@@ -3345,6 +3345,7 @@ void bind_table(nb::module_& m) {
         } else {
             fitsfile* fptr = nullptr;
             int status = 0;
+            torchfits::check_fits_filename_security(filename);
             fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");
@@ -3370,6 +3371,7 @@ void bind_table(nb::module_& m) {
         } else {
             fitsfile* fptr = nullptr;
             int status = 0;
+            torchfits::check_fits_filename_security(filename);
             fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");
@@ -3424,6 +3426,7 @@ void bind_table(nb::module_& m) {
             nb::gil_scoped_release release;
             fitsfile* fptr = nullptr;
             int status = 0;
+            torchfits::check_fits_filename_security(filename);
             fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");

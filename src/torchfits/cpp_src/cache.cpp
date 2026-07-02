@@ -137,6 +137,7 @@ public:
         // Open new file
         fitsfile* fptr = nullptr;
         int status = 0;
+        check_fits_filename_security(filepath);
         fits_open_file(&fptr, filepath.c_str(), READONLY, &status);
 
         if (status != 0) return nullptr;
