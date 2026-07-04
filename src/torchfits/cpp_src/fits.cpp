@@ -2906,6 +2906,7 @@ torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
     fitsfile* fptr = nullptr;
     int status = 0;
     try {
+        check_fits_filename_security(path);
         fits_open_file(&fptr, path.c_str(), READONLY, &status);
         if (status != 0) {
             throw std::runtime_error("Could not open FITS file: " + path);
@@ -3020,6 +3021,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
     fitsfile* fptr = nullptr;
     int status = 0;
     std::shared_ptr<SharedReadMeta> shared_meta = get_shared_meta_for_path(path);
+    check_fits_filename_security(path);
     fits_open_file(&fptr, path.c_str(), READONLY, &status);
     if (status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
