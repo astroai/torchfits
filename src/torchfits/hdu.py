@@ -8,8 +8,7 @@ This module implements the main data structures for FITS HDUs:
 - Header: FITS header management
 """
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union, NamedTuple
 
 import torch
 from torch import Tensor
@@ -37,8 +36,7 @@ except ImportError:
 _ = torch.empty(1)  # Force torch C++ symbols to load
 
 
-@dataclass(frozen=True)
-class Card:
+class Card(NamedTuple):
     """One FITS header card.
 
     The object is intentionally lightweight and tuple-compatible enough for
@@ -52,17 +50,6 @@ class Card:
     @property
     def keyword(self) -> str:
         return self.key
-
-    def __iter__(self):
-        yield self.key
-        yield self.value
-        yield self.comment
-
-    def __len__(self) -> int:
-        return 3
-
-    def __getitem__(self, index: int) -> Any:
-        return (self.key, self.value, self.comment)[index]
 
 
 class Header(dict):
@@ -89,12 +76,24 @@ class Header(dict):
                         comment = ""
                     self._set_card(str(k), value, str(comment), bump=False)
             elif isinstance(cards, (list, tuple)):
+                # ⚡ Bolt: Fast-path for bulk header loading from C++ backend
+                # Uses localized lookups and strict type checks to bypass
+                # overhead of _coerce_card and isinstance evaluations.
+                append = self._cards.append
+                setitem = super().__setitem__
                 for card in cards:
-                    try:
-                        parsed = self._coerce_card(card)
-                    except (TypeError, ValueError):
-                        continue
-                    self._append_card(parsed, update_mapping=True, bump=False)
+                    if type(card) is tuple and len(card) == 3:
+                        key, value, comment = card
+                        card_obj = Card(str(key), value, str(comment))
+                        append(card_obj)
+                        if key not in {"HISTORY", "COMMENT"}:
+                            setitem(key, value)
+                    else:
+                        try:
+                            parsed = self._coerce_card(card)
+                        except (TypeError, ValueError):
+                            continue
+                        self._append_card(parsed, update_mapping=True, bump=False)
 
     def __setitem__(self, key, value):
         if (
