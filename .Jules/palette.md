@@ -1,0 +1,3 @@
+## 2024-07-05 - [Add accessibility to scrollable Jupyter HTML representations]
+**Learning:** When creating custom scrollable `<div>` containers (using `overflow: auto`) for Jupyter Notebook HTML representations (`_repr_html_`), it is important to add `tabindex="0"` and an `aria-label` to ensure they are keyboard accessible and screen-reader friendly. Furthermore, ensuring that `<th>` elements have `scope="col"` helps screen readers correctly associate headers with table columns.
+**Action:** Always verify that any scrollable elements added to `_repr_html_` output include these basic accessibility attributes for proper screen reader and keyboard navigation support.
