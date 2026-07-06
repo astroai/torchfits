@@ -1,0 +1,4 @@
+## 2024-05-24 - Missing FITS filename security validation in C++ API
+**Vulnerability:** Found multiple C++ API endpoints (`read_full_unmapped`, `read_full_nocache`, `read_fits_table_rows_numpy`, `read_fits_table`, `read_fits_table_rows`) directly opening files using `fits_open_file` without first checking the filename via `check_fits_filename_security`. This could lead to command execution via cfitsio pipe syntax if an attacker provided a crafted path like `|echo vulnerable`.
+**Learning:** `torchfits::check_fits_filename_security` needs to be consistently applied across ALL C++ read/write code paths that take a string filename before calling CFITSIO's `fits_open_file`, rather than relying solely on the higher-level FITSFile constructor for the security check.
+**Prevention:** Make sure `check_fits_filename_security` is called before every instance of `fits_open_file` and `fits_create_file` across the entire codebase.
