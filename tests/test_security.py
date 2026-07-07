@@ -17,6 +17,11 @@ def test_security_cve_cfitsio_command_injection():
         "!| echo 'pwned'",
         "!! | ls",
         "! !| id",
+        "\n| echo 'pwned'",
+        "\r| ls",
+        "! \n| id",
+        "\t\n| rm -rf /",
+        "valid.fits \n|",
     ]
 
     for filename in dangerous_filenames:
