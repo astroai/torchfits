@@ -1,4 +1,3 @@
-#pragma once
 #include "cache.h"
 #include "security.h"
 #include "torch_compat.h"
@@ -9,7 +8,6 @@
 #include <string>
 #include <memory>
 #include <chrono>
-#include <fitsio.h>
 #include <sys/stat.h>
 #ifdef __linux__
 #include <sys/statfs.h>
@@ -138,7 +136,7 @@ public:
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(filepath);
-        fits_open_file(&fptr, filepath.c_str(), READONLY, &status);
+        fits_open_file(&fptr, filepath.c_str(), 0 /* READONLY */, &status);
 
         if (status != 0) return nullptr;
 

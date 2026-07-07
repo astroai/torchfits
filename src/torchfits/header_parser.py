@@ -228,7 +228,10 @@ class FastHeaderParser:
                         elif fc == "(":
                             complex_match = cls._COMPLEX_PATTERN.match(pv)
                             if complex_match:
-                                value = complex(float(complex_match.group(1)), float(complex_match.group(2)))
+                                value = complex(
+                                    float(complex_match.group(1)),
+                                    float(complex_match.group(2)),
+                                )
                         if value is None:
                             value = pv
             return keyword, value, comment

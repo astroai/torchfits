@@ -246,7 +246,20 @@ def read_table(
     fast_header: bool = True,
     return_header: bool = False,
 ):
-    return _read_table_impl(read, path, hdu=hdu, columns=columns, start_row=start_row, num_rows=num_rows, device=device, mmap=mmap, cache_capacity=cache_capacity, handle_cache_capacity=handle_cache_capacity, fast_header=fast_header, return_header=return_header)
+    return _read_table_impl(
+        read,
+        path,
+        hdu=hdu,
+        columns=columns,
+        start_row=start_row,
+        num_rows=num_rows,
+        device=device,
+        mmap=mmap,
+        cache_capacity=cache_capacity,
+        handle_cache_capacity=handle_cache_capacity,
+        fast_header=fast_header,
+        return_header=return_header,
+    )
 
 
 def read_hdus(
@@ -257,7 +270,9 @@ def read_hdus(
     mmap: bool = True,
     return_header: bool = False,
 ):
-    return _read_hdus_impl(path, hdus, device=device, mmap=mmap, return_header=return_header)
+    return _read_hdus_impl(
+        path, hdus, device=device, mmap=mmap, return_header=return_header
+    )
 
 
 def read_subset(
@@ -296,7 +311,9 @@ def write(
     overwrite: bool = False,
     compress: bool | str = False,
 ) -> None:
-    return _write_impl(path, data, header=header, overwrite=overwrite, compress=compress)
+    return _write_impl(
+        path, data, header=header, overwrite=overwrite, compress=compress
+    )
 
 
 def write_tensor(
@@ -360,7 +377,17 @@ def stream_table(
     mmap: bool = False,
     max_chunks: int | None = None,
 ):
-    return _stream_table_impl(get_header, file_path, hdu=hdu, columns=columns, start_row=start_row, num_rows=num_rows, chunk_rows=chunk_rows, mmap=mmap, max_chunks=max_chunks)
+    return _stream_table_impl(
+        get_header,
+        file_path,
+        hdu=hdu,
+        columns=columns,
+        start_row=start_row,
+        num_rows=num_rows,
+        chunk_rows=chunk_rows,
+        mmap=mmap,
+        max_chunks=max_chunks,
+    )
 
 
 def read_large_table(
@@ -370,7 +397,14 @@ def read_large_table(
     streaming: bool = False,
     return_iterator: bool = False,
 ):
-    return _read_large_table_impl(get_header, file_path, hdu=hdu, max_memory_mb=max_memory_mb, streaming=streaming, return_iterator=return_iterator)
+    return _read_large_table_impl(
+        get_header,
+        file_path,
+        hdu=hdu,
+        max_memory_mb=max_memory_mb,
+        streaming=streaming,
+        return_iterator=return_iterator,
+    )
 
 
 def read_batch(
@@ -409,7 +443,15 @@ def clear_file_cache(
     cpp: bool = True,
     cpp_module: Any = None,
 ) -> None:
-    return _clear_file_cache_impl(data=data, handles=handles, meta=meta, hdu_types=hdu_types, stats=stats, cpp=cpp, cpp_module=cpp_module)
+    return _clear_file_cache_impl(
+        data=data,
+        handles=handles,
+        meta=meta,
+        hdu_types=hdu_types,
+        stats=stats,
+        cpp=cpp,
+        cpp_module=cpp_module,
+    )
 
 
 def cache_subsystem_policy(name: str) -> dict[str, bool]:

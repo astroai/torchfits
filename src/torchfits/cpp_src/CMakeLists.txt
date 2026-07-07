@@ -398,7 +398,9 @@ endif()
 set(SOURCES
     bindings.cpp
     fits.cpp
+    fits_file.cpp
     table.cpp
+    table_mutation.cpp
     compression.cpp
     cache.cpp
     hardware.cpp

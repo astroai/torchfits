@@ -1,0 +1,351 @@
+"""Table write path: CFITSIO-backed table writes, header management, schema rewrite."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    pass
+
+from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
+from ..io import _normalize_cpp_table_data, _write_header_cards_if_supported
+
+
+def _apply_hdu_header_cards(hdu_header, header_map: dict[str, Any]) -> None:
+    skip_keys = {
+        "SIMPLE",
+        "XTENSION",
+        "BITPIX",
+        "NAXIS",
+        "NAXIS1",
+        "NAXIS2",
+        "PCOUNT",
+        "GCOUNT",
+        "TFIELDS",
+        "EXTEND",
+    }
+    for key, value in (header_map or {}).items():
+        key_upper = str(key).upper()
+        if key_upper in skip_keys:
+            continue
+        if key_upper.startswith("TTYPE") or key_upper.startswith("TFORM"):
+            continue
+        if key_upper == "HISTORY":
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for item in values:
+                hdu_header.add_history(str(item))
+            continue
+        if key_upper == "COMMENT":
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for item in values:
+                hdu_header.add_comment(str(item))
+            continue
+        try:
+            hdu_header[str(key)] = value
+        except Exception:
+            continue
+
+
+def write(
+    path: str,
+    data: dict[str, Any],
+    *,
+    schema: dict[str, dict[str, Any]] | None = None,
+    header: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    extname: str | None = None,
+    table_type: str = "binary",
+) -> None:
+    if not isinstance(data, dict) or not data:
+        raise ValueError("data must be a non-empty dictionary")
+    table_kind = str(table_type).lower().strip()
+    if table_kind not in {"binary", "ascii"}:
+        raise ValueError("table_type must be 'binary' or 'ascii'")
+    if schema is not None and not isinstance(schema, dict):
+        raise TypeError("schema must be a dictionary when provided")
+    if extname is not None:
+        hdr = dict(header or {})
+        hdr["EXTNAME"] = str(extname)
+    else:
+        hdr = header
+    import torchfits
+    from .._io_engine.write_api import _prepare_unsigned_table_data_for_write
+
+    data, schema, unsigned_converted = _prepare_unsigned_table_data_for_write(
+        data, schema
+    )
+
+    if schema or unsigned_converted or table_kind == "ascii":
+        import torchfits._C as cpp
+
+        _invalidate_path_caches(path)
+        data = _normalize_cpp_table_data(data)
+        cpp.write_fits_table(
+            path,
+            data,
+            hdr if hdr else {},
+            overwrite,
+            schema if schema else None,
+            table_kind,
+        )
+        if hdr:
+            _write_header_cards_if_supported(path, 1, hdr)
+        _invalidate_path_caches(path)
+        return
+
+    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)
+
+
+def _header_cards_to_mapping(header_cards: Any) -> dict[str, Any]:
+    if isinstance(header_cards, dict):
+        return {str(k): v for k, v in header_cards.items()}
+    out: dict[str, Any] = {}
+    if isinstance(header_cards, (list, tuple)):
+        for card in header_cards:
+            if hasattr(card, "key") and hasattr(card, "value"):
+                out[str(card.key)] = card.value
+                continue
+            if not isinstance(card, (list, tuple)) or len(card) < 2:
+                continue
+            out[str(card[0])] = card[1]
+    return out
+
+
+def _column_tform_map(header_map: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    name_by_idx = _column_name_index_map(header_map)
+    tform_by_idx: dict[int, str] = {}
+    for key, value in header_map.items():
+        key_u = str(key).upper()
+        if key_u.startswith("TFORM"):
+            suffix = key_u[5:]
+            if suffix.isdigit():
+                tform_by_idx[int(suffix)] = str(value)
+
+    for idx, name in name_by_idx.items():
+        out[name] = tform_by_idx.get(idx, "")
+    return out
+
+
+def _column_name_index_map(header_map: dict[str, Any]) -> dict[int, str]:
+    out: dict[int, str] = {}
+
+    try:
+        tfields = int(header_map.get("TFIELDS", 0))
+    except (ValueError, TypeError):
+        tfields = 0
+
+    if tfields > 0:
+        for i in range(1, tfields + 1):
+            val = header_map.get(f"TTYPE{i}")
+            if val is not None:
+                out[i] = str(val)
+        return out
+
+    for key, value in header_map.items():
+        key_u = str(key).upper()
+        if not key_u.startswith("TTYPE"):
+            continue
+        suffix = key_u[5:]
+        if suffix.isdigit():
+            out[int(suffix)] = str(value)
+    return out
+
+
+def _extract_table_schema_from_header(
+    header_map: dict[str, Any], columns: list[str]
+) -> dict[str, dict[str, Any]]:
+    name_by_idx = _column_name_index_map(header_map)
+    index_by_name = {name: idx for idx, name in name_by_idx.items()}
+    schema: dict[str, dict[str, Any]] = {}
+    for name in columns:
+        idx = index_by_name.get(name)
+        if idx is None:
+            continue
+        meta: dict[str, Any] = {}
+        tform = header_map.get(f"TFORM{idx}")
+        if tform is not None:
+            meta["format"] = str(tform)
+        tunit = header_map.get(f"TUNIT{idx}")
+        if tunit is not None:
+            meta["unit"] = str(tunit)
+        tdim = header_map.get(f"TDIM{idx}")
+        if tdim is not None:
+            meta["dim"] = str(tdim)
+        tnull = header_map.get(f"TNULL{idx}")
+        if tnull is not None:
+            meta["tnull"] = tnull
+        tscal = header_map.get(f"TSCAL{idx}")
+        if tscal is not None:
+            meta["bscale"] = tscal
+        tzero = header_map.get(f"TZERO{idx}")
+        if tzero is not None:
+            meta["bzero"] = tzero
+        schema[name] = meta
+    return schema
+
+
+def _sanitize_table_header_for_rewrite(header_map: dict[str, Any]) -> dict[str, Any]:
+    skip_exact = {
+        "SIMPLE",
+        "XTENSION",
+        "BITPIX",
+        "NAXIS",
+        "NAXIS1",
+        "NAXIS2",
+        "PCOUNT",
+        "GCOUNT",
+        "TFIELDS",
+        "CHECKSUM",
+        "DATASUM",
+    }
+    skip_prefixes = ("TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO")
+    out: dict[str, Any] = {}
+    for key, value in header_map.items():
+        key_s = str(key)
+        key_u = key_s.upper()
+        if key_u in skip_exact:
+            continue
+        if key_u.startswith(skip_prefixes):
+            continue
+        out[key_s] = value
+    return out
+
+
+def _ordered_dict_for_columns(
+    columns: list[str], data_by_name: dict[str, Any]
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name in columns:
+        out[name] = data_by_name[name]
+    return out
+
+
+def _rewrite_table_hdu_with_schema(
+    path: str,
+    target_hdu: int,
+    data: dict[str, Any],
+    schema: dict[str, dict[str, Any]],
+    header: dict[str, Any],
+    table_type: str,
+) -> None:
+    import torchfits
+    import torchfits._C as cpp
+
+    can_overwrite_table_only = False
+    handle = cpp.open_fits_file(path, "r")
+    try:
+        num_hdus = int(cpp.get_num_hdus(handle))
+        if num_hdus == 1 and target_hdu == 0:
+            hdu_type = str(cpp.get_hdu_type(handle, 0))
+            if hdu_type in {"BINARY_TABLE", "ASCII_TABLE"}:
+                can_overwrite_table_only = True
+        elif num_hdus == 2 and target_hdu == 1:
+            hdu0_type = str(cpp.get_hdu_type(handle, 0))
+            hdu1_type = str(cpp.get_hdu_type(handle, 1))
+            if hdu0_type == "IMAGE" and hdu1_type in {"BINARY_TABLE", "ASCII_TABLE"}:
+                h0_header = _header_cards_to_mapping(cpp.read_header(handle, 0))
+                try:
+                    naxis0 = int(h0_header.get("NAXIS", 0))
+                except Exception:
+                    naxis0 = 0
+                if naxis0 == 0:
+                    can_overwrite_table_only = True
+                elif naxis0 == 1:
+                    try:
+                        naxis1 = int(h0_header.get("NAXIS1", 0))
+                    except Exception:
+                        naxis1 = -1
+                    can_overwrite_table_only = naxis1 == 0
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+    if can_overwrite_table_only:
+        write(
+            path,
+            data=data,
+            schema=schema,
+            header=header,
+            overwrite=True,
+            table_type=table_type,
+        )
+        return
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        write(
+            tmp_path,
+            data=data,
+            schema=schema,
+            header=header,
+            overwrite=True,
+            table_type=table_type,
+        )
+        with torchfits.open(tmp_path) as hdul:
+            replacement = hdul[1].materialize(device="cpu")
+        torchfits.replace_hdu(path, target_hdu, replacement)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _resolve_table_hdu_index_and_columns(
+    path: str, hdu: int | str
+) -> tuple[int, dict[str, Any], list[str], dict[str, str]]:
+    import torchfits._C as cpp
+
+    handle = cpp.open_fits_file(path, "r")
+    try:
+        num_hdus = int(cpp.get_num_hdus(handle))
+        if num_hdus <= 0:
+            raise RuntimeError(f"No HDUs found in '{path}'")
+
+        target_idx: int | None = None
+        if isinstance(hdu, int):
+            target_idx = hdu
+        elif isinstance(hdu, str):
+            wanted = hdu.strip().upper()
+            if not wanted:
+                raise ValueError("hdu name cannot be empty")
+            for i in range(num_hdus):
+                hdu_type = str(cpp.get_hdu_type(handle, i))
+                if hdu_type not in {"BINARY_TABLE", "ASCII_TABLE"}:
+                    continue
+                header_map = _header_cards_to_mapping(cpp.read_header(handle, i))
+                extname = str(header_map.get("EXTNAME", "")).strip().upper()
+                if extname == wanted:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                raise KeyError(f"Table HDU named '{hdu}' not found in '{path}'")
+        else:
+            raise TypeError("hdu must be an int index or EXTNAME string")
+
+        if target_idx is None or target_idx < 0 or target_idx >= num_hdus:
+            raise IndexError(
+                f"hdu index {hdu} out of range for '{path}' (num_hdus={num_hdus})"
+            )
+
+        hdu_type = str(cpp.get_hdu_type(handle, target_idx))
+        if hdu_type not in {"BINARY_TABLE", "ASCII_TABLE"}:
+            raise ValueError(f"HDU {target_idx} is not a table (type={hdu_type})")
+
+        header_map = _header_cards_to_mapping(cpp.read_header(handle, target_idx))
+        col_map = _column_name_index_map(header_map)
+        columns = [col_map[idx] for idx in sorted(col_map)]
+        tform_map = _column_tform_map(header_map)
+        return target_idx, header_map, columns, tform_map
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass

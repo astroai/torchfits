@@ -20,10 +20,6 @@ fitsfile* get_or_open_cached(const std::string& filepath);
 void release_cached(const std::string& filepath);
 void invalidate_cached(const std::string& filepath);
 
-// Cache initialization (old API if any remains)
-void init_cache(size_t memory_limit_mb, const std::string& disk_cache_dir = "");
-void clear_cache();
-
 // RAII guard for fitsfile* handles.  Two modes:
 //   cached=false (default) — calls fits_close_file on destruction
 //   cached=true           — calls release_cached(path) on destruction

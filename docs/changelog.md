@@ -26,7 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- GPU transport benchmarks add **`torchfits_dtype_fair_device`** (`read_tensor` +
+- **C++ source extraction:** Split `fits.cpp` (4552 lines) into `fits_detail.h`,
+  `fits_file.h`/`.cpp`, `fits_rw.h`; split `table.cpp` (3432 lines) into
+  `table_types.h`, `table_reader.h` (header-only), `table_mutation.h`/`.cpp`.
+  Removed `extern "C"` linkage from table mutation functions to fix UB from
+  C++ exceptions crossing C ABI boundaries. Removed dead declarations,
+  unused types, stale comments, and double includes.
   `raw_scale=True`) for dtype-equivalent integer comparisons vs fitsio.
 - Lab benchmark snapshot `exhaustive_mmap_0.5.0b4_20260630_162835` (3626 rows, 13 deficits).
 - README and `docs/benchmarks.md` document integer GPU semantics and training cache guidance.

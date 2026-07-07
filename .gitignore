@@ -70,3 +70,6 @@ mpl-cache-*/
 venv/
 
 .DS_Store
+
+# uv (not used — pixi is the package manager)
+uv.lock

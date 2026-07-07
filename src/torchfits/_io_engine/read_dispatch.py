@@ -34,9 +34,6 @@ def _cpp_has(cpp_module: Any, attr: str) -> bool:
         return result
 
 
-
-
-
 def _bit_columns_from_header(header: Header | None) -> set[str]:
     if not header:
         return set()
