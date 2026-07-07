@@ -54,6 +54,9 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "HDUList": ("torchfits.hdu", "HDUList"),
     "TensorHDU": ("torchfits.hdu", "TensorHDU"),
     "TableHDU": ("torchfits.hdu", "TableHDU"),
+    "TableHDURef": ("torchfits.hdu", "TableHDURef"),
+    "FITSDataset": ("torchfits.datasets", "FITSDataset"),
+    "IterableFITSDataset": ("torchfits.datasets", "IterableFITSDataset"),
 }
 
 __all__ = tuple(
@@ -73,6 +76,7 @@ __all__ = tuple(
         "HDUList",
         "TensorHDU",
         "TableHDU",
+        "TableHDURef",
         "read_batch",
         "get_batch_info",
         "get_cache_performance",
@@ -87,6 +91,8 @@ __all__ = tuple(
         "write_checksums",
         "write_tensor",
         "read_fast",
+        "FITSDataset",
+        "IterableFITSDataset",
         "to_pandas",
         "to_arrow",
         "to_polars",
@@ -171,7 +177,10 @@ if TYPE_CHECKING:
     from .hdu import HDUList as HDUList
     from .hdu import Header as Header
     from .hdu import TableHDU as TableHDU
+    from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
+    from .datasets import FITSDataset as FITSDataset
+    from .datasets import IterableFITSDataset as IterableFITSDataset
     from .io import get_header as get_header
     from .io import open as open
     from .io import read as read

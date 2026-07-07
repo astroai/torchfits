@@ -3121,6 +3121,15 @@ def drop_columns(
 
 # -- interop re-exports (implementations live in _table.interop) --------------
 
+__all__ = [
+    "duckdb_query",
+    "to_duckdb",
+    "to_pandas",
+    "to_polars",
+    "to_polars_lazy",
+    "write_parquet",
+]
+
 from ._table.interop import (  # noqa: E402,F401
     _materialize_arrow_table,
     _split_io_kwargs,

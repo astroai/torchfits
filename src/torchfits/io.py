@@ -11,7 +11,10 @@ import logging as _stdlib_logging
 import os
 import sys
 import atexit
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .hdu import HDUList, Header
 
 import torchfits._C as cpp
 
@@ -20,7 +23,6 @@ from ._io_engine.batch import (
     read_batch as _read_batch_impl,
 )
 from ._io_engine.caches import (
-    IO_CACHE_SUBSYSTEMS,
     cache_subsystem_policy as _cache_subsystem_policy_impl,
     clear_cache_subsystem as _clear_cache_subsystem_impl,
     check_read_cache as _check_read_cache_impl,
@@ -77,10 +79,30 @@ _READ_EXC_TYPES = (
 )
 
 
-def read_fast(*args: Any, **kwargs: Any):
+def read_fast(
+    path: str | list[str] | tuple[str, ...],
+    hdu: int | list[int] | tuple[int, ...] = 0,
+    mmap: bool = True,
+    device: str = "cpu",
+    fp16: bool = False,
+    bf16: bool = False,
+    use_cache: bool = True,
+    raw_scale: bool = False,
+    scale_on_device: bool = True,
+):
     from ._fastio import read as _read_fast
 
-    return _read_fast(*args, **kwargs)
+    return _read_fast(
+        path,
+        hdu=hdu,
+        mmap=mmap,
+        device=device,
+        fp16=fp16,
+        bf16=bf16,
+        use_cache=use_cache,
+        raw_scale=raw_scale,
+        scale_on_device=scale_on_device,
+    )
 
 
 def _invalidate_path_caches(path: str) -> None:
@@ -211,12 +233,31 @@ def read_image(*args: Any, **kwargs: Any):
     return _read_image_impl(*args, **kwargs)
 
 
-def read_table(*args: Any, **kwargs: Any):
-    return _read_table_impl(read, *args, **kwargs)
+def read_table(
+    path: str,
+    hdu: int = 1,
+    columns: list[str] | None = None,
+    start_row: int = 1,
+    num_rows: int = -1,
+    device: str = "cpu",
+    mmap: bool | str = "auto",
+    cache_capacity: int = 10,
+    handle_cache_capacity: int = 16,
+    fast_header: bool = True,
+    return_header: bool = False,
+):
+    return _read_table_impl(read, path, hdu=hdu, columns=columns, start_row=start_row, num_rows=num_rows, device=device, mmap=mmap, cache_capacity=cache_capacity, handle_cache_capacity=handle_cache_capacity, fast_header=fast_header, return_header=return_header)
 
 
-def read_hdus(*args: Any, **kwargs: Any):
-    return _read_hdus_impl(*args, **kwargs)
+def read_hdus(
+    path: str,
+    hdus: list[int | str] | tuple[int | str, ...],
+    *,
+    device: str = "cpu",
+    mmap: bool = True,
+    return_header: bool = False,
+):
+    return _read_hdus_impl(path, hdus, device=device, mmap=mmap, return_header=return_header)
 
 
 def read_subset(
@@ -240,16 +281,22 @@ def read_subset(
     )
 
 
-def open_subset_reader(*args: Any, **kwargs: Any):
-    return _open_subset_reader_impl(*args, **kwargs)
+def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu"):
+    return _open_subset_reader_impl(path, hdu=hdu, device=device)
 
 
-def open(*args: Any, **kwargs: Any):
-    return _open_hdulist_impl(*args, **kwargs)
+def open(path: str, mode: str = "r") -> HDUList:
+    return _open_hdulist_impl(path, mode=mode)
 
 
-def write(*args: Any, **kwargs: Any):
-    return _write_impl(*args, **kwargs)
+def write(
+    path: str,
+    data: Any,
+    header: Header | None = None,
+    overwrite: bool = False,
+    compress: bool | str = False,
+) -> None:
+    return _write_impl(path, data, header=header, overwrite=overwrite, compress=compress)
 
 
 def write_tensor(
@@ -267,16 +314,32 @@ def write_tensor(
     return write(path, tensor, header=header, overwrite=overwrite, compress=compress)
 
 
-def insert_hdu(*args: Any, **kwargs: Any):
-    return _insert_hdu_impl(*args, **kwargs)
+def insert_hdu(
+    path: str,
+    data: Any,
+    index: int = 1,
+    header: dict[str, Any] | None = None,
+    compress: bool | str = False,
+) -> None:
+    return _insert_hdu_impl(path, data, index=index, header=header, compress=compress)
 
 
-def replace_hdu(*args: Any, **kwargs: Any):
-    return _replace_hdu_impl(*args, **kwargs)
+def replace_hdu(
+    path: str,
+    hdu: int | str,
+    data: Any,
+    header: dict[str, Any] | None = None,
+    compress: bool | str = False,
+) -> None:
+    return _replace_hdu_impl(path, hdu, data, header=header, compress=compress)
 
 
-def delete_hdu(*args: Any, **kwargs: Any):
-    return _delete_hdu_impl(*args, **kwargs)
+def delete_hdu(
+    path: str,
+    hdu: int | str,
+    compress: bool | str = False,
+) -> None:
+    return _delete_hdu_impl(path, hdu, compress=compress)
 
 
 def get_header(path: str, hdu: Any = None):
@@ -287,12 +350,27 @@ def _write_header_cards_if_supported(*args: Any, **kwargs: Any):
     return _write_header_cards_if_supported_impl(*args, **kwargs)
 
 
-def stream_table(*args: Any, **kwargs: Any):
-    return _stream_table_impl(get_header, *args, **kwargs)
+def stream_table(
+    file_path: str,
+    hdu: int = 1,
+    columns: list[str] | None = None,
+    start_row: int = 1,
+    num_rows: int = -1,
+    chunk_rows: int = 65536,
+    mmap: bool = False,
+    max_chunks: int | None = None,
+):
+    return _stream_table_impl(get_header, file_path, hdu=hdu, columns=columns, start_row=start_row, num_rows=num_rows, chunk_rows=chunk_rows, mmap=mmap, max_chunks=max_chunks)
 
 
-def read_large_table(*args: Any, **kwargs: Any):
-    return _read_large_table_impl(get_header, *args, **kwargs)
+def read_large_table(
+    file_path: str,
+    hdu: int = 1,
+    max_memory_mb: int = 100,
+    streaming: bool = False,
+    return_iterator: bool = False,
+):
+    return _read_large_table_impl(get_header, file_path, hdu=hdu, max_memory_mb=max_memory_mb, streaming=streaming, return_iterator=return_iterator)
 
 
 def read_batch(
@@ -321,8 +399,17 @@ def get_cache_performance():
     return _get_cache_performance_impl()
 
 
-def clear_file_cache(*args: Any, **kwargs: Any):
-    return _clear_file_cache_impl(*args, **kwargs)
+def clear_file_cache(
+    *,
+    data: bool = True,
+    handles: bool = True,
+    meta: bool = True,
+    hdu_types: bool = True,
+    stats: bool = True,
+    cpp: bool = True,
+    cpp_module: Any = None,
+) -> None:
+    return _clear_file_cache_impl(data=data, handles=handles, meta=meta, hdu_types=hdu_types, stats=stats, cpp=cpp, cpp_module=cpp_module)
 
 
 def cache_subsystem_policy(name: str) -> dict[str, bool]:
@@ -341,12 +428,12 @@ def _shutdown_fits_io_caches() -> None:
 atexit.register(_shutdown_fits_io_caches)
 
 
-def write_checksums(*args: Any, **kwargs: Any):
-    return _write_checksums_impl(*args, **kwargs)
+def write_checksums(path: str, hdu: int = 0) -> None:
+    return _write_checksums_impl(path, hdu=hdu)
 
 
-def verify_checksums(*args: Any, **kwargs: Any):
-    return _verify_checksums_impl(*args, **kwargs)
+def verify_checksums(path: str, hdu: int = 0) -> dict[str, Any]:
+    return _verify_checksums_impl(path, hdu=hdu)
 
 
 def read_table_rows(
@@ -386,9 +473,9 @@ def _normalize_cpp_table_data(table_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "clear_file_cache",
     "cache_subsystem_policy",
     "clear_cache_subsystem",
+    "clear_file_cache",
     "delete_hdu",
     "get_batch_info",
     "get_cache_performance",
@@ -401,18 +488,15 @@ __all__ = [
     "read_fast",
     "read_hdus",
     "read_image",
-    "read_tensor",
     "read_large_table",
     "read_subset",
     "read_table",
     "read_table_rows",
+    "read_tensor",
     "replace_hdu",
     "stream_table",
     "verify_checksums",
     "write",
-    "write_tensor",
     "write_checksums",
-    "IO_CACHE_SUBSYSTEMS",
-    "_normalize_cpp_table_data",
-    "_write_header_cards_if_supported",
+    "write_tensor",
 ]

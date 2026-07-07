@@ -48,15 +48,13 @@ def acquire_cpp_handle(path: str, cpp: Any) -> Any:
         if handle is not None:
             _handle_cache.move_to_end(path)
             return handle
-
-    handle = cpp.open_fits_file(path, "r")
-    with _handle_cache_lock:
+        handle = cpp.open_fits_file(path, "r")
         _handle_cache[path] = handle
         _handle_cache.move_to_end(path)
         while len(_handle_cache) > _HANDLE_CACHE_MAX:
             _, old = _handle_cache.popitem(last=False)
             _close_cpp_handle(old)
-    return handle
+        return handle
 
 
 def acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
@@ -72,15 +70,13 @@ def acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
         if reader is not None:
             _reader_cache.move_to_end(key)
             return reader
-
-    file_handle = acquire_cpp_handle(path, cpp)
-    reader = cpp.TableReader(file_handle, hdu_index)
-    with _reader_cache_lock:
+        file_handle = acquire_cpp_handle(path, cpp)
+        reader = cpp.TableReader(file_handle, hdu_index)
         _reader_cache[key] = reader
         _reader_cache.move_to_end(key)
         while len(_reader_cache) > _READER_CACHE_MAX:
             _reader_cache.popitem(last=False)
-    return reader
+        return reader
 
 
 def close_all_cached_handles() -> None:

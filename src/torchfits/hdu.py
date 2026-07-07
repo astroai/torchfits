@@ -32,8 +32,13 @@ except ImportError:
             self.col_names_dict = col_names_dict or {}
 
 
-# Import torch first
-_ = torch.empty(1)  # Force torch C++ symbols to load
+_BITPIX_TO_DTYPE: dict[int, torch.dtype] = {
+    8: torch.uint8,
+    16: torch.int16,
+    32: torch.int32,
+    -32: torch.float32,
+    -64: torch.float64,
+}
 
 
 class Card(NamedTuple):
@@ -324,18 +329,10 @@ class DataView:
 
     @property
     def dtype(self) -> torch.dtype:
-        # Map BITPIX to torch dtype
         bitpix = self._handle.get_dtype(self._index)
-        if bitpix == 8:
-            return torch.uint8
-        elif bitpix == 16:
-            return torch.int16
-        elif bitpix == 32:
-            return torch.int32
-        elif bitpix == -32:
-            return torch.float32
-        elif bitpix == -64:
-            return torch.float64
+        dtype = _BITPIX_TO_DTYPE.get(bitpix)
+        if dtype is not None:
+            return dtype
         return torch.float32  # Default
 
     def __getitem__(self, slice_spec) -> Tensor:
@@ -413,8 +410,10 @@ class TensorHDU:
 
             return cpp.read_full(self._file_handle, self._hdu_index).to(device)
         else:
-            # Return dummy data if no data available
-            return torch.zeros(10, 10).to(device)
+            raise ValueError(
+                "TensorHDU has no data available. "
+                "Construct it with a file handle, tensor data, or a Header with a source HDU."
+            )
 
     def chunks(self, chunk_size: Tuple[int, ...]) -> Iterator[Tensor]:
         import torchfits._C as cpp
@@ -449,19 +448,14 @@ class TensorHDU:
         return "()"
 
     def _get_dtype_str(self) -> str:
-        """Get dtype string representation."""
         if self._data is not None:
             return str(self._data.dtype).replace("torch.", "")
         elif self._file_handle:
             bitpix = self.header.get("BITPIX", 0)
-            mapping = {
-                8: "uint8",
-                16: "int16",
-                32: "int32",
-                -32: "float32",
-                -64: "float64",
-            }
-            return mapping.get(bitpix, str(bitpix))
+            dtype = _BITPIX_TO_DTYPE.get(bitpix)
+            if dtype is not None:
+                return str(dtype).replace("torch.", "")
+            return str(bitpix)
         return "unknown"
 
     def __repr__(self):
@@ -1250,8 +1244,6 @@ class TableHDU(TensorFrame):
 
 
 class _TableHDURefDataWrapper:
-    """Wrapper to provide dict-like access to TableHDURef columns without redefining class."""
-
     def __init__(self, parent: "TableHDURef"):
         self._parent = parent
 
@@ -1259,7 +1251,6 @@ class _TableHDURefDataWrapper:
         return self._parent[key]
 
     def __contains__(self, key: str) -> bool:
-        # ⚡ Bolt: Removed `set()` wrapper to avoid O(N) allocation overhead per lookup
         return key in self._parent.columns
 
     def keys(self):

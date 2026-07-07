@@ -783,6 +783,45 @@ public:
 
     }
 
+    // Template helper for reading typed columns from mmap with byte-swapping.
+    // OutT is the output tensor element type; RawT is the integer type used for
+    // raw reads and byte-swapping (same size as OutT, verified by static_assert).
+    // bswap_fn is the byte-swap function (bswap_16 / bswap_32 / bswap_64).
+    template <typename OutT, typename RawT, RawT (*bswap_fn)(RawT)>
+    void read_typed_mmap_column(
+        const uint8_t* col_ptr,
+        OutT* out,
+        long num_rows,
+        long repeat,
+        long row_width_bytes)
+    {
+        constexpr size_t elem_size = sizeof(RawT);
+        static_assert(sizeof(OutT) == sizeof(RawT));
+
+        if (repeat == 1) {
+            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                for (long i = start; i < end; i++) {
+                    RawT raw_val;
+                    memcpy(&raw_val, col_ptr + i * row_width_bytes, elem_size);
+                    RawT val = bswap_fn(raw_val);
+                    memcpy(&out[i], &val, elem_size);
+                }
+            });
+        } else {
+            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                for (long i = start; i < end; i++) {
+                    OutT* row_out = out + i * repeat;
+                    for (long j = 0; j < repeat; j++) {
+                        RawT raw_val;
+                        memcpy(&raw_val, col_ptr + i * row_width_bytes + j * elem_size, elem_size);
+                        RawT val = bswap_fn(raw_val);
+                        memcpy(&row_out[j], &val, elem_size);
+                    }
+                }
+            });
+        }
+    }
+
     // Memory-mapped column reading
     // Returns a dict of column name to torch::Tensor (or numpy array for strings)
     nb::dict read_columns_mmap(
@@ -933,119 +972,20 @@ public:
                 }
 
                 if (col.type == FITSColumnType::FLOAT) {
-                    float* out = tensor.data_ptr<float>();
-                    if (repeat == 1) {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int32_t raw_val;
-                                memcpy(&raw_val, col_ptr + i * row_width_bytes_, sizeof(int32_t));
-                                int32_t val = bswap_32(raw_val);
-                                memcpy(&out[i], &val, sizeof(float));
-                            }
-                        });
-                    } else {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                float* row_out = out + i * repeat;
-                                for (long j = 0; j < repeat; j++) {
-                                    int32_t raw_val;
-                                    memcpy(&raw_val, col_ptr + i * row_width_bytes_ + j * sizeof(int32_t), sizeof(int32_t));
-                                    int32_t val = bswap_32(raw_val);
-                                    memcpy(&row_out[j], &val, sizeof(float));
-                                }
-                            }
-                        });
-                    }
+                    read_typed_mmap_column<float, int32_t, bswap_32>(
+                        col_ptr, tensor.data_ptr<float>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::DOUBLE) {
-                    double* out = tensor.data_ptr<double>();
-                    if (repeat == 1) {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int64_t raw_val;
-                                memcpy(&raw_val, col_ptr + i * row_width_bytes_, sizeof(int64_t));
-                                int64_t val = bswap_64(raw_val);
-                                memcpy(&out[i], &val, sizeof(double));
-                            }
-                        });
-                    } else {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                double* row_out = out + i * repeat;
-                                for (long j = 0; j < repeat; j++) {
-                                    int64_t raw_val;
-                                    memcpy(&raw_val, col_ptr + i * row_width_bytes_ + j * sizeof(int64_t), sizeof(int64_t));
-                                    int64_t val = bswap_64(raw_val);
-                                    memcpy(&row_out[j], &val, sizeof(double));
-                                }
-                            }
-                        });
-                    }
+                    read_typed_mmap_column<double, int64_t, bswap_64>(
+                        col_ptr, tensor.data_ptr<double>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::INT) {
-                    int32_t* out = tensor.data_ptr<int32_t>();
-                    if (repeat == 1) {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int32_t raw_val;
-                                memcpy(&raw_val, col_ptr + i * row_width_bytes_, sizeof(int32_t));
-                                out[i] = bswap_32(raw_val);
-                            }
-                        });
-                    } else {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int32_t* row_out = out + i * repeat;
-                                for (long j = 0; j < repeat; j++) {
-                                    int32_t raw_val;
-                                    memcpy(&raw_val, col_ptr + i * row_width_bytes_ + j * sizeof(int32_t), sizeof(int32_t));
-                                    row_out[j] = bswap_32(raw_val);
-                                }
-                            }
-                        });
-                    }
+                    read_typed_mmap_column<int32_t, int32_t, bswap_32>(
+                        col_ptr, tensor.data_ptr<int32_t>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::SHORT) {
-                    int16_t* out = tensor.data_ptr<int16_t>();
-                    if (repeat == 1) {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int16_t raw_val;
-                                memcpy(&raw_val, col_ptr + i * row_width_bytes_, sizeof(int16_t));
-                                out[i] = bswap_16(raw_val);
-                            }
-                        });
-                    } else {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int16_t* row_out = out + i * repeat;
-                                for (long j = 0; j < repeat; j++) {
-                                    int16_t raw_val;
-                                    memcpy(&raw_val, col_ptr + i * row_width_bytes_ + j * sizeof(int16_t), sizeof(int16_t));
-                                    row_out[j] = bswap_16(raw_val);
-                                }
-                            }
-                        });
-                    }
+                    read_typed_mmap_column<int16_t, int16_t, bswap_16>(
+                        col_ptr, tensor.data_ptr<int16_t>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::LONG) {
-                    int64_t* out = tensor.data_ptr<int64_t>();
-                    if (repeat == 1) {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int64_t raw_val;
-                                memcpy(&raw_val, col_ptr + i * row_width_bytes_, sizeof(int64_t));
-                                out[i] = bswap_64(raw_val);
-                            }
-                        });
-                    } else {
-                        at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                            for (long i = start; i < end; i++) {
-                                int64_t* row_out = out + i * repeat;
-                                for (long j = 0; j < repeat; j++) {
-                                    int64_t raw_val;
-                                    memcpy(&raw_val, col_ptr + i * row_width_bytes_ + j * sizeof(int64_t), sizeof(int64_t));
-                                    row_out[j] = bswap_64(raw_val);
-                                }
-                            }
-                        });
-                    }
+                    read_typed_mmap_column<int64_t, int64_t, bswap_64>(
+                        col_ptr, tensor.data_ptr<int64_t>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::BYTE || col.type == FITSColumnType::STRING) {
                     uint8_t* out = tensor.data_ptr<uint8_t>();
                     at::parallel_for(0, num_rows, 2048, [&](long start, long end) {

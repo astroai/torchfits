@@ -202,8 +202,35 @@ class FastHeaderParser:
                 value_str = value_comment
                 comment = None
 
-            # Parse the value
-            value = cls._parse_value(value_str, keyword)
+            # Parse the value (inlined from _parse_value for performance)
+            value = None
+            if value_str:
+                pv = value_str.strip()
+                if pv:
+                    fc = pv[0]
+                    if fc == "'":
+                        value = cls._parse_string_value(pv)
+                    elif keyword in cls._STRING_KEYWORDS:
+                        value = pv
+                    elif fc in "+-0123456789.":
+                        try:
+                            if "." in pv or "e" in pv or "E" in pv:
+                                value = float(pv)
+                            else:
+                                value = int(pv)
+                        except ValueError:
+                            pass
+                    if value is None:
+                        if pv == "T":
+                            value = True
+                        elif pv == "F":
+                            value = False
+                        elif fc == "(":
+                            complex_match = cls._COMPLEX_PATTERN.match(pv)
+                            if complex_match:
+                                value = complex(float(complex_match.group(1)), float(complex_match.group(2)))
+                        if value is None:
+                            value = pv
             return keyword, value, comment
         else:
             # No equals sign - might be a comment-only keyword
@@ -250,61 +277,6 @@ class FastHeaderParser:
                 return i
             i += 1
         return -1
-
-    @classmethod
-    def _parse_value(cls, value_str: str, keyword: str) -> Any:
-        """
-        Parse a FITS value string into appropriate Python type.
-
-        Args:
-            value_str: Value portion of FITS card
-            keyword: Keyword name (for context-sensitive parsing)
-
-        Returns:
-            Parsed value in appropriate Python type
-        """
-        if not value_str:
-            return None
-
-        value_str = value_str.strip()
-        if not value_str:
-            return None
-
-        first_char = value_str[0]
-
-        # 1. String values (quoted)
-        if first_char == "'":
-            return cls._parse_string_value(value_str)
-
-        # Force string parsing for certain keywords
-        if keyword in cls._STRING_KEYWORDS:
-            return value_str
-
-        # 2. Fast path for numbers without regex
-        if first_char in "+-0123456789.":
-            try:
-                if "." in value_str or "e" in value_str or "E" in value_str:
-                    return float(value_str)
-                return int(value_str)
-            except ValueError:
-                pass
-
-        # 3. Logical values
-        if value_str == "T":
-            return True
-        if value_str == "F":
-            return False
-
-        # 4. Complex numbers
-        if first_char == "(":
-            complex_match = cls._COMPLEX_PATTERN.match(value_str)
-            if complex_match:
-                real_part = float(complex_match.group(1))
-                imag_part = float(complex_match.group(2))
-                return complex(real_part, imag_part)
-
-        # 5. Default to string
-        return value_str
 
     @classmethod
     def _parse_string_value(cls, quoted_str: str) -> str:

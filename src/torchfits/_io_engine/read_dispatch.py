@@ -22,6 +22,20 @@ from .caches import (
     set_cached_hdu_type,
 )
 
+_CPP_ATTR_CACHE: dict[str, bool] = {}
+
+
+def _cpp_has(cpp_module: Any, attr: str) -> bool:
+    try:
+        return _CPP_ATTR_CACHE[attr]
+    except KeyError:
+        result = hasattr(cpp_module, attr)
+        _CPP_ATTR_CACHE[attr] = result
+        return result
+
+
+
+
 
 def _bit_columns_from_header(header: Header | None) -> set[str]:
     if not header:
@@ -153,9 +167,9 @@ def _read_unsigned_image_if_needed(
         return None
     dtype, offset = target
     try:
-        if not effective_mmap and hasattr(cpp_module, "read_full_unmapped_raw"):
+        if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped_raw"):
             raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
-        elif hasattr(cpp_module, "read_full_raw"):
+        elif _cpp_has(cpp_module, "read_full_raw"):
             raw = cpp_module.read_full_raw(path, hdu_num, effective_mmap)
         else:
             return None
@@ -193,9 +207,9 @@ def _try_raw_scale_post(
         return data
     dtype, offset = target
     try:
-        if not effective_mmap and hasattr(cpp_module, "read_full_unmapped_raw"):
+        if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped_raw"):
             raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
-        elif hasattr(cpp_module, "read_full_raw"):
+        elif _cpp_has(cpp_module, "read_full_raw"):
             raw = cpp_module.read_full_raw(path, hdu_num, effective_mmap)
         else:
             return data
@@ -939,7 +953,7 @@ def read_scaled_cpu_fast(
     cpp_module: Any, path: str, hdu: int = 0, mmap: bool = True
 ) -> Tensor:
     """Internal helper for the CPU scaled fast path."""
-    if not hasattr(cpp_module, "read_full_raw_with_scale"):
+    if not _cpp_has(cpp_module, "read_full_raw_with_scale"):
         raise RuntimeError("Scaled fast path unavailable in this build")
 
     data, scaled, bscale, bzero = cpp_module.read_full_raw_with_scale(path, hdu, mmap)
@@ -974,12 +988,12 @@ def read_cpu_fast_path(
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
         if handle_cache_capacity > 0:
-            if hasattr(cpp_module, "read_full_cached"):
+            if _cpp_has(cpp_module, "read_full_cached"):
                 data = cpp_module.read_full_cached(path, hdu, effective_mmap)
             else:
                 file_handle, _cached = get_cached_handle(path, handle_cache_capacity)
                 data = cpp_module.read_full(file_handle, hdu, effective_mmap)
-        elif cache_capacity == 0 and hasattr(cpp_module, "read_full_nocache"):
+        elif cache_capacity == 0 and _cpp_has(cpp_module, "read_full_nocache"):
             data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
         else:
             file_handle = cpp_module.open_fits_file(path, "r")
@@ -1042,7 +1056,7 @@ def read_generic_fast_path(
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
         if scale_on_device and not raw_scale:
-            if hasattr(cpp_module, "read_full_raw_with_scale"):
+            if _cpp_has(cpp_module, "read_full_raw_with_scale"):
                 if debug_scale:
                     print("TORCHFITS_DEBUG_SCALE: fast_path_scaled")
                 data, scaled, bscale, bzero = cpp_module.read_full_raw_with_scale(
@@ -1064,29 +1078,29 @@ def read_generic_fast_path(
         elif raw_scale:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: raw_scale")
-            if not effective_mmap and hasattr(cpp_module, "read_full_unmapped_raw"):
+            if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped_raw"):
                 data = cpp_module.read_full_unmapped_raw(path, hdu)
             else:
                 data = cpp_module.read_full_raw(path, hdu, effective_mmap)
         else:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: unscaled")
-            if not effective_mmap and hasattr(cpp_module, "read_full_unmapped"):
+            if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped"):
                 data = cpp_module.read_full_unmapped(path, hdu)
             else:
                 if (
                     cold_nocache
                     and cache_capacity == 0
-                    and hasattr(cpp_module, "read_full_nocache")
+                    and _cpp_has(cpp_module, "read_full_nocache")
                 ):
                     data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
-                elif cache_capacity == 0 and hasattr(cpp_module, "read_full_nocache"):
+                elif cache_capacity == 0 and _cpp_has(cpp_module, "read_full_nocache"):
                     data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
                 else:
                     data = cpp_module.read_full(path, hdu, effective_mmap)
 
         if not (fp16 or bf16) and not (
-            scale_on_device and hasattr(cpp_module, "read_full_raw_with_scale")
+            scale_on_device and _cpp_has(cpp_module, "read_full_raw_with_scale")
         ):
             data = _try_raw_scale_post(data, cpp_module, path, hdu, effective_mmap)
 

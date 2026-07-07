@@ -44,8 +44,6 @@
 namespace {
 using fits_is_compressed_with_nulls_fn = int (*)(fitsfile*);
 
-
-
 inline void _xor_sign_bit_u8(uint8_t* p, size_t nbytes) {
     if (!p || nbytes == 0) {
         return;
@@ -394,6 +392,42 @@ void clear_shared_read_meta_cache() {
 }
 
 namespace {
+
+class FitsHandleGuard {
+    fitsfile* handle_{nullptr};
+public:
+    FitsHandleGuard() noexcept = default;
+    explicit FitsHandleGuard(fitsfile* h) noexcept : handle_(h) {}
+    ~FitsHandleGuard() noexcept { close(); }
+    FitsHandleGuard(const FitsHandleGuard&) = delete;
+    FitsHandleGuard& operator=(const FitsHandleGuard&) = delete;
+    FitsHandleGuard(FitsHandleGuard&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+    FitsHandleGuard& operator=(FitsHandleGuard&& other) noexcept {
+        if (this != &other) {
+            close();
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+    fitsfile* get() const noexcept { return handle_; }
+    fitsfile* release() noexcept {
+        fitsfile* h = handle_;
+        handle_ = nullptr;
+        return h;
+    }
+    explicit operator bool() const noexcept { return handle_ != nullptr; }
+private:
+    void close() noexcept {
+        if (handle_) {
+            int status = 0;
+            fits_close_file(handle_, &status);
+        }
+    }
+};
+
 using torchfits::internal::bswap_16;
 using torchfits::internal::bswap_32;
 using torchfits::internal::bswap_64;
@@ -549,34 +583,21 @@ inline bool try_read_compressed_rows_parallel(
     std::atomic<int> first_status{0};
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(nthreads));
-    std::vector<fitsfile*> local_handles(static_cast<size_t>(nthreads), nullptr);
+    std::vector<FitsHandleGuard> local_handles(static_cast<size_t>(nthreads));
 
     for (int64_t t = 0; t < nthreads; ++t) {
-        fitsfile* local = nullptr;
+        fitsfile* raw = nullptr;
         int st = 0;
-        ffreopen(fptr, &local, &st);
-        if (st != 0 || !local) {
-            for (fitsfile* opened : local_handles) {
-                if (opened) {
-                    int close_status = 0;
-                    fits_close_file(opened, &close_status);
-                }
-            }
+        ffreopen(fptr, &raw, &st);
+        if (st != 0 || !raw) {
             return false;
         }
-        fits_movabs_hdu(local, target_hdu, nullptr, &st);
+        FitsHandleGuard local(raw);
+        fits_movabs_hdu(local.get(), target_hdu, nullptr, &st);
         if (st != 0) {
-            int close_status = 0;
-            fits_close_file(local, &close_status);
-            for (fitsfile* opened : local_handles) {
-                if (opened) {
-                    close_status = 0;
-                    fits_close_file(opened, &close_status);
-                }
-            }
             return false;
         }
-        local_handles[static_cast<size_t>(t)] = local;
+        local_handles[static_cast<size_t>(t)] = std::move(local);
     }
 
     for (int64_t t = 0; t < nthreads; ++t) {
@@ -585,21 +606,14 @@ inline bool try_read_compressed_rows_parallel(
         const int64_t row_begin = std::min<int64_t>(rows_ll, tile_row_begin * tile_h_ll);
         const int64_t row_end = std::min<int64_t>(rows_ll, tile_row_end * tile_h_ll);
         if (row_end <= row_begin) {
-            fitsfile* local = local_handles[static_cast<size_t>(t)];
-            if (local) {
-                int close_status = 0;
-                fits_close_file(local, &close_status);
-                local_handles[static_cast<size_t>(t)] = nullptr;
-            }
             continue;
         }
 
+        fitsfile* local_ptr = local_handles[static_cast<size_t>(t)].get();
         workers.emplace_back([=, &first_status]() {
-            fitsfile* local = local_handles[static_cast<size_t>(t)];
-            if (!local) {
+            if (!local_ptr) {
                 return;
             }
-
             if (first_status.load(std::memory_order_relaxed) != 0) {
                 return;
             }
@@ -619,7 +633,7 @@ inline bool try_read_compressed_rows_parallel(
             void* chunk_ptr = static_cast<void*>(dst_u8 + (elem_offset * elem_size));
 
             fits_read_subset(
-                local,
+                local_ptr,
                 datatype,
                 fpixel.data(),
                 lpixel.data(),
@@ -638,14 +652,6 @@ inline bool try_read_compressed_rows_parallel(
 
     for (auto& worker : workers) {
         worker.join();
-    }
-
-    for (fitsfile* local : local_handles) {
-        if (!local) {
-            continue;
-        }
-        int close_status = 0;
-        fits_close_file(local, &close_status);
     }
 
     return first_status.load(std::memory_order_relaxed) == 0;
@@ -2903,10 +2909,10 @@ torch::Tensor read_hdus_sequence_last(const std::string& path, const std::vector
 }
 
 torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
+    torchfits::check_fits_filename_security(path);
     fitsfile* fptr = nullptr;
     int status = 0;
     try {
-        torchfits::check_fits_filename_security(path);
         fits_open_file(&fptr, path.c_str(), READONLY, &status);
         if (status != 0) {
             throw std::runtime_error("Could not open FITS file: " + path);
