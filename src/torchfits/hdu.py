@@ -1249,6 +1249,23 @@ class TableHDU(TensorFrame):
         )
 
 
+class _TableHDURefDataWrapper:
+    """Wrapper to provide dict-like access to TableHDURef columns without redefining class."""
+
+    def __init__(self, parent: "TableHDURef"):
+        self._parent = parent
+
+    def __getitem__(self, key: str) -> Any:
+        return self._parent[key]
+
+    def __contains__(self, key: str) -> bool:
+        # ⚡ Bolt: Removed `set()` wrapper to avoid O(N) allocation overhead per lookup
+        return key in self._parent.columns
+
+    def keys(self):
+        return self._parent.columns
+
+
 class TableHDURef:
     """
     Lazy, file-backed table handle.
@@ -1527,21 +1544,7 @@ class TableHDURef:
     @property
     def data(self):
         """Dictionary-like column access (lazy per-column reads)."""
-
-        class _Wrapper:
-            def __init__(self, parent: "TableHDURef"):
-                self._parent = parent
-
-            def __getitem__(self, key: str) -> Any:
-                return self._parent[key]
-
-            def __contains__(self, key: str) -> bool:
-                return key in set(self._parent.columns)
-
-            def keys(self):
-                return self._parent.columns
-
-        return _Wrapper(self)
+        return _TableHDURefDataWrapper(self)
 
     def to_arrow(self, **kwargs):
         import torchfits
