@@ -117,9 +117,9 @@ def clear_cache_subsystem(
     )
     if policy["table_handles"]:
         try:
-            from .._table.cache import close_all_cached_handles
+            from .._table.cache import _close_all_cached_handles
 
-            close_all_cached_handles()
+            _close_all_cached_handles()
         except Exception:
             if table_module is not None:
                 try:
@@ -331,9 +331,9 @@ def invalidate_path_caches(path: str, table_module: ModuleType | None = None) ->
         auto_hdu_cache.pop(key, None)
 
     try:
-        from .._table.cache import invalidate_caches_for_path
+        from .._table.cache import _invalidate_caches_for_path
 
-        invalidate_caches_for_path(path)
+        _invalidate_caches_for_path(path)
     except Exception:
         if table_module is not None:
             try:

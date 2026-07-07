@@ -46,7 +46,7 @@ from ._io_engine.image_meta import (
     resolve_image_mmap as _resolve_image_mmap_impl,
     should_use_cold_nommap as _should_use_cold_nommap_impl,
 )
-from ._io_engine.read_dispatch import read_unified as _read_unified_impl
+from ._io_engine._read_pipeline import read_unified as _read_unified_impl
 from ._io_engine.subset import open_subset_reader as _open_subset_reader_impl
 from ._io_engine.subset import read_subset as _read_subset_impl
 from ._io_engine.table_api import read_table as _read_table_impl

@@ -7,7 +7,8 @@ from typing import Any, Optional
 
 # -- helpers shared with table.py ------------------------------------------------
 
-from ..table import _require_pyarrow, _TABLE_IO_KEYS, read, scan, reader  # noqa: E402
+from .._table.utils import _require_pyarrow, _TABLE_IO_KEYS  # noqa: E402
+from .._table.read import read, scan, reader  # noqa: E402
 
 
 # -- internal helpers (only used by the functions below) -------------------------

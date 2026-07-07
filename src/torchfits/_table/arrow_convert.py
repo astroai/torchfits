@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 # -- imported from the parent table module (resolved via bottom-of-file import) -----
 
-from ..table import _fits_tform_is_bit, _require_pyarrow  # noqa: E402
+from .._table.utils import _fits_tform_is_bit, _require_pyarrow  # noqa: E402
 
 
 # -- low-level Arrow array constructors --------------------------------------------

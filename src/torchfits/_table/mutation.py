@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
-from ..table import (
+from .._table.utils import (
     _arrow_column_to_python,
     _column_tnull_map,
     _normalize_row_slice,

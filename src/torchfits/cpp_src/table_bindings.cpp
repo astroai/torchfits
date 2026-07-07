@@ -18,7 +18,7 @@
 #include "cache.h"
 #include "table_types.h"
 #include "table_reader.h"
-#include "table_mutation.h"
+#include "table_ops.h"
 
 namespace nb = nanobind;
 

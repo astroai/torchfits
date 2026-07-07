@@ -6,7 +6,7 @@ from torchfits._where import (
     _normalize_where_syntax,
     _parse_where_expression,
     _where_columns_from_ast,
-    evaluate_where,
+    _evaluate_where,
 )
 
 
@@ -225,7 +225,7 @@ def test_where_columns_from_ast():
     assert set(cols) == {"X", "Y", "Z"}
 
 
-def test_evaluate_where():
+def test__evaluate_where():
     data = {
         "A": np.array([1, 2, 3, 4, 5]),
         "B": np.array([10, 20, 30, 40, 50]),
@@ -236,80 +236,80 @@ def test_evaluate_where():
 
     # Comparison
     ast = _parse_where_expression("A > 2")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, False, True, True, True])
 
     ast = _parse_where_expression("A <= 3")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, True, True, False, False])
 
     ast = _parse_where_expression("C == 'baz'")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, False, True, False, False])
 
     ast = _parse_where_expression("C != 'baz'")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, True, False, True, True])
 
     # AND / OR
     ast = _parse_where_expression("A > 1 AND B < 50")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, True, True, True, False])
 
     ast = _parse_where_expression("A == 1 OR A == 5")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, False, False, True])
 
     # NOT
     ast = _parse_where_expression("NOT A > 2")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, True, False, False, False])
 
     # IN
     ast = _parse_where_expression("A IN (2, 4)")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, True, False, True, False])
 
     ast = _parse_where_expression("A NOT IN (2, 4)")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, True, False, True])
 
     # BETWEEN
     ast = _parse_where_expression("A BETWEEN 2 AND 4")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, True, True, True, False])
 
     ast = _parse_where_expression("A NOT BETWEEN 2 AND 4")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, False, False, True])
 
     # IS NULL
     # D is float with NaN
     ast = _parse_where_expression("D IS NULL")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, True, False, False, True])
 
     ast = _parse_where_expression("D IS NOT NULL")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, True, True, False])
 
     # E is object with None
     ast = _parse_where_expression("E IS NULL")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, True, False, False])
 
     # Missing column
     with pytest.raises(ValueError, match="Unknown column: MISSING"):
-        evaluate_where(_parse_where_expression("MISSING > 0"), data)
+        _evaluate_where(_parse_where_expression("MISSING > 0"), data)
 
     # == NULL and != NULL (Special cases in evaluator)
     ast = _parse_where_expression("E == NULL")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [True, False, True, False, False])
 
     ast = _parse_where_expression("E != NULL")
-    mask = evaluate_where(ast, data)
+    mask = _evaluate_where(ast, data)
     np.testing.assert_array_equal(mask, [False, True, False, True, True])
 
     with pytest.raises(ValueError, match="NULL comparisons only support == and !="):
-        evaluate_where(_parse_where_expression("E > NULL"), data)
+        _evaluate_where(_parse_where_expression("E > NULL"), data)

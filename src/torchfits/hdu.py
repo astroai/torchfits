@@ -31,3 +31,12 @@ from ._hdu.table_hdu_ref import TableHDURef as TableHDURef
 # -- HDU list ----------------------------------------------------------------------
 
 from ._hdu.hdu_list import HDUList as HDUList
+
+__all__ = [
+    "Card",
+    "Header",
+    "HDUList",
+    "TableHDU",
+    "TableHDURef",
+    "TensorHDU",
+]

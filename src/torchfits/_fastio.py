@@ -67,7 +67,7 @@ def read(
     if scale_on_device and not raw_scale and _HAS_READ_FULL_RAW_WITH_SCALE:
         data, scaled, bscale, bzero = cpp.read_full_raw_with_scale(path, hdu, mmap)
         if scaled or not is_cpu:
-            from torchfits._io_engine.read_dispatch import _apply_scale_on_device
+            from torchfits._io_engine._read_pipeline import _apply_scale_on_device
 
             data = _apply_scale_on_device(
                 data,

@@ -6,7 +6,7 @@ import torch
 from astropy.io import fits
 
 import torchfits
-from torchfits._io_engine.read_dispatch import (
+from torchfits._io_engine._read_pipeline import (
     _apply_scale_on_device,
     _apply_unsigned_offset,
 )

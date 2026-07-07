@@ -118,7 +118,7 @@ def _normalize_where_syntax(where: str) -> str:
 
 
 @lru_cache(maxsize=1024)
-def parse_where_expression(where: str):
+def _parse_where_expression(where: str):
     if not isinstance(where, str) or not where.strip():
         raise ValueError("where must be a non-empty string expression")
     where = _normalize_where_syntax(where)
@@ -297,7 +297,7 @@ def parse_where_expression(where: str):
     return ast
 
 
-def where_columns_from_ast(ast) -> List[str]:
+def _where_columns_from_ast(ast) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
 
@@ -387,7 +387,7 @@ def _evaluate_isnull(ast: Tuple, data_map: dict) -> Any:
     return ~mask if negate else mask
 
 
-def evaluate_where(ast: Tuple, data_map: dict) -> Any:
+def _evaluate_where(ast: Tuple, data_map: dict) -> Any:
     """Evaluate a where expression AST against a data map of NumPy arrays."""
     kind = ast[0]
 
@@ -395,13 +395,13 @@ def evaluate_where(ast: Tuple, data_map: dict) -> Any:
         return _evaluate_cmp(ast, data_map)
 
     if kind == "and":
-        return evaluate_where(ast[1], data_map) & evaluate_where(ast[2], data_map)
+        return _evaluate_where(ast[1], data_map) & _evaluate_where(ast[2], data_map)
 
     if kind == "or":
-        return evaluate_where(ast[1], data_map) | evaluate_where(ast[2], data_map)
+        return _evaluate_where(ast[1], data_map) | _evaluate_where(ast[2], data_map)
 
     if kind == "not":
-        return ~evaluate_where(ast[1], data_map)
+        return ~_evaluate_where(ast[1], data_map)
 
     if kind == "in":
         return _evaluate_in(ast, data_map)
@@ -416,5 +416,6 @@ def evaluate_where(ast: Tuple, data_map: dict) -> Any:
 
 
 # Aliases for backward compatibility in tests
-_parse_where_expression = parse_where_expression
-_where_columns_from_ast = where_columns_from_ast
+parse_where_expression = _parse_where_expression
+where_columns_from_ast = _where_columns_from_ast
+evaluate_where = _evaluate_where

@@ -39,7 +39,7 @@ def _close_cpp_handle(handle: Any) -> None:
         logger.debug("Failed to close C++ handle: %s", e)
 
 
-def acquire_cpp_handle(path: str, cpp: Any) -> Any:
+def _acquire_cpp_handle(path: str, cpp: Any) -> Any:
     if not _HANDLE_CACHE_ENABLED:
         return cpp.open_fits_file(path, "r")
 
@@ -57,12 +57,12 @@ def acquire_cpp_handle(path: str, cpp: Any) -> Any:
         return handle
 
 
-def acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
+def _acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
     """Return a cached C++ TableReader bound to a cached FITSFile handle."""
     hdu_index = int(hdu)
     key = (path, hdu_index)
     if not _READER_CACHE_ENABLED:
-        file_handle = acquire_cpp_handle(path, cpp)
+        file_handle = _acquire_cpp_handle(path, cpp)
         return cpp.TableReader(file_handle, hdu_index)
 
     with _reader_cache_lock:
@@ -70,7 +70,7 @@ def acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
         if reader is not None:
             _reader_cache.move_to_end(key)
             return reader
-        file_handle = acquire_cpp_handle(path, cpp)
+        file_handle = _acquire_cpp_handle(path, cpp)
         reader = cpp.TableReader(file_handle, hdu_index)
         _reader_cache[key] = reader
         _reader_cache.move_to_end(key)
@@ -79,7 +79,7 @@ def acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
         return reader
 
 
-def close_all_cached_handles() -> None:
+def _close_all_cached_handles() -> None:
     with _reader_cache_lock:
         _reader_cache.clear()
     with _handle_cache_lock:
@@ -89,7 +89,7 @@ def close_all_cached_handles() -> None:
         _close_cpp_handle(handle)
 
 
-def invalidate_caches_for_path(path: str) -> None:
+def _invalidate_caches_for_path(path: str) -> None:
     """Drop cached readers/handles bound to a given file path."""
     with _reader_cache_lock:
         stale_reader_keys = [k for k in _reader_cache.keys() if k[0] == path]
@@ -103,4 +103,4 @@ def invalidate_caches_for_path(path: str) -> None:
         _close_cpp_handle(handle)
 
 
-atexit.register(close_all_cached_handles)
+atexit.register(_close_all_cached_handles)

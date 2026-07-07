@@ -13,8 +13,8 @@ if TYPE_CHECKING:
     import numpy as np
 
 from .. import fits_schema
-from .._table.cache import acquire_cpp_handle as _acquire_cpp_handle
-from .._table.cache import acquire_cpp_reader as _acquire_cpp_reader
+from .._table.cache import _acquire_cpp_handle
+from .._table.cache import _acquire_cpp_reader
 from .._where import parse_where_expression, where_columns_from_ast
 from .._table_engine import (
     WhereStrategy,
@@ -22,7 +22,7 @@ from .._table_engine import (
     should_skip_cpp_numpy_for_where,
     validate_table_backend,
 )
-from ..table import _normalize_row_slice, _require_pyarrow
+from .._table.utils import _normalize_row_slice, _require_pyarrow
 from .._table.arrow_convert import (
     _chunk_to_record_batch,
     _column_tnull_from_meta,

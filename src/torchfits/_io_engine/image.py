@@ -9,7 +9,7 @@ from torch import Tensor
 
 from ..hdu import Header
 
-from .read_dispatch import _read_unsigned_image_if_needed
+from ._read_pipeline import _read_unsigned_image_if_needed
 
 
 def batch_to_device(

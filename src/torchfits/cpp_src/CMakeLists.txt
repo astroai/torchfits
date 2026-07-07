@@ -397,10 +397,10 @@ endif()
 # Source files
 set(SOURCES
     bindings.cpp
-    fits.cpp
+    fits_bindings.cpp
     fits_file.cpp
-    table.cpp
-    table_mutation.cpp
+    table_bindings.cpp
+    table_ops.cpp
     compression.cpp
     cache.cpp
     hardware.cpp

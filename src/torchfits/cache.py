@@ -234,9 +234,9 @@ def clear_cache():
     except Exception:
         pass
     try:
-        from ._table.cache import close_all_cached_handles
+        from ._table.cache import _close_all_cached_handles
 
-        close_all_cached_handles()
+        _close_all_cached_handles()
     except Exception:
         pass
 
