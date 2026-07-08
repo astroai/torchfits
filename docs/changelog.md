@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lab benchmark refresh (mmap-on+off, 0.6.0b2):** 2754 rows, **7 deficits**
+  in `exhaustive_mmap_v060b2_20260708_232039` — *down* from the prior
+  `exhaustive_v060b1_20260708` (2754 rows, 14 deficits).  The previous
+  interim mmap-on-only bench (1377 rows, 22 deficits) showed a higher
+  deficit rate because the uint16/uint32 mmap-on path was over-represented;
+  with `--mmap-matrix` the mmap-off path absorbs those cases.  Remaining
+  7-deficit breakdown:
+  - 2 fits (compressed): `compressed_hcompress_1` (1.79×) and
+    `compressed_gzip_2` (low-impact residual) `read_full`.
+  - 5 fitstable (narrow): `predicate_filter` on `narrow_{1000,10000,100000,1000000}`
+    (1.10–2.86× behind fitsio, fitsio is competitive on small/narrow tables).
+  The uint16/uint32 mmap-on regression that motivated 0.5.0b4's
+  bswap+BZERO merge is no longer in the deficit table.
 - **Multi-worker DataLoader coverage:** `tests/test_data.py` now exercises
   ``make_loader(..., num_workers=2)`` for both ``FitsImageDataset`` and
   ``FitsImageIterableDataset``.  Tests fork a subprocess to keep CFITSIO's
