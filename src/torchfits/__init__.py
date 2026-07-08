@@ -16,6 +16,7 @@ _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
     "cache": "torchfits.cache",
     "cpp": "torchfits.cpp",
+    "transforms": "torchfits.transforms",
 }
 
 _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
@@ -168,6 +169,7 @@ if TYPE_CHECKING:
     from . import (
         table as table,
         cache as cache,
+        transforms as transforms,
     )
     from .hdu import Card as Card
     from .hdu import HDUList as HDUList
