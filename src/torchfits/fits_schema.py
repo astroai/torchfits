@@ -109,11 +109,12 @@ def _iter_tfields_indexed(
     tfields = _tfields_count(header)
     if tfields > 0:
         for i in range(1, tfields + 1):
-            name = header.get(f"TTYPE{i}")
+            si = str(i)
+            name = header.get("TTYPE" + si)
             if name is None:
                 continue
-            tform = header.get(f"TFORM{i}")
-            tdim = header.get(f"TDIM{i}")
+            tform = header.get("TFORM" + si)
+            tdim = header.get("TDIM" + si)
             yield (
                 i,
                 str(name),

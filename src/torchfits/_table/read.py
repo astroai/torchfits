@@ -318,17 +318,18 @@ def _can_use_mmap_row_path_for_full_read(
     any_selected = False
 
     for i in range(1, tf_count + 1):
-        name = header.get(f"TTYPE{i}")
+        si = str(i)
+        name = header.get("TTYPE" + si)
         if not isinstance(name, str) or not name:
             continue
         if selected is not None and name not in selected:
             continue
         any_selected = True
 
-        if header.get(f"TSCAL{i}") is not None or header.get(f"TZERO{i}") is not None:
+        if header.get("TSCAL" + si) is not None or header.get("TZERO" + si) is not None:
             return False
 
-        parsed = _column_tform_code_and_repeat(header.get(f"TFORM{i}"))
+        parsed = _column_tform_code_and_repeat(header.get("TFORM" + si))
         if parsed is None:
             return False
         code, repeat = parsed
@@ -360,14 +361,15 @@ def _can_use_torch_table_path_for_full_read(
     any_selected = False
 
     for i in range(1, tf_count + 1):
-        name = header.get(f"TTYPE{i}")
+        si = str(i)
+        name = header.get("TTYPE" + si)
         if not isinstance(name, str) or not name:
             continue
         if selected is not None and name not in selected:
             continue
         any_selected = True
 
-        parsed = _column_tform_code_and_repeat(header.get(f"TFORM{i}"))
+        parsed = _column_tform_code_and_repeat(header.get("TFORM" + si))
         if parsed is None:
             return False
         code, repeat = parsed
