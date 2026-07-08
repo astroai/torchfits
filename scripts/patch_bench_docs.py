@@ -65,6 +65,13 @@ def main() -> int:
     parser.add_argument("--csv", type=Path, required=True)
     parser.add_argument("--deficits", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--quick-dir",
+        type=Path,
+        default=_REPO / "benchmark_results" / "quick",
+        help="Directory containing per-scope quick-bench JSON files "
+        "(`fits.json`, `fitstable.json`). Missing files produce empty rows.",
+    )
     args = parser.parse_args()
 
     iopath = _render("render_bench_iopath_table.py", "--csv", str(args.csv))
@@ -75,6 +82,7 @@ def main() -> int:
     full_table = _render(
         "render_full_benchmarks_table.py", "--results-dir", str(args.csv.parent)
     )
+    quick = _render("render_bench_quick.py", "--quick-dir", str(args.quick_dir))
     if deficits.startswith("## Performance deficits"):
         deficits = deficits.split("\n", 2)[-1] if "\n\n" in deficits else ""
         if deficits.startswith("\n"):
@@ -110,6 +118,9 @@ def main() -> int:
     )
     text = _replace_block(
         text, "<!-- BENCH_SNAPSHOT_BEGIN -->", "<!-- BENCH_SNAPSHOT_END -->", snapshot
+    )
+    text = _replace_block(
+        text, "<!-- BENCH_QUICK_BEGIN -->", "<!-- BENCH_QUICK_END -->", quick
     )
     args.docs.write_text(text, encoding="utf-8")
     return 0

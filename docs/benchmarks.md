@@ -524,10 +524,12 @@ Latest full lab benchmark:
 
 Latest local quick benchmark evidence:
 
+<!-- BENCH_QUICK_BEGIN -->
 | Run ID | Scope | Command | Rows | Deficits |
 |---|---|---|---:|---:|
-| `20260625_213448` | FITS image I/O | `pixi run python benchmarks/bench_all.py --profile user --fits-only --quick` | 27 | 0 |
-| `20260625_213459` | FITS table I/O | `pixi run python benchmarks/bench_all.py --profile user --fitstable-only --quick` | 90 | 0 |
+| — | FITS image I/O | _(no run yet)_ | — | — |
+| — | FITS table I/O | _(no run yet)_ | — | — |
+<!-- BENCH_QUICK_END -->
 
 Keep this page current with the latest FITS and FITS-table benchmark
 run before making performance claims. Historical WCS/sphere benchmark results
