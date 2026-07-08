@@ -56,6 +56,13 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "TableHDURef": ("torchfits.hdu", "TableHDURef"),
     "FITSDataset": ("torchfits.datasets", "FITSDataset"),
     "IterableFITSDataset": ("torchfits.datasets", "IterableFITSDataset"),
+    # Transforms (public API)
+    "SpectralBinning": ("torchfits.transforms", "SpectralBinning"),
+    "ContinuumRemoval": ("torchfits.transforms", "ContinuumRemoval"),
+    "BandMath": ("torchfits.transforms", "BandMath"),
+    "ContinuumNormalize": ("torchfits.transforms", "ContinuumNormalize"),
+    "DopplerShift": ("torchfits.transforms", "DopplerShift"),
+    "PhaseFold": ("torchfits.transforms", "PhaseFold"),
 }
 
 __all__ = tuple(
@@ -93,6 +100,12 @@ __all__ = tuple(
         "to_pandas",
         "to_arrow",
         "to_polars",
+        "SpectralBinning",
+        "ContinuumRemoval",
+        "BandMath",
+        "ContinuumNormalize",
+        "DopplerShift",
+        "PhaseFold",
         *_NAMESPACES,
     ]
 )
@@ -183,3 +196,9 @@ if TYPE_CHECKING:
     from .io import open as open
     from .io import read as read
     from .io import write as write
+    from .transforms import SpectralBinning as SpectralBinning
+    from .transforms import ContinuumRemoval as ContinuumRemoval
+    from .transforms import BandMath as BandMath
+    from .transforms import ContinuumNormalize as ContinuumNormalize
+    from .transforms import DopplerShift as DopplerShift
+    from .transforms import PhaseFold as PhaseFold

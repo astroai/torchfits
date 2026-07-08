@@ -20,6 +20,7 @@ REQUIRED = [
     "example_table.py",
     "example_table_interop.py",
     "example_table_recipes.py",
+    "example_hyperspectral.py",
 ]
 
 # Optional-deps examples: pass if they exit 0 or print a known skip message.
