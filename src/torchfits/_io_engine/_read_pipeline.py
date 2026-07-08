@@ -84,26 +84,6 @@ def _coerce_unsigned_table_columns(table_data: Any, header: Header | None) -> An
     return out
 
 
-def _unsigned_image_target(
-    header: Header | None,
-) -> tuple[torch.dtype, int] | None:
-    if not header:
-        return None
-    try:
-        bitpix = int(header.get("BITPIX", 0))
-        bscale = float(header.get("BSCALE", 1.0))
-        bzero = float(header.get("BZERO", 0.0))
-    except Exception:
-        return None
-    if bscale != 1.0:
-        return None
-    if bitpix == 16 and bzero == 32768.0:
-        return torch.uint16, 32768
-    if bitpix == 32 and bzero == 2147483648.0:
-        return torch.uint32, 2147483648
-    return None
-
-
 def _apply_unsigned_offset(
     data: torch.Tensor,
     dtype: torch.dtype,
@@ -168,45 +148,6 @@ def _read_unsigned_image_if_needed(
     TUSHORT/TUINT datatype through CFITSIO).
     """
     return None
-
-
-def _try_raw_scale_post(
-    data: torch.Tensor,
-    cpp_module: Any,
-    path: str,
-    hdu_num: int,
-) -> torch.Tensor:
-    """Post-process a scaled-read tensor for unsigned integer convention.
-
-    When the C++ path returns float32 (CFITSIO scaling fallback, which
-    only occurs without mmap), this function reads the header to detect
-    the unsigned convention and re-reads raw data via
-    ``read_full_unmapped_raw`` to produce the correct uint16/uint32
-    tensor.
-
-    With mmap enabled, the C++ ``read_tensor_canonical`` handles
-    unsigned conventions natively (returning uint16/uint32 directly),
-    so the ``data.dtype != torch.float32`` guard short-circuits
-    immediately.
-    """
-    if data.dtype != torch.float32:
-        return data
-    try:
-        header = Header(cpp_module.read_header_dict(path, hdu_num))
-    except Exception:
-        return data
-    target = _unsigned_image_target(header)
-    if target is None:
-        return data
-    dtype, offset = target
-    try:
-        if _cpp_has(cpp_module, "read_full_unmapped_raw"):
-            raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
-        else:
-            return data
-    except Exception:
-        return data
-    return _apply_unsigned_offset(raw, dtype, offset)
 
 
 def read_unified(
@@ -989,9 +930,6 @@ def read_cpu_fast_path(
                 except Exception:
                     pass
 
-        if not (fp16 or bf16):
-            data = _try_raw_scale_post(data, cpp_module, path, hdu)
-
         if fp16:
             data = data.to(torch.float16)
         elif bf16:
@@ -1082,11 +1020,6 @@ def read_generic_fast_path(
                     data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
                 else:
                     data = cpp_module.read_full(path, hdu, effective_mmap)
-
-        if not (fp16 or bf16) and not (
-            scale_on_device and _cpp_has(cpp_module, "read_full_raw_with_scale")
-        ):
-            data = _try_raw_scale_post(data, cpp_module, path, hdu)
 
         if fp16:
             data = data.to(torch.float16)
