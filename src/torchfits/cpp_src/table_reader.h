@@ -173,11 +173,13 @@ public:
                     col.tzero == 32768.0) {
                     col.is_unsigned_int = true;
                     col.unsigned_offset = 32768;
+                    col.unsigned_target_type = torch::kUInt16;
                     col.scaled = false;  // skip float64 scaling; apply offset instead
                 } else if ((typecode == TINT || typecode == TUINT) &&
                            col.tzero == 2147483648.0) {
                     col.is_unsigned_int = true;
                     col.unsigned_offset = 2147483648;
+                    col.unsigned_target_type = torch::kUInt32;
                     col.scaled = false;
                 }
             }
@@ -654,7 +656,7 @@ public:
             if (it == result.end() || !it->second.fixed_data.defined()) continue;
             torch::Tensor converted = it->second.fixed_data.to(torch::kInt64);
             converted.add_(col.unsigned_offset);
-            it->second.fixed_data = converted;
+            it->second.fixed_data = converted.to(col.unsigned_target_type);
         }
 
         return result;
@@ -960,6 +962,7 @@ public:
                 if (col.is_unsigned_int) {
                     tensor = tensor.to(torch::kInt64);
                     tensor.add_(col.unsigned_offset);
+                    tensor = tensor.to(col.unsigned_target_type);
                 }
                 result[col.name.c_str()] = tensor_to_python(tensor);
 

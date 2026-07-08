@@ -157,30 +157,11 @@ def _read_unsigned_image_if_needed(
     (e.g. BITPIX=16, BSCALE=1.0, BZERO=32768.0), the underlying
     CFITSIO read returns float32.
 
-    With mmap enabled, defer to the C++ path which handles unsigned
-    conventions natively (single-pass bswap+BZERO in the mmap fast path,
-    or TUSHORT/TUINT datatype through CFITSIO fallback).
-
-    Without mmap, perform a raw read and convert to the correct
-    unsigned dtype in Python, avoiding the lossy float32 intermediate
-    representation.
+    Always defer to the C++ path, which handles unsigned conventions
+    natively for both mmap and non-mmap reads (direct mmap+bswap or
+    TUSHORT/TUINT datatype through CFITSIO).
     """
-    target = _unsigned_image_target(header)
-    if target is None:
-        return None
-    if effective_mmap:
-        return None
-    dtype, offset = target
-    try:
-        if _cpp_has(cpp_module, "read_full_unmapped_raw"):
-            raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
-        elif _cpp_has(cpp_module, "read_full_raw"):
-            raw = cpp_module.read_full_raw(path, hdu_num, effective_mmap)
-        else:
-            return None
-    except Exception:
-        return None
-    return _apply_unsigned_offset(raw, dtype, offset)
+    return None
 
 
 def _try_raw_scale_post(

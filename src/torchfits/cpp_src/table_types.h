@@ -43,6 +43,7 @@ struct ColumnInfo {
     bool scaled = false;
     bool is_unsigned_int = false;  // uint16/uint32 FITS convention (TZERO offset)
     int64_t unsigned_offset = 0;   // 32768 or 2147483648
+    torch::ScalarType unsigned_target_type = torch::kInt64;  // kUInt16 or kUInt32
     long storage_bytes = 0;        // Physical bytes occupied by one table row
 };
 
