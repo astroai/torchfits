@@ -375,7 +375,7 @@ inline torch::Tensor read_tensor_canonical(
         }
     }
 
-    // Multi-byte mmap fast path
+    // Multi-byte mmap fast path — single-pass: mmap directly and bswap while copying
     if (use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
         path.find('[') == std::string::npos) {
         size_t elem_size = 0;
@@ -391,41 +391,57 @@ inline torch::Tensor read_tensor_canonical(
             int status = 0;
             LONGLONG headstart = 0, data_offset = 0, dataend = 0;
             fits_get_hduaddrll(fptr, &headstart, &data_offset, &dataend, &status);
-            if (status == 0 && data_offset > 0) {
+            if (status == 0 && data_offset > 0 && raw_fd != -1) {
                 const size_t nbytes = static_cast<size_t>(nelements) * elem_size;
-                if (nbytes > 0 && raw_fd != -1 &&
-                    read_region_via_fd(raw_fd, static_cast<off_t>(data_offset), tensor.data_ptr(), nbytes)) {
-                    if (host_is_little_endian()) {
-                        if (elem_size == sizeof(uint16_t)) {
-                            auto* p = static_cast<uint16_t*>(tensor.data_ptr());
-                            if (unsigned_short) {
-                                // bswap + BZERO in a single pass
-                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16, [&](int64_t begin, int64_t end) {
+                struct stat sb {};
+                if (nbytes > 0 && fstat(raw_fd, &sb) == 0 &&
+                    static_cast<size_t>(sb.st_size) >= static_cast<size_t>(data_offset) + nbytes) {
+                    static const long kPageSize = sysconf(_SC_PAGESIZE);
+                    const off_t page_mask = kPageSize > 0 ? static_cast<off_t>(kPageSize - 1) : 0;
+                    const off_t page_offset = data_offset & ~page_mask;
+                    const size_t map_len = static_cast<size_t>(nbytes + (data_offset - page_offset));
+                    void* map_ptr = mmap(nullptr, map_len, PROT_READ, MAP_SHARED, raw_fd, page_offset);
+                    if (map_ptr != MAP_FAILED) {
+#if defined(MADV_SEQUENTIAL) && defined(MADV_WILLNEED)
+                        madvise(map_ptr, map_len, MADV_SEQUENTIAL | MADV_WILLNEED);
+#endif
+                        const size_t src_offset = static_cast<size_t>(data_offset - page_offset);
+                        if (host_is_little_endian()) {
+                            if (elem_size == sizeof(uint16_t)) {
+                                const auto* src = reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                auto* dst = static_cast<uint16_t*>(tensor.data_ptr());
+                                if (unsigned_short) {
+                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
+                                        for (int64_t i = begin; i < end; ++i)
+                                            dst[i] = internal::bswap_16(src[i]) + static_cast<uint16_t>(32768);
+                                    });
+                                } else {
+                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
+                                        for (int64_t i = begin; i < end; ++i)
+                                            dst[i] = internal::bswap_16(src[i]);
+                                    });
+                                }
+                            } else if (elem_size == sizeof(uint32_t)) {
+                                const auto* src = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                auto* dst = static_cast<uint32_t*>(tensor.data_ptr());
+                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
                                     for (int64_t i = begin; i < end; ++i)
-                                        p[i] = internal::bswap_16(p[i]) + static_cast<uint16_t>(32768);
+                                        dst[i] = internal::bswap_32(src[i]) + 2147483648u;
                                 });
-                            } else {
-                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16, [&](int64_t begin, int64_t end) {
+                            } else if (elem_size == sizeof(uint64_t)) {
+                                const auto* src = reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                auto* dst = static_cast<uint64_t*>(tensor.data_ptr());
+                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
                                     for (int64_t i = begin; i < end; ++i)
-                                        p[i] = internal::bswap_16(p[i]);
+                                        dst[i] = internal::bswap_64(src[i]);
                                 });
                             }
-                        } else if (elem_size == sizeof(uint32_t)) {
-                            auto* p = static_cast<uint32_t*>(tensor.data_ptr());
-                            // bswap + BZERO in a single pass
-                            at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16, [&](int64_t begin, int64_t end) {
-                                for (int64_t i = begin; i < end; ++i)
-                                    p[i] = internal::bswap_32(p[i]) + 2147483648u;
-                            });
-                        } else if (elem_size == sizeof(uint64_t)) {
-                            auto* p = static_cast<uint64_t*>(tensor.data_ptr());
-                            at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16, [&](int64_t begin, int64_t end) {
-                                for (int64_t i = begin; i < end; ++i)
-                                    p[i] = internal::bswap_64(p[i]);
-                            });
+                        } else {
+                            std::memcpy(tensor.data_ptr(), static_cast<const uint8_t*>(map_ptr) + src_offset, nbytes);
                         }
+                        munmap(map_ptr, map_len);
+                        return tensor;
                     }
-                    return tensor;
                 }
             }
         }

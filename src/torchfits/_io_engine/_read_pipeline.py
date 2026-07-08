@@ -188,19 +188,19 @@ def _try_raw_scale_post(
     cpp_module: Any,
     path: str,
     hdu_num: int,
-    effective_mmap: bool,
 ) -> torch.Tensor:
     """Post-process a scaled-read tensor for unsigned integer convention.
 
-    When the C++ path returns float32 (CFITSIO scaling fallback), this
-    function reads the header to detect the unsigned convention and
-    re-reads raw data to produce the correct uint16/uint32 tensor.
-    For mmap reads the C++ ``read_tensor_canonical`` handles unsigned
-    conventions natively (returning uint16/uint32 directly), so this
-    function short-circuits immediately via the dtype guard.
+    When the C++ path returns float32 (CFITSIO scaling fallback, which
+    only occurs without mmap), this function reads the header to detect
+    the unsigned convention and re-reads raw data via
+    ``read_full_unmapped_raw`` to produce the correct uint16/uint32
+    tensor.
 
-    Non-float results pass through with zero overhead — only float32
-    results trigger the header check.
+    With mmap enabled, the C++ ``read_tensor_canonical`` handles
+    unsigned conventions natively (returning uint16/uint32 directly),
+    so the ``data.dtype != torch.float32`` guard short-circuits
+    immediately.
     """
     if data.dtype != torch.float32:
         return data
@@ -213,10 +213,8 @@ def _try_raw_scale_post(
         return data
     dtype, offset = target
     try:
-        if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped_raw"):
+        if _cpp_has(cpp_module, "read_full_unmapped_raw"):
             raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
-        elif _cpp_has(cpp_module, "read_full_raw"):
-            raw = cpp_module.read_full_raw(path, hdu_num, effective_mmap)
         else:
             return data
     except Exception:
@@ -1012,7 +1010,7 @@ def read_cpu_fast_path(
                     pass
 
         if not (fp16 or bf16):
-            data = _try_raw_scale_post(data, cpp_module, path, hdu, effective_mmap)
+            data = _try_raw_scale_post(data, cpp_module, path, hdu)
 
         if fp16:
             data = data.to(torch.float16)
@@ -1108,7 +1106,7 @@ def read_generic_fast_path(
         if not (fp16 or bf16) and not (
             scale_on_device and _cpp_has(cpp_module, "read_full_raw_with_scale")
         ):
-            data = _try_raw_scale_post(data, cpp_module, path, hdu, effective_mmap)
+            data = _try_raw_scale_post(data, cpp_module, path, hdu)
 
         if fp16:
             data = data.to(torch.float16)
