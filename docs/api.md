@@ -225,6 +225,88 @@ Still supported; prefer the canonical paths above:
 - `read_fast` → `read` / `read_tensor`
 - `read_image` → `read_tensor`
 
+## Transforms
+
+All transforms are compatible with `torch.utils.data.Dataset` and `DataLoader`.
+Every transform provides a matching `.inverse()` for decoding model outputs
+back to physical units.  Import from the root:
+
+```python
+from torchfits import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
+pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
+```
+
+### Stretches (stateless, exact roundtrip)
+
+| Transform | Description |
+|---|---|
+| `ArcsinhStretch(a=1.0)` | Lupton+ (2004) arcsinh stretch — LSST/SDSS standard for high-DR images. Forward: `arcsinh(a*x)/arcsinh(a)`. Inverse: `sinh`. |
+| `LogStretch(a=1000.0, eps=1e-9)` | Logarithmic stretch for heavy-tailed flux. Negatives clamped to zero. |
+| `SqrtStretch()` | Square-root stretch — stabilises Poisson variance. |
+
+### Normalizers (data-dependent, invertible)
+
+| Transform | Description |
+|---|---|
+| `ZScaleNormalize(contrast=0.25, dim=(-2,-1))` | IRAF zscale auto-contrast → [0, 1]. |
+| `RobustNormalize(dim=(-2,-1))` | Subtract median, divide by MAD-derived std. Universal ML prep (P1). |
+| `BackgroundSubtract(dim=(-2,-1))` | Subtract median background. Inverse adds it back. |
+| `PercentileClipNormalize(lower_pct=1, upper_pct=99, dim=(-2,-1))` | Clip to percentile range → [0, 1]. |
+| `MinMaxNormalize(dim=(-2,-1))` | Min-max → [0, 1] with ULP-safe epsilon for constant images. |
+| `GlobalScalarNorm(stat="median", dim=None)` | Divide by median/max/mean/rms scalar. Minimal linear prep used by AstroCLIP/SpecFormer. Network's first layer can un-learn this. (P5) |
+
+### Spectral transforms (1D, astronomy-specific)
+
+| Transform | Description | Inverse |
+|---|---|---|
+| `ContinuumNormalize(order=3, n_sigma=2.0, max_iter=3)` | Fit polynomial continuum with sigma-clipping, **divide** spectrum by it. | Multiply by cached continuum. |
+| `ContinuumRemoval(method="polynomial", order=3, n_knots=10)` | Fit polynomial or cubic B-spline continuum (sigma-clipped), **subtract** it. | Add baseline back. |
+| `DopplerShift(z=0.0)` | Redshift/blueshift spectrum via linear-interpolation resampling. | Opposite shift `1/(1+z)`. |
+| `SpectralBinning(factor=2, mode="mean", dim=-1)` | Bin adjacent channels along any dim. Trailing partial bins dropped. | Nearest-neighbour repeat upsample. |
+| `BandMath(func, band_dim=0)` | Dimension-agnostic band arithmetic via `torch.unbind`. Classic use: `lambda b: (b[1]-b[0])/(b[1]+b[0]+1e-8)` for NDVI. | ✗ (lossy). |
+
+### Continuum / baseline estimators (additive decomposition, invertible)
+
+All use `Original = Estimate + Residuals` so `inverse()` re-adds stored
+residuals for perfect recovery.  Based on post-2021 astro-ML research
+(SUPPNet, RASSINE, AstroCLIP, Candebat+2024).
+
+| Transform | Description | Key param |
+|---|---|---|
+| `SavitzkyGolayFilter(window_length=7, polyorder=3, dim=-1)` | Polynomial smoothing via conv1d with pre-computed SG coefficients. Laboratory spectroscopy standard. (P4) | `window_length=7` |
+| `RunningPercentile(percentile=90, window_size=21, dim=-1)` | Sliding-window percentile via `unfold` + `torch.quantile`. Default 90th percentile hugs upper envelope. (P6) | `percentile=90` |
+| `UpperEnvelopeContinuum(window=11, smooth=0.0, dim=-1)` | Local-max detection + linear interpolation between maxima. Alpha-shape/convex-hull approximation (RASSINE). (P3) | `window=11` |
+| `AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=10, dim=-1)` | Eilers 2003 penalised baseline with asymmetric weights. Standard in Raman/NIR spectroscopy. Additive decomposition. | `lam=1e5`, `p=0.01` |
+| `AlphaShapeContinuum(half_window=15, iterations=1, dim=-1)` | Morphological closing (dilation→erosion) via `unfold`. Guaranteed upper envelope (always >= signal). Additive decomposition. | `half_window=15` |
+| `WaveletDecompose(levels=3, dim=-1)` | Multi-level Haar DWT. Fully invertible frequency split: approx = broadband continuum, details = narrow features. Handles non-power-of-2 lengths via reflect padding. (P2) | `levels=3` |
+
+### Time-domain
+
+| Transform | Description | Inverse |
+|---|---|---|
+| `PhaseFold(period=1.0, n_bins=64, t0=0.0)` | Fold periodic time series into phase bins. | ✗ (many-to-one). |
+
+### Meta / header-aware
+
+| Transform | Description |
+|---|---|
+| `FITSHeaderScale(bscale=1.0, bzero=0.0)` | Apply/remove BSCALE/BZERO. `from_header(header)` factory. |
+| `FITSHeaderNormalize(header, scale_floats=False)` | Auto-normalize from BITPIX/BSCALE/BZERO. Integer types → [0,1]; floats are identity by default. |
+
+### Outlier rejection
+
+| Transform | Description | Inverse |
+|---|---|---|
+| `SigmaClip(n_sigma=3.0, max_iter=5, dim=(-2,-1), fill="mean")` | Iterative sigma-clipping with mean or median fill. | ✗ (lossy). |
+| `AsymmetricSigmaClip(n_low=3.0, n_high=3.0, dim=(-2,-1))` | Simple one-pass asymmetric sigma-clip via `estimate_background` (median + MAD). Different thresholds for lower and upper tails. Fills outliers with per-group median. | ✗ (lossy). |
+
+### Utility
+
+| Symbol | Description |
+|---|---|
+| `Compose(transforms)` | Chain transforms; `inverse()` unwinds in reverse order. |
+| `FITSTransform` | Base class: override `forward` and `inverse`. `__call__` delegates to `forward`. |
+
 ## Limitations
 
 - VLA columns are read via buffered I/O; mmap reads and in-place updates are not

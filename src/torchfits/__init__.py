@@ -68,6 +68,9 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "RunningPercentile": ("torchfits.transforms", "RunningPercentile"),
     "UpperEnvelopeContinuum": ("torchfits.transforms", "UpperEnvelopeContinuum"),
     "WaveletDecompose": ("torchfits.transforms", "WaveletDecompose"),
+    "AsymmetricLeastSquares": ("torchfits.transforms", "AsymmetricLeastSquares"),
+    "AlphaShapeContinuum": ("torchfits.transforms", "AlphaShapeContinuum"),
+    "AsymmetricSigmaClip": ("torchfits.transforms", "AsymmetricSigmaClip"),
 }
 
 __all__ = tuple(
@@ -116,6 +119,9 @@ __all__ = tuple(
         "RunningPercentile",
         "UpperEnvelopeContinuum",
         "WaveletDecompose",
+        "AsymmetricLeastSquares",
+        "AlphaShapeContinuum",
+        "AsymmetricSigmaClip",
         *_NAMESPACES,
     ]
 )
@@ -217,3 +223,6 @@ if TYPE_CHECKING:
     from .transforms import RunningPercentile as RunningPercentile
     from .transforms import UpperEnvelopeContinuum as UpperEnvelopeContinuum
     from .transforms import WaveletDecompose as WaveletDecompose
+    from .transforms import AsymmetricLeastSquares as AsymmetricLeastSquares
+    from .transforms import AlphaShapeContinuum as AlphaShapeContinuum
+    from .transforms import AsymmetricSigmaClip as AsymmetricSigmaClip

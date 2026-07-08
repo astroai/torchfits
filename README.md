@@ -55,6 +55,69 @@ Recent beta improvements:
 
 Full history: [docs/changelog.md](docs/changelog.md). Roadmap for the final 0.6.0 and beyond: [docs/roadmap.md](docs/roadmap.md).
 
+## Transforms
+
+torchfits includes over 20 ML-friendly FITS data transforms — all with `.inverse()`
+for decoding model outputs back to physical units.  See [docs/api.md](docs/api.md)
+for full signatures and the example scripts in `examples/`.
+
+```python
+from torchfits import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
+
+pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
+normalized = pipeline(image)     # forward → model input
+restored  = pipeline.inverse(normalized)  # inverse → physical flux
+```
+
+### Image stretches & normalizers (invertible)
+
+| Transform | Description |
+|---|---|
+| `ArcsinhStretch(a)` | LSST/SDSS standard for high-DR images |
+| `LogStretch(a, eps)` | Logarithmic stretch, negatives clamped |
+| `SqrtStretch()` | Poisson variance-stabilising |
+| `ZScaleNormalize(contrast, dim)` | IRAF auto-contrast → [0, 1] |
+| `RobustNormalize(dim)` | Median + MAD standardization (P1) |
+| `BackgroundSubtract(dim)` | Subtract median background |
+| `PercentileClipNormalize(lower, upper, dim)` | Percentile-clip → [0, 1] |
+| `MinMaxNormalize(dim)` | Min-max → [0, 1] |
+| `GlobalScalarNorm(stat, dim)` | Divide by median/max/mean/rms (P5) |
+
+### Spectral & hyperspectral (astronomy-specific)
+
+| Transform | Description |
+|---|---|
+| `ContinuumNormalize(order, n_sigma)` | Fit continuum + **divide** by it. Inverse multiplies back. |
+| `ContinuumRemoval(method, order, n_knots)` | Fit continuum + **subtract** it. Inverse adds back. |
+| `DopplerShift(z)` | Redshift/blueshift via resampling. Inverse is opposite shift. |
+| `SpectralBinning(factor, mode, dim)` | Bin adjacent channels. Inverse nearest-neighbour upsamples. |
+| `BandMath(func, band_dim)` | Band ratios (NDVI etc.) via `unbind`. Inverse not available. |
+
+### Continuum / baseline estimators (additive decomposition)
+
+All use `Original = Estimate + Residuals` for perfect recovery.
+Based on post-2021 astro-ML research (SUPPNet, RASSINE, AstroCLIP).
+
+| Transform | Description |
+|---|---|
+| `AsymmetricLeastSquares(lam, p, max_iter)` | Eilers 2003 penalised baseline (Raman/NIR) |
+| `AlphaShapeContinuum(half_window, iterations)` | Morphological closing — guaranteed upper envelope |
+| `SavitzkyGolayFilter(window, polyorder)` | Polynomial smoothing (P4) |
+| `RunningPercentile(percentile, window)` | Sliding-window percentile continuum (P6) |
+| `UpperEnvelopeContinuum(window, smooth)` | Local-max interpolation (RASSINE-like) (P3) |
+| `WaveletDecompose(levels)` | Multi-level Haar DWT frequency split (P2) |
+
+### Time-domain & meta
+
+| Transform | Description |
+|---|---|
+| `PhaseFold(period, n_bins)` | Fold time series into phase bins |
+| `FITSHeaderScale(bscale, bzero)` | Apply/remove BSCALE/BZERO |
+| `FITSHeaderNormalize(header)` | Auto-normalize from BITPIX |
+| `SigmaClip(n_sigma, max_iter, dim)` | Iterative outlier rejection |
+| `AsymmetricSigmaClip(n_low, n_high, dim)` | One-pass asymmetric sigma-clip (median+MAD) |
+| `Compose(transforms)` | Chain transforms; inverse unwinds in reverse |
+
 ## Performance
 
 Median wall-clock from the lab exhaustive benchmark suite (`exhaustive_mmap_0.5.0b4_20260630_162835`, H100 CUDA). See [docs/benchmarks.md](docs/benchmarks.md) for methodology, deficit transparency, and reproducible commands.

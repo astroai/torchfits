@@ -7,6 +7,8 @@ Demonstrates the :mod:`torchfits.transforms` hyperspectral-specific tools:
 - **BandMath**: compute band ratios (NDVI, WBI, etc.) on multi-spectral data
 - **WaveletDecompose**: split spectrum into frequency bands (Haar DWT)
 - **SavitzkyGolayFilter**: polynomial smoothing with invertible decomposition
+- **AsymmetricLeastSquares**: Eilers 2003 baseline correction for Raman/NIR
+- **AlphaShapeContinuum**: morphological closing for guaranteed upper envelope
 
 All transforms operate on arbitrary tensor layouts and are compatible with
 :class:`~torch.utils.data.DataLoader` pipelines.
@@ -17,6 +19,8 @@ import math
 import torch
 
 from torchfits.transforms import (
+    AlphaShapeContinuum,
+    AsymmetricLeastSquares,
     BandMath,
     ContinuumRemoval,
     SavitzkyGolayFilter,
@@ -351,6 +355,142 @@ def main() -> None:
     spec_restored = sg.inverse(spec_smooth)
     err_sg = (spec_restored - spec_noisy.unsqueeze(0)).abs().max().item()
     print("    Roundtrip error: {:.2e}".format(err_sg))
+
+    # ------------------------------------------------------------------
+    # 7. AsymmetricLeastSquares — Eilers 2003 baseline correction
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("7. AsymmetricLeastSquares")
+    print("=" * 60)
+
+    # Create a spectrum with shallow absorption dips on a smooth continuum.
+    # AsLS with small p (0.01) should fit a baseline that hugs the lower
+    # envelope, ignoring narrow absorption features.
+    t_arr = torch.linspace(-1, 1, 256)
+    continuum = 0.5 - 0.10 * t_arr + 0.03 * (t_arr - 0.1) ** 2
+    # Shallow absorption dips (narrow mineral features)
+    dips = torch.zeros(256)
+    for centre, width, depth in [
+        (0.0, 0.04, 0.04),
+        (0.35, 0.05, 0.03),
+        (-0.30, 0.05, 0.03),
+    ]:
+        dips += depth * torch.exp(-((t_arr - centre) ** 2) / (2 * width**2))
+    spectrum = (continuum - dips).unsqueeze(0)  # [1, 256]
+
+    # AsLS with small p: baseline hugs the lower envelope, ignoring dips
+    asls = AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=10, dim=-1)
+    baseline = asls(spectrum)
+    print("  AsLS(lam=1e5, p=0.01): lower-envelope baseline")
+    print(
+        "    Baseline range: [{:.4f}, {:.4f}]".format(
+            baseline.min().item(), baseline.max().item()
+        )
+    )
+    # Baseline should be near the continuum level, not following dips.
+    # AsLS with small p fits through the lower envelope (the valleys).
+    # The baseline at dip positions sits between the dip bottom and the
+    # continuum level, controlled by the smoothness parameter λ.
+    dip_min_idx = dips.argmin().item()
+    print(
+        "    At deepest dip (idx {}): spectrum={:.4f}, baseline={:.4f}".format(
+            dip_min_idx,
+            spectrum[0, dip_min_idx].item(),
+            baseline[0, dip_min_idx].item(),
+        )
+    )
+    # Baseline at the dip should be above the dip bottom (smoothing effect)
+    # and should be below the surrounding continuum level
+    dip_val = baseline[0, dip_min_idx].item()
+    continuum_level = continuum[dip_min_idx].item()
+    print(
+        "    Continuum level at dip: {:.4f}  (baseline is {:.4f} below)".format(
+            continuum_level, continuum_level - dip_val
+        )
+    )
+
+    # Verify roundtrip via additive decomposition
+    restored = asls.inverse(baseline)
+    err_asls = (restored - spectrum).abs().max().item()
+    print("    Roundtrip error: {:.2e}".format(err_asls))
+
+    # Compare: larger p (0.5) makes the baseline ride higher (more symmetric)
+    asls_sym = AsymmetricLeastSquares(lam=1e5, p=0.5, max_iter=10, dim=-1)
+    baseline_sym = asls_sym(spectrum)
+    print(
+        "  AsLS(p=0.5, symmetric): baseline range [{:.4f}, {:.4f}]".format(
+            baseline_sym.min().item(), baseline_sym.max().item()
+        )
+    )
+    # Symmetric weighting (p=0.5) produces a baseline near the middle of the
+    # data, not hugging the lower envelope
+    lower_hug = baseline[0, dip_min_idx].item()
+    mid_hug = baseline_sym[0, dip_min_idx].item()
+    print(
+        "    At deepest dip: p=0.01→{:.4f}  p=0.5→{:.4f}  "
+        "(smaller p hugs lower envelope more)".format(lower_hug, mid_hug)
+    )
+    assert lower_hug < mid_hug, (
+        "Smaller p should produce a lower baseline at absorption dips"
+    )
+
+    # ------------------------------------------------------------------
+    # 8. AlphaShapeContinuum — morphological closing for upper envelope
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("8. AlphaShapeContinuum")
+    print("=" * 60)
+
+    # Use the same spectrum; AlphaShapeContinuum produces the upper envelope
+    # via dilation (running max) followed by erosion (running min).
+    alpha = AlphaShapeContinuum(half_window=15, iterations=1, dim=-1)
+    envelope = alpha(spectrum)  # [1, 256]
+    print("  AlphaShapeContinuum(half_window=15): upper envelope via closing")
+    print(
+        "    Envelope range: [{:.4f}, {:.4f}]".format(
+            envelope.min().item(), envelope.max().item()
+        )
+    )
+    # Morphological closing guarantees the result is >= the input
+    assert torch.all(envelope >= spectrum - 1e-6), (
+        "Closing must produce values >= input"
+    )
+    print("    All envelope values >= spectrum (guaranteed by closing)")
+
+    # Verify roundtrip via additive decomposition
+    restored_alpha = alpha.inverse(envelope)
+    err_alpha = (restored_alpha - spectrum).abs().max().item()
+    print("    Roundtrip error: {:.2e}".format(err_alpha))
+
+    # Compare with UpperEnvelopeContinuum (local-max + interpolation)
+    from torchfits.transforms import UpperEnvelopeContinuum
+
+    uec = UpperEnvelopeContinuum(window=15, smooth=0.0, dim=-1)
+    envelope_uec = uec(spectrum)
+    print(
+        "  UpperEnvelopeContinuum(window=15): envelope range [{:.4f}, {:.4f}]".format(
+            envelope_uec.min().item(), envelope_uec.max().item()
+        )
+    )
+    # AlphaShapeContinuum (morphological) is always >= signal;
+    # UpperEnvelopeContinuum (interpolation) may dip slightly below at edges
+    alpha_above = (envelope >= spectrum - 1e-6).float().mean().item()
+    uec_above = (envelope_uec >= spectrum - 1e-6).float().mean().item()
+    print(
+        "    Fraction >= signal:  closing={:.3f}  interpolation={:.3f}".format(
+            alpha_above, uec_above
+        )
+    )
+
+    # Larger window produces a smoother (flatter) envelope
+    alpha_large = AlphaShapeContinuum(half_window=40, iterations=1, dim=-1)
+    envelope_large = alpha_large(spectrum)
+    small_std = envelope.std().item()
+    large_std = envelope_large.std().item()
+    print(
+        "  Envelope std:  window=15→{:.4f}  window=40→{:.4f}  "
+        "(larger window = smoother)".format(small_std, large_std)
+    )
 
     print("\nDone — all transforms compatible with torch.utils.data.DataLoader.")
 

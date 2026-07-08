@@ -5,7 +5,10 @@ import pytest
 import torch
 
 from torchfits.transforms import (
+    AlphaShapeContinuum,
     ArcsinhStretch,
+    AsymmetricLeastSquares,
+    AsymmetricSigmaClip,
     BackgroundSubtract,
     BandMath,
     Compose,
@@ -1496,3 +1499,242 @@ class TestWaveletDecompose:
         r = repr(WaveletDecompose(levels=3, dim=-1))
         assert "WaveletDecompose" in r
         assert "3" in r
+
+
+# ---------------------------------------------------------------------------
+# AsymmetricLeastSquares (Tier 2 — Eilers 2003, additive decomposition)
+# ---------------------------------------------------------------------------
+
+
+class TestAsymmetricLeastSquares:
+    def test_roundtrip(self):
+        # Quadratic continuum + Gaussian absorption dips
+        t_arr = torch.linspace(-1, 1, 200)
+        continuum = 10.0 + 2.0 * t_arr + 3.0 * t_arr**2
+        dip = -2.0 * torch.exp(-((t_arr - 0.0) ** 2) / (2 * 0.03**2))
+        dip2 = -1.5 * torch.exp(-((t_arr - 0.5) ** 2) / (2 * 0.05**2))
+        spectrum = continuum + dip + dip2
+        x = spectrum.unsqueeze(0)
+        t = AsymmetricLeastSquares(lam=1e4, p=0.01, max_iter=10)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_baseline_hugs_lower_envelope(self):
+        # Spectrum with strong absorption features
+        t_arr = torch.linspace(-1, 1, 200)
+        continuum = 10.0 + 2.0 * t_arr
+        # Deep absorption at center
+        dip = -5.0 * torch.exp(-((t_arr) ** 2) / (2 * 0.02**2))
+        spectrum = continuum + dip
+        x = spectrum.unsqueeze(0)
+        t = AsymmetricLeastSquares(lam=1e5, p=0.001, max_iter=10)
+        baseline = t.forward(x)
+        # Baseline should be above the spectrum at the dip bottom
+        # (it hugs the lower envelope, i.e., it's above absorption features)
+        dip_min_idx = dip.argmin().item()
+        assert baseline[0, dip_min_idx].item() > spectrum[dip_min_idx].item()
+
+    def test_lam_controls_smoothness(self):
+        # Use a linear baseline (nullspace of D^T D) with positive Gaussian peaks.
+        # A stiffer lam pushes toward a straight line, which should be closer
+        # to the true linear baseline than a flexible (wiggly) fit.
+        t_arr = torch.linspace(-1, 1, 200)
+        baseline_true = 5.0 + 10.0 * t_arr  # straight line
+        peak = 3.0 * torch.exp(-((t_arr - 0.2) ** 2) / (2 * 0.03**2))
+        peak2 = 2.0 * torch.exp(-((t_arr + 0.4) ** 2) / (2 * 0.04**2))
+        x = (baseline_true + peak + peak2).unsqueeze(0)
+        t_stiff = AsymmetricLeastSquares(lam=1e7, p=0.01, max_iter=10)
+        t_flex = AsymmetricLeastSquares(lam=1e2, p=0.01, max_iter=10)
+        stiff = t_stiff.forward(x)
+        flex = t_flex.forward(x)
+        # Stiffer baseline should be smoother and closer to the straight line
+        stiff_err = (stiff - baseline_true.unsqueeze(0)).abs().mean().item()
+        flex_err = (flex - baseline_true.unsqueeze(0)).abs().mean().item()
+        assert stiff_err < flex_err, f"stiff_err {stiff_err} >= flex_err {flex_err}"
+
+    def test_batched_spectra(self):
+        x = torch.randn(4, 150) * 2 + 10
+        t = AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=5)
+        out = t.forward(x)
+        assert out.shape == (4, 150)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_inverse_without_forward_raises(self):
+        t = AsymmetricLeastSquares()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(10))
+
+    def test_invalid_lam_raises(self):
+        with pytest.raises(ValueError):
+            AsymmetricLeastSquares(lam=0)
+        with pytest.raises(ValueError):
+            AsymmetricLeastSquares(lam=-1)
+
+    def test_invalid_p_raises(self):
+        with pytest.raises(ValueError):
+            AsymmetricLeastSquares(p=0)
+        with pytest.raises(ValueError):
+            AsymmetricLeastSquares(p=1)
+
+    def test_repr(self):
+        r = repr(AsymmetricLeastSquares(lam=1e6, p=0.05))
+        assert "AsymmetricLeastSquares" in r
+        assert "1000000.0" in r
+
+
+# ---------------------------------------------------------------------------
+# AlphaShapeContinuum (Tier 2 — morphological closing, additive)
+# ---------------------------------------------------------------------------
+
+
+class TestAlphaShapeContinuum:
+    def test_roundtrip(self):
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        x = x + 2.0 * torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
+        t = AlphaShapeContinuum(half_window=15)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_always_above_signal(self):
+        # Morphological closing (dilation→erosion) is guaranteed to be
+        # >= original signal everywhere
+        x = torch.sin(torch.linspace(0, 6 * math.pi, 200)).unsqueeze(0)
+        t = AlphaShapeContinuum(half_window=10)
+        out = t.forward(x)
+        assert torch.all(out >= x - 1e-6)
+
+    def test_bridges_absorption_features(self):
+        # Spectrum with narrow absorption dips
+        t_arr = torch.linspace(-1, 1, 200)
+        continuum = 10.0 + 2.0 * t_arr
+        dip = -3.0 * torch.exp(-((t_arr - 0.1) ** 2) / (2 * 0.02**2))
+        x = (continuum + dip).unsqueeze(0)
+        t = AlphaShapeContinuum(half_window=20)
+        out = t.forward(x)
+        # At the dip minimum, the continuum should be significantly above
+        dip_min_idx = dip.argmin().item()
+        assert out[0, dip_min_idx].item() > x[0, dip_min_idx].item() + 2.0
+
+    def test_window_size_controls_scale(self):
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
+        t_small = AlphaShapeContinuum(half_window=2)
+        t_large = AlphaShapeContinuum(half_window=30)
+        out_small = t_small.forward(x)
+        out_large = t_large.forward(x)
+        # Larger window should produce a smoother (flatter) continuum
+        small_std = out_small.std().item()
+        large_std = out_large.std().item()
+        assert large_std < small_std, f"large {large_std} >= small {small_std}"
+
+    def test_multiple_iterations(self):
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        x = x + torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
+        t = AlphaShapeContinuum(half_window=8, iterations=3)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_batched_spectra(self):
+        x = torch.randn(4, 200) * 2 + 10
+        t = AlphaShapeContinuum(half_window=15)
+        out = t.forward(x)
+        assert out.shape == (4, 200)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_inverse_without_forward_raises(self):
+        t = AlphaShapeContinuum()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(10))
+
+    def test_invalid_window_raises(self):
+        with pytest.raises(ValueError):
+            AlphaShapeContinuum(half_window=0)
+
+    def test_invalid_iterations_raises(self):
+        with pytest.raises(ValueError):
+            AlphaShapeContinuum(iterations=0)
+
+    def test_repr(self):
+        r = repr(AlphaShapeContinuum(half_window=20, iterations=2))
+        assert "AlphaShapeContinuum" in r
+        assert "20" in r
+
+
+# ---------------------------------------------------------------------------
+# AsymmetricSigmaClip (simple one-pass asymmetric outlier rejection)
+# ---------------------------------------------------------------------------
+
+
+class TestAsymmetricSigmaClip:
+    def test_clips_positive_outliers(self):
+        x = torch.randn(10, 10) * 2 + 5.0
+        x[0, 0] = 100.0  # extreme positive outlier
+        t = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)
+        out = t.forward(x)
+        # Outlier should be replaced with median (~5)
+        assert out[0, 0].item() < 10.0
+
+    def test_clips_negative_outliers(self):
+        x = torch.randn(10, 10) * 2 + 5.0
+        x[0, 0] = -50.0  # extreme negative outlier
+        t = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)
+        out = t.forward(x)
+        # Outlier should be replaced with median (~5)
+        assert out[0, 0].item() > 0.0
+
+    def test_asymmetric_thresholds(self):
+        # Data with real variance so MAD > 0
+        x = torch.randn(10, 10) * 2 + 5.0
+        x[0, 0] = -8.0  # mild negative outlier
+        x[1, 1] = 12.0  # mild positive outlier
+        # Aggressive low clipping (n_low=10 -> keep negative), tight high clipping (n_high=1)
+        t = AsymmetricSigmaClip(n_low=10.0, n_high=1.0)
+        out = t.forward(x)
+        # Negative outlier should survive (n_low=10 is very permissive)
+        assert out[0, 0].item() < 0.0
+        # Positive outlier should be clipped (n_high=1 is very strict)
+        assert abs(out[1, 1].item() - 5.0) < 3.0
+
+    def test_no_clipping_on_clean_data(self):
+        x = torch.randn(4, 32, 32) * 5 + 100
+        t = AsymmetricSigmaClip(n_low=10.0, n_high=10.0)
+        out = t.forward(x)
+        # With n_sigma=10, almost nothing should be clipped
+        assert (out - x).abs().max().item() < 0.5
+
+    def test_inverse_raises(self):
+        t = AsymmetricSigmaClip()
+        with pytest.raises(RuntimeError, match="irrecoverable"):
+            t.inverse(torch.zeros(3))
+
+    def test_constant_image(self):
+        x = torch.ones(4, 32, 32) * 42.0
+        t = AsymmetricSigmaClip()
+        out = t.forward(x)
+        assert torch.allclose(out, x, atol=1e-5)
+
+    def test_per_channel(self):
+        x = torch.randn(4, 32, 32) * 5 + 10
+        t = AsymmetricSigmaClip(dim=(-2, -1))
+        out = t.forward(x)
+        assert out.shape == (4, 32, 32)
+        assert torch.isfinite(out).all()
+
+    def test_invalid_n_raises(self):
+        with pytest.raises(ValueError):
+            AsymmetricSigmaClip(n_low=0)
+        with pytest.raises(ValueError):
+            AsymmetricSigmaClip(n_high=-1)
+
+    def test_repr(self):
+        r = repr(AsymmetricSigmaClip(n_low=5.0, n_high=2.0))
+        assert "AsymmetricSigmaClip" in r
+        assert "5.0" in r
+        assert "2.0" in r

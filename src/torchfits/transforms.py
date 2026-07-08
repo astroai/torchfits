@@ -1651,6 +1651,238 @@ class WaveletDecompose(FITSTransform):
         return f"WaveletDecompose(levels={self.levels}, dim={self.dim})"
 
 
+def _build_d2_matrix(n: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Build the n×n second-difference penalty matrix D^T D.
+
+    D is the (n-2)×n second-difference operator with rows
+    [0, ..., 1, -2, 1, ..., 0].  D^T D is the n×n pentadiagonal
+    matrix used in the Whittaker smoother / AsLS penalty term.
+    """
+    D2 = torch.zeros(n, n, device=device, dtype=dtype)
+    if n < 4:
+        return D2
+    # Main diagonal: 6 (two contributions from overlapping D rows)
+    D2[0, 0] = 1.0
+    D2[0, 1] = -2.0
+    D2[0, 2] = 1.0
+    D2[1, 0] = -2.0
+    D2[1, 1] = 5.0
+    D2[1, 2] = -4.0
+    D2[1, 3] = 1.0
+    for i in range(2, n - 2):
+        D2[i, i - 2] = 1.0
+        D2[i, i - 1] = -4.0
+        D2[i, i] = 6.0
+        D2[i, i + 1] = -4.0
+        D2[i, i + 2] = 1.0
+    if n >= 3:
+        D2[n - 2, n - 4] = 1.0
+        D2[n - 2, n - 3] = -4.0
+        D2[n - 2, n - 2] = 5.0
+        D2[n - 2, n - 1] = -2.0
+        D2[n - 1, n - 3] = 1.0
+        D2[n - 1, n - 2] = -2.0
+        D2[n - 1, n - 1] = 1.0
+    return D2
+
+
+class AsymmetricLeastSquares(FITSTransform):
+    """Asymmetric Least Squares baseline correction (Eilers 2003).
+
+    Iteratively fits a smooth baseline that hugs the lower envelope of
+    the signal by differentially weighting points above vs below the
+    baseline.  This is the standard method in Raman/NIR spectroscopy for
+    automated baseline removal and is fully information-preserving via
+    additive decomposition.
+
+    The algorithm solves ``(W + λ D^T D) z = W y`` at each iteration,
+    where *W* is a diagonal weight matrix with ``w_i = p`` if ``y_i > z_i``
+    and ``w_i = 1 - p`` otherwise, and *D* is the second-difference matrix.
+    Smaller *p* values make the baseline hug absorption features more
+    aggressively.
+
+    The transform is additive: ``Original = Baseline + Residuals``.
+    ``inverse`` re-adds the stored residuals.
+
+    Parameters
+    ----------
+    lam : float
+        Smoothness parameter.  Larger values produce a stiffer baseline.
+        Typical range: 1e2 to 1e9 (default 1e5).
+    p : float
+        Asymmetry parameter.  Points above the baseline get weight *p*,
+        points below get weight ``1 - p``.  Smaller *p* makes the baseline
+        hug the lower envelope more aggressively.
+        Typical range: 0.001 to 0.1 (default 0.01).
+    max_iter : int
+        Maximum number of reweighting iterations (default 10).
+    dim : int
+        Dimension to operate along (default -1).
+
+    References
+    ----------
+    Eilers, P. H. C. (2003). "A Perfect Smoother."
+    Analytical Chemistry, 75(14), 3631–3636.
+    """
+
+    def __init__(
+        self,
+        lam: float = 1e5,
+        p: float = 0.01,
+        max_iter: int = 10,
+        dim: int = -1,
+    ) -> None:
+        if lam <= 0:
+            raise ValueError("lam must be > 0")
+        if not 0 < p < 1:
+            raise ValueError("p must be in (0, 1)")
+        if max_iter < 1:
+            raise ValueError("max_iter must be >= 1")
+        self.lam = float(lam)
+        self.p = float(p)
+        self.max_iter = int(max_iter)
+        self.dim = int(dim)
+        self._residuals: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+
+        # Move working dim to last position
+        x_moved = x.movedim(dim, -1)  # [..., L]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [N, L]
+        n_spectra, length = x_flat.shape
+
+        with torch.no_grad():
+            # Build penalty matrix once in float64 for numerical stability
+            # when λ is large (shared across all spectra of same length).
+            D2 = _build_d2_matrix(length, x.device, torch.float64)
+
+            baseline = torch.zeros_like(x_flat)
+            for i in range(n_spectra):
+                y = x_flat[i]
+                z = y.clone()  # initial estimate = signal
+                for _ in range(self.max_iter):
+                    # Weights: p for positive residuals (above baseline),
+                    # 1-p for negative residuals (below baseline)
+                    w = torch.where(y > z, self.p, 1.0 - self.p)
+                    W = torch.diag(w)
+                    # Solve (W + λ D^T D) z_new = W y in float64.
+                    A = W.double() + self.lam * D2
+                    b = W.double() @ y.double()
+                    z_new = torch.linalg.solve(A, b).to(x.dtype)
+                    # Check convergence
+                    if torch.allclose(z_new, z, atol=1e-6):
+                        z = z_new
+                        break
+                    z = z_new
+                baseline[i] = z
+
+        baseline = baseline.reshape(x_moved.shape).movedim(-1, dim)
+        self._residuals = x - baseline
+        return baseline
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._residuals is None:
+            raise RuntimeError(
+                "AsymmetricLeastSquares.inverse() requires a prior forward() pass."
+            )
+        return x + self._residuals
+
+    def __repr__(self) -> str:
+        return (
+            f"AsymmetricLeastSquares(lam={self.lam}, p={self.p}, "
+            f"max_iter={self.max_iter}, dim={self.dim})"
+        )
+
+
+class AlphaShapeContinuum(FITSTransform):
+    """Alpha-shape continuum via morphological closing.
+
+    Computes an upper-envelope continuum using morphological closing
+    (dilation followed by erosion), which naturally follows the spectral
+    peaks while bridging narrow absorption features.  This is a
+    practical approximation to the full alpha-shape algorithm used by
+    RASSINE (Cretignier et al. 2020), implemented entirely in PyTorch
+    using unfold + max/min operations.
+
+    Unlike :class:`UpperEnvelopeContinuum` (which uses local-max detection
+    + interpolation), morphological closing produces a guaranteed upper
+    envelope that is always >= the original signal.
+
+    The transform is additive: ``Original = Continuum + Residuals``.
+    ``inverse`` re-adds the stored residuals.
+
+    Parameters
+    ----------
+    half_window : int
+        Half-width of the structuring element in samples.  Larger values
+        bridge wider absorption features.  Default 15.
+    iterations : int
+        Number of closing operations.  Each iteration applies
+        dilation→erosion, progressively smoothing the continuum.
+        Default 1.
+    dim : int
+        Dimension to operate along (default -1).
+
+    References
+    ----------
+    Cretignier, M. et al. (2020). "RASSINE: Interactive tool for
+    normalising stellar spectra." Astronomy & Astrophysics, 640, A42.
+    """
+
+    def __init__(
+        self, half_window: int = 15, iterations: int = 1, dim: int = -1
+    ) -> None:
+        if half_window < 1:
+            raise ValueError("half_window must be >= 1")
+        if iterations < 1:
+            raise ValueError("iterations must be >= 1")
+        self.half_window = int(half_window)
+        self.iterations = int(iterations)
+        self.dim = int(dim)
+        self._residuals: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+        window_size = 2 * self.half_window + 1
+
+        # Move working dim to last position
+        x_moved = x.movedim(dim, -1)  # [..., L]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [N, L]
+        pad = self.half_window
+
+        with torch.no_grad():
+            continuum = x_flat
+            for _ in range(self.iterations):
+                # Dilation: running max
+                padded = torch.nn.functional.pad(continuum, (pad, pad), mode="reflect")
+                windows = padded.unfold(-1, window_size, 1)  # [N, L, W]
+                dilated = windows.max(dim=-1).values  # [N, L]
+                # Erosion: running min of the dilated signal
+                padded = torch.nn.functional.pad(dilated, (pad, pad), mode="reflect")
+                windows = padded.unfold(-1, window_size, 1)  # [N, L, W]
+                continuum = windows.min(dim=-1).values  # [N, L]
+
+        continuum = continuum.reshape(x_moved.shape).movedim(-1, dim)
+        self._residuals = x - continuum
+        return continuum
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._residuals is None:
+            raise RuntimeError(
+                "AlphaShapeContinuum.inverse() requires a prior forward() pass."
+            )
+        return x + self._residuals
+
+    def __repr__(self) -> str:
+        return (
+            f"AlphaShapeContinuum(half_window={self.half_window}, "
+            f"iterations={self.iterations}, dim={self.dim})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Outlier rejection
 # ---------------------------------------------------------------------------
@@ -1787,6 +2019,71 @@ class SigmaClip(FITSTransform):
         return (
             f"SigmaClip(n_sigma={self.n_sigma}, max_iter={self.max_iter}, "
             f"dim={self.dim}, fill={self.fill!r})"
+        )
+
+
+class AsymmetricSigmaClip(FITSTransform):
+    """Simple one-pass asymmetric sigma-clipping outlier rejection.
+
+    Computes per-group median and MAD-derived std (:func:`estimate_background`),
+    then replaces values outside ``[median - n_low*std, median + n_high*std]``
+    with the per-group median.  Non-iterative — faster and simpler than the
+    full :class:`SigmaClip`, and supports different thresholds for the lower
+    and upper tails.
+
+    ``inverse`` is not available — clipped values are irrecoverable.
+
+    Parameters
+    ----------
+    n_low : float
+        Number of std deviations below median to clip (default 3.0).
+        Set higher to preserve more faint pixels.
+    n_high : float
+        Number of std deviations above median to clip (default 3.0).
+        Set higher to preserve more bright pixels.
+    dim :
+        Dimensions along which stats are computed independently.
+        Default ``(-2, -1)`` for per-image clipping.
+
+    Examples
+    --------
+    >>> # Clip negative outliers aggressively, preserve bright sources
+    >>> clip = AsymmetricSigmaClip(n_low=5.0, n_high=3.0)
+    >>>
+    >>> # Per-spectrum clipping along the spectral axis
+    >>> clip = AsymmetricSigmaClip(n_low=2.5, n_high=2.5, dim=(-1,))
+    """
+
+    def __init__(
+        self,
+        n_low: float = 3.0,
+        n_high: float = 3.0,
+        dim: Tuple[int, ...] = (-2, -1),
+    ) -> None:
+        if n_low <= 0 or n_high <= 0:
+            raise ValueError("n_low and n_high must be > 0")
+        self.n_low = float(n_low)
+        self.n_high = float(n_high)
+        self.dim = tuple(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            med, std = estimate_background(x, dim=self.dim)
+            lower = med - self.n_low * std
+            upper = med + self.n_high * std
+            mask = (x >= lower) & (x <= upper)
+            return torch.where(mask, x, med)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError(
+            "AsymmetricSigmaClip.inverse() is not available — "
+            "clipped values are irrecoverable."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"AsymmetricSigmaClip(n_low={self.n_low}, "
+            f"n_high={self.n_high}, dim={self.dim})"
         )
 
 
