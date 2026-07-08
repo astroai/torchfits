@@ -408,37 +408,28 @@ def _bench_case(
 
     for op_name, method_map in operations.items():
         for method, fn in method_map.items():
-            if method in {"fitsio", "fitsio_torch"}:
-                rows.append(
-                    _make_row(
-                        run_id=run_id,
-                        case_name=case_name,
-                        case=case,
-                        operation=op_name,
-                        family="smart" if method == "fitsio_torch" else "specialized",
-                        method=method,
-                        library="fitsio",
-                        mode="smart" if method == "fitsio_torch" else "specialized",
-                        mmap_target=mmap_target,
-                        status="SKIPPED",
-                        comparable=False,
-                        skip_reason="strict_mmap_fairness: comparator mmap mode is not controllable",
-                        time_s=None,
-                        throughput=None,
-                        unit="ops/s",
-                        n_points=nrows,
-                    )
-                )
-                continue
+            # fitsio runs in both mmap modes — its internal I/O strategy
+            # is appropriate for both buffered and non-buffered comparisons.
+            if method in {"fitsio", "fitsio_torch"} and not target_memmap:
+                # Run fitsio normally — fair comparison against non-mmap torchfits.
+                pass
 
             t_val, err = _time_median(fn, runs=runs, warmup=warmup)
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
 
-            library = "torchfits" if method.startswith("torchfits") else "astropy"
+            library = (
+                "torchfits"
+                if method.startswith("torchfits")
+                else "fitsio"
+                if method.startswith("fitsio")
+                else "astropy"
+            )
             family = (
-                "smart" if method in {"torchfits", "astropy_torch"} else "specialized"
+                "smart"
+                if method in {"torchfits", "astropy_torch", "fitsio_torch"}
+                else "specialized"
             )
             mode = "smart" if family == "smart" else "specialized"
 

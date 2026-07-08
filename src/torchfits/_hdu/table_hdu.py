@@ -243,6 +243,8 @@ class TableHDU(TensorFrame):
     def get_string_column(
         self, name: str, encoding: str = "ascii", strip: bool = True
     ) -> List[str]:
+        import numpy as np
+
         value = self._raw_data.get(name)
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -251,13 +253,16 @@ class TableHDU(TensorFrame):
         if value.dim() != 2:
             raise ValueError(f"Column '{name}' must be 2D (rows, width)")
 
-        strings: List[str] = []
-        for row in value.cpu().numpy():
-            s = bytes(row.tolist()).decode(encoding, errors="ignore")
-            if strip:
-                s = s.rstrip(" \x00")
-            strings.append(s)
-        return strings
+        # Vectorized fixed-width byte decode using numpy
+        arr = value.cpu().numpy()
+        width = arr.shape[1]
+        if width == 0:
+            return [""] * arr.shape[0]
+        byte_view = arr.view(f"S{width}").ravel()
+        decoded = np.char.decode(byte_view, encoding=encoding, errors="ignore")
+        if strip:
+            decoded = np.char.rstrip(decoded, " \x00")
+        return decoded.tolist()
 
     @property
     def num_rows(self) -> int:
@@ -366,12 +371,21 @@ class TableHDU(TensorFrame):
         if not eval_locals:
             raise ValueError("No row-aligned columns available for filtering")
 
-        from .._where import parse_where_expression, evaluate_where
+        # Build a minimal Arrow table and delegate to pyarrow.compute predicates.
+        import pyarrow as pa
 
-        ast = parse_where_expression(condition)
-        mask_result = evaluate_where(ast, eval_locals)
+        pa_arrays = {}
+        for name, arr in eval_locals.items():
+            if isinstance(arr, np.ndarray) and arr.dtype.kind == "O":
+                pa_arrays[name] = pa.array(arr.tolist())
+            else:
+                pa_arrays[name] = pa.array(arr)
+        pa_table = pa.table(pa_arrays)
 
-        mask_arr = np.asarray(mask_result)
+        from .._table.read import _where_mask_for_table
+
+        mask_chunked = _where_mask_for_table(pa_table, condition)
+        mask_arr = mask_chunked.to_numpy()
         if mask_arr.ndim == 0:
             mask = np.full(num_rows, bool(mask_arr.item()), dtype=bool)
         else:
@@ -707,6 +721,7 @@ class TableHDU(TensorFrame):
 
     def to_fits(self, file_path: str, overwrite: bool = False):
         import torchfits
+        import numpy as np
 
         payload = (
             dict(self._raw_data)
@@ -722,12 +737,15 @@ class TableHDU(TensorFrame):
             ):
                 decoded: List[str] = []
                 arr = value.detach().cpu().numpy()
-                for row in arr:
-                    decoded.append(
-                        bytes(row.tolist())
-                        .decode("ascii", errors="ignore")
-                        .rstrip(" \x00")
+                width = arr.shape[1]
+                if width == 0:
+                    decoded = [""] * arr.shape[0]
+                else:
+                    byte_view = arr.view(f"S{width}").ravel()
+                    decoded_arr = np.char.decode(
+                        byte_view, encoding="ascii", errors="ignore"
                     )
+                    decoded = np.char.rstrip(decoded_arr, " \x00").tolist()
                 payload[name] = decoded
 
         torchfits.write(

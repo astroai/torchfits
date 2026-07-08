@@ -38,27 +38,26 @@ def test_tablehdu_filter_security():
         table.filter("unknown_var > 0")
 
 
-def test_evaluate_where_direct():
-    from torchfits._where import _parse_where_expression, evaluate_where
+def test_where_mask_for_table_direct():
+    """WHERE expressions evaluated via pyarrow.compute (replaces old evaluate_where)."""
+    import pyarrow as pa
+    from torchfits._table.read import _where_mask_for_table
 
     data = {"a": np.array([1, 2, 3, 4, 5])}
+    table = pa.table(data)
 
     # Test complex logical expression
-    ast = _parse_where_expression("(a > 1 AND a < 5) OR a == 1")
-    mask = evaluate_where(ast, data)
-    np.testing.assert_array_equal(mask, [True, True, True, True, False])
+    mask = _where_mask_for_table(table, "(a > 1 AND a < 5) OR a == 1")
+    np.testing.assert_array_equal(mask.to_numpy(), [True, True, True, True, False])
 
     # Test NOT
-    ast = _parse_where_expression("NOT a == 3")
-    mask = evaluate_where(ast, data)
-    np.testing.assert_array_equal(mask, [True, True, False, True, True])
+    mask = _where_mask_for_table(table, "NOT a == 3")
+    np.testing.assert_array_equal(mask.to_numpy(), [True, True, False, True, True])
 
-    # Test IS NULL
-    data_nulls = {"b": np.array([1.0, np.nan, 3.0])}
-    ast = _parse_where_expression("b IS NULL")
-    mask = evaluate_where(ast, data_nulls)
-    np.testing.assert_array_equal(mask, [False, True, False])
+    # Test IS NULL (Arrow uses None, not NaN, for null)
+    table_nulls = pa.table({"b": pa.array([1.0, None, 3.0], type=pa.float64())})
+    mask = _where_mask_for_table(table_nulls, "b IS NULL")
+    np.testing.assert_array_equal(mask.to_numpy(), [False, True, False])
 
-    ast = _parse_where_expression("b IS NOT NULL")
-    mask = evaluate_where(ast, data_nulls)
-    np.testing.assert_array_equal(mask, [True, False, True])
+    mask = _where_mask_for_table(table_nulls, "b IS NOT NULL")
+    np.testing.assert_array_equal(mask.to_numpy(), [True, False, True])

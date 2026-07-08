@@ -40,9 +40,9 @@ FITS files with header round-trip coverage.
 fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
 backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
 
-## What's New in 0.5.0
+## What's New in 0.6.0
 
-0.5.0 is a focused FITS I/O release: tensor-native reads/writes, Arrow tables with
+0.6.0 (beta) is a focused FITS I/O release: tensor-native reads/writes, Arrow tables with
 C++ predicate pushdown, mmap in-place table updates (BIT, complex, fixed-width strings),
 unsigned integer conventions, compressed-image parity, and test-backed compatibility
 with common `astropy.io.fits` and `fitsio` workflows.
@@ -53,7 +53,7 @@ Recent beta improvements:
 - Smarter `where=` reads — automatic choice between Arrow filter and C++ pushdown based on table size and column layout.
 - Cleaner cache boundaries — table handle caches live in `_table.cache` without circular imports through `io`.
 
-Full history: [docs/changelog.md](docs/changelog.md). Engineering decomposition plan for 0.6.0: [docs/roadmap.md](docs/roadmap.md).
+Full history: [docs/changelog.md](docs/changelog.md). Roadmap for the final 0.6.0 and beyond: [docs/roadmap.md](docs/roadmap.md).
 
 ## Performance
 

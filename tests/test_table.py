@@ -85,19 +85,15 @@ class TestTableReading:
         finally:
             os.unlink(filepath)
 
-    def test_large_table_streaming(self):
-        """Test streaming read for large tables."""
+    def test_table_streaming_memory_budget(self):
+        """Test streaming read for large tables using stream_table directly."""
         filepath, expected_data = self.create_test_table(10000)
 
         try:
-            # Test with memory limit to force streaming
-            result = torchfits.read_large_table(
-                filepath, max_memory_mb=1, streaming=True
-            )
-
-            assert isinstance(result, dict)
-            assert "RA" in result
-            assert len(result["RA"]) == 10000
+            # Use stream_table to read chunks within memory budget
+            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=1000))
+            total_rows = sum(len(chunk["RA"]) for chunk in chunks)
+            assert total_rows == 10000
 
         finally:
             os.unlink(filepath)
@@ -308,32 +304,26 @@ class TestTablePerformance:
             return f.name
 
     def test_chunked_reading_performance(self):
-        """Test performance of chunked reading."""
+        """Test performance of chunked reading via stream_table."""
         import time
 
         filepath = self.create_large_table(50000)
 
         try:
-            # Test streaming read
             start_time = time.time()
-            result = torchfits.read_large_table(
-                filepath, max_memory_mb=10, streaming=True
-            )
+            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=5000))
+            total_rows = sum(len(chunk["RA"]) for chunk in chunks)
             streaming_time = time.time() - start_time
 
-            assert isinstance(result, dict)
-            assert len(result["RA"]) == 50000
-
-            # Streaming should complete in reasonable time
-            assert streaming_time < 30.0  # Should complete within 30 seconds
+            assert total_rows == 50000
+            assert streaming_time < 30.0
 
         finally:
             os.unlink(filepath)
 
     def test_memory_efficiency(self):
-        """Test memory efficiency of table reading."""
+        """Test memory efficiency of table reading via stream_table."""
         import gc
-
         import psutil
 
         filepath = self.create_large_table(20000)
@@ -342,18 +332,18 @@ class TestTablePerformance:
             process = psutil.Process()
             mem_before = process.memory_info().rss / 1024 / 1024  # MB
 
-            # Read table
-            result = torchfits.read_large_table(filepath, max_memory_mb=50)
+            # Read table in chunks
+            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=2000))
+            total_rows = sum(len(chunk["RA"]) for chunk in chunks)
 
             mem_after = process.memory_info().rss / 1024 / 1024  # MB
             memory_increase = mem_after - mem_before
 
-            # Should not use excessive memory
+            assert total_rows == 20000
             file_size = os.path.getsize(filepath) / 1024 / 1024  # MB
-            assert memory_increase < 5 * file_size  # Allow 5x file size for processing
+            assert memory_increase < 5 * file_size
 
-            # Cleanup
-            del result
+            del chunks
             gc.collect()
 
         finally:

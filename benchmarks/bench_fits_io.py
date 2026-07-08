@@ -731,15 +731,7 @@ def _normalize_legacy_rows(
                 comparable = status == "OK"
                 skip_reason = ""
 
-                if library == "fitsio":
-                    comparable = False
-                    status = "SKIPPED"
-                    skip_reason = (
-                        "strict_mmap_fairness: comparator mmap mode is not controllable"
-                    )
-                    t_val = None
-                    tp_val = None
-                elif library == "astropy" and status != "OK":
+                if library == "astropy" and status != "OK":
                     comparable = False
                     status = "SKIPPED"
                     skip_reason = "strict_mmap_fairness: astropy mmap mode unavailable for this case"
@@ -828,14 +820,6 @@ def _benchmark_headers(
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
-            if library == "fitsio":
-                status = "SKIPPED"
-                comparable = False
-                skip_reason = (
-                    "strict_mmap_fairness: comparator mmap mode is not controllable"
-                )
-                t_val = None
-
             if library == "astropy" and err and target_memmap:
                 status = "SKIPPED"
                 comparable = False

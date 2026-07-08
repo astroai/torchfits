@@ -506,6 +506,7 @@ class TestCacheConfig:
             if name == "SC_PHYS_PAGES":
                 return (100 * (1024**3)) // 4096
             raise ValueError()
+
         mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
@@ -524,6 +525,7 @@ class TestCacheConfig:
             if name == "SC_PHYS_PAGES":
                 return (16 * (1024**3)) // 4096
             raise ValueError()
+
         mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
@@ -543,6 +545,7 @@ class TestCacheConfig:
             if name == "SC_PHYS_PAGES":
                 return (32 * (1024**3)) // 4096
             raise ValueError()
+
         mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
@@ -555,13 +558,16 @@ class TestCacheConfig:
     @patch.object(CacheConfig, "_is_hpc_environment", return_value=False)
     @patch.object(CacheConfig, "_is_cloud_environment", return_value=False)
     @patch.object(CacheConfig, "_is_gpu_environment", return_value=False)
-    def test_for_environment_default(self, mock_gpu, mock_cloud, mock_hpc, mock_sysconf):
+    def test_for_environment_default(
+        self, mock_gpu, mock_cloud, mock_hpc, mock_sysconf
+    ):
         def sysconf_mock(name):
             if name == "SC_PAGE_SIZE":
                 return 4096
             if name == "SC_PHYS_PAGES":
                 return (8 * (1024**3)) // 4096
             raise ValueError()
+
         mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()

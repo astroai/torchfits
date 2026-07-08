@@ -155,16 +155,24 @@ def _read_unsigned_image_if_needed(
 
     When a FITS image uses the unsigned integer convention
     (e.g. BITPIX=16, BSCALE=1.0, BZERO=32768.0), the underlying
-    CFITSIO read returns float32. This function performs a raw read
-    instead and converts to the correct unsigned dtype in Python,
-    avoiding the lossy float32 intermediate representation.
+    CFITSIO read returns float32.
+
+    With mmap enabled, defer to the C++ path which handles unsigned
+    conventions natively (single-pass bswap+BZERO in the mmap fast path,
+    or TUSHORT/TUINT datatype through CFITSIO fallback).
+
+    Without mmap, perform a raw read and convert to the correct
+    unsigned dtype in Python, avoiding the lossy float32 intermediate
+    representation.
     """
     target = _unsigned_image_target(header)
     if target is None:
         return None
+    if effective_mmap:
+        return None
     dtype, offset = target
     try:
-        if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped_raw"):
+        if _cpp_has(cpp_module, "read_full_unmapped_raw"):
             raw = cpp_module.read_full_unmapped_raw(path, hdu_num)
         elif _cpp_has(cpp_module, "read_full_raw"):
             raw = cpp_module.read_full_raw(path, hdu_num, effective_mmap)
@@ -184,14 +192,15 @@ def _try_raw_scale_post(
 ) -> torch.Tensor:
     """Post-process a scaled-read tensor for unsigned integer convention.
 
-    After ``read_full`` (which applies CFITSIO BSCALE/BZERO scaling),
-    unsigned int16 images arrive as float32. This function reads the
-    header to detect the unsigned convention and re-reads raw data to
-    produce the correct uint16/uint32 tensor.
+    When the C++ path returns float32 (CFITSIO scaling fallback), this
+    function reads the header to detect the unsigned convention and
+    re-reads raw data to produce the correct uint16/uint32 tensor.
+    For mmap reads the C++ ``read_tensor_canonical`` handles unsigned
+    conventions natively (returning uint16/uint32 directly), so this
+    function short-circuits immediately via the dtype guard.
 
-    Non-float results (int8/int16/int32 from unscaled reads) pass
-    through with zero overhead — only float32/float64 results trigger
-    the header check.
+    Non-float results pass through with zero overhead — only float32
+    results trigger the header check.
     """
     if data.dtype != torch.float32:
         return data

@@ -10,7 +10,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.5.0b4"
+__version__ = "0.6.0b1"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -31,7 +31,6 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "read_batch": ("torchfits.io", "read_batch"),
     "get_batch_info": ("torchfits.io", "get_batch_info"),
     "get_cache_performance": ("torchfits.io", "get_cache_performance"),
-    "read_large_table": ("torchfits.io", "read_large_table"),
     "read_table_rows": ("torchfits.io", "read_table_rows"),
     "stream_table": ("torchfits.io", "stream_table"),
     "clear_file_cache": ("torchfits.io", "clear_file_cache"),
@@ -78,7 +77,6 @@ __all__ = tuple(
         "read_batch",
         "get_batch_info",
         "get_cache_performance",
-        "read_large_table",
         "read_table_rows",
         "stream_table",
         "clear_file_cache",

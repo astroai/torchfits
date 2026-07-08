@@ -401,7 +401,6 @@ set(SOURCES
     fits_file.cpp
     table_bindings.cpp
     table_ops.cpp
-    compression.cpp
     cache.cpp
     hardware.cpp
 )

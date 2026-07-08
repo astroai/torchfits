@@ -176,41 +176,6 @@ bool FITSFile::has_compressed_nulls_cached(int hdu_num) {
     return result;
 }
 
-bool FITSFile::is_parallel_compressed_codec_cached(int hdu_num) {
-    auto it = compressed_parallel_cache_.find(hdu_num);
-    if (it != compressed_parallel_cache_.end()) return it->second;
-    if (shared_meta_) {
-        std::lock_guard<std::mutex> lock(shared_meta_->mutex);
-        auto sit = shared_meta_->compressed_parallel_cache.find(hdu_num);
-        if (sit != shared_meta_->compressed_parallel_cache.end()) {
-            compressed_parallel_cache_[hdu_num] = sit->second;
-            return sit->second;
-        }
-    }
-    bool result = false;
-    char zcmptype[FLEN_VALUE];
-    std::memset(zcmptype, 0, sizeof(zcmptype));
-    int status = 0;
-    fits_read_key(fptr_, TSTRING, "ZCMPTYPE", zcmptype, nullptr, &status);
-    if (status == 0) {
-        std::string zcmp(zcmptype);
-        std::transform(zcmp.begin(), zcmp.end(), zcmp.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        if (zcmp.find("RICE") != std::string::npos) {
-            result = true;
-        } else if (detail::compressed_parallel_hcompress_enabled() &&
-                   zcmp.find("HCOMPRESS") != std::string::npos) {
-            result = true;
-        }
-    } else { status = 0; }
-    compressed_parallel_cache_[hdu_num] = result;
-    if (shared_meta_) {
-        std::lock_guard<std::mutex> lock(shared_meta_->mutex);
-        shared_meta_->compressed_parallel_cache[hdu_num] = result;
-    }
-    return result;
-}
-
 const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(int hdu_num) {
     auto it = image_info_cache_.find(hdu_num);
     if (it != image_info_cache_.end()) return it->second;
@@ -237,11 +202,10 @@ const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(in
     return inserted.first->second;
 }
 
-torch::Tensor FITSFile::read_image(int hdu_num, bool use_mmap) {
+torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     int status = 0;
     ensure_hdu(hdu_num, &status);
     if (status != 0) throw std::runtime_error("Could not move to HDU");
-    const bool want_mmap = use_mmap;
     int bitpix = 0, naxis = 0;
     std::array<LONGLONG, 9> naxes_ll{};
     {
@@ -263,175 +227,19 @@ torch::Tensor FITSFile::read_image(int hdu_num, bool use_mmap) {
         return torch::empty({0}, torch::TensorOptions().dtype(dtype));
     }
     const auto& scale_info = get_scale_info(hdu_num, bitpix);
-    bool scaled = scale_info.scaled;
-    LONGLONG nelements = 0;
-    if (naxis > 0) {
-        nelements = 1;
-        for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
-    }
-    int64_t torch_shape[9];
-    for (int i = 0; i < naxis; ++i) torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
-    torch::ScalarType dtype;
-    int datatype;
-    bool compressed = is_compressed_image_cached(hdu_num);
-    if (scaled) {
-        if (bitpix == BYTE_IMG && scale_info.bscale == 1.0 && scale_info.bzero == -128.0) {
-            dtype = at::kChar; datatype = TSBYTE;
-        } else {
-            dtype = torch::kFloat32; datatype = TFLOAT;
-        }
-    } else {
-        switch (bitpix) {
-            case BYTE_IMG:     dtype = torch::kUInt8;  datatype = TBYTE;      break;
-            case SHORT_IMG:    dtype = torch::kInt16;  datatype = TSHORT;     break;
-            case LONG_IMG:     dtype = torch::kInt32;  datatype = TINT;       break;
-            case LONGLONG_IMG: dtype = torch::kInt64;  datatype = TLONGLONG;  break;
-            case FLOAT_IMG:    dtype = torch::kFloat32; datatype = TFLOAT;     break;
-            case DOUBLE_IMG:   dtype = torch::kFloat64; datatype = TDOUBLE;    break;
-            default: throw std::runtime_error("Unsupported BITPIX");
-        }
-    }
-    auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
-    if (compressed && !scaled && is_parallel_compressed_codec_cached(hdu_num)) {
-        bool allow_float_parallel = true;
-        if (datatype == TFLOAT || datatype == TDOUBLE)
-            allow_float_parallel = !has_compressed_nulls_cached(hdu_num);
-        if (detail::try_read_compressed_rows_parallel(
-                fptr_, filename_, hdu_num + start_hdu_,
-                naxis, naxes_ll, nelements, datatype,
-                allow_float_parallel, tensor.data_ptr())) {
-            return tensor;
-        }
-    }
-    const bool signed_byte_scaled =
-        scaled && bitpix == BYTE_IMG && scale_info.bscale == 1.0 && scale_info.bzero == -128.0;
-    if (want_mmap && !compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled) &&
-        filename_.find('[') == std::string::npos) {
-        LONGLONG headstart = 0, data_offset = 0, dataend = 0;
-        status = 0;
-        fits_get_hduaddrll(fptr_, &headstart, &data_offset, &dataend, &status);
-        if (status == 0 && data_offset > 0) {
-            const size_t nbytes = static_cast<size_t>(nelements);
-            if (nbytes > 0) {
-                const size_t end_off = static_cast<size_t>(data_offset) + nbytes;
-                if (ensure_raw_fd(end_off)) {
-                    uint8_t* dst = static_cast<uint8_t*>(tensor.data_ptr());
-                    size_t remaining = nbytes;
-                    off_t off = static_cast<off_t>(data_offset);
-                    bool ok = true;
-                    while (remaining > 0) {
-                        ssize_t got = ::pread(raw_fd_, dst, remaining, off);
-                        if (got < 0) { if (errno == EINTR) continue; ok = false; break; }
-                        if (got == 0) { ok = false; break; }
-                        dst += static_cast<size_t>(got);
-                        off += static_cast<off_t>(got);
-                        remaining -= static_cast<size_t>(got);
-                    }
-                    if (!ok) {
-                        void* map_ptr = mmap(nullptr, static_cast<size_t>(raw_file_size_),
-                                             PROT_READ, MAP_SHARED, raw_fd_, 0);
-                        if (map_ptr != MAP_FAILED) {
-                            const uint8_t* src = static_cast<const uint8_t*>(map_ptr) + data_offset;
-                            std::memcpy(tensor.data_ptr(), src, nbytes);
-                            munmap(map_ptr, static_cast<size_t>(raw_file_size_));
-                            ok = true;
-                        }
-                    }
-                    if (ok) {
-                        if (signed_byte_scaled)
-                            detail::_xor_sign_bit_u8(static_cast<uint8_t*>(tensor.data_ptr()), nbytes);
-                        return tensor;
-                    }
-                }
-            }
-        } else { status = 0; }
-    }
-    if (want_mmap && !compressed && !scaled && filename_.find('[') == std::string::npos) {
-        size_t elem_size = 0;
-        switch (bitpix) {
-            case SHORT_IMG:    elem_size = sizeof(uint16_t); break;
-            case LONG_IMG:     elem_size = sizeof(uint32_t); break;
-            case LONGLONG_IMG: elem_size = sizeof(uint64_t); break;
-            case FLOAT_IMG:    elem_size = 0; break;
-            case DOUBLE_IMG:   elem_size = sizeof(uint64_t); break;
-            default:           elem_size = 0; break;
-        }
-        if (elem_size > 0) {
-            LONGLONG headstart = 0, data_offset = 0, dataend = 0;
-            status = 0;
-            fits_get_hduaddrll(fptr_, &headstart, &data_offset, &dataend, &status);
-            if (status == 0 && data_offset > 0) {
-                const size_t nbytes = static_cast<size_t>(nelements) * elem_size;
-                if (nbytes > 0) {
-                    const size_t end_off = static_cast<size_t>(data_offset) + nbytes;
-                    if (ensure_raw_fd(end_off)) {
-                        uint8_t* dst = static_cast<uint8_t*>(tensor.data_ptr());
-                        size_t remaining = nbytes;
-                        off_t off = static_cast<off_t>(data_offset);
-                        bool ok = true;
-                        while (remaining > 0) {
-                            ssize_t got = ::pread(raw_fd_, dst, remaining, off);
-                            if (got < 0) { if (errno == EINTR) continue; ok = false; break; }
-                            if (got == 0) { ok = false; break; }
-                            dst += static_cast<size_t>(got);
-                            off += static_cast<off_t>(got);
-                            remaining -= static_cast<size_t>(got);
-                        }
-                        if (!ok) {
-                            void* map_ptr = mmap(nullptr, static_cast<size_t>(raw_file_size_),
-                                                 PROT_READ, MAP_SHARED, raw_fd_, 0);
-                            if (map_ptr != MAP_FAILED) {
-                                const uint8_t* src = static_cast<const uint8_t*>(map_ptr) + data_offset;
-                                std::memcpy(tensor.data_ptr(), src, nbytes);
-                                munmap(map_ptr, static_cast<size_t>(raw_file_size_));
-                                ok = true;
-                            }
-                        }
-                        if (ok) {
-                            if (host_is_little_endian()) {
-                                if (elem_size == sizeof(uint16_t)) {
-                                    auto* p = static_cast<uint16_t*>(tensor.data_ptr());
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16,
-                                        [&](int64_t b, int64_t e) {
-                                            for (int64_t i = b; i < e; ++i) p[i] = torchfits::internal::bswap_16(p[i]);
-                                        });
-                                } else if (elem_size == sizeof(uint32_t)) {
-                                    auto* p = static_cast<uint32_t*>(tensor.data_ptr());
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16,
-                                        [&](int64_t b, int64_t e) {
-                                            for (int64_t i = b; i < e; ++i) p[i] = torchfits::internal::bswap_32(p[i]);
-                                        });
-                                } else if (elem_size == sizeof(uint64_t)) {
-                                    auto* p = static_cast<uint64_t*>(tensor.data_ptr());
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 16,
-                                        [&](int64_t b, int64_t e) {
-                                            for (int64_t i = b; i < e; ++i) p[i] = torchfits::internal::bswap_64(p[i]);
-                                        });
-                                }
-                            }
-                            return tensor;
-                        }
-                    }
-                }
-            } else { status = 0; }
-        }
-    }
-    int anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    void* nullval_ptr = nullptr;
-    if ((datatype == TFLOAT || datatype == TDOUBLE) && compressed) {
-        if (has_compressed_nulls_cached(hdu_num))
-            nullval_ptr = (datatype == TFLOAT) ? (void*)&fnullval : (void*)&dnullval;
-    }
-    fits_read_img(fptr_, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
-    if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading image data: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
-    }
-    return tensor;
+
+    detail::ResolvedFITSMeta meta;
+    meta.bitpix = bitpix;
+    meta.naxis = naxis;
+    meta.naxes_ll = naxes_ll;
+    meta.scaled = scale_info.scaled;
+    meta.bscale = scale_info.bscale;
+    meta.bzero = scale_info.bzero;
+    meta.compressed = is_compressed_image_cached(hdu_num);
+    meta.compressed_nulls = has_compressed_nulls_cached(hdu_num);
+
+    const int fd = detail::get_shared_raw_fd(shared_meta_, filename_);
+    return detail::read_tensor_canonical(fptr_, filename_, meta, use_mmap, fd, /*use_chunking=*/false);
 }
 
 torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {

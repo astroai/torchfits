@@ -1,11 +1,9 @@
 import os
-from unittest.mock import MagicMock
 
 from torchfits.cache import (
     CacheConfig,
     get_optimal_cache_config,
 )
-import torchfits.cache
 
 
 def _mock_sysconf_with_memory(monkeypatch, memory_gb: float):

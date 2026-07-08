@@ -144,7 +144,7 @@ class CacheManager:
             pass
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive cache statistics."""
+        """Get comprehensive cache statistics, including I/O engine stats."""
         try:
             import torchfits._C as cpp
 
@@ -152,8 +152,24 @@ class CacheManager:
         except (ImportError, AttributeError):
             cpp_size = 0
 
+        # Merge I/O engine cache statistics when available
+        io_stats: Dict[str, Any] = {}
+        try:
+            from ._io_engine.caches import get_cache_performance
+
+            io_stats = get_cache_performance()
+        except Exception:
+            pass
+
+        merged_hits = self._stats["hits"] + io_stats.get("hits", 0)
+        merged_misses = self._stats["misses"] + io_stats.get("misses", 0)
+        merged_total = merged_hits + merged_misses
+
         return {
             **self._stats,
+            "io_hits": io_stats.get("hits", 0),
+            "io_misses": io_stats.get("misses", 0),
+            "io_total_requests": io_stats.get("total_requests", 0),
             "cpp_cache_size": cpp_size,
             "config": {
                 "max_files": self.config.max_files,
@@ -161,8 +177,7 @@ class CacheManager:
                 "disk_cache_gb": self.config.disk_cache_gb,
                 "prefetch_enabled": self.config.prefetch_enabled,
             },
-            "hit_rate": self._stats["hits"]
-            / max(1, self._stats["hits"] + self._stats["misses"]),
+            "hit_rate": merged_hits / max(1, merged_total),
         }
 
     def clear(self):

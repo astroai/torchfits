@@ -409,21 +409,17 @@ class TestTableAPI:
             table.write(f.name, format="fits", overwrite=True)
             return f.name
 
-    def test_large_table_reading(self):
-        """Test large table reading function."""
+    def test_table_streaming_api(self):
+        """Test streaming read via stream_table."""
         filepath = self.create_test_table(10000)
 
         try:
-            # Test streaming read
-            result = torchfits.read_large_table(
-                filepath, max_memory_mb=10, streaming=True
-            )
-            assert isinstance(result, dict)
-            assert "RA" in result
-            assert len(result["RA"]) == 10000
+            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=5000))
+            total_rows = sum(len(chunk["RA"]) for chunk in chunks)
+            assert total_rows == 10000
 
-            # Test non-streaming read
-            result2 = torchfits.read_large_table(filepath, streaming=False)
+            # Test non-streaming read via read_table
+            result2 = torchfits.read_table(filepath, hdu=1)
             assert isinstance(result2, dict)
 
         finally:

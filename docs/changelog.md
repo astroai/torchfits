@@ -7,37 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.6.0b1] - 2026-07-08
 
-- **Security:** Block CFITSIO pipe injection bypass via leading `!` prefix (`!|command`) in
-  `check_fits_filename_security`; also enforced on unified cache open path (PR #173).
-- GPU `scale_on_device` preserves narrow integer H2D for FITS signed-byte (int8) and
-  unsigned uint16/uint32 conventions instead of promoting through float32 or int64 on CPU.
-- CPU unsigned image reads use int32 widening for uint16 (not int64) where applicable.
+### Removed
 
-### Added
-
-- **Header:** O(N) construction for large dict inputs via keyed fast-path in `_set_card`
-  (PR #172; 2000 keys ~0.002s locally vs ~2.5s pre-fix).
-- **Jupyter:** Scrollable, sticky-header HTML repr for `Header` and `HDUList` (PR #171).
-- `tests/test_scale_on_device.py` — signed-byte, unsigned, and fitsio parity checks.
-- Release gate includes `test_scale_on_device.py`.
-- `.cursor/skills/release-api-freeze-review/` — pre-tag API/feature freeze audit workflow.
+- Removed deprecated `read_large_table` function (use `stream_table` or `read_table` instead).
+- **Custom WHERE AST evaluator runtime** (~120 lines) from `_where.py`: `_evaluate_cmp`,
+  `_evaluate_in`, `_evaluate_between`, `_evaluate_isnull`, `_evaluate_where`, and the
+  `evaluate_where` public alias. Replaced with `pyarrow.compute` native predicates via
+  `_where_mask_for_table`. The parser, tokenizer, normalizers, and `where_columns_from_ast`
+  stay for C++ pushdown path compatibility.
+- **Compressed parallel decompression path** (~350 lines): `try_read_compressed_rows_parallel`,
+  `compressed_parallel_enabled/min_pixels/min_rows_per_thread/max_threads/hcompress_enabled`
+  helpers, `load_bswap` templates, `FitsHandleGuard` local class, `is_parallel_compressed_codec_cached`,
+  `compressed_parallel_cache`, and `hardware_concurrency` dependency. CFITSIO's built-in decompression
+  already covers this serially — the 2-thread cap meant the heuristic rarely activated.
+- **Unused `read_rice_parallel`** (~320 lines) from `compression.cpp` — vendored Rice
+  decompression, nanobind binding, and the entire `compression.cpp`/`compression.h` files.
+  Dead after compressed parallel path removal.
+- `bind_compression` from `bindings.cpp` — only bound `read_rice_parallel`.
 
 ### Changed
 
+- **3→1 C++ read path merge:** Extracted a single `read_tensor_canonical()` in `fits_detail.h`
+  and converted three read paths (`read_full_cached`, `read_full_nocache`, `FITSFile::read_tensor`)
+  into thin wrappers, eliminating ~455 lines of duplication.
+- **API naming consistency:** Renamed `read_image_canonical` → `read_tensor_canonical` and
+  `FITSFile::read_image` → `FITSFile::read_tensor`, aligning C++ with the Python `read_tensor`/`write_tensor` API.
+- **bswap+BZERO merge:** Merged the two-pass byte-swap and BZERO offset into a single `parallel_for`
+  in the multi-byte mmap fast path. For unsigned images (uint16 with BZERO=32768, uint32 with
+  BZERO=2147483648), `bswap + add` executes in one traversal instead of two.
+- **Unsigned mmap fast path unlocked:** `_read_unsigned_image_if_needed` now defers to the C++
+  path when `mmap=True`, letting `read_tensor_canonical` handle unsigned conventions natively
+  (single-pass bswap+BZERO returning uint16/uint32 directly). Previously Python preempted C++
+  by calling `read_full_raw` and doing a second offset pass — making the bswap+BZERO merge dead code.
+  **uint32_2d: 8.3× faster (now beats fitsio); uint16_2d: 3.5× faster; 5 deficits eliminated.**
+- **Vectorized string decode:** Replaced per-row Python `for` loops in `interop.py`
+  (`to_pandas`, `to_arrow`), `table_hdu.py` (`get_string_column`, `to_fits`), and
+  `table_hdu_ref.py` (`get_string_column`) with `np.char.decode()` + `np.char.rstrip()`
+  for significant speedup on large string columns.
+- **Deduplicated `fits_schema.py`:** `column_tnull_map()` delegates to `_iter_tfields_indexed()`
+  instead of reimplementing the TTYPE/TNULL iteration loop.
+- **Deduplicated unsigned dtype and TFORM parsing:** `_table/read.py` now delegates to
+  `fits_schema.unsigned_column_dtypes_from_header()` and `fits_schema.iter_table_columns()`
+  instead of reimplementing TZERO/unsigned detection and TTYPE/TFORM header walks.
+- **Table schema fast path:** `table.schema()` skips data reads when `where=None`,
+  inferring the Arrow schema directly from FITS TFORM header cards (≤1 header pass).
 - **C++ source extraction:** Split `fits.cpp` (4552 lines) into `fits_detail.h`,
   `fits_file.h`/`.cpp`, `fits_rw.h`; split `table.cpp` (3432 lines) into
   `table_types.h`, `table_reader.h` (header-only), `table_mutation.h`/`.cpp`.
   Removed `extern "C"` linkage from table mutation functions to fix UB from
   C++ exceptions crossing C ABI boundaries. Removed dead declarations,
   unused types, stale comments, and double includes.
-  `raw_scale=True`) for dtype-equivalent integer comparisons vs fitsio.
-- Lab benchmark snapshot `exhaustive_mmap_0.5.0b4_20260630_162835` (3626 rows, 13 deficits).
-- README and `docs/benchmarks.md` document integer GPU semantics and training cache guidance.
+- **Merged cache stats:** `CacheManager.get_stats()` now pulls I/O engine metrics
+  (`io_hits`, `io_misses`, `io_total_requests`) from the cache subsystem.
+- **WHERE evaluator → Arrow compute:** `TableHDU.filter()` now builds a minimal Arrow
+  table and delegates to `_where_mask_for_table` (pyarrow.compute native predicates)
+  instead of running the old NumPy-based custom evaluator. The parser stays for
+  C++ pushdown path compatibility.
+- **Table read unification:** Extracted `_read_ranges_as_chunk` from `_read_cpp_numpy_table`
+  into shared `_table/engine.py`, removing ~50 lines of duplicated code.
+- **CI:** Added non-blocking `mypy src/` step to the GitHub Actions lint job.
+- **Benchmark fairness fix:** fitsio is no longer unconditionally skipped — runs when
+  `mmap=off` for fair buffered-read comparisons (449 fitsio OK rows in fits domain,
+  180 in fitstable).
 - `examples/example_image_dataset.py`: `optimize_for_dataset` + correct `pin_memory` when
   reading directly to CUDA.
 - `scripts/run_exhaustive_bench_and_patch_docs.sh` skips rebuild when extension imports.
+
+### Fixed
+
+- **Vectorized NULL evaluation:** `_where.py` replaced Python-loop `np.array([v is None for v in val])`
+  with vectorized `(val == None)` for element-wise null checks.
+- Fixed unused imports in `tests/test_cache_config.py`.
+- **Security:** Block CFITSIO pipe injection bypass via leading `!` prefix (`!|command`) in
+  `check_fits_filename_security`; also enforced on unified cache open path.
+- GPU `scale_on_device` preserves narrow integer H2D for FITS signed-byte (int8) and
+  unsigned uint16/uint32 conventions instead of promoting through float32 or int64 on CPU.
+
+### Added
+
+- **Header:** O(N) construction for large dict inputs via keyed fast-path in `_set_card`
+  (2000 keys ~0.002s locally vs ~2.5s pre-fix).
+- **Jupyter:** Scrollable, sticky-header HTML repr for `Header` and `HDUList`.
+- `tests/test_scale_on_device.py` — signed-byte, unsigned, and fitsio parity checks.
+- Release gate includes `test_scale_on_device.py`.
+- `.cursor/skills/release-api-freeze-review/` — pre-tag API/feature freeze audit workflow.
+- **`_table/engine.py`** — shared C++ table read dispatch module with extracted
+  `_read_ranges_as_chunk` helper (de-duplicated from `_read_cpp_numpy_table`).
 
 ### Performance notes
 
@@ -46,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lab exhaustive refresh (`exhaustive_mmap_0.5.0b4_20260630_162835`, H100 MIG): **3626 rows**,
   **13 deficits** (down from 22). Integer CUDA gaps closed; remaining are marginal int8 (≤1.2×)
   and cold `large_uint32_2d` CPU vs astropy (~1.5×).
+- User-profile refresh (`unsigned_mmap_fix_20260708`, CPU, mmap=on): **1,377 rows**,
+  **25 deficits**. `torchfits_specialized` uint32_2d now beats fitsio (was 5–10× behind);
+  uint16_2d at ~1.6× vs fitsio (was ~5×). Remaining deficits dominated by medium-size
+  unsigned reads and compressed HCOMPRESS.
+  Torchfits dominates table I/O (886×–2,318× vs astropy), image reads (7.92× vs astropy,
+  1.76× vs fitsio on large float32), and repeated cutouts (17× vs astropy, 1.09× vs fitsio).
 
 ## [0.5.0b4] - 2026-06-30
 
@@ -177,7 +240,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v0.5.0b4...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v0.6.0b1...HEAD
+[0.6.0b1]: https://github.com/astroai/torchfits/releases/tag/v0.6.0b1
 [0.5.0b4]: https://github.com/astroai/torchfits/releases/tag/v0.5.0b4
 [0.5.0b3]: https://github.com/astroai/torchfits/releases/tag/v0.5.0b3
 [0.5.0b2]: https://github.com/astroai/torchfits/releases/tag/v0.5.0b2

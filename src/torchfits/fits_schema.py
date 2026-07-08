@@ -270,33 +270,10 @@ def unsigned_column_dtypes_from_header(
 def column_tnull_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
     """Map column name -> TNULL value from a flat header dict."""
     out: dict[str, Any] = {}
-    tfields = _tfields_count(header_map)
-    if tfields > 0:
-        for i in range(1, tfields + 1):
-            tnull = header_map.get(f"TNULL{i}")
-            if tnull is None:
-                continue
-            ttype = header_map.get(f"TTYPE{i}")
-            if ttype is not None:
-                out[str(ttype)] = tnull
-        return out
-
-    name_by_idx: dict[int, str] = {}
-    tnull_by_idx: dict[int, Any] = {}
-    for key, value in header_map.items():
-        key_u = str(key).upper()
-        if key_u.startswith("TTYPE"):
-            suffix = key_u[5:]
-            if suffix.isdigit():
-                name_by_idx[int(suffix)] = str(value)
-        elif key_u.startswith("TNULL"):
-            suffix = key_u[5:]
-            if suffix.isdigit():
-                tnull_by_idx[int(suffix)] = value
-
-    for idx, name in name_by_idx.items():
-        if idx in tnull_by_idx:
-            out[name] = tnull_by_idx[idx]
+    for idx, name, _, _ in _iter_tfields_indexed(header_map):
+        tnull = header_map.get(f"TNULL{idx}")
+        if tnull is not None:
+            out[name] = tnull
     return out
 
 

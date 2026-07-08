@@ -50,9 +50,6 @@ from ._io_engine._read_pipeline import read_unified as _read_unified_impl
 from ._io_engine.subset import open_subset_reader as _open_subset_reader_impl
 from ._io_engine.subset import read_subset as _read_subset_impl
 from ._io_engine.table_api import read_table as _read_table_impl
-from ._io_engine.table_streaming import (
-    read_large_table as _read_large_table_impl,
-)
 from ._io_engine.table_streaming import stream_table as _stream_table_impl
 from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
 from ._io_engine.write_api import insert_hdu as _insert_hdu_impl
@@ -220,7 +217,6 @@ def read_tensor(
     )
 
 
-
 def read_table(
     path: str,
     hdu: int = 1,
@@ -378,23 +374,6 @@ def stream_table(
     )
 
 
-def read_large_table(
-    file_path: str,
-    hdu: int = 1,
-    max_memory_mb: int = 100,
-    streaming: bool = False,
-    return_iterator: bool = False,
-):
-    return _read_large_table_impl(
-        get_header,
-        file_path,
-        hdu=hdu,
-        max_memory_mb=max_memory_mb,
-        streaming=streaming,
-        return_iterator=return_iterator,
-    )
-
-
 def read_batch(
     file_paths: list[str],
     hdu: int = 0,
@@ -517,8 +496,6 @@ __all__ = [
     "read_batch",
     "read_fast",
     "read_hdus",
-    "read_image",
-    "read_large_table",
     "read_subset",
     "read_table",
     "read_table_rows",

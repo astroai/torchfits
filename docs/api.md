@@ -222,7 +222,6 @@ reads.
 
 Still supported; prefer the canonical paths above:
 
-- `read_large_table` → `read_table` / `stream_table` / `table.scan`
 - `read_fast` → `read` / `read_tensor`
 - `read_image` → `read_tensor`
 

@@ -265,15 +265,16 @@ def _column_tforms_for_decode(
     hdu: int,
     selected_columns: Optional[set[str]],
 ) -> dict[str, str]:
-    out: dict[str, str] = {}
+    """Delegates to fits_schema for TFORM lookup."""
+    import torchfits
+
     try:
-        fm, _ = _build_fits_metadata(path, hdu, selected_columns)
-        for col, meta in fm.items():
-            tf = meta.get("fits_tform")
-            if tf:
-                out[col] = tf
+        header = torchfits.get_header(path, hdu)
     except Exception:
-        pass
+        return {}
+    out: dict[str, str] = {}
+    for col in fits_schema.iter_table_columns(header, selected=selected_columns):
+        out[col.name] = col.tform
     return out
 
 
@@ -282,29 +283,19 @@ def _unsigned_column_dtypes(
     hdu: int,
     selected_columns: Optional[set[str]],
 ) -> dict[str, str]:
+    """Delegates to fits_schema.unsigned_column_dtypes_from_header."""
+    import torchfits
+
     try:
-        fm, _ = _build_fits_metadata(path, hdu, selected_columns)
+        header = torchfits.get_header(path, hdu)
     except Exception:
         return {}
-    targets = {
-        ("I", 32768.0): "uint16",
-        ("J", 2147483648.0): "uint32",
+    torch_dtype_map = fits_schema.unsigned_column_dtypes_from_header(header)
+    return {
+        col: str(dt).split(".")[-1]
+        for col, dt in torch_dtype_map.items()
+        if selected_columns is None or col in selected_columns
     }
-    out: dict[str, str] = {}
-    for col, meta in fm.items():
-        parsed = _column_tform_code_and_repeat(meta.get("fits_tform"))
-        if parsed is None:
-            continue
-        code, _repeat = parsed
-        try:
-            tscal = float(meta.get("fits_tscal", "1"))
-            tzero = float(meta.get("fits_tzero", "0"))
-        except Exception:
-            continue
-        target = targets.get((code, tzero))
-        if target is not None and tscal == 1.0:
-            out[col] = target
-    return out
 
 
 def _can_use_mmap_row_path_for_full_read(
@@ -889,6 +880,96 @@ def read(
     )
 
 
+def _arrow_type_from_tform(
+    code: str, repeat: int, *, decode_bytes: bool, pa
+) -> Any | None:
+    """Map a scalar FITS TFORM code + repeat to a pyarrow type, or None if unhandled.
+
+    Bit columns (X) map to bool_(); for repeat > 1 the result is a
+    FixedSizeList of bools, matching what the data path produces via
+    ``_uint8_matrix_to_fixed_bool_list``.
+    """
+    _SCALAR: dict[str, Any] = {
+        "L": pa.bool_(),
+        "X": pa.bool_(),
+        "B": pa.uint8(),
+        "I": pa.int16(),
+        "J": pa.int32(),
+        "K": pa.int64(),
+        "E": pa.float32(),
+        "D": pa.float64(),
+        "C": pa.float64(),
+        "M": pa.float64(),
+        "A": pa.utf8() if decode_bytes else pa.binary(),
+    }
+    base = _SCALAR.get(code)
+    if base is None:
+        return None
+    if repeat == 1:
+        return base
+    return pa.list_(base, repeat)
+
+
+def _schema_from_header(
+    path: str,
+    hdu: int,
+    columns: Optional[list[str]],
+    decode_bytes: bool,
+    include_fits_metadata: bool,
+) -> Any | None:
+    """Build a pyarrow schema from FITS header cards only (no data rows read).
+
+    Returns ``None`` when the header cannot be read, or when VLA columns,
+    complex types, or unknown TFORM codes are present — callers must fall
+    back to the scan-based schema path in those cases.
+    """
+    import torchfits
+
+    try:
+        header = torchfits.get_header(path, hdu)
+    except Exception:
+        return None
+
+    pa = _require_pyarrow()
+    selected = set(columns) if columns else None
+    fields = []
+    any_vla = False
+
+    table_meta: dict[str, str] = {"fits_hdu": str(hdu)}
+
+    for col in fits_schema.iter_table_columns(header, selected=selected):
+        info = col.tform_info
+        if info.vla or info.code is None:
+            any_vla = True
+            continue
+        arrow_type = _arrow_type_from_tform(
+            info.code, info.repeat, decode_bytes=decode_bytes, pa=pa
+        )
+        if arrow_type is None:
+            any_vla = True
+            continue
+
+        metadata = None
+        if include_fits_metadata:
+            meta: dict[bytes, bytes] = {}
+            if col.tform:
+                meta[b"fits_tform"] = col.tform.encode("utf-8")
+            if col.tdim is not None:
+                meta[b"fits_tdim"] = col.tdim.encode("utf-8")
+            if col.tnull is not None:
+                meta[b"fits_tnull"] = str(col.tnull).encode("utf-8")
+            if meta:
+                metadata = meta
+
+        fields.append(pa.field(col.name, arrow_type, metadata=metadata))
+
+    if not fields and not any_vla:
+        return pa.schema([], metadata=table_meta if include_fits_metadata else None)
+    if any_vla:
+        return None
+    return pa.schema(fields, metadata=table_meta if include_fits_metadata else None)
+
+
 def schema(
     path: str,
     hdu: int | str = 1,
@@ -905,6 +986,15 @@ def schema(
     validate_table_backend(backend)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
+
+    # Fast path: when no WHERE filter, infer schema from header cards only.
+    if where is None:
+        header_schema = _schema_from_header(
+            path, hdu, columns, decode_bytes, include_fits_metadata
+        )
+        if header_schema is not None:
+            return header_schema
+
     scan_backend = backend
     iterator = scan(
         path,
@@ -999,47 +1089,8 @@ def _read_cpp_numpy_table(
 
     col_list = columns if columns else []
 
-    def _read_ranges_as_chunk(reader, ranges: list[tuple[int, int]]):
-        out_sorted: dict[str, Any] = {}
-        n_total = sum(length for _, length in ranges)
-
-        cursor = 0
-        for start0, length in ranges:
-            seg = reader.read_rows_numpy(col_list, start0 + 1, length)
-            if not seg:
-                cursor += length
-                continue
-            for name, value in seg.items():
-                buf = out_sorted.get(name)
-                if buf is None:
-                    if isinstance(value, np.ndarray):
-                        buf = np.empty((n_total,) + value.shape[1:], dtype=value.dtype)
-                    elif isinstance(value, list):
-                        buf = [None] * n_total
-                    elif _is_vla_tuple(value):
-                        buf = [None] * n_total
-                    else:
-                        buf = [None] * n_total
-                    out_sorted[name] = buf
-
-                if isinstance(value, np.ndarray):
-                    buf[cursor : cursor + length] = value
-                elif isinstance(value, list):
-                    buf[cursor : cursor + length] = value
-                elif _is_vla_tuple(value):
-                    fixed, offsets = value
-                    fixed = np.asarray(fixed)
-                    offsets = np.asarray(offsets)
-                    items = []
-                    for i in range(length):
-                        a = int(offsets[i])
-                        b = int(offsets[i + 1])
-                        items.append(fixed[a:b])
-                    buf[cursor : cursor + length] = items
-                else:
-                    buf[cursor : cursor + length] = [value] * length
-            cursor += length
-        return out_sorted
+    # -- C++ dispatch chain (kept inline for stability) -------------------------
+    from .engine import _read_ranges_as_chunk
 
     chunk = None
     prefer_torch_full_path = (
@@ -1096,7 +1147,7 @@ def _read_cpp_numpy_table(
 
         try:
             reader = _acquire_cpp_reader(path, hdu, cpp)
-            chunk_sorted = _read_ranges_as_chunk(reader, ranges)
+            chunk_sorted = _read_ranges_as_chunk(reader, col_list, ranges)
         except Exception:
             chunk_sorted = None
         if chunk_sorted is None:

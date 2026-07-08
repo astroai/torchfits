@@ -240,14 +240,17 @@ class TableHDURef:
             raise TypeError(
                 f"Column '{name}' is not a uint8 (rows,width) encoded string column"
             )
-        out: List[str] = []
+        import numpy as np
+
         arr = value.detach().cpu().numpy()
-        for row in arr:
-            s = bytes(row.tolist()).decode(encoding, errors="ignore")
-            if strip:
-                s = s.rstrip(" \x00")
-            out.append(s)
-        return out
+        width = arr.shape[1]
+        if width == 0:
+            return [""] * arr.shape[0]
+        byte_view = arr.view(f"S{width}").ravel()
+        decoded = np.char.decode(byte_view, encoding=encoding, errors="ignore")
+        if strip:
+            decoded = np.char.rstrip(decoded, " \x00")
+        return decoded.tolist()
 
     def get_vla_column(self, name: str) -> List[Tensor]:
         value = self[name]

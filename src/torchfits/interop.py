@@ -29,19 +29,25 @@ def to_pandas(
         import pandas as pd
     except ImportError:
         raise ImportError("Pandas is required for to_pandas conversion.")
+    import numpy as np
 
     processed_data = {}
     for key, value in data.items():
         if isinstance(value, torch.Tensor):
             if decode_bytes and value.dtype == torch.uint8 and value.dim() == 2:
-                rows = value.cpu().numpy()
-                strings = []
-                for row in rows:
-                    s = bytes(row.tolist()).decode(encoding, errors="ignore")
+                # Vectorized fixed-width byte decode using numpy
+                arr = value.cpu().numpy()
+                width = arr.shape[1]
+                if width == 0:
+                    processed_data[key] = [""] * arr.shape[0]
+                else:
+                    byte_view = arr.view(f"S{width}").ravel()
+                    decoded = np.char.decode(
+                        byte_view, encoding=encoding, errors="ignore"
+                    )
                     if strip:
-                        s = s.rstrip(" \x00")
-                    strings.append(s)
-                processed_data[key] = strings
+                        decoded = np.char.rstrip(decoded, " \x00")
+                    processed_data[key] = decoded.tolist()
             else:
                 processed_data[key] = value.numpy()
         elif isinstance(value, list):
@@ -116,6 +122,7 @@ def to_arrow(
         import pyarrow as pa
     except ImportError:
         raise ImportError("PyArrow is required for to_arrow conversion.")
+    import numpy as np
 
     arrays = []
     names = []
@@ -124,14 +131,19 @@ def to_arrow(
         names.append(key)
         if isinstance(value, torch.Tensor):
             if decode_bytes and value.dtype == torch.uint8 and value.dim() == 2:
-                rows = value.cpu().numpy()
-                strings = []
-                for row in rows:
-                    s = bytes(row.tolist()).decode(encoding, errors="ignore")
+                # Vectorized fixed-width byte decode using numpy
+                arr = value.cpu().numpy()
+                width = arr.shape[1]
+                if width == 0:
+                    arrays.append(pa.array([""] * arr.shape[0]))
+                else:
+                    byte_view = arr.view(f"S{width}").ravel()
+                    decoded = np.char.decode(
+                        byte_view, encoding=encoding, errors="ignore"
+                    )
                     if strip:
-                        s = s.rstrip(" \x00")
-                    strings.append(s)
-                arrays.append(pa.array(strings))
+                        decoded = np.char.rstrip(decoded, " \x00")
+                    arrays.append(pa.array(decoded))
             else:
                 arrays.append(pa.array(value.numpy()))
         elif isinstance(value, list):
