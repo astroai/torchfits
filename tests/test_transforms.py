@@ -17,6 +17,7 @@ from torchfits.transforms import (
     DopplerShift,
     FITSHeaderNormalize,
     FITSHeaderScale,
+    FITSScaleColumns,
     FITSTransform,
     GlobalScalarNorm,
     LogStretch,
@@ -29,6 +30,7 @@ from torchfits.transforms import (
     SigmaClip,
     SpectralBinning,
     SqrtStretch,
+    TNullToNan,
     UpperEnvelopeContinuum,
     WaveletDecompose,
     ZScaleNormalize,
@@ -1738,3 +1740,210 @@ class TestAsymmetricSigmaClip:
         assert "AsymmetricSigmaClip" in r
         assert "5.0" in r
         assert "2.0" in r
+
+
+# ---------------------------------------------------------------------------
+# FITSScaleColumns (table column TSCAL/TZERO scaling, invertible)
+# ---------------------------------------------------------------------------
+
+
+class TestFITSScaleColumns:
+    def test_roundtrip(self):
+        header = {
+            "TFIELDS": 2,
+            "TTYPE1": "FLUX",
+            "TFORM1": "E",
+            "TSCAL1": 0.001,
+            "TZERO1": 0.0,
+            "TTYPE2": "MAG",
+            "TFORM2": "E",
+            "TSCAL2": 1.0,
+            "TZERO2": 25.0,
+        }
+        flux = torch.tensor([1000.0, 2000.0, 3000.0])
+        mag = torch.tensor([10.0, 20.0, 30.0])
+        x = {"FLUX": flux, "MAG": mag}
+        t = FITSScaleColumns.from_header(header)
+        out = t.forward(x)
+        # FLUX: physical = 0.001 * stored + 0 = [1.0, 2.0, 3.0]
+        assert torch.allclose(out["FLUX"], torch.tensor([1.0, 2.0, 3.0]))
+        # MAG: physical = 1.0 * stored + 25.0
+        assert torch.allclose(out["MAG"], torch.tensor([35.0, 45.0, 55.0]))
+        restored = t.inverse(out)
+        assert torch.allclose(restored["FLUX"], flux)
+        assert torch.allclose(restored["MAG"], mag)
+
+    def test_empty_header(self):
+        header = {}
+        x = {"A": torch.randn(10)}
+        t = FITSScaleColumns.from_header(header)
+        out = t.forward(x)
+        assert torch.equal(out["A"], x["A"])  # no-op
+
+    def test_identity_scales_noop(self):
+        header = {
+            "TFIELDS": 1,
+            "TTYPE1": "DATA",
+            "TFORM1": "E",
+            "TSCAL1": 1.0,
+            "TZERO1": 0.0,
+        }
+        x = {"DATA": torch.randn(100)}
+        t = FITSScaleColumns.from_header(header)
+        out = t.forward(x)
+        assert torch.equal(out["DATA"], x["DATA"])  # identity scales skipped
+
+    def test_preserves_unrelated_columns(self):
+        header = {
+            "TFIELDS": 1,
+            "TTYPE1": "FLUX",
+            "TFORM1": "E",
+            "TSCAL1": 2.0,
+            "TZERO1": 10.0,
+        }
+        extra = torch.randn(5)
+        x = {"FLUX": torch.ones(5), "EXTRA": extra}
+        t = FITSScaleColumns.from_header(header)
+        out = t.forward(x)
+        assert torch.equal(out["EXTRA"], extra)  # unrelated column untouched
+        assert "EXTRA" in out
+
+    def test_preserves_int_dtype(self):
+        header = {
+            "TFIELDS": 1,
+            "TTYPE1": "N",
+            "TFORM1": "J",
+            "TSCAL1": 1.0,
+            "TZERO1": 0.0,
+        }
+        x = {"N": torch.tensor([1, 2, 3], dtype=torch.int32)}
+        t = FITSScaleColumns.from_header(header)
+        out = t.forward(x)
+        assert out["N"].dtype == torch.int32
+
+    def test_repr(self):
+        header = {
+            "TFIELDS": 1,
+            "TTYPE1": "F",
+            "TFORM1": "E",
+            "TSCAL1": 0.5,
+            "TZERO1": 100.0,
+        }
+        t = FITSScaleColumns.from_header(header)
+        r = repr(t)
+        assert "FITSScaleColumns" in r
+        assert "0.5" in r
+
+
+# ---------------------------------------------------------------------------
+# TNullToNan (table column TNULL sentinel → NaN, lossy)
+# ---------------------------------------------------------------------------
+
+
+class TestTNullToNan:
+    def test_replaces_sentinel_with_nan(self):
+        header = {"TFIELDS": 1, "TTYPE1": "FLUX", "TFORM1": "J", "TNULL1": -999}
+        x = {"FLUX": torch.tensor([1, -999, 3], dtype=torch.int32)}
+        t = TNullToNan.from_header(header)
+        out = t.forward(x)
+        assert out["FLUX"].dtype == torch.float32  # promoted to float
+        assert torch.isnan(out["FLUX"][1])
+        assert out["FLUX"][0].item() == 1.0
+        assert out["FLUX"][2].item() == 3.0
+
+    def test_float_column_no_promotion(self):
+        header = {"TFIELDS": 1, "TTYPE1": "VAL", "TFORM1": "E", "TNULL1": 0.0}
+        x = {"VAL": torch.tensor([0.0, 1.0, 2.0], dtype=torch.float32)}
+        t = TNullToNan.from_header(header)
+        out = t.forward(x)
+        assert out["VAL"].dtype == torch.float32  # already float, no promotion
+        assert torch.isnan(out["VAL"][0])
+
+    def test_empty_header(self):
+        header = {}
+        x = {"A": torch.randn(10)}
+        t = TNullToNan.from_header(header)
+        out = t.forward(x)
+        assert torch.equal(out["A"], x["A"])  # no-op
+
+    def test_nulls_only_on_specified_columns(self):
+        header = {
+            "TFIELDS": 2,
+            "TTYPE1": "GOOD",
+            "TFORM1": "J",
+            "TTYPE2": "BAD",
+            "TFORM2": "J",
+            "TNULL2": -99,
+        }
+        x = {
+            "GOOD": torch.tensor([1, -99, 3], dtype=torch.int32),
+            "BAD": torch.tensor([1, -99, 3], dtype=torch.int32),
+        }
+        t = TNullToNan.from_header(header)
+        out = t.forward(x)
+        # GOOD has no TNULL, should be untouched
+        assert out["GOOD"].dtype == torch.int32
+        assert out["GOOD"][1].item() == -99
+        # BAD has TNULL=-99, should be converted to NaN
+        assert torch.isnan(out["BAD"][1])
+
+    def test_inverse_raises(self):
+        t = TNullToNan.from_header({})
+        with pytest.raises(RuntimeError, match="lossy"):
+            t.inverse({})
+
+    def test_repr(self):
+        header = {"TFIELDS": 1, "TTYPE1": "X", "TFORM1": "J", "TNULL1": -1}
+        t = TNullToNan.from_header(header)
+        r = repr(t)
+        assert "TNullToNan" in r
+        assert "X" in r
+
+
+# ---------------------------------------------------------------------------
+# FITSHeaderScale extended roundtrip tests
+# ---------------------------------------------------------------------------
+
+
+class TestFITSHeaderScaleRoundtrip:
+    def test_scaled_image_roundtrip(self):
+        """Simulate a typical int16 image with BSCALE/BZERO."""
+        raw = torch.randint(-100, 100, (64, 64), dtype=torch.int16)
+        header = {"BITPIX": 16, "BSCALE": 0.5, "BZERO": 2000.0}
+        t = FITSHeaderScale.from_header(header)
+        physical = t.forward(raw.float())
+        expected = raw.float() * 0.5 + 2000.0
+        assert torch.allclose(physical, expected)
+        restored = t.inverse(physical)
+        # 0.5 is exactly representable in float32, roundtrip is exact
+        assert torch.allclose(restored, raw.float())
+
+    def test_unsigned_uint16_convention(self):
+        """BZERO=32768 is the standard FITS unsigned int16 convention."""
+        raw = torch.randint(0, 65535, (32, 32), dtype=torch.int32)
+        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
+        t = FITSHeaderScale.from_header(header)
+        physical = t.forward(raw.float())
+        expected = raw.float() * 1.0 + 32768.0
+        assert torch.allclose(physical, expected)
+        restored = t.inverse(physical)
+        assert torch.allclose(restored, raw.float())
+
+    def test_bscale_only_convention(self):
+        """BSCALE != 1, BZERO = 0."""
+        header = {"BITPIX": -32, "BSCALE": 2.0, "BZERO": 0.0}
+        orig = torch.rand(16, 16) * 100
+        raw = orig.clone()
+        t = FITSHeaderScale.from_header(header)
+        out = t.forward(raw)
+        # 2.0 is exact in float32
+        assert torch.allclose(out, orig.mul(2.0))
+        assert torch.allclose(t.inverse(out), orig)
+
+    def test_inverse_applied_to_identity(self):
+        """After applying scale, inverse should get back the original."""
+        x = torch.tensor([100.0, 200.0, 300.0])
+        t = FITSHeaderScale(bscale=0.5, bzero=50.0)
+        fwd = t.forward(x)
+        inv = t.inverse(fwd)
+        assert torch.allclose(inv, x, atol=1e-5)

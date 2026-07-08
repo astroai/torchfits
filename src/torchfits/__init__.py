@@ -17,6 +17,7 @@ _NAMESPACES: dict[str, str] = {
     "cache": "torchfits.cache",
     "cpp": "torchfits.cpp",
     "transforms": "torchfits.transforms",
+    "data": "torchfits.data",
 }
 
 _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
@@ -71,6 +72,8 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "AsymmetricLeastSquares": ("torchfits.transforms", "AsymmetricLeastSquares"),
     "AlphaShapeContinuum": ("torchfits.transforms", "AlphaShapeContinuum"),
     "AsymmetricSigmaClip": ("torchfits.transforms", "AsymmetricSigmaClip"),
+    "FITSScaleColumns": ("torchfits.transforms", "FITSScaleColumns"),
+    "TNullToNan": ("torchfits.transforms", "TNullToNan"),
 }
 
 __all__ = tuple(
@@ -122,6 +125,8 @@ __all__ = tuple(
         "AsymmetricLeastSquares",
         "AlphaShapeContinuum",
         "AsymmetricSigmaClip",
+        "FITSScaleColumns",
+        "TNullToNan",
         *_NAMESPACES,
     ]
 )
@@ -199,6 +204,7 @@ if TYPE_CHECKING:
         table as table,
         cache as cache,
         transforms as transforms,
+        data as data,
     )
     from .hdu import Card as Card
     from .hdu import HDUList as HDUList
@@ -226,3 +232,5 @@ if TYPE_CHECKING:
     from .transforms import AsymmetricLeastSquares as AsymmetricLeastSquares
     from .transforms import AlphaShapeContinuum as AlphaShapeContinuum
     from .transforms import AsymmetricSigmaClip as AsymmetricSigmaClip
+    from .transforms import FITSScaleColumns as FITSScaleColumns
+    from .transforms import TNullToNan as TNullToNan

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`AsymmetricLeastSquares(lam, p, max_iter, dim)`** — Eilers 2003 penalised
+  baseline correction with asymmetric weights. Iteratively solves the Whittaker
+  smoother `(W + λD^T D)z = Wy` with differential weighting (p above baseline,
+  1-p below). Standard in Raman/NIR spectroscopy. D^T D penalty matrix built in
+  float64 for numerical stability at large λ. Additive decomposition (invertible).
+- **`AlphaShapeContinuum(half_window, iterations, dim)`** — Morphological closing
+  (dilation→erosion) via `unfold` + max/min. Produces a guaranteed upper envelope
+  (always ≥ signal). Practical approximation to the full alpha-shape algorithm
+  (RASSINE). Additive decomposition (invertible).
+- **`AsymmetricSigmaClip(n_low, n_high, dim)`** — Simple one-pass asymmetric
+  sigma-clipping outlier rejection using `estimate_background` (median + MAD).
+  Supports different lower/upper sigma thresholds; replaces outliers with per-group
+  median. Lossy (no inverse).
+- `_build_d2_matrix` internal helper for the n×n pentadiagonal second-difference
+  penalty matrix D^T D used by the Whittaker smoother / AsLS.
+- 27 new tests for the three transforms (201 transforms tests total, all passing).
+- Sections 7–9 in `examples/example_hyperspectral.py` demonstrating
+  `AsymmetricLeastSquares`, `AlphaShapeContinuum`, and `AsymmetricSigmaClip`.
+- All three transforms exported to the root package for direct
+  `from torchfits import AsymmetricLeastSquares` access.
+- Documentation for all three transforms in `docs/api.md` and `README.md`
+  transform tables.
+
 ## [0.6.0b1] - 2026-07-08
 
 ### Removed

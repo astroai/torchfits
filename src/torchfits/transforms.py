@@ -628,6 +628,173 @@ def _linear_interp_1d(
 
 
 # ---------------------------------------------------------------------------
+# FITS table-aware transforms (TSCAL/TZERO/TNULL)
+# ---------------------------------------------------------------------------
+
+
+class FITSScaleColumns(FITSTransform):
+    """Apply or remove TSCAL/TZERO scaling to table column tensors.
+
+    Reads TSCAL and TZERO keywords for each column from a FITS table header
+    and applies ``physical = TSCAL * stored + TZERO``.  Columns with default
+    values (TSCAL=1.0, TZERO=0.0) are passed through unchanged.
+
+    ``forward`` applies scaling: stored → physical.
+    ``inverse`` removes it: ``(physical - TZERO) / TSCAL``.
+
+    Parameters
+    ----------
+    header : dict
+        FITS table header dict-like with TTYPE*/TFORM*/TSCAL*/TZERO* keywords.
+
+    Example
+    -------
+    >>> header = {"TFIELDS": 2, "TTYPE1": "FLUX", "TFORM1": "E",
+    ...            "TSCAL1": 0.001, "TZERO1": 0.0,
+    ...            "TTYPE2": "MAG", "TFORM2": "E",
+    ...            "TSCAL2": 1.0, "TZERO2": 25.0}
+    >>> scaler = FITSScaleColumns.from_header(header)
+    >>> physical = scaler({"FLUX": raw_flux, "MAG": raw_mag})
+    >>> raw = scaler.inverse(physical)
+    """
+
+    def __init__(self, scales: dict[str, tuple[float, float]]) -> None:
+        """
+        Parameters
+        ----------
+        scales : dict[str, tuple[float, float]]
+            Mapping of column name → (TSCAL, TZERO).
+        """
+        self.scales: dict[str, tuple[float, float]] = {
+            name: (float(ts), float(tz))
+            for name, (ts, tz) in scales.items()
+            if ts != 1.0 or tz != 0.0
+        }
+
+    @classmethod
+    def from_header(cls, header: dict) -> FITSScaleColumns:
+        """Construct from a FITS table header dict-like object."""
+        from .fits_schema import iter_table_columns  # noqa: PLC0415
+
+        scales: dict[str, tuple[float, float]] = {}
+        for col in iter_table_columns(header):
+            tscal = float(col.tscal) if col.tscal is not None else 1.0
+            tzero = float(col.tzero) if col.tzero is not None else 0.0
+            scales[col.name] = (tscal, tzero)
+        return cls(scales)
+
+    def forward(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if not self.scales:
+            return x
+        out = dict(x)
+        for name, (tscal, tzero) in self.scales.items():
+            if name not in out:
+                continue
+            val = out[name]
+            if tscal == 1.0 and tzero == 0.0:
+                continue
+            result = val.to(torch.float32)
+            if tscal != 1.0:
+                result = result.mul_(tscal)
+            if tzero != 0.0:
+                result = result.add_(tzero)
+            out[name] = result.to(val.dtype) if val.dtype != torch.float32 else result
+        return out
+
+    def inverse(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if not self.scales:
+            return x
+        out = dict(x)
+        for name, (tscal, tzero) in self.scales.items():
+            if name not in out:
+                continue
+            val = out[name]
+            if tscal == 1.0 and tzero == 0.0:
+                continue
+            result = val.to(torch.float32)
+            if tzero != 0.0:
+                result = result.sub_(tzero)
+            if tscal != 1.0:
+                result = result.div_(tscal)
+            out[name] = result.to(val.dtype) if val.dtype != torch.float32 else result
+        return out
+
+    def __repr__(self) -> str:
+        items = ", ".join(
+            f"{n!r}: ({ts}, {tz})" for n, (ts, tz) in sorted(self.scales.items())
+        )
+        return f"FITSScaleColumns({{{items}}})"
+
+
+class TNullToNan(FITSTransform):
+    """Replace FITS TNULL sentinel values with NaN.
+
+    Reads TNULL keywords from a FITS table header and replaces the
+    corresponding sentinel values in each tensor column with NaN.
+    Integer columns are promoted to float32 so NaN can be represented.
+
+    ``inverse`` is not available — null replacement is lossy.
+
+    Parameters
+    ----------
+    header : dict
+        FITS table header dict-like with TTYPE*/TNULL* keywords.
+
+    Example
+    -------
+    >>> header = {"TFIELDS": 1, "TTYPE1": "FLUX", "TFORM1": "J", "TNULL1": -999}
+    >>> nuller = TNullToNan.from_header(header)
+    >>> clean = nuller({"FLUX": torch.tensor([1, -999, 3], dtype=torch.int32)})
+    >>> # FLUX is now float32 with NaN at position 1
+    """
+
+    def __init__(self, nulls: dict[str, float]) -> None:
+        """
+        Parameters
+        ----------
+        nulls : dict[str, float]
+            Mapping of column name → TNULL value.
+        """
+        self.nulls: dict[str, float] = {name: float(v) for name, v in nulls.items()}
+
+    @classmethod
+    def from_header(cls, header: dict) -> TNullToNan:
+        """Construct from a FITS table header dict-like object."""
+        from .fits_schema import column_tnull_map  # noqa: PLC0415
+
+        nulls = column_tnull_map(header)
+        return cls(nulls)
+
+    def forward(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if not self.nulls:
+            return x
+        out = dict(x)
+        for name, tnull in self.nulls.items():
+            if name not in out:
+                continue
+            val = out[name]
+            # Promote integer columns to float32 so NaN is representable
+            if val.dtype not in (torch.float32, torch.float64):
+                val = val.to(torch.float32)
+            mask = val.eq(tnull)
+            out[name] = torch.where(
+                mask,
+                torch.tensor(float("nan"), dtype=val.dtype, device=val.device),
+                val,
+            )
+        return out
+
+    def inverse(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        raise RuntimeError(
+            "TNullToNan.inverse() is not available — null replacement is lossy."
+        )
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{n!r}: {v}" for n, v in sorted(self.nulls.items()))
+        return f"TNullToNan({{{items}}})"
+
+
+# ---------------------------------------------------------------------------
 # Spectral transforms (1D — not in torch/torchvision)
 # ---------------------------------------------------------------------------
 
