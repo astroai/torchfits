@@ -9,6 +9,7 @@ Demonstrates the :mod:`torchfits.transforms` hyperspectral-specific tools:
 - **SavitzkyGolayFilter**: polynomial smoothing with invertible decomposition
 - **AsymmetricLeastSquares**: Eilers 2003 baseline correction for Raman/NIR
 - **AlphaShapeContinuum**: morphological closing for guaranteed upper envelope
+- **AsymmetricSigmaClip**: simple one-pass asymmetric outlier rejection
 
 All transforms operate on arbitrary tensor layouts and are compatible with
 :class:`~torch.utils.data.DataLoader` pipelines.
@@ -21,6 +22,7 @@ import torch
 from torchfits.transforms import (
     AlphaShapeContinuum,
     AsymmetricLeastSquares,
+    AsymmetricSigmaClip,
     BandMath,
     ContinuumRemoval,
     SavitzkyGolayFilter,
@@ -491,6 +493,47 @@ def main() -> None:
         "  Envelope std:  window=15→{:.4f}  window=40→{:.4f}  "
         "(larger window = smoother)".format(small_std, large_std)
     )
+
+    # ------------------------------------------------------------------
+    # 9. AsymmetricSigmaClip — one-pass asymmetric outlier rejection
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("9. AsymmetricSigmaClip")
+    print("=" * 60)
+
+    # Create a 2D image with known outliers
+    img = torch.randn(64, 64) * 5 + 50  # background ~50, std ~5
+    img[10, 10] = 200.0  # bright outlier (cosmic ray)
+    img[20, 20] = -30.0  # dark outlier (dead pixel)
+    print(
+        "  Original image: shape={}, range=[{:.1f}, {:.1f}]".format(
+            img.shape, img.min().item(), img.max().item()
+        )
+    )
+
+    # Symmetric clip: same threshold for both tails
+    clip_sym = AsymmetricSigmaClip(n_low=3.0, n_high=3.0, dim=(-2, -1))
+    img_sym = clip_sym(img)
+    n_clipped_sym = (img_sym != img).sum().item()
+    print("  Symmetric (n_low=3, n_high=3): {} pixels clipped".format(n_clipped_sym))
+    print(
+        "    range [{:.1f}, {:.1f}]".format(img_sym.min().item(), img_sym.max().item())
+    )
+
+    # Asymmetric: aggressive on bright outliers, permissive on dark
+    clip_asy = AsymmetricSigmaClip(n_low=6.0, n_high=2.0, dim=(-2, -1))
+    img_asy = clip_asy(img)
+    n_clipped_asy = (img_asy != img).sum().item()
+    bright_kept = (img_asy == img) & (img > 100)
+    dark_kept = (img_asy == img) & (img < 0)
+    print("  Asymmetric (n_low=6, n_high=2): {} pixels clipped".format(n_clipped_asy))
+    print(
+        "    range [{:.1f}, {:.1f}]".format(img_asy.min().item(), img_asy.max().item())
+    )
+    # With n_high=2 (strict), bright outlier should be clipped
+    assert not bright_kept.any(), "Bright outlier should be clipped by n_high=2"
+    # With n_low=6 (permissive), dark outlier may survive
+    print("    Dark pixel survived: {}".format(dark_kept.any().item()))
 
     print("\nDone — all transforms compatible with torch.utils.data.DataLoader.")
 
