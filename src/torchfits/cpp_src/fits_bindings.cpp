@@ -523,11 +523,23 @@ torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
         int is_compressed = fits_is_compressed_image(fptr, &compressed_status);
         compressed = (compressed_status == 0 && is_compressed);
 
+        const bool unsigned_short = scale_info.scaled && bitpix == SHORT_IMG &&
+                                     scale_info.bscale == 1.0 && scale_info.bzero == 32768.0;
+        const bool unsigned_long  = scale_info.scaled && bitpix == LONG_IMG  &&
+                                     scale_info.bscale == 1.0 && scale_info.bzero == 2147483648.0;
+
         torch::ScalarType dtype;
         int datatype;
         if (scale_info.scaled) {
-            dtype = torch::kFloat32;
-            datatype = TFLOAT;
+            if (bitpix == BYTE_IMG && scale_info.bscale == 1.0 && scale_info.bzero == -128.0) {
+                dtype = torch::kInt8; datatype = TSBYTE;
+            } else if (unsigned_short) {
+                dtype = torch::kUInt16; datatype = TUSHORT;
+            } else if (unsigned_long) {
+                dtype = torch::kUInt32; datatype = TUINT;
+            } else {
+                dtype = torch::kFloat32; datatype = TFLOAT;
+            }
         } else {
             switch (bitpix) {
                 case BYTE_IMG:   dtype = torch::kUInt8; datatype = TBYTE; break;
