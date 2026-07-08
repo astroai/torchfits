@@ -59,6 +59,16 @@ def _flatten_dims(x: torch.Tensor, dims: Tuple[int, ...]) -> torch.Tensor:
     return x_moved.reshape(*x_moved.shape[: len(keep)], -1)
 
 
+def _unflatten_result(
+    reduced: torch.Tensor, shape: tuple[int, ...], dims: tuple[int, ...]
+) -> torch.Tensor:
+    """Reshape a reduced tensor back to *shape* with *dims* set to 1."""
+    shape_out = list(shape)
+    for d in dims:
+        shape_out[d] = 1
+    return reduced.reshape(shape_out)
+
+
 def _reduce_keepdim(
     x: torch.Tensor,
     dim: Tuple[int, ...],
@@ -545,3 +555,380 @@ class FITSHeaderScale(FITSTransform):
 
     def __repr__(self) -> str:
         return f"FITSHeaderScale(bscale={self.bscale}, bzero={self.bzero})"
+
+
+# ---------------------------------------------------------------------------
+# Spatial transforms
+# ---------------------------------------------------------------------------
+
+
+class Gaussian2D(FITSTransform):
+    """Convolve with a 2D Gaussian kernel (PSF smoothing).
+
+    Operates on the last two spatial dimensions.  Supports elliptical
+    kernels via separate *sigma_x* and *sigma_y* and an optional rotation
+    angle *theta* (degrees, counter-clockwise).
+
+    ``inverse`` is not available — deconvolution is ill-posed.
+
+    Parameters
+    ----------
+    sigma : float
+        Gaussian sigma (pixels).  When *sigma_y* is not given, used for
+        both axes (circular PSF).
+    sigma_y : float or None
+        Y-axis sigma.  Defaults to *sigma*.
+    theta : float
+        Rotation angle in degrees (counter-clockwise).  Only meaningful
+        when the kernel is elliptical.
+    kernel_size : int or None
+        Kernel width/height in pixels.  Default ``None`` auto-computes
+        ``ceil(6 * max(sigma_x, sigma_y)) | 1`` (odd).
+    """
+
+    def __init__(
+        self,
+        sigma: float = 1.0,
+        sigma_y: float | None = None,
+        theta: float = 0.0,
+        kernel_size: int | None = None,
+    ) -> None:
+        self.sigma = float(sigma)
+        self.sigma_y = float(sigma_y) if sigma_y is not None else self.sigma
+        self.theta = float(theta)
+        self._kernel: torch.Tensor | None = None
+        if kernel_size is not None:
+            self.kernel_size = int(kernel_size)
+        else:
+            s = max(self.sigma, self.sigma_y)
+            self.kernel_size = max(3, int(math.ceil(6.0 * s)) | 1)
+        self._build_kernel()
+
+    def _build_kernel(self) -> None:
+        """Pre-compute the Gaussian kernel tensor."""
+        ksize = self.kernel_size
+        ax = torch.linspace(-(ksize - 1) / 2.0, (ksize - 1) / 2.0, ksize)
+        yy, xx = torch.meshgrid(ax, ax, indexing="ij")
+
+        theta_rad = math.radians(self.theta)
+        cos_t = math.cos(theta_rad)
+        sin_t = math.sin(theta_rad)
+        xr = xx * cos_t + yy * sin_t
+        yr = -xx * sin_t + yy * cos_t
+
+        kernel = torch.exp(-0.5 * ((xr / self.sigma) ** 2 + (yr / self.sigma_y) ** 2))
+        kernel /= kernel.sum()
+        # Store as [1, 1, H, W] for F.conv2d
+        self._kernel = kernel.reshape(1, 1, ksize, ksize)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply Gaussian convolution to the last two spatial dims."""
+        if self._kernel is None:
+            self._build_kernel()
+        kernel = self._kernel.to(device=x.device, dtype=x.dtype)
+
+        # Reshape to [N, C, H, W] for conv2d
+        shape_in = x.shape
+        x_4d = x.reshape(-1, 1, *shape_in[-2:])
+        padding = self.kernel_size // 2
+        out = torch.nn.functional.conv2d(x_4d, kernel, padding=padding, groups=1)
+        return out.reshape(shape_in)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError(
+            "Gaussian2D.inverse() is not available — deconvolution is ill-posed. "
+            "If needed, use an approximate method (e.g. Wiener filter) externally."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Gaussian2D(sigma={self.sigma}, sigma_y={self.sigma_y}, "
+            f"theta={self.theta}, kernel_size={self.kernel_size})"
+        )
+
+
+class Downsample(FITSTransform):
+    """Downsample (rebin) spatial dimensions by an integer factor.
+
+    Uses mean pooling to preserve surface brightness (flux-conserving).
+    Operates on the last two dimensions.  ``inverse`` upsamples via
+    nearest-neighbour interpolation.
+
+    Parameters
+    ----------
+    factor : int
+        Integer downsampling factor per spatial axis.
+    mode : str
+        Pooling mode: ``"mean"`` (flux-conserving, default) or ``"max"``.
+    """
+
+    def __init__(self, factor: int = 2, mode: str = "mean") -> None:
+        if factor < 1:
+            raise ValueError("factor must be >= 1")
+        if mode not in ("mean", "max"):
+            raise ValueError("mode must be 'mean' or 'max'")
+        self.factor = int(factor)
+        self.mode = mode
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.factor == 1:
+            return x
+        shape_in = x.shape
+        # Flatten leading dims to [N, C, H, W] for pooling
+        x_4d = x.reshape(-1, 1, *shape_in[-2:])
+        pool = (
+            torch.nn.functional.avg_pool2d
+            if self.mode == "mean"
+            else torch.nn.functional.max_pool2d
+        )
+        out = pool(x_4d, kernel_size=self.factor, stride=self.factor)
+        return out.reshape(*shape_in[:-2], *out.shape[-2:])
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        """Upsample back to original resolution (nearest-neighbour)."""
+        if self.factor == 1:
+            return x
+        shape_in = x.shape
+        x_4d = x.reshape(-1, 1, *shape_in[-2:])
+        out = torch.nn.functional.interpolate(
+            x_4d, scale_factor=self.factor, mode="nearest"
+        )
+        return out.reshape(*shape_in[:-2], *out.shape[-2:])
+
+    def __repr__(self) -> str:
+        return f"Downsample(factor={self.factor}, mode={self.mode!r})"
+
+
+# ---------------------------------------------------------------------------
+# Outlier rejection
+# ---------------------------------------------------------------------------
+
+
+class SigmaClip(FITSTransform):
+    """Iterative sigma-clipping outlier rejection.
+
+    Iteratively computes the mean and standard deviation over *dim*,
+    masks values outside ``[mean - n_sigma*std, mean + n_sigma*std]``,
+    and replaces them with the final mean.  Stops when no new pixels
+    are clipped or *max_iter* is reached.
+
+    ``inverse`` is not available — clipped values are irrecoverable.
+
+    Parameters
+    ----------
+    n_sigma : float
+        Number of standard deviations for the clipping threshold.
+    max_iter : int
+        Maximum number of clipping iterations.
+    dim :
+        Dimensions along which stats are computed independently.
+    fill : str
+        Replacement strategy: ``"mean"`` (default) or ``"median"``.
+    """
+
+    def __init__(
+        self,
+        n_sigma: float = 3.0,
+        max_iter: int = 5,
+        dim: Tuple[int, ...] = (-2, -1),
+        fill: str = "mean",
+    ) -> None:
+        self.n_sigma = float(n_sigma)
+        self.max_iter = int(max_iter)
+        self.dim = tuple(dim)
+        if fill not in ("mean", "median"):
+            raise ValueError("fill must be 'mean' or 'median'")
+        self.fill = fill
+        self._last_mask: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Iteratively sigma-clip outliers and fill with mean or median."""
+        ndim = x.ndim
+        dims: tuple[int, ...] = ()
+        if len(self.dim) > 0:
+            dims = _normalize_dims(ndim, self.dim)
+
+        with torch.no_grad():
+            mask = torch.ones_like(x, dtype=torch.bool)
+            for _ in range(self.max_iter):
+                # Count and sum of unmasked pixels per group
+                good_x = torch.where(mask, x, torch.zeros_like(x))
+                good_cnt = mask.float()
+
+                if len(dims) > 0:
+                    x_flat = _flatten_dims(good_x, dims)
+                    c_flat = _flatten_dims(good_cnt, dims)
+                    total_sum = x_flat.sum(dim=-1, keepdim=True)
+                    total_cnt = c_flat.sum(dim=-1, keepdim=True)
+                    mean_v = total_sum / torch.clamp_min(total_cnt, 1.0)
+                    # Broadcast mean back to original shape
+                    mean_v_full = _unflatten_result(mean_v, x.shape, dims)
+                    diff_sq = torch.where(
+                        mask, (x - mean_v_full) ** 2, torch.zeros_like(x)
+                    )
+                    d_flat = _flatten_dims(diff_sq, dims)
+                    var = d_flat.sum(dim=-1, keepdim=True) / torch.clamp_min(
+                        total_cnt, 1.0
+                    )
+                    std_v_full = _unflatten_result(
+                        torch.sqrt(torch.clamp_min(var, 0.0)), x.shape, dims
+                    )
+                else:
+                    cnt = good_cnt.sum()
+                    mean_v_full = torch.full_like(
+                        x, good_x.sum() / max(cnt.item(), 1.0)
+                    )
+                    diff_sq = torch.where(
+                        mask, (x - mean_v_full) ** 2, torch.zeros_like(x)
+                    )
+                    var = diff_sq.sum() / max(cnt.item(), 1.0)
+                    std_v_full = torch.full_like(x, math.sqrt(max(var.item(), 0.0)))
+
+                new_mask = (x >= mean_v_full - self.n_sigma * std_v_full) & (
+                    x <= mean_v_full + self.n_sigma * std_v_full
+                )
+                if torch.equal(new_mask, mask):
+                    break
+                mask = new_mask
+
+            self._last_mask = mask
+
+            # Fill clipped values with per-group mean or median
+            if self.fill == "mean":
+                good_x_final = torch.where(mask, x, torch.zeros_like(x))
+                good_c_final = mask.float()
+                if len(dims) > 0:
+                    xf = _flatten_dims(good_x_final, dims)
+                    cf = _flatten_dims(good_c_final, dims)
+                    fill_val = _unflatten_result(
+                        xf.sum(dim=-1, keepdim=True)
+                        / torch.clamp_min(cf.sum(dim=-1, keepdim=True), 1.0),
+                        x.shape,
+                        dims,
+                    )
+                else:
+                    cnt = good_c_final.sum()
+                    fill_val = good_x_final.sum() / max(cnt.item(), 1.0)
+            else:
+                # Median fill: use the existing _median helper
+                fill_val = _median(
+                    torch.where(
+                        mask,
+                        x,
+                        torch.tensor(float("inf"), device=x.device, dtype=x.dtype),
+                    ),
+                    dims if dims else (-1,),
+                )
+                # Replace inf (all-masked groups) with 0
+                fill_val = torch.where(
+                    torch.isinf(fill_val), torch.zeros_like(fill_val), fill_val
+                )
+
+            return torch.where(mask, x, fill_val)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError(
+            "SigmaClip.inverse() is not available — clipped values are irrecoverable."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"SigmaClip(n_sigma={self.n_sigma}, max_iter={self.max_iter}, "
+            f"dim={self.dim}, fill={self.fill!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Header-aware normalization
+# ---------------------------------------------------------------------------
+
+
+class FITSHeaderNormalize(FITSTransform):
+    """Auto-detect and apply normalization from FITS header keywords.
+
+    Inspects BITPIX, BSCALE, and BZERO to determine the best
+    normalization strategy:
+
+    - **Integer types** (BITPIX 8/16/32): scales to [0, 1] using the
+      integer range, optionally compensating for BZERO offset.
+    - **Float types** (BITPIX -32/-64): applies no scaling by default
+      (floats are already in physical units).  Set *scale_floats=True*
+      to normalize to [0, 1] via min-max.
+
+    ``inverse`` reverses the normalization using the cached parameters.
+
+    Parameters
+    ----------
+    header : dict
+        FITS header dict-like with BITPIX, BSCALE, BZERO keywords.
+    scale_floats : bool
+        If True, min-max normalize floating-point data.  Default False.
+    """
+
+    # BITPIX → (dtype, signed, bits)
+    _BITPIX_MAP: dict[int, tuple[torch.dtype, bool, int]] = {
+        8: (torch.uint8, False, 8),
+        16: (torch.int16, True, 16),
+        32: (torch.int32, True, 32),
+        64: (torch.int64, True, 64),
+        -32: (torch.float32, False, 32),
+        -64: (torch.float64, False, 64),
+    }
+
+    def __init__(self, header: dict, scale_floats: bool = False) -> None:
+        self.bitpix = int(header.get("BITPIX", -32))
+        self.bscale = float(header.get("BSCALE", 1.0))
+        self.bzero = float(header.get("BZERO", 0.0))
+        self.scale_floats = bool(scale_floats)
+
+        info = self._BITPIX_MAP.get(self.bitpix)
+        self._is_integer = info is not None and info[1]
+        self._is_unsigned = info is not None and not info[1] and self.bitpix > 0
+        self._bits = info[2] if info else 32
+        self._in_range: tuple[float, float] | None = None
+
+        # Pre-compute the physical value range for integer types
+        if self._is_integer:
+            raw_min = -(2 ** (self._bits - 1))
+            raw_max = (2 ** (self._bits - 1)) - 1
+            phys_min = raw_min * self.bscale + self.bzero
+            phys_max = raw_max * self.bscale + self.bzero
+            self._in_range = (phys_min, phys_max)
+        elif self._is_unsigned and self.bitpix == 8:
+            phys_min = self.bzero
+            phys_max = 255.0 * self.bscale + self.bzero
+            self._in_range = (phys_min, phys_max)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._is_integer or self._is_unsigned:
+            vmin, vmax = self._in_range  # type: ignore[misc]
+            if vmax == vmin:
+                return torch.zeros_like(x)
+            return (x - vmin) / (vmax - vmin)
+        if self.scale_floats:
+            vmin = x.min()
+            vmax = x.max()
+            self._in_range = (float(vmin.item()), float(vmax.item()))
+            if vmax == vmin:
+                return torch.zeros_like(x)
+            return (x - vmin) / (vmax - vmin)
+        # Float types, no scaling requested — identity
+        return x
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._is_integer or self._is_unsigned or self.scale_floats:
+            if self._in_range is None:
+                raise RuntimeError(
+                    "FITSHeaderNormalize.inverse() requires a prior forward() pass "
+                    "when scale_floats=True."
+                )
+            vmin, vmax = self._in_range
+            return x * (vmax - vmin) + vmin
+        return x
+
+    def __repr__(self) -> str:
+        return (
+            f"FITSHeaderNormalize(bitpix={self.bitpix}, "
+            f"bscale={self.bscale}, bzero={self.bzero}, "
+            f"scale_floats={self.scale_floats})"
+        )

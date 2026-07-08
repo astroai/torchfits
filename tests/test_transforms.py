@@ -7,12 +7,16 @@ from torchfits.transforms import (
     ArcsinhStretch,
     BackgroundSubtract,
     Compose,
+    Downsample,
+    FITSHeaderNormalize,
     FITSHeaderScale,
     FITSTransform,
+    Gaussian2D,
     LogStretch,
     MinMaxNormalize,
     PercentileClipNormalize,
     RobustNormalize,
+    SigmaClip,
     SqrtStretch,
     ZScaleNormalize,
     _amin,
@@ -735,3 +739,244 @@ class TestEdgeCases:
             r = repr(t)
             assert len(r) > 0
             assert cls.__name__ in r
+
+
+# ---------------------------------------------------------------------------
+# Gaussian2D
+# ---------------------------------------------------------------------------
+
+
+class TestGaussian2D:
+    def test_smoothes_image(self):
+        x = torch.zeros(1, 32, 32)
+        x[0, 16, 16] = 1.0  # single bright pixel
+        t = Gaussian2D(sigma=2.0)
+        out = t.forward(x)
+        # The peak should be spread out
+        assert out[0, 16, 16] < 1.0
+        assert out.sum() > 0.99  # nearly flux-conserving
+
+    def test_circular_vs_elliptical(self):
+        x = torch.zeros(1, 32, 32)
+        x[0, 16, 16] = 1.0
+        circ = Gaussian2D(sigma=2.0)
+        ellip = Gaussian2D(sigma=2.0, sigma_y=4.0)
+        out_c = circ.forward(x)
+        out_e = ellip.forward(x)
+        # Elliptical kernel spreads more in y, less in x
+        assert out_c[0, 16, 16] != out_e[0, 16, 16]
+
+    def test_rotation(self):
+        x = torch.zeros(1, 32, 32)
+        x[0, 16, 16] = 1.0
+        t = Gaussian2D(sigma=2.0, sigma_y=4.0, theta=45.0)
+        out = t.forward(x)
+        assert torch.isfinite(out).all()
+
+    def test_inverse_raises(self):
+        t = Gaussian2D(sigma=1.0)
+        with pytest.raises(RuntimeError, match="deconvolution"):
+            t.inverse(torch.zeros(3, 3))
+
+    def test_batched_4d(self):
+        x = _make_tensor((4, 3, 32, 32), kind="normal")
+        t = Gaussian2D(sigma=1.5)
+        out = t.forward(x)
+        assert out.shape == (4, 3, 32, 32)
+        assert torch.isfinite(out).all()
+
+    def test_flux_conservation(self):
+        # Kernel is normalized to sum = 1.0
+        t = Gaussian2D(sigma=1.5)
+        assert abs(t._kernel.sum().item() - 1.0) < 1e-7
+        # The interior of a uniform image is unchanged (away from edges)
+        x = torch.ones(1, 64, 64)
+        out = t.forward(x)
+        # Interior pixels (10 pixels from each edge) should be exactly 1.0
+        interior = out[0, 10:-10, 10:-10]
+        assert (interior - 1.0).abs().max().item() < 1e-6
+
+    def test_repr(self):
+        t = Gaussian2D(sigma=1.5, sigma_y=2.0, theta=30.0)
+        r = repr(t)
+        assert "Gaussian2D" in r
+        assert "1.5" in r
+        assert "2.0" in r
+
+
+# ---------------------------------------------------------------------------
+# Downsample
+# ---------------------------------------------------------------------------
+
+
+class TestDownsample:
+    def test_mean_downsample(self):
+        x = torch.ones(1, 64, 64) * 10.0
+        t = Downsample(factor=2, mode="mean")
+        out = t.forward(x)
+        assert out.shape == (1, 32, 32)
+        # Mean pooling preserves the mean value
+        assert abs(out.mean().item() - 10.0) < 1e-5
+
+    def test_max_downsample(self):
+        x = torch.zeros(1, 64, 64)
+        x[0, 31, 31] = 100.0
+        t = Downsample(factor=2, mode="max")
+        out = t.forward(x)
+        assert out.max().item() == 100.0
+
+    def test_inverse_upsamples(self):
+        x = torch.rand(1, 32, 32)
+        t = Downsample(factor=2)
+        down = t.forward(x)
+        assert down.shape == (1, 16, 16)
+        up = t.inverse(down)
+        assert up.shape == (1, 32, 32)
+
+    def test_factor_one_identity(self):
+        x = torch.rand(3, 32, 32)
+        t = Downsample(factor=1)
+        out = t.forward(x)
+        assert torch.equal(out, x)
+        inv = t.inverse(x)
+        assert torch.equal(inv, x)
+
+    def test_factor_zero_raises(self):
+        with pytest.raises(ValueError):
+            Downsample(factor=0)
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError):
+            Downsample(mode="sum")
+
+    def test_batched(self):
+        x = _make_tensor((4, 3, 64, 64), kind="uniform")
+        t = Downsample(factor=4)
+        out = t.forward(x)
+        assert out.shape == (4, 3, 16, 16)
+
+    def test_repr(self):
+        t = Downsample(factor=4, mode="max")
+        r = repr(t)
+        assert "Downsample" in r
+        assert "4" in r
+        assert "max" in r
+
+
+# ---------------------------------------------------------------------------
+# SigmaClip
+# ---------------------------------------------------------------------------
+
+
+class TestSigmaClip:
+    def test_removes_outliers(self):
+        x = torch.ones(10, 10) * 5.0
+        x[0, 0] = 100.0  # extreme outlier
+        t = SigmaClip(n_sigma=3.0, max_iter=5)
+        out = t.forward(x)
+        # The outlier should be replaced with the mean (~5)
+        assert out[0, 0].item() < 10.0
+
+    def test_no_clipping_on_clean_data(self):
+        x = _make_tensor((4, 32, 32), kind="normal")
+        t = SigmaClip(n_sigma=10.0, max_iter=3)
+        out = t.forward(x)
+        # With n_sigma=10, almost nothing should be clipped — values very close
+        assert (out - x).abs().max().item() < 0.5
+
+    def test_inverse_raises(self):
+        t = SigmaClip()
+        with pytest.raises(RuntimeError, match="irrecoverable"):
+            t.inverse(torch.zeros(3))
+
+    def test_constant_image(self):
+        x = torch.ones(4, 32, 32) * 42.0
+        t = SigmaClip()
+        out = t.forward(x)
+        assert torch.allclose(out, x, atol=1e-5)
+
+    def test_per_channel(self):
+        x = torch.randn(4, 32, 32) * 5 + 10
+        t = SigmaClip(dim=(-2, -1))
+        out = t.forward(x)
+        assert out.shape == (4, 32, 32)
+        assert torch.isfinite(out).all()
+
+    def test_median_fill(self):
+        x = torch.ones(10, 10) * 5.0
+        x[0, 0] = 100.0
+        t = SigmaClip(n_sigma=3.0, fill="median")
+        out = t.forward(x)
+        assert out[0, 0].item() < 10.0
+
+    def test_repr(self):
+        t = SigmaClip(n_sigma=5.0, max_iter=3, fill="median")
+        r = repr(t)
+        assert "SigmaClip" in r
+        assert "5.0" in r
+
+
+# ---------------------------------------------------------------------------
+# FITSHeaderNormalize
+# ---------------------------------------------------------------------------
+
+
+class TestFITSHeaderNormalize:
+    def test_int16_scales_to_01(self):
+        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 0.0}
+        x = torch.tensor([-32768, 0, 32767], dtype=torch.float32)
+        t = FITSHeaderNormalize(header)
+        out = t.forward(x)
+        assert out.min() >= 0
+        assert out.max() <= 1.0
+        assert out[1].item() == pytest.approx(0.5, abs=0.01)
+
+    def test_int16_with_bzero(self):
+        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
+        x = torch.tensor([0.0, 32768.0, 65535.0])
+        t = FITSHeaderNormalize(header)
+        out = t.forward(x)
+        assert out.min() >= 0
+        assert out.max() <= 1.0
+        # Physical range: [-32768, 32767] * 1.0 + 32768 = [0, 65535]
+        assert out[1].item() == pytest.approx(0.5, abs=0.01)
+
+    def test_roundtrip_int16(self):
+        header = {"BITPIX": 16, "BSCALE": 2.0, "BZERO": 100.0}
+        x = torch.tensor([0.0, 500.0, 65534.0])
+        t = FITSHeaderNormalize(header)
+        out = t.forward(x)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-4)
+
+    def test_float32_no_scale(self):
+        header = {"BITPIX": -32}
+        x = torch.randn(4, 32, 32)
+        t = FITSHeaderNormalize(header, scale_floats=False)
+        out = t.forward(x)
+        assert torch.equal(out, x)
+
+    def test_float32_with_scale(self):
+        header = {"BITPIX": -32}
+        x = _make_tensor((4, 32, 32), kind="uniform")
+        t = FITSHeaderNormalize(header, scale_floats=True)
+        out = t.forward(x)
+        assert out.min() >= -1e-6
+        assert out.max() <= 1.0 + 1e-6
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-5)
+
+    def test_uint8(self):
+        header = {"BITPIX": 8, "BSCALE": 1.0, "BZERO": 0.0}
+        x = torch.tensor([0.0, 128.0, 255.0])
+        t = FITSHeaderNormalize(header)
+        out = t.forward(x)
+        assert out.min() >= 0
+        assert out.max() <= 1.0
+        assert out[1].item() == pytest.approx(0.5, abs=0.01)
+
+    def test_repr(self):
+        t = FITSHeaderNormalize({"BITPIX": -32}, scale_floats=True)
+        r = repr(t)
+        assert "FITSHeaderNormalize" in r
+        assert "bitpix=-32" in r
