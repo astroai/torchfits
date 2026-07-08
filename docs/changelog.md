@@ -3,12 +3,29 @@
 All notable changes to torchfits are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).## [Unreleased]
 
 ### Added
 
+- **Multi-worker DataLoader coverage:** `tests/test_data.py` now exercises
+  ``make_loader(..., num_workers=2)`` for both ``FitsImageDataset`` and
+  ``FitsImageIterableDataset``.  Tests fork a subprocess to keep CFITSIO's
+  threadpool away from pytest's own threadpool, and verify that every file is
+  seen exactly once regardless of ``num_workers`` and shuffle seed.
+- **End-to-end FITS round-trip coverage** in `tests/test_transforms_e2e.py`:
+  - `TestEndToEndImageRoundTrip` — write / read / scale / inverse for INT16
+    with custom BSCALE/BZERO, BZERO=32768 unsigned convention, and INT32 with
+    rescaling.
+  - `TestEndToEndTableRoundTrip` — FITS binary tables with TSCAL/TZERO use
+    real on-disk encoding (via astropy), then ``FITSScaleColumns.from_header`` +
+    ``TNullToNan.from_header`` round-trip is verified to within the storage
+    precision.
+  - `TestEndToEndFITSHeaderNormalize` — full int16 BZERO=32768 round-trip
+    through the header-driven normaliser.
+- **Release-gate now includes** `tests/test_data.py`, `tests/test_transforms.py`,
+  and `tests/test_transforms_e2e.py`.  This closes the *torchfits.data
+  documented with multi-worker test coverage* and *torchfits.transforms
+  round-trip tests for scaled images and tables* gate items.
 - **`AsymmetricLeastSquares(lam, p, max_iter, dim)`** — Eilers 2003 penalised
   baseline correction with asymmetric weights. Iteratively solves the Whittaker
   smoother `(W + λD^T D)z = Wy` with differential weighting (p above baseline,

@@ -10,6 +10,10 @@ training transforms. Those domains are out of scope for torchfits.
 
 | Goal | Entry point |
 |---|---|
+| Image map-style DataLoader | `torchfits.data.FitsImageDataset(paths)` |
+| Image streaming DataLoader | `torchfits.data.FitsImageIterableDataset(paths)` |
+| Table map-style DataLoader | `torchfits.data.FitsTableDataset(path)` |
+| Sensible DataLoader factory | `torchfits.data.make_loader(ds)` |
 | Read image or table | `torchfits.read(path, hdu=..., return_header=True)` |
 | Read N-D array/tensor | `torchfits.read_tensor(path, hdu=0, mmap=True)` |
 | Read table only | `torchfits.read_table(path, hdu=1, columns=[...])` |
@@ -306,6 +310,56 @@ residuals for perfect recovery.  Based on post-2021 astro-ML research
 |---|---|
 | `Compose(transforms)` | Chain transforms; `inverse()` unwinds in reverse order. |
 | `FITSTransform` | Base class: override `forward` and `inverse`. `__call__` delegates to `forward`. |
+
+## Data Module
+
+The `torchfits.data` namespace provides map-style and iterable-style
+`torch.utils.data.Dataset` implementations, a default collate function,
+and a loader factory.  All classes are worker-safe: every worker holds
+its own copy of stateful transform objects, and `IterableDataset`
+shards by `worker_id` deterministically.
+
+```python
+from torchfits.data import FitsImageIterableDataset, make_loader
+
+ds = FitsImageIterableDataset("observations/*.fits", shuffle=True, seed=42)
+loader = make_loader(ds, batch_size=32, num_workers=4, pin_memory=True)
+
+for batch in loader:        # torch.Tensor [B, 1, H, W] (with add_channel_dim=True)
+    ...
+```
+
+### Datasets
+
+| Class | Mode | Use case |
+|---|---|---|
+| `FitsImageDataset(paths, hdu=0, label_key=None, transform=None, device="cpu", mmap=True, add_channel_dim=True)` | map | Small-to-medium labelled image catalogs.  Reads once per `__getitem__`. |
+| `FitsImageIterableDataset(paths, hdu=0, transform=None, shuffle=False, seed=0)` | iterable | Multi-worker sharded image loading. Deterministically partitions by `worker_id`. |
+| `FitsTableDataset(path, hdu=1, columns=None, where=None, transform=None)` | map | Row-indexable FITS catalog; supports `columns=` projection and `where=` pushdown. |
+| `FitsTableIterableDataset` *(planned for 0.7.0)* | iterable | Streams via `torchfits.table.scan` for 100M+ row catalogs. |
+| `FITSDataset` / `IterableFITSDataset` (`torchfits.datasets`) | both | General-purpose; defers to `torchfits.read(...)` per item. |
+
+### Helpers
+
+| Symbol | Description |
+|---|---|
+| `fits_collate_fn(batch)` | Defaults to stacking ``(image, label)`` tuples and ``dict[str, Tensor]`` rows; raises `ValueError` on ragged/VLA columns unless an explicit `vla_policy=` is engaged. |
+| `make_loader(ds, batch_size=32, num_workers=0, *, optimize_cache=True, ...)` | Wraps `DataLoader`.  When `optimize_cache=True` and the dataset exposes a `files` attribute, calls `torchfits.cache.optimize_for_dataset(...)` once before iteration begins.  Map-style datasets default to `shuffle=True`; iterable datasets default to `shuffle=False`. |
+
+### Worker sharding guarantee
+
+`FitsImageIterableDataset.__iter__` distributes indices by `worker_id`:
+
+```text
+per_worker = total // num_workers
+remainder  = total %  num_workers
+start      = worker_id * per_worker + min(worker_id, remainder)
+size       = per_worker + (1 if worker_id < remainder else 0)
+```
+
+Verified in `tests/test_data.py::TestMultiWorkerDataLoader` via a
+subprocess that exercises the real DataLoader worker machinery
+(`num_workers=2` across 8 files with and without shuffle).
 
 ## Limitations
 

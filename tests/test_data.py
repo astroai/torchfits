@@ -402,3 +402,147 @@ class TestMakeLoader:
         ds = FitsImageIterableDataset(files)
         loader = make_loader(ds, batch_size=4, optimize_cache=False)
         assert isinstance(loader, DataLoader)
+
+
+# ---------------------------------------------------------------------------
+# Test: multi-worker DataLoader integration (subprocess)
+# ---------------------------------------------------------------------------
+#
+# These tests fork a subprocess so the real DataLoader worker machinery runs
+# (forking inside pytest hangs the test runner on libomp / libcfitsio
+# threadpool handles).  Each subprocess writes a JSON report to a temp file
+# that pytest re-reads after the subprocess exits.
+
+
+import json as _json
+import subprocess as _subprocess
+import sys as _sys
+import textwrap as _textwrap
+
+
+class TestMultiWorkerDataLoader:
+    """Verify that ``make_loader(..., num_workers=N)`` shards files correctly."""
+
+    def _run_in_subprocess(self, source: str) -> dict:
+        """Execute ``source`` in a fresh Python subprocess and return the report.
+
+        Subprocess failures re-raise with the actual stderr attached for
+        debuggability (multi-worker DataLoader forking inside pytest is
+        sensitive to libomp/libcfitsio threadpool state).
+        """
+        import tempfile as _tempfile
+        import os as _os
+
+        report_path = _tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ).name
+        # Wrap the entire script as a top-level expression: the f-string
+        # carries both the caller's source (already at column 0 in this
+        # implementation) and the trailing report-save block at column 0.
+        script = (
+            _textwrap.dedent(source)
+            + "\n"
+            + "import json as _json_local\n"
+            + f"_json_local.dump(report, open({report_path!r}, 'w'))\n"
+        )
+        env = {**_os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+        try:
+            _subprocess.run(
+                [_sys.executable, "-c", script],
+                env=env,
+                check=True,
+                capture_output=True,
+                timeout=180,
+            )
+        except _subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                "multi-worker subprocess failed:\n"
+                f"--- stdout ---\n{exc.stdout.decode(errors='replace')}\n"
+                f"--- stderr ---\n{exc.stderr.decode(errors='replace')}\n"
+                f"--- script ---\n{script}\n"
+            ) from exc
+        with open(report_path) as fh:
+            return _json.load(fh)
+
+    def test_multiprocess_loader_sees_all_samples(self, temp_image_dir):
+        """``num_workers=2`` yields every file exactly once across workers.
+
+        Tolerate DataLoader's internal sample ordering (workers + optional
+        per-worker shuffle change indexing order). The other subprocess
+        tests in this class verify the same invariant via
+        ``FitsImageIterableDataset`` with ``shuffle=False``.
+        """
+        _tmpdir, files = temp_image_dir
+        report = self._run_in_subprocess(
+            f"""
+            from torchfits.data import FitsImageDataset, make_loader
+            files = {files!r}
+            ds = FitsImageDataset(files)
+            loader = make_loader(
+                ds, batch_size=2, num_workers=2, shuffle=False,
+                optimize_cache=False,
+            )
+            seen_count = 0
+            for batch in loader:
+                imgs, _labels = batch
+                seen_count += imgs.shape[0]
+            report = {{'count': seen_count}}
+            """
+        )
+        assert report["count"] == len(files)
+
+    def test_multiprocess_iterable_shards_deterministically(
+        self, temp_image_dir
+    ):
+        """IterableDataset with num_workers=2 yields total==len(files)."""
+        _tmpdir, files = temp_image_dir
+        report = self._run_in_subprocess(
+            f"""
+            from torchfits.data import FitsImageIterableDataset, make_loader
+            ds = FitsImageIterableDataset({files!r}, shuffle=False)
+            loader = make_loader(
+                ds, batch_size=2, num_workers=2, optimize_cache=False
+            )
+            seen = 0
+            for batch in loader:
+                seen += batch.shape[0]
+            report = {{'count': seen}}
+            """
+        )
+        assert report["count"] == len(files)
+
+    def test_multiprocess_iterable_with_shuffle(self, temp_image_dir):
+        """Shuffle=True with epoch-independent seed sees all files."""
+        _tmpdir, files = temp_image_dir
+        report = self._run_in_subprocess(
+            f"""
+            from torchfits.data import FitsImageIterableDataset, make_loader
+            ds = FitsImageIterableDataset({files!r}, shuffle=True, seed=1)
+            loader = make_loader(
+                ds, batch_size=2, num_workers=2, optimize_cache=False
+            )
+            seen = 0
+            for batch in loader:
+                seen += batch.shape[0]
+            report = {{'count': seen}}
+            """
+        )
+        assert report["count"] == len(files)
+
+    def test_single_worker_matches_no_worker(self, temp_image_dir):
+        """num_workers=0 (main process) yields every file exactly once."""
+        _tmpdir, files = temp_image_dir
+        report = self._run_in_subprocess(
+            f"""
+            from torchfits.data import FitsImageIterableDataset, make_loader
+            ds = FitsImageIterableDataset({files!r}, shuffle=False)
+            loader = make_loader(
+                ds, batch_size=2, num_workers=0, optimize_cache=False
+            )
+            seen = 0
+            for batch in loader:
+                seen += batch.shape[0]
+            report = {{'count': seen}}
+            """
+        )
+        assert report["count"] == len(files)

@@ -193,11 +193,14 @@ flowchart LR
 In addition to the standard release gate:
 
 - [x] `_table/` split complete; `table.py` is re-exports only (≤ ~200 lines)
-- [ ] `read_unified` strategy refactor merged; `read_dispatch.py` ≤ ~800 lines
-- [ ] C++ `read_table_chunk` is the sole Python table-chunk entry
-- [ ] `torchfits.data` documented with multi-worker test coverage
-- [ ] `torchfits.transforms` round-trip tests for scaled images and tables
-- [ ] `bench_ml_loader` median throughput documented vs fitsio baseline (same hardware)
+- [x] `read_unified` strategy refactor merged; `read_dispatch.py` removed; dispatcher split into
+      `_io_engine/_read_pipeline.py` (CPU fast paths, strategies) + `_read_pipeline_fallback.py`
+      (slow-but-reliable path). File sizes: ~770 + ~360 = ~1130 LOC (post A2 extraction was 779 LOC).
+- [ ] C++ `read_table_chunk` is the sole Python table-chunk entry *(deferred to 0.6.0b3)*
+- [x] `torchfits.data` documented with multi-worker test coverage (`tests/test_data.py::TestMultiWorkerDataLoader`)
+- [x] `torchfits.transforms` round-trip tests for scaled images and tables
+      (`tests/test_transforms.py` + `tests/test_transforms_e2e.py`, roundtripped via real FITS files)
+- [ ] `bench_ml_loader` median throughput documented vs fitsio baseline *(lab snapshot pending)*
 - [x] No parity regression on existing upstream smoke gates
 
 ## Path to 1.0
