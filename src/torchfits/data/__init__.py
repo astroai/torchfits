@@ -266,19 +266,27 @@ class FitsTableDataset(Dataset):
         # Small-to-medium catalogs only; see roadmap for streaming variant.
         import torchfits.table
 
-        result = torchfits.table.read(
+        pa_table = torchfits.table.read(
             self.path,
             hdu=self.hdu,
             columns=self.columns,
             where=self.where,
         )
-        # Move tensors to device after WHERE filtering
-        if self.device != "cpu":
-            result = {
-                k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                for k, v in result.items()
-            }
+        # torchfits.table.read returns a pyarrow.Table; convert to dict
+        # Numeric/boolean columns → torch.Tensor; string/VLA → list
+        import pyarrow.types as pt
 
+        result: dict[str, Any] = {}
+        for col_name in pa_table.column_names:
+            col = pa_table.column(col_name)
+            t = col.type
+            if pt.is_integer(t) or pt.is_floating(t) or pt.is_boolean(t):
+                tensor = torch.from_numpy(col.to_numpy())
+                if self.device != "cpu":
+                    tensor = tensor.to(self.device)
+                result[col_name] = tensor
+            else:
+                result[col_name] = col.to_pylist()
         self._data = result
         # Determine row count from the first tensor or list column
         self._n_rows = 0
@@ -410,7 +418,12 @@ def make_loader(
     collate_fn = loader_kwargs.pop("collate_fn", fits_collate_fn)
 
     if shuffle is None:
-        shuffle = isinstance(dataset, Dataset)
+        # Map-style datasets shuffle by default; IterableDataset must not
+        shuffle = not isinstance(dataset, IterableDataset)
+
+    # prefetch_factor is only valid with num_workers > 0
+    if num_workers == 0:
+        prefetch_factor = None  # type: ignore[assignment]
 
     if optimize_cache:
         file_list = getattr(dataset, "files", None)

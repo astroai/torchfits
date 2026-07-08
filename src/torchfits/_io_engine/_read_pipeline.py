@@ -16,11 +16,8 @@ from ..hdu import Header
 from .options import ReadOptions
 from .caches import (
     cache_stats,
-    file_cache,
     get_cached_handle,
     get_cached_hdu_type,
-    path_signature,
-    set_cached_hdu_type,
 )
 
 _CPP_ATTR_CACHE: dict[
@@ -139,15 +136,60 @@ def _read_unsigned_image_if_needed(
 ) -> torch.Tensor | None:
     """Read image data with unsigned integer convention handling.
 
-    When a FITS image uses the unsigned integer convention
-    (e.g. BITPIX=16, BSCALE=1.0, BZERO=32768.0), the underlying
-    CFITSIO read returns float32.
-
     Always defer to the C++ path, which handles unsigned conventions
-    natively for both mmap and non-mmap reads (direct mmap+bswap or
-    TUSHORT/TUINT datatype through CFITSIO).
+    natively for both mmap and non-mmap reads.
     """
     return None
+
+
+# ---------------------------------------------------------------------------
+# Option parsing and validation (extracted from read_unified — A2 refactor)
+# ---------------------------------------------------------------------------
+
+
+def _parse_read_options(
+    options: ReadOptions | None, kwargs: dict[str, Any]
+) -> ReadOptions:
+    """Merge an explicit ReadOptions with kwargs into a single options object."""
+    if options is not None:
+        colliding = (set(kwargs) & _READ_OPTION_FIELD_NAMES) - {"mode"}
+        if colliding:
+            raise TypeError(
+                "Pass either options= or individual read kwargs, not both; "
+                f"collision on: {sorted(colliding)}"
+            )
+        opts = copy.copy(options)
+    else:
+        opts = ReadOptions()
+    for field_name in _READ_OPTION_FIELD_NAMES:
+        if field_name in kwargs:
+            setattr(opts, field_name, kwargs[field_name])
+    return opts
+
+
+def _validate_single_path_params(
+    path: str, hdu: Any, device: str, mmap: bool | str, mode: str
+) -> tuple[bool, bool]:
+    """Validate path/hdu/device/mmap/mode; return (force_image, force_table)."""
+    if not isinstance(path, str):
+        raise ValueError("Path must be a string or list of strings")
+    if isinstance(hdu, int) and hdu < 0:
+        raise ValueError("HDU index must be a non-negative integer")
+    if device not in ["cpu", "cuda", "mps"] and not device.startswith("cuda:"):
+        raise ValueError("device must be 'cpu', 'cuda', 'mps' or 'cuda:N'")
+    if isinstance(mmap, str) and mmap.strip().lower() != "auto":
+        raise ValueError("mmap must be bool or 'auto'")
+    if not isinstance(mmap, (bool, str)):
+        raise ValueError("mmap must be bool or 'auto'")
+    mode = str(mode).strip().lower()
+    if mode not in {"auto", "image", "table"}:
+        raise ValueError("mode must be 'auto', 'image', or 'table'")
+    return mode == "image", mode == "table"
+
+
+# ---------------------------------------------------------------------------
+# read_unified — the main unified read dispatcher
+# ---------------------------------------------------------------------------
 
 
 def read_unified(
@@ -171,21 +213,8 @@ def read_unified(
     logger: Any,
 ) -> Any:
     """Unified root FITS read dispatcher implementation."""
-    if options is not None:
-        # `mode` is owned by io.read's explicit `mode=` param, not by user kwargs,
-        # so it is injected into kwargs unconditionally and is not a collision.
-        colliding = (set(kwargs) & _READ_OPTION_FIELD_NAMES) - {"mode"}
-        if colliding:
-            raise TypeError(
-                "Pass either options= or individual read kwargs, not both; "
-                f"collision on: {sorted(colliding)}"
-            )
-        opts = copy.copy(options)
-    else:
-        opts = ReadOptions()
-    for field_name in _READ_OPTION_FIELD_NAMES:
-        if field_name in kwargs:
-            setattr(opts, field_name, kwargs[field_name])
+    # --- parse options ---
+    opts = _parse_read_options(options, kwargs)
 
     fp16 = opts.fp16
     bf16 = opts.bf16
@@ -200,27 +229,7 @@ def read_unified(
     fast_header = opts.fast_header
     mode = opts.mode
 
-    def recursive_read(*args: Any, **inner_kwargs: Any) -> Any:
-        return read_unified(
-            cpp_module=cpp_module,
-            path=args[0] if args else inner_kwargs.pop("path"),
-            hdu=inner_kwargs.pop("hdu", None),
-            device=inner_kwargs.pop("device", "cpu"),
-            mmap=inner_kwargs.pop("mmap", "auto"),
-            options=None,
-            return_header=inner_kwargs.pop("return_header", False),
-            kwargs=inner_kwargs,
-            autodetect_hdu=autodetect_hdu,
-            batch_to_device=batch_to_device,
-            resolve_image_mmap=resolve_image_mmap,
-            read_check_cache=read_check_cache,
-            read_header=read_header,
-            debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
-            read_exc_types=read_exc_types,
-            logger=logger,
-        )
-
+    # --- validate ---
     if not path:
         raise ValueError("Path must be a non-empty string")
 
@@ -237,7 +246,7 @@ def read_unified(
     if isinstance(path, (list, tuple)):
         if any(not isinstance(item_path, str) or not item_path for item_path in path):
             raise ValueError("Path must be a string or list of strings")
-        return read_batch_paths(
+        return _read_batch_paths(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
@@ -256,27 +265,23 @@ def read_unified(
             mode=mode,
             autodetect_hdu=autodetect_hdu,
             batch_to_device=batch_to_device,
-            read_func=recursive_read,
+            resolve_image_mmap=resolve_image_mmap,
+            read_check_cache=read_check_cache,
+            read_header=read_header,
+            debug_scale=debug_scale,
+            cold_nocache=cold_nocache,
+            read_exc_types=read_exc_types,
+            logger=logger,
         )
 
-    if not isinstance(path, str):
-        raise ValueError("Path must be a string or list of strings")
-    if isinstance(hdu, int) and hdu < 0:
-        raise ValueError("HDU index must be a non-negative integer")
-    if device not in ["cpu", "cuda", "mps"] and not device.startswith("cuda:"):
-        raise ValueError("device must be 'cpu', 'cuda', 'mps' or 'cuda:N'")
-    if isinstance(mmap, str) and mmap.strip().lower() != "auto":
-        raise ValueError("mmap must be bool or 'auto'")
-    if not isinstance(mmap, (bool, str)):
-        raise ValueError("mmap must be bool or 'auto'")
-    mode = str(mode).strip().lower()
-    if mode not in {"auto", "image", "table"}:
-        raise ValueError("mode must be 'auto', 'image', or 'table'")
-    force_image = mode == "image"
-    force_table = mode == "table"
+    # Fixed: pass hdu then device (matches function signature order)
+    force_image, force_table = _validate_single_path_params(
+        path, hdu, device, mmap, mode
+    )
     if force_image and (columns is not None or start_row != 1 or num_rows != -1):
         raise ValueError("mode='image' does not support table row/column options")
 
+    # --- resolve HDU ---
     if hdu is None or (isinstance(hdu, str) and hdu.strip().lower() == "auto"):
         hdu = autodetect_hdu(path, handle_cache_capacity)
 
@@ -286,6 +291,7 @@ def read_unified(
     )
     skip_generic_image_fast_path = is_cached_table_hdu
 
+    # --- batch HDUs ---
     if (
         isinstance(hdu, (list, tuple))
         and not return_header
@@ -293,7 +299,7 @@ def read_unified(
         and start_row == 1
         and num_rows == -1
     ):
-        return read_batch_hdus(
+        return _read_batch_hdus(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
@@ -311,10 +317,17 @@ def read_unified(
             fast_header=fast_header,
             return_header=return_header,
             batch_to_device=batch_to_device,
-            read_func=recursive_read,
+            autodetect_hdu=autodetect_hdu,
+            resolve_image_mmap=resolve_image_mmap,
+            read_check_cache=read_check_cache,
+            read_header=read_header,
+            debug_scale=debug_scale,
+            cold_nocache=cold_nocache,
+            read_exc_types=read_exc_types,
+            logger=logger,
         )
 
-    # Detect mock once per call via isinstance (module-level import, no per-call overhead).
+    # --- strategy 1: CPU image fast path ---
     cpp_is_mocked = isinstance(
         getattr(cpp_module, "read_full", None), _unittest_mock.Mock
     )
@@ -331,7 +344,7 @@ def read_unified(
         and num_rows == -1
         and not is_cached_table_hdu
     ):
-        result, fallback = read_cpu_fast_path(
+        result, fallback = _read_cpu_fast_path(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
@@ -352,6 +365,7 @@ def read_unified(
             return result
         skip_generic_image_fast_path = True
 
+    # --- strategy 2: generic image fast path ---
     if (
         not return_header
         and isinstance(hdu, int)
@@ -360,7 +374,7 @@ def read_unified(
         and num_rows == -1
         and not skip_generic_image_fast_path
     ):
-        result = read_generic_fast_path(
+        result = _read_generic_fast_path(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
@@ -380,6 +394,9 @@ def read_unified(
         )
         if result is not None:
             return result
+
+    # --- strategy 3: full fallback ---
+    from ._read_pipeline_fallback import read_fallback
 
     return read_fallback(
         cpp_module=cpp_module,
@@ -405,340 +422,12 @@ def read_unified(
     )
 
 
-def read_fallback(
-    *,
-    cpp_module: Any,
-    path: str,
-    hdu: Any,
-    device: str,
-    mmap: bool | str,
-    fp16: bool,
-    bf16: bool,
-    cache_capacity: int,
-    handle_cache_capacity: int,
-    fast_header: bool,
-    return_header: bool,
-    force_image: bool,
-    force_table: bool,
-    hdu_type_hint: Any,
-    columns: Any,
-    start_row: int,
-    num_rows: int,
-    read_check_cache: Callable[..., tuple[bool, Any, Any]],
-    resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
-    read_header: Callable[[Any, int, bool], Any],
-) -> Any:
-    """Generic fallback read path for image/table HDUs."""
-    hit, cached_res, cache_key = read_check_cache(
-        path,
-        hdu,
-        device,
-        fp16,
-        bf16,
-        columns,
-        start_row,
-        num_rows,
-        return_header,
-        cache_capacity,
-    )
-    if hit:
-        return cached_res
-
-    if isinstance(hdu, int) and hdu < 0:
-        raise ValueError("HDU index must be non-negative")
-    if start_row < 1:
-        raise ValueError("start_row must be >= 1 (FITS uses 1-based indexing)")
-    if num_rows < -1 or num_rows == 0:
-        raise ValueError("num_rows must be > 0 or -1 for all rows")
-    if device not in ["cpu", "cuda", "mps"] and not device.startswith("cuda:"):
-        raise ValueError("device must be 'cpu', 'cuda', 'mps' or 'cuda:N'")
-
-    try:
-        file_handle, cached_handle = get_cached_handle(path, handle_cache_capacity)
-        try:
-            if isinstance(hdu, str):
-                hdu_num = None
-                if hasattr(cpp_module, "resolve_hdu_name_cached"):
-                    try:
-                        hdu_num = int(cpp_module.resolve_hdu_name_cached(path, hdu))
-                    except Exception:
-                        hdu_num = None
-
-                if hdu_num is None:
-                    num_hdus = cpp_module.get_num_hdus(file_handle)
-                    for i in range(num_hdus):
-                        try:
-                            hdr = cpp_module.read_header(file_handle, i)
-                            if hdr.get("EXTNAME") == hdu:
-                                hdu_num = i
-                                break
-                        except Exception:
-                            continue
-
-                if hdu_num is None:
-                    raise ValueError(f"HDU '{hdu}' not found in file")
-            else:
-                hdu_num = hdu
-
-            header = None
-            header_data = None
-            hdu_type = hdu_type_hint if isinstance(hdu_num, int) else None
-            if isinstance(hdu_num, int) and hdu_type is None:
-                try:
-                    hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                    set_cached_hdu_type(path, hdu_num, hdu_type)
-                except Exception:
-                    hdu_type = None
-
-            is_table_hdu = force_table or (hdu_type in {"ASCII_TABLE", "BINARY_TABLE"})
-            if force_image:
-                is_table_hdu = False
-
-            if not is_table_hdu:
-                try:
-                    return read_fallback_image(
-                        cpp_module=cpp_module,
-                        file_handle=file_handle,
-                        path=path,
-                        hdu_num=hdu_num,
-                        device=device,
-                        mmap=mmap,
-                        fp16=fp16,
-                        bf16=bf16,
-                        cache_capacity=cache_capacity,
-                        fast_header=fast_header,
-                        return_header=return_header,
-                        cache_key=cache_key,
-                        use_cache=cache_capacity > 0,
-                        resolve_image_mmap=resolve_image_mmap,
-                        read_header=read_header,
-                    )
-                except (RuntimeError, TypeError):
-                    if force_image:
-                        raise
-                    if isinstance(hdu_num, int):
-                        try:
-                            hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                            set_cached_hdu_type(path, hdu_num, hdu_type)
-                        except Exception:
-                            hdu_type = None
-                    is_table_hdu = force_table or (
-                        hdu_type in {"ASCII_TABLE", "BINARY_TABLE"}
-                    )
-                    if not is_table_hdu:
-                        raise
-
-            try:
-                return read_fallback_table(
-                    cpp_module=cpp_module,
-                    file_handle=file_handle,
-                    path=path,
-                    hdu_num=hdu_num,
-                    device=device,
-                    mmap=mmap,
-                    cache_capacity=cache_capacity,
-                    fast_header=fast_header,
-                    return_header=return_header,
-                    cache_key=cache_key,
-                    use_cache=cache_capacity > 0,
-                    columns=columns,
-                    start_row=start_row,
-                    num_rows=num_rows,
-                    header_data=header_data,
-                    header=header,
-                    read_header=read_header,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"Failed to read table extension: {exc}")
-
-        finally:
-            if not cached_handle:
-                try:
-                    file_handle.close()
-                except Exception:
-                    pass
-
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read FITS file '{path}': {exc}") from exc
+# ---------------------------------------------------------------------------
+# Batch dispatch helpers
+# ---------------------------------------------------------------------------
 
 
-def read_fallback_image(
-    *,
-    cpp_module: Any,
-    file_handle: Any,
-    path: str,
-    hdu_num: Any,
-    device: str,
-    mmap: bool | str,
-    fp16: bool,
-    bf16: bool,
-    cache_capacity: int,
-    fast_header: bool,
-    return_header: bool,
-    cache_key: Any,
-    use_cache: bool,
-    resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
-    read_header: Callable[[Any, int, bool], Any],
-) -> Any:
-    """Read an image HDU in the generic fallback path."""
-    effective_mmap = resolve_image_mmap(path, hdu_num, mmap, cache_capacity)
-    header = None
-    header_data = None
-    if isinstance(hdu_num, int) and not (fp16 or bf16):
-        try:
-            header_data = read_header(file_handle, hdu_num, fast_header)
-            header = Header(header_data)
-        except Exception:
-            header = None
-    data = None
-    if isinstance(hdu_num, int) and not (fp16 or bf16):
-        data = _read_unsigned_image_if_needed(
-            cpp_module=cpp_module,
-            path=path,
-            hdu_num=hdu_num,
-            effective_mmap=bool(effective_mmap),
-            header=header,
-        )
-    if data is None:
-        data = cpp_module.read_full(file_handle, hdu_num, effective_mmap)
-
-    if fp16:
-        data = data.to(torch.float16)
-    elif bf16:
-        data = data.to(torch.bfloat16)
-
-    if device != "cpu":
-        data = data.to(device)
-
-    if return_header:
-        if header is None:
-            header_data = read_header(file_handle, hdu_num, fast_header)
-            header = Header(header_data)
-
-    if use_cache and cache_key is not None:
-        file_cache[cache_key] = (
-            data.cpu() if device != "cpu" else data,
-            header,
-            path_signature(path),
-        )
-        while len(file_cache) > cache_capacity:
-            file_cache.popitem(last=False)
-        cache_stats["cache_size"] = len(file_cache)
-
-    if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "IMAGE")
-    return (data, header) if return_header else data
-
-
-def read_fallback_table(
-    *,
-    cpp_module: Any,
-    file_handle: Any,
-    path: str,
-    hdu_num: Any,
-    device: str,
-    mmap: bool | str,
-    cache_capacity: int,
-    fast_header: bool,
-    return_header: bool,
-    cache_key: Any,
-    use_cache: bool,
-    columns: Any,
-    start_row: int,
-    num_rows: int,
-    header_data: Any,
-    header: Any,
-    read_header: Callable[[Any, int, bool], Any],
-) -> Any:
-    """Read a table HDU in the generic fallback path."""
-    if (return_header or isinstance(hdu_num, str)) and header_data is None:
-        header_data = read_header(file_handle, hdu_num, fast_header)
-        header = Header(header_data)
-
-    col_list = columns if columns else []
-    table_result = None
-    table_mmap = mmap if isinstance(mmap, bool) else True
-    if table_mmap:
-        try:
-            if start_row > 1 or num_rows != -1:
-                if hasattr(cpp_module, "read_fits_table_rows"):
-                    table_result = cpp_module.read_fits_table_rows(
-                        path, hdu_num, col_list, start_row, num_rows, True
-                    )
-                else:
-                    table_result = cpp_module.read_fits_table(
-                        path, hdu_num, col_list, True
-                    )
-            else:
-                table_result = cpp_module.read_fits_table(path, hdu_num, col_list, True)
-        except Exception:
-            table_result = None
-
-    if table_result is None:
-        if columns is None and start_row == 1 and num_rows == -1:
-            table_result = cpp_module.read_fits_table_from_handle(file_handle, hdu_num)
-        elif hasattr(cpp_module, "read_fits_table_rows_from_handle"):
-            table_result = cpp_module.read_fits_table_rows_from_handle(
-                file_handle, hdu_num, col_list, start_row, num_rows
-            )
-        elif start_row > 1 or num_rows != -1:
-            if hasattr(cpp_module, "read_fits_table_rows"):
-                table_result = cpp_module.read_fits_table_rows(
-                    path, hdu_num, col_list, start_row, num_rows, False
-                )
-            else:
-                table_result = cpp_module.read_fits_table(
-                    path, hdu_num, col_list, False
-                )
-        else:
-            table_result = cpp_module.read_fits_table(path, hdu_num, col_list, False)
-
-    table_data = table_result
-    if header is None:
-        try:
-            header = Header(read_header(file_handle, hdu_num, fast_header))
-        except Exception:
-            header = None
-    table_data = _coerce_bit_table_columns(table_data, header)
-    table_data = _coerce_unsigned_table_columns(table_data, header)
-
-    if (start_row > 1 or num_rows != -1) and not hasattr(
-        cpp_module, "read_fits_table_rows"
-    ):
-        for key, value in table_data.items():
-            if isinstance(value, torch.Tensor):
-                end_row = start_row + num_rows - 1 if num_rows != -1 else len(value)
-                table_data[key] = value[start_row - 1 : end_row]
-
-    if use_cache and cache_key is not None:
-        file_cache[cache_key] = (table_data, header, path_signature(path))
-        while len(file_cache) > cache_capacity:
-            file_cache.popitem(last=False)
-        cache_stats["cache_size"] = len(file_cache)
-
-    if device != "cpu":
-        new_data = {}
-        for key, value in table_data.items():
-            if isinstance(value, torch.Tensor):
-                new_data[key] = value.to(device)
-            elif isinstance(value, list):
-                new_list = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        new_list.append(item.to(device))
-                    else:
-                        new_list.append(item)
-                new_data[key] = new_list
-            else:
-                new_data[key] = value
-        table_data = new_data
-
-    if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "BINARY_TABLE")
-    return (table_data, header) if return_header else table_data
-
-
-def read_batch_paths(
+def _read_batch_paths(
     *,
     cpp_module: Any,
     path: list[str] | tuple[str, ...],
@@ -758,7 +447,13 @@ def read_batch_paths(
     mode: str,
     autodetect_hdu: Callable[[str, int], int],
     batch_to_device: Callable[[list[Tensor], str], list[Tensor]],
-    read_func: Callable[..., Any],
+    resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
+    read_check_cache: Callable[..., tuple[bool, Any, Any]],
+    read_header: Callable[[Any, int, bool], Any],
+    debug_scale: bool,
+    cold_nocache: bool,
+    read_exc_types: tuple[type[BaseException], ...],
+    logger: Any,
 ) -> list[Any]:
     """Dispatch a list of FITS paths through batch C++ or recursive reads."""
     hdu_batch = hdu
@@ -784,28 +479,41 @@ def read_batch_paths(
     data_list = []
     for item_path in path:
         data_list.append(
-            read_func(
-                item_path,
+            read_unified(
+                cpp_module=cpp_module,
+                path=item_path,
                 hdu=hdu,
-                mode=mode,
                 device=device,
                 mmap=mmap,
-                fp16=fp16,
-                bf16=bf16,
-                raw_scale=raw_scale,
-                columns=columns,
-                start_row=start_row,
-                num_rows=num_rows,
-                cache_capacity=cache_capacity,
-                handle_cache_capacity=handle_cache_capacity,
-                fast_header=fast_header,
+                options=None,
                 return_header=return_header,
+                kwargs=dict(
+                    mode=mode,
+                    fp16=fp16,
+                    bf16=bf16,
+                    raw_scale=raw_scale,
+                    columns=columns,
+                    start_row=start_row,
+                    num_rows=num_rows,
+                    cache_capacity=cache_capacity,
+                    handle_cache_capacity=handle_cache_capacity,
+                    fast_header=fast_header,
+                ),
+                autodetect_hdu=autodetect_hdu,
+                batch_to_device=batch_to_device,
+                resolve_image_mmap=resolve_image_mmap,
+                read_check_cache=read_check_cache,
+                read_header=read_header,
+                debug_scale=debug_scale,
+                cold_nocache=cold_nocache,
+                read_exc_types=read_exc_types,
+                logger=logger,
             )
         )
     return data_list
 
 
-def read_batch_hdus(
+def _read_batch_hdus(
     *,
     cpp_module: Any,
     path: str,
@@ -824,7 +532,14 @@ def read_batch_hdus(
     fast_header: bool,
     return_header: bool,
     batch_to_device: Callable[[list[Tensor], str], list[Tensor]],
-    read_func: Callable[..., Any],
+    autodetect_hdu: Callable[[str, int], int],
+    resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
+    read_check_cache: Callable[..., tuple[bool, Any, Any]],
+    read_header: Callable[[Any, int, bool], Any],
+    debug_scale: bool,
+    cold_nocache: bool,
+    read_exc_types: tuple[type[BaseException], ...],
+    logger: Any,
 ) -> Any:
     """Dispatch multiple HDUs from one FITS path."""
     if hasattr(cpp_module, "read_hdus_batch"):
@@ -853,25 +568,43 @@ def read_batch_hdus(
             data = batch_to_device(data, device)
         return data
     return [
-        read_func(
-            path,
+        read_unified(
+            cpp_module=cpp_module,
+            path=path,
             hdu=item_hdu,
             device=device,
             mmap=mmap,
-            fp16=fp16,
-            bf16=bf16,
-            raw_scale=raw_scale,
-            scale_on_device=scale_on_device,
-            columns=columns,
-            start_row=start_row,
-            num_rows=num_rows,
-            cache_capacity=cache_capacity,
-            handle_cache_capacity=handle_cache_capacity,
-            fast_header=fast_header,
+            options=None,
             return_header=return_header,
+            kwargs=dict(
+                fp16=fp16,
+                bf16=bf16,
+                raw_scale=raw_scale,
+                scale_on_device=scale_on_device,
+                columns=columns,
+                start_row=start_row,
+                num_rows=num_rows,
+                cache_capacity=cache_capacity,
+                handle_cache_capacity=handle_cache_capacity,
+                fast_header=fast_header,
+            ),
+            autodetect_hdu=autodetect_hdu,
+            batch_to_device=batch_to_device,
+            resolve_image_mmap=resolve_image_mmap,
+            read_check_cache=read_check_cache,
+            read_header=read_header,
+            debug_scale=debug_scale,
+            cold_nocache=cold_nocache,
+            read_exc_types=read_exc_types,
+            logger=logger,
         )
         for item_hdu in hdu
     ]
+
+
+# ---------------------------------------------------------------------------
+# Image fast path helpers
+# ---------------------------------------------------------------------------
 
 
 def read_scaled_cpu_fast(
@@ -891,7 +624,7 @@ def read_scaled_cpu_fast(
     return data
 
 
-def read_cpu_fast_path(
+def _read_cpu_fast_path(
     *,
     cpp_module: Any,
     path: str,
@@ -955,7 +688,7 @@ def read_cpu_fast_path(
         return None, True
 
 
-def read_generic_fast_path(
+def _read_generic_fast_path(
     *,
     cpp_module: Any,
     path: str,
