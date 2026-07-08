@@ -1353,6 +1353,12 @@ public:
                 k++; // Move to next after the run
             }
 
+            // Apply unsigned integer offset for uint16/uint32 FITS convention.
+            if (col.is_unsigned_int) {
+                out_tensor = out_tensor.to(torch::kInt64);
+                out_tensor.add_(col.unsigned_offset);
+                out_tensor = out_tensor.to(col.unsigned_target_type);
+            }
             result[col.name] = out_tensor;
         }
 
