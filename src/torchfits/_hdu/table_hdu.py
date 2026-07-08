@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -199,11 +200,15 @@ class TableHDU(TensorFrame):
 
         return set(string_column_names(header))
 
-    @property
+    # ⚡ Bolt: Cache string column derivation to avoid redundant header parsing and
+    # string extraction on repeated access (e.g., during loops or schema validations).
+    @functools.cached_property
     def string_columns(self) -> List[str]:
         return sorted(self._get_string_columns(self.header))
 
-    @property
+    # ⚡ Bolt: Cache schema building to prevent O(N) header traversals
+    # for TTYPE*/TFORM* keys on every property access.
+    @functools.cached_property
     def schema(self) -> Dict[str, Any]:
         return self._build_schema()
 
@@ -264,7 +269,9 @@ class TableHDU(TensorFrame):
             decoded = np.char.rstrip(decoded, " \x00")
         return decoded.tolist()
 
-    @property
+    # ⚡ Bolt: Cache row count extraction to prevent scanning all column tensors
+    # and re-evaluating shapes on every length check.
+    @functools.cached_property
     def num_rows(self) -> int:
         if hasattr(self, "_raw_data") and self._raw_data:
             import numpy as np
@@ -291,7 +298,9 @@ class TableHDU(TensorFrame):
     def data(self):
         return TableDataAccessor(self)
 
-    @property
+    # ⚡ Bolt: Cache column names list construction to avoid O(N) dictionary key
+    # traversals and string formatting on every access.
+    @functools.cached_property
     def columns(self) -> List[str]:
         if hasattr(self, "_raw_data"):
             return [str(k) for k in self._raw_data.keys()]
@@ -299,11 +308,14 @@ class TableHDU(TensorFrame):
             return [str(k) for k in self.feat_dict.keys()]
         return []
 
-    @property
+    # ⚡ Bolt: Cache col_names alias
+    @functools.cached_property
     def col_names(self) -> List[str]:
         return self.columns
 
-    @property
+    # ⚡ Bolt: Cache feature type extraction to prevent re-iterating over the entire
+    # feat_dict and running dtype checks on every access.
+    @functools.cached_property
     def feat_types(self) -> Dict[str, str]:
         types = {}
         if hasattr(self, "feat_dict"):
