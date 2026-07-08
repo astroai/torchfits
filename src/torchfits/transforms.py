@@ -568,7 +568,6 @@ def _fit_poly_continuum(
 
     mask = torch.ones(n, length, dtype=torch.bool, device=x.device)
     for _ in range(max_iter):
-        # Weighted least squares per spectrum
         coeffs = torch.zeros(n, order + 1, device=x.device, dtype=x.dtype)
         for i in range(n):
             mi = mask[i]
@@ -1157,6 +1156,499 @@ class BandMath(FITSTransform):
     def __repr__(self) -> str:
         name = getattr(self.func, "__name__", repr(self.func))
         return f"BandMath(func={name}, band_dim={self.band_dim})"
+
+
+# ---------------------------------------------------------------------------
+# Continuum / baseline estimators (all use additive decomposition:
+#   Original = Estimate + Residuals  →  invertible)
+# ---------------------------------------------------------------------------
+
+
+class GlobalScalarNorm(FITSTransform):
+    """Normalise by dividing by a global scalar statistic.
+
+    The simplest linear transform — used by virtually all astronomical
+    foundation models (AstroCLIP, SpecFormer, SpecHub) as the only
+    preprocessing step.  A neural network's first layer can implicitly
+    un-learn this through gradient descent.
+
+    ``inverse`` multiplies by the cached scalar.
+
+    Parameters
+    ----------
+    stat : str
+        Statistic to compute: ``"median"`` (default, robust), ``"max"``,
+        ``"mean"``, or ``"rms"``.
+    dim :
+        Dimensions over which to compute the statistic.  Default ``None``
+        (all dims — a single scalar for the whole tensor).
+    """
+
+    def __init__(
+        self, stat: str = "median", dim: Optional[Tuple[int, ...]] = None
+    ) -> None:
+        if stat not in ("median", "max", "mean", "rms"):
+            raise ValueError("stat must be 'median', 'max', 'mean', or 'rms'")
+        self.stat = stat
+        self.dim = dim
+        self._scalar: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        dim = self.dim if self.dim is not None else tuple(range(x.ndim))
+        with torch.no_grad():
+            if self.stat == "median":
+                scalar = _median(x, dim)
+            elif self.stat == "max":
+                scalar = _amax(x, dim)
+            elif self.stat == "mean":
+                scalar = x.float().mean(dim=dim, keepdim=True).to(x.dtype)
+            else:  # rms
+                scalar = torch.sqrt((x.float() ** 2).mean(dim=dim, keepdim=True)).to(
+                    x.dtype
+                )
+        self._scalar = scalar
+        return x / torch.clamp_min(scalar, 1e-30)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._scalar is None:
+            raise RuntimeError(
+                "GlobalScalarNorm.inverse() requires a prior forward() pass."
+            )
+        return x * self._scalar
+
+    def __repr__(self) -> str:
+        return f"GlobalScalarNorm(stat={self.stat!r}, dim={self.dim})"
+
+
+def _sg_coeffs(window_length: int, polyorder: int, deriv: int = 0) -> torch.Tensor:
+    """Compute Savitzky–Golay filter coefficients.
+
+    Returns a 1D tensor of length *window_length* with the convolution
+    coefficients for derivative order *deriv*.
+    """
+    if window_length % 2 == 0 or window_length < 3:
+        raise ValueError("window_length must be odd and >= 3")
+    if polyorder >= window_length:
+        raise ValueError("polyorder must be < window_length")
+
+    half = window_length // 2
+    # Build Vandermonde matrix: x values relative to window centre
+    x = torch.arange(-half, half + 1, dtype=torch.float64)
+    A = torch.stack([x**k for k in range(polyorder + 1)], dim=1)  # [W, P+1]
+    # Target: unit impulse at the window centre for derivative order *deriv*.
+    # For deriv=0 (smoothing), we want the convolution to reproduce the
+    # central value of a polynomial, which is solved by lstsq.
+    y = torch.zeros(window_length, dtype=torch.float64)
+    y[half] = 1.0
+    # Solve A @ c ≈ y to get polynomial coefficients, then evaluate at all
+    # window positions to produce the full convolution kernel of length W.
+    c = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)  # [P+1]
+    coeffs = A @ c  # [W]
+    return coeffs.float()
+
+
+class SavitzkyGolayFilter(FITSTransform):
+    """Savitzky–Golay polynomial smoothing filter.
+
+    Convolves the data along *dim* with pre-computed SG coefficients.
+    The filter is additive: ``Original = Smoothed + Residuals``,
+    so ``inverse`` recovers the original by re-adding the residuals.
+
+    This is the standard smoothing method in laboratory spectroscopy
+    (UV/VIS/NIR) and is fully information-preserving when residuals
+    are retained.
+
+    Parameters
+    ----------
+    window_length : int
+        Odd window length in samples (>= 3).
+    polyorder : int
+        Polynomial order for the local fit (< window_length).
+    dim : int
+        Dimension to filter along (default -1).
+
+    Notes
+    -----
+    The filter is applied via ``F.conv1d``, which is efficient on GPU.
+    Edge values are padded by reflecting the boundary.
+    """
+
+    def __init__(
+        self, window_length: int = 7, polyorder: int = 3, dim: int = -1
+    ) -> None:
+        self.window_length = int(window_length)
+        self.polyorder = int(polyorder)
+        self.dim = int(dim)
+        # Pre-compute SG coefficients once
+        coeffs = _sg_coeffs(window_length, polyorder)
+        # Reshape for F.conv1d: [out_channels, in_channels/groups, kernel]
+        self._coeffs_1d = coeffs.view(1, 1, -1)
+        self._residuals: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.window_length < 3:
+            return x
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+        pad = self.window_length // 2
+
+        # Move filtering dim to last position for conv1d
+        x_moved = x.movedim(dim, -1)  # [..., L]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [N, L]
+
+        # Pad and convolve
+        x_padded = torch.nn.functional.pad(
+            x_flat.unsqueeze(1), (pad, pad), mode="reflect"
+        )  # [N, 1, L+2*pad]
+        smoothed = torch.nn.functional.conv1d(
+            x_padded,
+            self._coeffs_1d.to(device=x.device, dtype=x.dtype),
+        ).squeeze(1)  # [N, L]
+
+        smoothed = smoothed.reshape(x_moved.shape).movedim(-1, dim)
+        self._residuals = x - smoothed
+        return smoothed
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._residuals is None:
+            raise RuntimeError(
+                "SavitzkyGolayFilter.inverse() requires a prior forward() pass."
+            )
+        return x + self._residuals
+
+    def __repr__(self) -> str:
+        return (
+            f"SavitzkyGolayFilter(window_length={self.window_length}, "
+            f"polyorder={self.polyorder}, dim={self.dim})"
+        )
+
+
+class RunningPercentile(FITSTransform):
+    """Running percentile continuum estimator.
+
+    Computes the *percentile*-th percentile in a sliding window along
+    *dim*, producing a smooth upper-envelope continuum.  This is the
+    standard quick-look continuum method in many spectroscopic surveys.
+
+    The transform is additive: ``Original = Continuum + Residuals``.
+    ``inverse`` re-adds the stored residuals.
+
+    Parameters
+    ----------
+    percentile : float
+        Percentile to compute in each window (0–100).  Default 90 gives
+        the upper envelope while ignoring narrow absorption lines.
+    window_size : int
+        Sliding window size in samples.  Must be odd and >= 3.
+    dim : int
+        Dimension to filter along (default -1).
+    """
+
+    def __init__(
+        self, percentile: float = 90.0, window_size: int = 21, dim: int = -1
+    ) -> None:
+        if window_size % 2 == 0 or window_size < 3:
+            raise ValueError("window_size must be odd and >= 3")
+        if not 0 <= percentile <= 100:
+            raise ValueError("percentile must be in [0, 100]")
+        self.percentile = float(percentile)
+        self.window_size = int(window_size)
+        self.dim = int(dim)
+        self._residuals: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+        pad = self.window_size // 2
+        q = self.percentile / 100.0
+
+        # Move filter dim to last position
+        x_moved = x.movedim(dim, -1)  # [..., L]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [N, L]
+
+        with torch.no_grad():
+            # Pad edges with reflection for continuity
+            x_padded = torch.nn.functional.pad(
+                x_flat, (pad, pad), mode="reflect"
+            )  # [N, L+2*pad]
+
+            # Unfold into windows: [N, L, window_size]
+            windows = x_padded.unfold(-1, self.window_size, 1)
+
+            # Compute percentile along the window dimension
+            continuum = torch.quantile(
+                windows.float(), q, dim=-1, interpolation="linear"
+            ).to(x.dtype)
+
+        continuum = continuum.reshape(x_moved.shape).movedim(-1, dim)
+        self._residuals = x - continuum
+        return continuum
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._residuals is None:
+            raise RuntimeError(
+                "RunningPercentile.inverse() requires a prior forward() pass."
+            )
+        return x + self._residuals
+
+    def __repr__(self) -> str:
+        return (
+            f"RunningPercentile(percentile={self.percentile}, "
+            f"window_size={self.window_size}, dim={self.dim})"
+        )
+
+
+class UpperEnvelopeContinuum(FITSTransform):
+    """Upper-envelope continuum estimation via local-maxima interpolation.
+
+    Finds local maxima in sliding windows, then interpolates between them
+    to produce a smooth continuum.  This approximates the alpha-shape
+    / convex-hull method used by RASSINE (Cretignier et al. 2020) but
+    is implemented entirely in PyTorch.
+
+    The transform is additive: ``Original = Continuum + Residuals``.
+    ``inverse`` re-adds the stored residuals.
+
+    Parameters
+    ----------
+    window : int
+        Half-width for local-maximum detection.  A point is a local max
+        if it is the largest in [i-window, i+window].  Larger values
+        produce a smoother (less concave) continuum.
+    smooth : float
+        Optional Gaussian sigma for smoothing the final continuum.
+        Default 0 (no smoothing).
+    dim : int
+        Dimension to operate along (default -1).
+    """
+
+    def __init__(self, window: int = 11, smooth: float = 0.0, dim: int = -1) -> None:
+        if window < 1:
+            raise ValueError("window must be >= 1")
+        self.window = int(window)
+        self.smooth = float(smooth)
+        self.dim = int(dim)
+        self._residuals: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+
+        # Move operating dim to last position
+        x_moved = x.movedim(dim, -1)  # [..., L]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [N, L]
+        n_spectra, length = x_flat.shape
+
+        with torch.no_grad():
+            # Pad for local-max search at edges
+            x_padded = torch.nn.functional.pad(
+                x_flat, (self.window, self.window), mode="reflect"
+            )  # [N, L+2*W]
+            windows = x_padded.unfold(-1, 2 * self.window + 1, 1)  # [N, L, 2W+1]
+            # A point is a local max if it equals the window maximum
+            is_local_max = x_flat == windows.max(dim=-1).values  # [N, L]
+
+            continuum = torch.zeros_like(x_flat)
+            for i in range(n_spectra):
+                max_mask = is_local_max[i]
+                if max_mask.sum() < 2:
+                    # Fallback: use overall max as flat continuum
+                    continuum[i] = x_flat[i].max()
+                    continue
+                max_idx = torch.where(max_mask)[0]
+                # Linear interpolation between local maxima
+                continuum[i] = _linear_interp_1d(
+                    x_flat[i : i + 1],
+                    max_idx.float(),
+                    torch.arange(length, device=x.device, dtype=x.dtype),
+                ).squeeze(0)
+
+            # Optional Gaussian smoothing
+            if self.smooth > 0:
+                half = int(math.ceil(3.0 * self.smooth))
+                t_kernel = torch.arange(-half, half + 1, device=x.device, dtype=x.dtype)
+                kernel = torch.exp(-0.5 * (t_kernel / self.smooth) ** 2)
+                kernel = kernel / kernel.sum()
+                kernel_1d = kernel.view(1, 1, -1)
+                cont_padded = torch.nn.functional.pad(
+                    continuum.unsqueeze(1), (half, half), mode="reflect"
+                )
+                continuum = torch.nn.functional.conv1d(
+                    cont_padded, kernel_1d.to(device=x.device, dtype=x.dtype)
+                ).squeeze(1)
+
+        continuum = continuum.reshape(x_moved.shape).movedim(-1, dim)
+        self._residuals = x - continuum
+        return continuum
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._residuals is None:
+            raise RuntimeError(
+                "UpperEnvelopeContinuum.inverse() requires a prior forward() pass."
+            )
+        return x + self._residuals
+
+    def __repr__(self) -> str:
+        return (
+            f"UpperEnvelopeContinuum(window={self.window}, "
+            f"smooth={self.smooth}, dim={self.dim})"
+        )
+
+
+def _haar_dwt_1d(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Single-level 1D Haar discrete wavelet transform.
+
+    Returns (approx, detail) where approx has half the length of x
+    and detail holds the high-frequency coefficients.
+    """
+    # Ensure even length
+    length = x.shape[-1]
+    if length % 2 != 0:
+        x = x[..., : length - 1]
+        length -= 1
+    # Average and difference
+    approx = (x[..., 0::2] + x[..., 1::2]) / 2.0
+    detail = (x[..., 0::2] - x[..., 1::2]) / 2.0
+    return approx, detail
+
+
+def _haar_idwt_1d(approx: torch.Tensor, detail: torch.Tensor) -> torch.Tensor:
+    """Inverse single-level 1D Haar DWT."""
+    length = approx.shape[-1] * 2
+    x = torch.zeros(
+        *approx.shape[:-1], length, device=approx.device, dtype=approx.dtype
+    )
+    x[..., 0::2] = approx + detail
+    x[..., 1::2] = approx - detail
+    return x
+
+
+class WaveletDecompose(FITSTransform):
+    """Multi-level Haar wavelet decomposition.
+
+    Decomposes the signal along *dim* into *levels* of approximation +
+    detail coefficients.  The output stacks ``[approx_L, detail_L, ...,
+    detail_1]`` along *dim*, preserving all information for a perfect
+    reconstruction.
+
+    This is a fully invertible frequency split — the approximation
+    coefficients capture the broadband continuum, while detail
+    coefficients capture narrow spectral features.  Neural networks
+    can learn to attend to either frequency band independently.
+
+    ``inverse`` reconstructs the original signal from the coefficients.
+
+    Parameters
+    ----------
+    levels : int
+        Number of decomposition levels (1–8).  Level 1 splits into
+        approx (half-length) + detail; each subsequent level further
+        splits the approximation.
+    dim : int
+        Dimension to decompose along (default -1).
+
+    Notes
+    -----
+    Uses the Haar wavelet (simplest, fastest, and most common in
+    astro-ML for continuum/feature separation).  The transform is
+    orthogonal (up to the ``sqrt(2)`` scaling factor), so it is
+    numerically stable and gradient-safe.
+    """
+
+    def __init__(self, levels: int = 3, dim: int = -1) -> None:
+        if levels < 1 or levels > 8:
+            raise ValueError("levels must be in [1, 8]")
+        self.levels = int(levels)
+        self.dim = int(dim)
+        self._orig_shape: tuple[int, ...] | None = None
+        self._padded: bool = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+        self._orig_shape = x.shape
+
+        # Move working dim to last position
+        x_w = x.movedim(dim, -1)
+        shape_prefix = x_w.shape[:-1]
+
+        # Pad to make length divisible by 2^levels
+        length = x_w.shape[-1]
+        target = ((length + (1 << self.levels) - 1) >> self.levels) << self.levels
+        self._padded = target > length
+        if self._padded:
+            pad_amount = target - length
+            x_w = torch.nn.functional.pad(x_w, (0, pad_amount), mode="reflect")
+            self._pad_amount = pad_amount
+
+        # Multi-level decomposition
+        coeffs: list[torch.Tensor] = []
+        current = x_w.reshape(-1, x_w.shape[-1])  # [N, L]
+        for _ in range(self.levels):
+            approx, detail = _haar_dwt_1d(current)
+            coeffs.append(detail.reshape(*shape_prefix, detail.shape[-1]))
+            current = approx  # continue decomposing the approximation
+        coeffs.append(current.reshape(*shape_prefix, current.shape[-1]))  # final approx
+
+        # Stack [approx_L, detail_L, ..., detail_1] along working dim.
+        # coeffs = [detail_1, ..., detail_L, approx_L] in order of
+        # increasing level.  Reverse to get decreasing frequency.
+        result = torch.cat(coeffs[::-1], dim=-1)
+        return result.movedim(-1, dim)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._orig_shape is None:
+            raise RuntimeError(
+                "WaveletDecompose.inverse() requires a prior forward() pass."
+            )
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+
+        x_w = x.movedim(dim, -1)
+        shape_prefix = x_w.shape[:-1]
+        length = x_w.shape[-1]
+
+        # Split into coefficient bands
+        # The layout is [approx_L, detail_L, ..., detail_1]
+        # Approx length = ceil(original / 2^L), but padded to power of 2
+        target = (
+            (self._orig_shape[dim] + (1 << self.levels) - 1) >> self.levels
+        ) << self.levels
+        n_padded = target  # length after padding
+        # Approx has n_padded / 2^levels elements
+        approx_len = n_padded >> self.levels
+
+        # Split: first approx_len elements are the final approximation,
+        # then detail_L (same length), detail_{L-1} (2x), ..., detail_1 (2^{L-1}x)
+        coeffs_flat = x_w.reshape(-1, length)  # [N, L]
+        positions = [approx_len]
+        for lev in range(self.levels - 1, -1, -1):
+            positions.append(positions[-1] + (approx_len << (self.levels - lev - 1)))
+
+        # Verify: positions[-1] should equal length
+        splits = torch.split(
+            coeffs_flat,
+            [positions[0]]
+            + [positions[i + 1] - positions[i] for i in range(len(positions) - 1)],
+            dim=-1,
+        )  # type: ignore[arg-type]
+        approx = splits[0]  # final approx
+        details = list(splits[1:])  # [detail_L, ..., detail_1] — deepest first
+
+        # Reconstruct from coarsest to finest
+        current = approx
+        for detail in details:
+            current = _haar_idwt_1d(current, detail)
+
+        # Remove padding if any
+        if self._padded:
+            current = current[..., : self._orig_shape[dim]]
+
+        current = current.reshape(*shape_prefix, current.shape[-1])
+        return current.movedim(-1, dim)
+
+    def __repr__(self) -> str:
+        return f"WaveletDecompose(levels={self.levels}, dim={self.dim})"
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,11 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "ContinuumNormalize": ("torchfits.transforms", "ContinuumNormalize"),
     "DopplerShift": ("torchfits.transforms", "DopplerShift"),
     "PhaseFold": ("torchfits.transforms", "PhaseFold"),
+    "GlobalScalarNorm": ("torchfits.transforms", "GlobalScalarNorm"),
+    "SavitzkyGolayFilter": ("torchfits.transforms", "SavitzkyGolayFilter"),
+    "RunningPercentile": ("torchfits.transforms", "RunningPercentile"),
+    "UpperEnvelopeContinuum": ("torchfits.transforms", "UpperEnvelopeContinuum"),
+    "WaveletDecompose": ("torchfits.transforms", "WaveletDecompose"),
 }
 
 __all__ = tuple(
@@ -106,6 +111,11 @@ __all__ = tuple(
         "ContinuumNormalize",
         "DopplerShift",
         "PhaseFold",
+        "GlobalScalarNorm",
+        "SavitzkyGolayFilter",
+        "RunningPercentile",
+        "UpperEnvelopeContinuum",
+        "WaveletDecompose",
         *_NAMESPACES,
     ]
 )
@@ -202,3 +212,8 @@ if TYPE_CHECKING:
     from .transforms import ContinuumNormalize as ContinuumNormalize
     from .transforms import DopplerShift as DopplerShift
     from .transforms import PhaseFold as PhaseFold
+    from .transforms import GlobalScalarNorm as GlobalScalarNorm
+    from .transforms import SavitzkyGolayFilter as SavitzkyGolayFilter
+    from .transforms import RunningPercentile as RunningPercentile
+    from .transforms import UpperEnvelopeContinuum as UpperEnvelopeContinuum
+    from .transforms import WaveletDecompose as WaveletDecompose

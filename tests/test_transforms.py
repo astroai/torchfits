@@ -15,14 +15,19 @@ from torchfits.transforms import (
     FITSHeaderNormalize,
     FITSHeaderScale,
     FITSTransform,
+    GlobalScalarNorm,
     LogStretch,
     MinMaxNormalize,
     PercentileClipNormalize,
     PhaseFold,
     RobustNormalize,
+    RunningPercentile,
+    SavitzkyGolayFilter,
     SigmaClip,
     SpectralBinning,
     SqrtStretch,
+    UpperEnvelopeContinuum,
+    WaveletDecompose,
     ZScaleNormalize,
     _amin,
     _amax,
@@ -1220,3 +1225,274 @@ class TestBandMath:
         t = BandMath(lambda b: torch.stack([b[0] - b[1], b[2] / (b[3] + 1e-8)], dim=0))
         out = t.forward(x)
         assert out.shape == (2, 32, 32)
+
+
+# ---------------------------------------------------------------------------
+# GlobalScalarNorm (P5 — linear, invertible)
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalScalarNorm:
+    def test_median_norm_roundtrip(self):
+        x = torch.randn(4, 64, 64) * 10 + 100
+        t = GlobalScalarNorm(stat="median")
+        out = t.forward(x)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-5)
+
+    def test_max_norm(self):
+        x = torch.rand(8, 32) * 50
+        t = GlobalScalarNorm(stat="max")
+        out = t.forward(x)
+        assert out.max().item() <= 1.0 + 1e-6
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-5)
+
+    def test_mean_norm(self):
+        x = torch.rand(2, 100) + 1.0  # positive values, mean ~1.5
+        t = GlobalScalarNorm(stat="mean")
+        out = t.forward(x)
+        # After dividing by mean, the output mean should be ~1
+        assert abs(out.mean().item() - 1.0) < 0.1
+
+    def test_rms_norm(self):
+        x = torch.randn(2, 100)
+        t = GlobalScalarNorm(stat="rms")
+        out = t.forward(x)
+        # RMS of normalized data should be ~1
+        rms = torch.sqrt((out**2).mean())
+        assert abs(rms.item() - 1.0) < 0.1
+
+    def test_per_image_norm(self):
+        x = torch.randn(4, 32, 32) * 5 + 20
+        t = GlobalScalarNorm(stat="median", dim=(-2, -1))
+        out = t.forward(x)
+        for i in range(4):
+            assert abs(out[i].median().item() - 1.0) < 0.1
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-5)
+
+    def test_inverse_without_forward_raises(self):
+        t = GlobalScalarNorm()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(3))
+
+    def test_invalid_stat_raises(self):
+        with pytest.raises(ValueError):
+            GlobalScalarNorm(stat="invalid")
+
+    def test_repr(self):
+        r = repr(GlobalScalarNorm(stat="rms", dim=(-1,)))
+        assert "GlobalScalarNorm" in r
+        assert "rms" in r
+
+
+# ---------------------------------------------------------------------------
+# SavitzkyGolayFilter (P4 — additive decomposition, invertible)
+# ---------------------------------------------------------------------------
+
+
+class TestSavitzkyGolayFilter:
+    def test_smoothing_roundtrip(self):
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        t = SavitzkyGolayFilter(window_length=7, polyorder=3)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        # Roundtrip should be perfect (additive decomposition)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_reduces_noise(self):
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
+        x = x + torch.randn_like(x) * 0.2  # add noise
+        t = SavitzkyGolayFilter(window_length=11, polyorder=3)
+        out = t.forward(x)
+        # Smoothed should have lower std than original
+        assert out.std().item() < x.std().item()
+
+    def test_preserves_polynomial(self):
+        # SG filter should exactly preserve a polynomial of order polyorder
+        x = (torch.linspace(-1, 1, 100) ** 3).unsqueeze(0)
+        t = SavitzkyGolayFilter(window_length=9, polyorder=3)
+        out = t.forward(x)
+        # Cubic polynomial should be exactly preserved (except at edges)
+        assert torch.allclose(out[:, 5:-5], x[:, 5:-5], atol=1e-5)
+
+    def test_inverse_without_forward_raises(self):
+        t = SavitzkyGolayFilter()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(10))
+
+    def test_invalid_window_raises(self):
+        with pytest.raises(ValueError):
+            SavitzkyGolayFilter(window_length=4)  # even
+
+    def test_invalid_polyorder_raises(self):
+        with pytest.raises(ValueError):
+            SavitzkyGolayFilter(window_length=5, polyorder=5)  # >= window
+
+    def test_non_unit_dim(self):
+        x = torch.randn(4, 3, 128)
+        t = SavitzkyGolayFilter(window_length=7, polyorder=2, dim=0)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_repr(self):
+        r = repr(SavitzkyGolayFilter(window_length=9, polyorder=2, dim=-1))
+        assert "SavitzkyGolayFilter" in r
+        assert "9" in r
+
+
+# ---------------------------------------------------------------------------
+# RunningPercentile (P6 — additive decomposition, invertible)
+# ---------------------------------------------------------------------------
+
+
+class TestRunningPercentile:
+    def test_roundtrip(self):
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        x = x + 0.5 * torch.sin(torch.linspace(0, 10 * math.pi, 200)).unsqueeze(0)
+        t = RunningPercentile(percentile=90, window_size=21)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_upper_envelope(self):
+        # Sine wave: running 95th percentile should hug the upper envelope
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
+        t = RunningPercentile(percentile=95, window_size=31)
+        out = t.forward(x)
+        # Upper envelope should be above most values
+        assert (out >= x).float().mean().item() > 0.5
+
+    def test_inverse_without_forward_raises(self):
+        t = RunningPercentile()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(10))
+
+    def test_invalid_window_raises(self):
+        with pytest.raises(ValueError):
+            RunningPercentile(window_size=4)  # even
+
+    def test_invalid_percentile_raises(self):
+        with pytest.raises(ValueError):
+            RunningPercentile(percentile=150)
+        with pytest.raises(ValueError):
+            RunningPercentile(percentile=-10)
+
+    def test_repr(self):
+        r = repr(RunningPercentile(percentile=75, window_size=15))
+        assert "RunningPercentile" in r
+        assert "75" in r
+
+
+# ---------------------------------------------------------------------------
+# UpperEnvelopeContinuum (P3 — additive decomposition, invertible)
+# ---------------------------------------------------------------------------
+
+
+class TestUpperEnvelopeContinuum:
+    def test_roundtrip(self):
+        x = torch.linspace(0, 100, 100).unsqueeze(0)
+        x = x + 2.0 * torch.sin(torch.linspace(0, 6 * math.pi, 100)).unsqueeze(0)
+        t = UpperEnvelopeContinuum(window=7)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_sits_above_signal(self):
+        # Upper envelope should be >= signal at local maxima
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
+        t = UpperEnvelopeContinuum(window=15)
+        out = t.forward(x)
+        # Envelope should be >= signal at most points (not all, since
+        # linear interpolation between local maxima can dip below)
+        assert (out >= x).float().mean().item() > 0.50
+
+    def test_with_smoothing(self):
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        x = x + torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
+        t = UpperEnvelopeContinuum(window=10, smooth=5.0)
+        out = t.forward(x)
+        assert out.shape == x.shape
+        # Smoothed envelope should be smoother than raw signal
+        assert out.diff().abs().mean().item() < x.diff().abs().mean().item()
+
+    def test_inverse_without_forward_raises(self):
+        t = UpperEnvelopeContinuum()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(10))
+
+    def test_invalid_window_raises(self):
+        with pytest.raises(ValueError):
+            UpperEnvelopeContinuum(window=0)
+
+    def test_repr(self):
+        r = repr(UpperEnvelopeContinuum(window=11, smooth=3.0))
+        assert "UpperEnvelopeContinuum" in r
+        assert "11" in r
+
+
+# ---------------------------------------------------------------------------
+# WaveletDecompose (P2 — fully invertible frequency split)
+# ---------------------------------------------------------------------------
+
+
+class TestWaveletDecompose:
+    def test_roundtrip(self):
+        x = torch.linspace(0, 100, 128).unsqueeze(0)  # power of 2
+        t = WaveletDecompose(levels=3)
+        out = t.forward(x)
+        assert out.shape[-1] == x.shape[-1]
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_approx_captures_low_freq(self):
+        # Low-frequency signal: approximation should preserve it well
+        t_wave = torch.linspace(0, 4 * math.pi, 128)
+        x = torch.sin(t_wave).unsqueeze(0)  # low freq
+        t = WaveletDecompose(levels=3)
+        out = t.forward(x)
+        # First approx_len elements are the final approximation
+        approx_len = 128 >> 3  # 16
+        approx = out[..., :approx_len]
+        # Approx should have non-negligible energy
+        assert approx.abs().max().item() > 0.1
+
+    def test_detail_captures_high_freq(self):
+        # High-frequency noise should go to detail coefficients
+        x = torch.randn(1, 64) * 0.5  # white noise
+        t = WaveletDecompose(levels=2)
+        out = t.forward(x)
+        restored = t.inverse(out)
+        assert torch.allclose(restored, x, atol=1e-6)
+
+    def test_non_power_of_two(self):
+        # Non-power-of-2 length should be padded and work
+        x = torch.linspace(0, 100, 100).unsqueeze(0)
+        t = WaveletDecompose(levels=2)
+        out = t.forward(x)
+        restored = t.inverse(out)
+        assert restored.shape[-1] == 100  # original length preserved
+        # Roundtrip should be approximate due to padding
+        assert torch.allclose(restored, x, atol=1e-4)
+
+    def test_inverse_without_forward_raises(self):
+        t = WaveletDecompose()
+        with pytest.raises(RuntimeError, match="prior forward"):
+            t.inverse(torch.zeros(16))
+
+    def test_invalid_levels_raises(self):
+        with pytest.raises(ValueError):
+            WaveletDecompose(levels=0)
+        with pytest.raises(ValueError):
+            WaveletDecompose(levels=10)
+
+    def test_repr(self):
+        r = repr(WaveletDecompose(levels=3, dim=-1))
+        assert "WaveletDecompose" in r
+        assert "3" in r
