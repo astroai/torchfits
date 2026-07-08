@@ -163,8 +163,14 @@ def zscale_limits(
         vmin = _amin(x, dim)
         vmax = _amax(x, dim)
         z1 = torch.where(std == 0, vmin, torch.maximum(z1, vmin))
-        z2 = torch.where(std == 0, vmax, torch.minimum(z2, vmax))
-        z2 = torch.where(z1 == z2, z1 + 1e-6, z2)
+        z2 = torch.where(
+            std == 0, vmax, torch.minimum(z2, vmax)
+        )  # Use a data-relative epsilon to avoid float32 underflow for large values.
+        # 1e-6 relative guarantees >1 ULP margin even at float32 extremes.
+        _eps = torch.maximum(
+            torch.tensor(1e-6, device=x.device, dtype=z1.dtype), z1.abs() * 1e-6
+        )
+        z2 = torch.where(z1 == z2, z1 + _eps, z2)
     return z1, z2
 
 
@@ -459,7 +465,12 @@ class MinMaxNormalize(FITSTransform):
         with torch.no_grad():
             vmin = _amin(x, self.dim)
             vmax = _amax(x, self.dim)
-            vmax = torch.where(vmin == vmax, vmin + 1e-6, vmax)
+            # Data-relative epsilon to avoid float32 underflow on constant images.
+            _eps = torch.maximum(
+                torch.tensor(1e-6, device=x.device, dtype=vmin.dtype),
+                vmin.abs() * 1e-6,
+            )
+            vmax = torch.where(vmin == vmax, vmin + _eps, vmax)
         self._last_state = (vmin, vmax)
         return (x - vmin).div_(vmax - vmin)
 
