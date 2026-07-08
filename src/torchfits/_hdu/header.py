@@ -61,7 +61,10 @@ class Header(dict):
     def __delitem__(self, key):
         key_s = str(key)
         super().__delitem__(key)
-        self._cards = [card for card in self._cards if card.key != key_s]
+        for idx, card in enumerate(self._cards):
+            if card.key == key_s:
+                del self._cards[idx]
+                break
         self._version += 1
 
     def update(self, *args, **kwargs):
@@ -90,14 +93,20 @@ class Header(dict):
             raise TypeError("pop expected at least 1 argument")
         key = str(args[0])
         res = super().pop(*args)
-        self._cards = [card for card in self._cards if card.key != key]
+        for idx, card in enumerate(self._cards):
+            if card.key == key:
+                del self._cards[idx]
+                break
         self._version += 1
         return res
 
     def popitem(self):
         res = super().popitem()
         key = str(res[0])
-        self._cards = [card for card in self._cards if card.key != key]
+        for idx, card in enumerate(self._cards):
+            if card.key == key:
+                del self._cards[idx]
+                break
         self._version += 1
         return res
 
@@ -151,10 +160,9 @@ class Header(dict):
             if ignore_missing:
                 return
             raise KeyError(key)
-        remove_indices = set(matches if remove_all else [matches[0]])
-        self._cards = [
-            card for idx, card in enumerate(self._cards) if idx not in remove_indices
-        ]
+        remove_indices = sorted(matches if remove_all else [matches[0]], reverse=True)
+        for idx in remove_indices:
+            del self._cards[idx]
         self._rebuild_mapping_for_key(key_s)
         self._version += 1
 

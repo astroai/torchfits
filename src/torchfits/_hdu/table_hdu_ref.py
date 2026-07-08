@@ -38,9 +38,9 @@ class TableHDURef:
         self.header = header or Header()
         self._source_path = source_path
         self._source_hdu = source_hdu
-        self._columns = columns[:] if columns else None
+        self._columns = tuple(columns) if columns else None
         self._row_slice = row_slice
-        self._all_columns_cache = None
+        self._all_columns_cache: tuple[str, ...] | None = None
 
     def _require_source(self) -> tuple[str, int]:
         if not self._source_path or self._source_hdu is None:
@@ -75,7 +75,7 @@ class TableHDURef:
         return self.num_rows
 
     @property
-    def columns(self) -> List[str]:
+    def columns(self) -> list[str]:
         if self._columns is not None:
             return list(self._columns)
 
@@ -85,15 +85,15 @@ class TableHDURef:
             n = int(self.header.get("TFIELDS", 0))
         except Exception:
             n = 0
-        out: List[str] = []
+        out: list[str] = []
         for i in range(1, n + 1):
             name = self.header.get(f"TTYPE{i}")
             if isinstance(name, str) and name:
                 out.append(name)
             else:
                 out.append(f"COL{i}")
-        self._all_columns_cache = out
-        return list(out)
+        self._all_columns_cache = tuple(out)
+        return out
 
     @property
     def string_columns(self) -> List[str]:
