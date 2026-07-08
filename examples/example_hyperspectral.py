@@ -5,6 +5,8 @@ Demonstrates the :mod:`torchfits.transforms` hyperspectral-specific tools:
 - **SpectralBinning**: reduce spectral resolution by binning adjacent channels
 - **ContinuumRemoval**: subtract a polynomial or B-spline baseline
 - **BandMath**: compute band ratios (NDVI, WBI, etc.) on multi-spectral data
+- **WaveletDecompose**: split spectrum into frequency bands (Haar DWT)
+- **SavitzkyGolayFilter**: polynomial smoothing with invertible decomposition
 
 All transforms operate on arbitrary tensor layouts and are compatible with
 :class:`~torch.utils.data.DataLoader` pipelines.
@@ -17,7 +19,9 @@ import torch
 from torchfits.transforms import (
     BandMath,
     ContinuumRemoval,
+    SavitzkyGolayFilter,
     SpectralBinning,
+    WaveletDecompose,
 )
 
 
@@ -276,6 +280,77 @@ def main() -> None:
     trimmed = 256 - (256 % 8)
     err_cube = (cube[:trimmed] - cube_restored[:trimmed]).abs().max().item()
     print(f"    Inverse error (binned region): {err_cube:.2e}")
+
+    # ------------------------------------------------------------------
+    # 5. WaveletDecompose — frequency split into approx + detail bands
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("5. WaveletDecompose")
+    print("=" * 60)
+
+    # Decompose a single-pixel spectrum into 3 levels
+    spec_00 = cube[:, 0, 0]  # [256]
+    wavelet = WaveletDecompose(levels=3, dim=-1)
+
+    # Forward: stacked [approx_3, detail_3, detail_2, detail_1]
+    coeffs = wavelet(spec_00.unsqueeze(0))  # [1, 256]
+    # The first N/8 elements are the level-3 approximation (broadband continuum),
+    # the remaining are detail coefficients at three scales.
+    approx_len = spec_00.shape[-1] >> 3  # 32
+    approx_energy = (coeffs[0, :approx_len] ** 2).sum().item()
+    detail_energy = (coeffs[0, approx_len:] ** 2).sum().item()
+    print("  WaveletDecompose (levels=3, Haar):")
+    print(
+        "    Approximation (low-freq / continuum) energy: {:.4f}".format(approx_energy)
+    )
+    print(
+        "    Detail (high-freq / features) energy:       {:.4f}".format(detail_energy)
+    )
+    # The continuum (quadratic baseline) dominates the approximation
+    assert approx_energy > detail_energy, (
+        "Broadband continuum should dominate approximation"
+    )
+
+    # Verify perfect reconstruction
+    restored_spec = wavelet.inverse(coeffs)
+    err_wavelet = (restored_spec - spec_00.unsqueeze(0)).abs().max().item()
+    print("    Roundtrip error: {:.2e}".format(err_wavelet))
+
+    # Demonstrate inverse: reconstructing from approx-only (discarding details)
+    # fills in the absorption features with broadband continuum
+    coeffs_zero_detail = coeffs.clone()
+    coeffs_zero_detail[0, approx_len:] = 0.0
+    continuum_only = wavelet.inverse(coeffs_zero_detail)
+    print("    Continuum-only reconstruction (details zeroed):")
+    print(
+        "      range [{:.4f}, {:.4f}]".format(
+            continuum_only.min().item(), continuum_only.max().item()
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # 6. SavitzkyGolayFilter — polynomial smoothing with residual channel
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("6. SavitzkyGolayFilter")
+    print("=" * 60)
+
+    # Add noise to the spectrum to demonstrate smoothing
+    spec_noisy = spec_00 + torch.randn_like(spec_00) * 0.01
+    sg = SavitzkyGolayFilter(window_length=11, polyorder=3, dim=-1)
+    spec_smooth = sg(spec_noisy.unsqueeze(0))  # [1, 256]
+    print("  SG filter (window=11, polyorder=3):")
+    # Smoothing should reduce std (noise suppression)
+    noisy_std = spec_noisy.std().item()
+    smooth_std = spec_smooth.std().item()
+    print("    Noisy spectrum std:    {:.5f}".format(noisy_std))
+    print("    Smoothed spectrum std: {:.5f}".format(smooth_std))
+    assert smooth_std < noisy_std, "SG filter should reduce noise"
+
+    # Verify invertibility via additive decomposition
+    spec_restored = sg.inverse(spec_smooth)
+    err_sg = (spec_restored - spec_noisy.unsqueeze(0)).abs().max().item()
+    print("    Roundtrip error: {:.2e}".format(err_sg))
 
     print("\nDone — all transforms compatible with torch.utils.data.DataLoader.")
 
