@@ -38,6 +38,7 @@ import math
 from typing import Optional, Sequence, Tuple
 
 import torch
+import torch.linalg
 
 
 # ---------------------------------------------------------------------------
@@ -557,146 +558,605 @@ class FITSHeaderScale(FITSTransform):
         return f"FITSHeaderScale(bscale={self.bscale}, bzero={self.bzero})"
 
 
+def _fit_poly_continuum(
+    x: torch.Tensor, order: int = 3, n_sigma: float = 2.0, max_iter: int = 3
+) -> torch.Tensor:
+    """Fit a low-order polynomial continuum via iterative sigma-clipping."""
+    n, length = x.shape
+    t = torch.linspace(-1.0, 1.0, length, device=x.device, dtype=x.dtype)
+    A = torch.stack([t**k for k in range(order + 1)], dim=1)  # [length, order+1]
+
+    mask = torch.ones(n, length, dtype=torch.bool, device=x.device)
+    for _ in range(max_iter):
+        # Weighted least squares per spectrum
+        coeffs = torch.zeros(n, order + 1, device=x.device, dtype=x.dtype)
+        for i in range(n):
+            mi = mask[i]
+            if mi.sum() <= order:
+                mi = torch.ones(length, dtype=torch.bool, device=x.device)
+            Am = A[mi]
+            ym = x[i][mi]
+            try:
+                coeffs[i] = torch.linalg.lstsq(Am, ym.unsqueeze(1)).solution.squeeze(1)
+            except RuntimeError:
+                # Fallback: use all points (singular / underdetermined)
+                coeffs[i] = torch.linalg.lstsq(A, x[i].unsqueeze(1)).solution.squeeze(1)
+
+        continuum = (A @ coeffs.T).T  # [n, length]
+        residuals = x - continuum
+        # Compute std only on currently-unmasked pixels (masked outliers
+        # would inflate the std and prevent convergence).
+        masked_res = torch.where(mask, residuals, torch.zeros_like(residuals))
+        count = mask.float().sum(dim=1, keepdim=True)
+        mean_res = masked_res.sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
+        var = torch.where(
+            mask, (residuals - mean_res) ** 2, torch.zeros_like(residuals)
+        ).sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
+        std = torch.sqrt(torch.clamp_min(var, 0.0))
+        new_mask = residuals.abs() < n_sigma * torch.clamp_min(std, 1e-9)
+        if torch.equal(new_mask, mask):
+            break
+        mask = new_mask
+
+    return continuum
+
+
+def _resample_spectrum(x: torch.Tensor, scale: float) -> torch.Tensor:
+    """Resample spectrum by a scale factor using linear interpolation."""
+    shape_in = x.shape
+    x_2d = x.reshape(-1, shape_in[-1])
+    length = x_2d.shape[1]
+    new_length = max(2, int(length * scale))
+    new_grid = torch.linspace(0, length - 1, new_length, device=x.device, dtype=x.dtype)
+    orig_grid = torch.arange(length, device=x.device, dtype=x.dtype)
+    # Interpolate using linear interpolation
+    out = _linear_interp_1d(x_2d, orig_grid, new_grid)
+    return out.reshape(*shape_in[:-1], new_length)
+
+
+def _linear_interp_1d(
+    y: torch.Tensor, x_orig: torch.Tensor, x_new: torch.Tensor
+) -> torch.Tensor:
+    """Linear interpolation of y(x) at x_new points."""
+    idx = torch.searchsorted(x_orig, x_new)
+    idx = torch.clamp(idx, 1, len(x_orig) - 1)
+    x0 = x_orig[idx - 1]
+    x1 = x_orig[idx]
+    y0 = y[:, idx - 1]
+    y1 = y[:, idx]
+    frac = (x_new - x0) / torch.clamp_min(x1 - x0, 1e-30)
+    return y0 + (y1 - y0) * frac.unsqueeze(0)
+
+
 # ---------------------------------------------------------------------------
-# Spatial transforms
+# Spectral transforms (1D — not in torch/torchvision)
 # ---------------------------------------------------------------------------
 
 
-class Gaussian2D(FITSTransform):
-    """Convolve with a 2D Gaussian kernel (PSF smoothing).
+class ContinuumNormalize(FITSTransform):
+    """Normalise a spectrum by fitting and dividing by its continuum.
 
-    Operates on the last two spatial dimensions.  Supports elliptical
-    kernels via separate *sigma_x* and *sigma_y* and an optional rotation
-    angle *theta* (degrees, counter-clockwise).
+    Fits a low-order polynomial to the flux array (iteratively rejecting
+    absorption/emission features via sigma-clipping), then divides the
+    spectrum by the fitted continuum.  Operates along the last dimension.
 
-    ``inverse`` is not available — deconvolution is ill-posed.
+    ``inverse`` multiplies back by the cached continuum fit.
 
     Parameters
     ----------
-    sigma : float
-        Gaussian sigma (pixels).  When *sigma_y* is not given, used for
-        both axes (circular PSF).
-    sigma_y : float or None
-        Y-axis sigma.  Defaults to *sigma*.
-    theta : float
-        Rotation angle in degrees (counter-clockwise).  Only meaningful
-        when the kernel is elliptical.
-    kernel_size : int or None
-        Kernel width/height in pixels.  Default ``None`` auto-computes
-        ``ceil(6 * max(sigma_x, sigma_y)) | 1`` (odd).
+    order : int
+        Polynomial order for the continuum fit (default 3).
+    n_sigma : float
+        Sigma-clipping threshold for rejecting spectral features during
+        the continuum fit (default 2.0).
+    max_iter : int
+        Maximum number of sigma-clipping iterations (default 3).
     """
 
-    def __init__(
-        self,
-        sigma: float = 1.0,
-        sigma_y: float | None = None,
-        theta: float = 0.0,
-        kernel_size: int | None = None,
-    ) -> None:
-        self.sigma = float(sigma)
-        self.sigma_y = float(sigma_y) if sigma_y is not None else self.sigma
-        self.theta = float(theta)
-        self._kernel: torch.Tensor | None = None
-        if kernel_size is not None:
-            self.kernel_size = int(kernel_size)
-        else:
-            s = max(self.sigma, self.sigma_y)
-            self.kernel_size = max(3, int(math.ceil(6.0 * s)) | 1)
-        self._build_kernel()
-
-    def _build_kernel(self) -> None:
-        """Pre-compute the Gaussian kernel tensor."""
-        ksize = self.kernel_size
-        ax = torch.linspace(-(ksize - 1) / 2.0, (ksize - 1) / 2.0, ksize)
-        yy, xx = torch.meshgrid(ax, ax, indexing="ij")
-
-        theta_rad = math.radians(self.theta)
-        cos_t = math.cos(theta_rad)
-        sin_t = math.sin(theta_rad)
-        xr = xx * cos_t + yy * sin_t
-        yr = -xx * sin_t + yy * cos_t
-
-        kernel = torch.exp(-0.5 * ((xr / self.sigma) ** 2 + (yr / self.sigma_y) ** 2))
-        kernel /= kernel.sum()
-        # Store as [1, 1, H, W] for F.conv2d
-        self._kernel = kernel.reshape(1, 1, ksize, ksize)
+    def __init__(self, order: int = 3, n_sigma: float = 2.0, max_iter: int = 3) -> None:
+        self.order = int(order)
+        self.n_sigma = float(n_sigma)
+        self.max_iter = int(max_iter)
+        self._continuum: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply Gaussian convolution to the last two spatial dims."""
-        if self._kernel is None:
-            self._build_kernel()
-        kernel = self._kernel.to(device=x.device, dtype=x.dtype)
-
-        # Reshape to [N, C, H, W] for conv2d
+        """Fit continuum and divide."""
         shape_in = x.shape
-        x_4d = x.reshape(-1, 1, *shape_in[-2:])
-        padding = self.kernel_size // 2
-        out = torch.nn.functional.conv2d(x_4d, kernel, padding=padding, groups=1)
-        return out.reshape(shape_in)
+        # Work on 2D: flatten leading dims to [N, length]
+        x_2d = x.reshape(-1, shape_in[-1])
+
+        with torch.no_grad():
+            continuum = _fit_poly_continuum(
+                x_2d, order=self.order, n_sigma=self.n_sigma, max_iter=self.max_iter
+            )
+        self._continuum = continuum.reshape(shape_in)
+
+        denom = torch.clamp_min(self._continuum.abs(), 1e-30)
+        return x / denom
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
-        raise RuntimeError(
-            "Gaussian2D.inverse() is not available — deconvolution is ill-posed. "
-            "If needed, use an approximate method (e.g. Wiener filter) externally."
-        )
+        if self._continuum is None:
+            raise RuntimeError(
+                "ContinuumNormalize.inverse() requires a prior forward() pass."
+            )
+        return x * self._continuum
 
     def __repr__(self) -> str:
         return (
-            f"Gaussian2D(sigma={self.sigma}, sigma_y={self.sigma_y}, "
-            f"theta={self.theta}, kernel_size={self.kernel_size})"
+            f"ContinuumNormalize(order={self.order}, "
+            f"n_sigma={self.n_sigma}, max_iter={self.max_iter})"
         )
 
 
-class Downsample(FITSTransform):
-    """Downsample (rebin) spatial dimensions by an integer factor.
+class DopplerShift(FITSTransform):
+    """Apply a redshift or blueshift to spectral data via linear interpolation.
 
-    Uses mean pooling to preserve surface brightness (flux-conserving).
-    Operates on the last two dimensions.  ``inverse`` upsamples via
-    nearest-neighbour interpolation.
+    Resamples the last dimension by a factor ``1 + z``, where *z* is the
+    redshift (positive = redshifted, negative = blueshifted).  Flux is
+    conserved per bin via normalisation.
+
+    ``inverse`` applies the opposite shift (``-z / (1 + z)``).
+
+    Parameters
+    ----------
+    z : float
+        Redshift.  Positive values stretch the spectrum (redshift).
+    """
+
+    def __init__(self, z: float = 0.0) -> None:
+        self.z = float(z)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.z == 0.0:
+            return x
+        return _resample_spectrum(x, 1.0 + self.z)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self.z == 0.0:
+            return x
+        return _resample_spectrum(x, 1.0 / (1.0 + self.z))
+
+    def __repr__(self) -> str:
+        return f"DopplerShift(z={self.z})"
+
+
+# ---------------------------------------------------------------------------
+# Time-domain transforms (not in torch/torchvision)
+# ---------------------------------------------------------------------------
+
+
+class PhaseFold(FITSTransform):
+    """Fold a periodic time series by period into phase space.
+
+    Maps each time step ``t`` to phase ``(t / period) % 1`` and then
+    sorts/resamples onto a uniform phase grid.  Operates along the last
+    dimension.
+
+    ``inverse`` is not available — folding is lossy (many-to-one).
+
+    Parameters
+    ----------
+    period : float
+        Folding period in the same units as the time axis.
+    n_bins : int
+        Number of uniform phase bins for the output (default 64).
+    t0 : float
+        Phase zero-point offset (default 0).
+    """
+
+    def __init__(self, period: float = 1.0, n_bins: int = 64, t0: float = 0.0) -> None:
+        if period <= 0:
+            raise ValueError("period must be > 0")
+        if n_bins < 2:
+            raise ValueError("n_bins must be >= 2")
+        self.period = float(period)
+        self.n_bins = int(n_bins)
+        self.t0 = float(t0)
+        self._orig_length: int | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fold into phase bins."""
+        self._orig_length = x.shape[-1]
+        shape_in = x.shape
+        x_2d = x.reshape(-1, shape_in[-1])
+        n_samples = x_2d.shape[0]
+        length = x_2d.shape[1]
+
+        # Time grid
+        t = torch.arange(length, device=x.device, dtype=x.dtype)
+        phase = ((t - self.t0) / self.period) % 1.0
+
+        # Bin edges and indices
+        edges = torch.linspace(
+            0.0, 1.0, self.n_bins + 1, device=x.device, dtype=x.dtype
+        )
+        bin_idx = torch.bucketize(phase, edges[:-1]) - 1
+        # Clamp out-of-range values
+        bin_idx = torch.clamp(bin_idx, 0, self.n_bins - 1)
+
+        # Scatter sum into bins
+        folded = torch.zeros(n_samples, self.n_bins, device=x.device, dtype=x.dtype)
+        counts = torch.zeros(self.n_bins, device=x.device, dtype=x.dtype)
+        for b in range(self.n_bins):
+            mask = bin_idx == b
+            folded[:, b] = x_2d[:, mask].sum(dim=1)
+            counts[b] = mask.sum()
+
+        # Normalise by counts (mean per bin)
+        folded = folded / torch.clamp_min(counts.unsqueeze(0), 1.0)
+
+        return folded.reshape(*shape_in[:-1], self.n_bins)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError(
+            "PhaseFold.inverse() is not available — folding is many-to-one."
+        )
+
+    def __repr__(self) -> str:
+        return f"PhaseFold(period={self.period}, n_bins={self.n_bins}, t0={self.t0})"
+
+
+# ---------------------------------------------------------------------------
+# Hyperspectral transforms (not in torch/torchvision)
+# ---------------------------------------------------------------------------
+
+
+class SpectralBinning(FITSTransform):
+    """Bin adjacent spectral channels to reduce spectral resolution.
+
+    Replaces groups of *factor* adjacent channels along *dim* with their
+    mean (flux-conserving) or sum.  Trailing partial bins are dropped.
+
+    ``inverse`` upsamples via nearest-neighbour repeat, dividing by
+    *factor* when ``mode="sum"`` to conserve absolute flux.
 
     Parameters
     ----------
     factor : int
-        Integer downsampling factor per spatial axis.
+        Number of adjacent channels to bin together (>= 1).
     mode : str
-        Pooling mode: ``"mean"`` (flux-conserving, default) or ``"max"``.
+        Reduction: ``"mean"`` (default, flux-conserving) or ``"sum"``.
+    dim : int
+        Spectral dimension to bin along (default -1).
     """
 
-    def __init__(self, factor: int = 2, mode: str = "mean") -> None:
+    def __init__(self, factor: int = 2, mode: str = "mean", dim: int = -1) -> None:
         if factor < 1:
             raise ValueError("factor must be >= 1")
-        if mode not in ("mean", "max"):
-            raise ValueError("mode must be 'mean' or 'max'")
+        if mode not in ("mean", "sum"):
+            raise ValueError("mode must be 'mean' or 'sum'")
         self.factor = int(factor)
         self.mode = mode
+        self.dim = int(dim)
+        self._orig_length: int | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.factor == 1:
             return x
-        shape_in = x.shape
-        # Flatten leading dims to [N, C, H, W] for pooling
-        x_4d = x.reshape(-1, 1, *shape_in[-2:])
-        pool = (
-            torch.nn.functional.avg_pool2d
-            if self.mode == "mean"
-            else torch.nn.functional.max_pool2d
-        )
-        out = pool(x_4d, kernel_size=self.factor, stride=self.factor)
-        return out.reshape(*shape_in[:-2], *out.shape[-2:])
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+        length = x.shape[dim]
+        trimmed = length - (length % self.factor)
+        self._orig_length = length
+
+        # Slice off trailing partial channels
+        slices = [slice(None)] * ndim
+        slices[dim] = slice(0, trimmed)
+        x_trimmed = x[tuple(slices)]
+
+        # Reshape to introduce factor dimension and reduce
+        new_shape = list(x_trimmed.shape)
+        new_shape.insert(dim + 1, self.factor)
+        new_shape[dim] = trimmed // self.factor
+        x_reshaped = x_trimmed.reshape(new_shape)
+
+        if self.mode == "mean":
+            return x_reshaped.mean(dim=dim + 1)
+        return x_reshaped.sum(dim=dim + 1)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
-        """Upsample back to original resolution (nearest-neighbour)."""
         if self.factor == 1:
             return x
-        shape_in = x.shape
-        x_4d = x.reshape(-1, 1, *shape_in[-2:])
-        out = torch.nn.functional.interpolate(
-            x_4d, scale_factor=self.factor, mode="nearest"
+        ndim = x.ndim
+        dim = self.dim if self.dim >= 0 else ndim + self.dim
+
+        # Nearest-neighbour repeat: expand then reshape
+        shape = list(x.shape)
+        shape.insert(dim + 1, self.factor)
+        x_repeated = x.unsqueeze(dim + 1).expand(shape)
+        out = x_repeated.reshape(
+            *x_repeated.shape[:dim],
+            x.shape[dim] * self.factor,
+            *x_repeated.shape[dim + 2 :],
         )
-        return out.reshape(*shape_in[:-2], *out.shape[-2:])
+
+        # For "sum" mode, divide to recover per-pixel flux
+        if self.mode == "sum":
+            out = out / self.factor
+
+        # Pad to original length if trailing bins were dropped
+        if self._orig_length is not None and out.shape[dim] < self._orig_length:
+            pad_shape = list(out.shape)
+            pad_shape[dim] = self._orig_length - out.shape[dim]
+            padding = torch.zeros(pad_shape, device=out.device, dtype=out.dtype)
+            out = torch.cat([out, padding], dim=dim)
+
+        return out
 
     def __repr__(self) -> str:
-        return f"Downsample(factor={self.factor}, mode={self.mode!r})"
+        return (
+            f"SpectralBinning(factor={self.factor}, mode={self.mode!r}, dim={self.dim})"
+        )
+
+
+def _build_spline_basis(
+    n_points: int, n_knots: int, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    """Build a cubic B-spline basis matrix with evenly-spaced knots.
+
+    Returns a matrix of shape ``[n_points, n_knots]`` where each column
+    is a cubic B-spline basis function evaluated at the *n_points*
+    positions.
+    """
+    # Knot positions: extend 2 beyond the range for cubic support
+    t = torch.linspace(-2, n_knots + 1, n_knots + 4, device=device, dtype=dtype)
+    x = torch.linspace(0, n_knots - 1, n_points, device=device, dtype=dtype)
+    B = torch.zeros(n_points, n_knots, device=device, dtype=dtype)
+
+    for k in range(n_knots):
+        # Cubic B-spline basis function centred at knot k
+        B[:, k] = _bspline_cubic(x, t[k : k + 5])
+
+    return B
+
+
+def _basis_order1(
+    points: torch.Tensor, t_i: torch.Tensor, t_ip1: torch.Tensor
+) -> torch.Tensor:
+    """Order-1 B-spline basis (piecewise constant)."""
+    return ((points >= t_i) & (points < t_ip1)).float()
+
+
+def _basis_order2(
+    points: torch.Tensor,
+    t_i: torch.Tensor,
+    t_ip1: torch.Tensor,
+    t_ip2: torch.Tensor,
+) -> torch.Tensor:
+    """Order-2 B-spline basis (linear)."""
+    b1 = (
+        _basis_order1(points, t_i, t_ip1)
+        * (points - t_i)
+        / torch.clamp_min(t_ip1 - t_i, 1e-30)
+    )
+    b2 = (
+        _basis_order1(points, t_ip1, t_ip2)
+        * (t_ip2 - points)
+        / torch.clamp_min(t_ip2 - t_ip1, 1e-30)
+    )
+    return b1 + b2
+
+
+def _basis_order3(
+    points: torch.Tensor,
+    t_i: torch.Tensor,
+    t_ip1: torch.Tensor,
+    t_ip2: torch.Tensor,
+    t_ip3: torch.Tensor,
+) -> torch.Tensor:
+    """Order-3 B-spline basis (quadratic)."""
+    b1 = (
+        _basis_order2(points, t_i, t_ip1, t_ip2)
+        * (points - t_i)
+        / torch.clamp_min(t_ip2 - t_i, 1e-30)
+    )
+    b2 = (
+        _basis_order2(points, t_ip1, t_ip2, t_ip3)
+        * (t_ip3 - points)
+        / torch.clamp_min(t_ip3 - t_ip1, 1e-30)
+    )
+    return b1 + b2
+
+
+def _bspline_cubic(x: torch.Tensor, knots: torch.Tensor) -> torch.Tensor:
+    """Evaluate a cubic B-spline with given knot vector at positions x.
+
+    Uses the Cox-de Boor recursion for order 4 (cubic).
+    *knots* should have 5 elements: ``[t_0, t_1, t_2, t_3, t_4]``.
+    Returns 0 outside ``[t_0, t_4]``.
+    """
+    t0, t1, t2, t3, t4 = knots[0], knots[1], knots[2], knots[3], knots[4]
+    b1 = _basis_order3(x, t0, t1, t2, t3) * (x - t0) / torch.clamp_min(t3 - t0, 1e-30)
+    b2 = _basis_order3(x, t1, t2, t3, t4) * (t4 - x) / torch.clamp_min(t4 - t1, 1e-30)
+    return b1 + b2
+
+
+def _fit_spline_continuum(
+    x: torch.Tensor,
+    n_knots: int = 10,
+    n_sigma: float = 2.0,
+    max_iter: int = 3,
+) -> torch.Tensor:
+    """Fit a cubic B-spline continuum with iterative sigma-clipping."""
+    n, length = x.shape
+    B = _build_spline_basis(length, n_knots, x.device, x.dtype)
+
+    # Add ridge penalty for numerical stability
+    ridge = 1e-6 * torch.eye(n_knots, device=x.device, dtype=x.dtype)
+
+    mask = torch.ones(n, length, dtype=torch.bool, device=x.device)
+    for _ in range(max_iter):
+        coeffs = torch.zeros(n, n_knots, device=x.device, dtype=x.dtype)
+        for i in range(n):
+            mi = mask[i]
+            if mi.sum() <= n_knots:
+                mi = torch.ones(length, dtype=torch.bool, device=x.device)
+            Bm = B[mi]
+            ym = x[i][mi]
+            # Weighted least squares with ridge
+            BtB_m = Bm.T @ Bm + ridge
+            Bty_m = Bm.T @ ym
+            try:
+                coeffs[i] = torch.linalg.solve(BtB_m, Bty_m)
+            except RuntimeError:
+                # Fallback: use all points
+                BtB = B.T @ B + ridge
+                coeffs[i] = torch.linalg.solve(BtB, B.T @ x[i])
+
+        continuum = (B @ coeffs.T).T  # [n, length]
+        residuals = x - continuum
+        # Sigma-clip on unmasked pixels
+        masked_res = torch.where(mask, residuals, torch.zeros_like(residuals))
+        count = mask.float().sum(dim=1, keepdim=True)
+        mean_res = masked_res.sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
+        var = torch.where(
+            mask, (residuals - mean_res) ** 2, torch.zeros_like(residuals)
+        ).sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
+        std = torch.sqrt(torch.clamp_min(var, 0.0))
+        new_mask = residuals.abs() < n_sigma * torch.clamp_min(std, 1e-9)
+        if torch.equal(new_mask, mask):
+            break
+        mask = new_mask
+
+    return continuum
+
+
+class ContinuumRemoval(FITSTransform):
+    """Remove spectral continuum (baseline) from reflectance spectra.
+
+    Fits a low-order polynomial or cubic B-spline to the spectrum
+    and **subtracts** the fit, leaving absorption/emission features as
+    positive or negative residuals around zero.
+
+    This is distinct from :class:`ContinuumNormalize`, which **divides**
+    by the continuum to normalise to ~1.  Use ``ContinuumRemoval`` for
+    additive baseline correction (common in reflectance spectroscopy);
+    use ``ContinuumNormalize`` for multiplicative normalisation.
+
+    ``inverse`` adds the cached continuum back.
+
+    Parameters
+    ----------
+    method : str
+        ``"polynomial"`` (default) or ``"spline"``.
+    order : int
+        Polynomial order when ``method="polynomial"`` (default 3).
+    n_knots : int
+        Number of evenly-spaced knots when ``method="spline"`` (default 10).
+    n_sigma : float
+        Sigma-clip threshold for rejecting spectral features during
+        the continuum fit (default 2.0).
+    max_iter : int
+        Maximum sigma-clipping iterations (default 3).
+    """
+
+    def __init__(
+        self,
+        method: str = "polynomial",
+        order: int = 3,
+        n_knots: int = 10,
+        n_sigma: float = 2.0,
+        max_iter: int = 3,
+    ) -> None:
+        if method not in ("polynomial", "spline"):
+            raise ValueError("method must be 'polynomial' or 'spline'")
+        self.method = method
+        self.order = int(order)
+        self.n_knots = int(n_knots)
+        self.n_sigma = float(n_sigma)
+        self.max_iter = int(max_iter)
+        self._baseline: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape_in = x.shape
+        x_2d = x.reshape(-1, shape_in[-1])
+
+        with torch.no_grad():
+            if self.method == "polynomial":
+                baseline = _fit_poly_continuum(
+                    x_2d,
+                    order=self.order,
+                    n_sigma=self.n_sigma,
+                    max_iter=self.max_iter,
+                )
+            else:
+                baseline = _fit_spline_continuum(
+                    x_2d,
+                    n_knots=self.n_knots,
+                    n_sigma=self.n_sigma,
+                    max_iter=self.max_iter,
+                )
+
+        self._baseline = baseline.reshape(shape_in)
+        return x - self._baseline
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if self._baseline is None:
+            raise RuntimeError(
+                "ContinuumRemoval.inverse() requires a prior forward() pass."
+            )
+        return x + self._baseline
+
+    def __repr__(self) -> str:
+        if self.method == "polynomial":
+            return (
+                f"ContinuumRemoval(method='polynomial', order={self.order}, "
+                f"n_sigma={self.n_sigma}, max_iter={self.max_iter})"
+            )
+        return (
+            f"ContinuumRemoval(method='spline', n_knots={self.n_knots}, "
+            f"n_sigma={self.n_sigma}, max_iter={self.max_iter})"
+        )
+
+
+class BandMath(FITSTransform):
+    """Apply arithmetic band ratios and indices to multi-spectral data.
+
+    Applies a user-supplied function along a specified *band_dim*.  The
+    function receives a tuple of tensors — one per band slice along
+    *band_dim* — and returns the result.  This gives dimension-agnostic
+    band access: ``lambda b: (b[1] - b[0]) / (b[1] + b[0])`` for NDVI.
+
+    ``inverse`` is not available — band arithmetic is lossy.
+
+    Parameters
+    ----------
+    func : callable
+        Function ``(tuple[Tensor, ...]) -> Tensor`` that takes a tuple of
+        band-slice tensors and returns the arithmetic result.
+    band_dim : int
+        Dimension containing spectral bands (default 0 for ``[C, H, W]``).
+
+    Examples
+    --------
+    >>> # NDVI: (NIR - Red) / (NIR + Red), NIR=band 3, Red=band 2
+    >>> ndvi = BandMath(lambda b: (b[3] - b[2]) / (b[3] + b[2] + 1e-8))
+    >>>
+    >>> # WBI (Water Band Index): R900 / R970
+    >>> wbi = BandMath(lambda b: b[0] / (b[1] + 1e-8), band_dim=-3)
+    """
+
+    def __init__(self, func, band_dim: int = 0) -> None:
+        if not callable(func):
+            raise TypeError("func must be callable")
+        self.func = func
+        self.band_dim = int(band_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.ndim
+        dim = self.band_dim if self.band_dim >= 0 else ndim + self.band_dim
+        # Unbind along band dimension for dimension-agnostic access
+        bands = torch.unbind(x, dim=dim)
+        return self.func(bands)
+
+    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError(
+            "BandMath.inverse() is not available — band arithmetic is lossy."
+        )
+
+    def __repr__(self) -> str:
+        name = getattr(self.func, "__name__", repr(self.func))
+        return f"BandMath(func={name}, band_dim={self.band_dim})"
 
 
 # ---------------------------------------------------------------------------
