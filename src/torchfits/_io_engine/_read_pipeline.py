@@ -6,6 +6,7 @@ import copy
 from collections.abc import Callable
 from dataclasses import fields
 from typing import Any
+import unittest.mock as _unittest_mock
 
 import torch
 from torch import Tensor
@@ -22,7 +23,12 @@ from .caches import (
     set_cached_hdu_type,
 )
 
-_CPP_ATTR_CACHE: dict[str, bool] = {}
+_CPP_ATTR_CACHE: dict[
+    str, bool
+] = {}  # Cached ReadOptions field names — computed once at module import.
+_READ_OPTION_FIELD_NAMES: frozenset[str] = frozenset(
+    f.name for f in fields(ReadOptions)
+)
 
 
 def _cpp_has(cpp_module: Any, attr: str) -> bool:
@@ -224,11 +230,10 @@ def read_unified(
     logger: Any,
 ) -> Any:
     """Unified root FITS read dispatcher implementation."""
-    option_field_names = {f.name for f in fields(ReadOptions)}
     if options is not None:
         # `mode` is owned by io.read's explicit `mode=` param, not by user kwargs,
         # so it is injected into kwargs unconditionally and is not a collision.
-        colliding = (set(kwargs) & option_field_names) - {"mode"}
+        colliding = (set(kwargs) & _READ_OPTION_FIELD_NAMES) - {"mode"}
         if colliding:
             raise TypeError(
                 "Pass either options= or individual read kwargs, not both; "
@@ -237,7 +242,7 @@ def read_unified(
         opts = copy.copy(options)
     else:
         opts = ReadOptions()
-    for field_name in option_field_names:
+    for field_name in _READ_OPTION_FIELD_NAMES:
         if field_name in kwargs:
             setattr(opts, field_name, kwargs[field_name])
 
@@ -368,24 +373,18 @@ def read_unified(
             read_func=recursive_read,
         )
 
-    cpp_is_mocked = False
-    if isinstance(hdu, int):
-        try:
-            import unittest.mock as unittest_mock
-
-            cpp_is_mocked = isinstance(
-                getattr(cpp_module, "read_full", None), unittest_mock.Mock
-            )
-        except Exception:
-            cpp_is_mocked = False
+    # Detect mock once per call via isinstance (module-level import, no per-call overhead).
+    cpp_is_mocked = isinstance(
+        getattr(cpp_module, "read_full", None), _unittest_mock.Mock
+    )
 
     if (
         scale_on_device
         and not raw_scale
-        and not cpp_is_mocked
         and device == "cpu"
         and not return_header
         and isinstance(hdu, int)
+        and not cpp_is_mocked
         and columns is None
         and start_row == 1
         and num_rows == -1
