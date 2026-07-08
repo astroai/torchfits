@@ -488,20 +488,25 @@ class TestCacheConfig:
         assert config.disk_cache_gb == 5
         assert config.prefetch_enabled is False
 
-    @patch("torchfits.cache.psutil", None)
-    def test_for_environment_no_psutil(self):
+    @patch("torchfits.cache.os.sysconf")
+    def test_for_environment_no_psutil(self, mock_sysconf):
+        mock_sysconf.side_effect = ValueError("Simulated sysconf error")
         config = CacheConfig.for_environment()
         assert config.max_files == 100
         assert config.max_memory_mb == 1024
         assert config.disk_cache_gb == 5
         assert config.prefetch_enabled is False
 
-    @patch("torchfits.cache.psutil")
+    @patch("torchfits.cache.os.sysconf")
     @patch.object(CacheConfig, "_is_hpc_environment", return_value=True)
-    def test_for_environment_hpc(self, mock_hpc, mock_psutil):
-        mock_memory = MagicMock()
-        mock_memory.total = 100 * (1024**3)  # 100 GB
-        mock_psutil.virtual_memory.return_value = mock_memory
+    def test_for_environment_hpc(self, mock_hpc, mock_sysconf):
+        def sysconf_mock(name):
+            if name == "SC_PAGE_SIZE":
+                return 4096
+            if name == "SC_PHYS_PAGES":
+                return (100 * (1024**3)) // 4096
+            raise ValueError()
+        mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
         assert config.max_files == 1000
@@ -509,13 +514,17 @@ class TestCacheConfig:
         assert config.disk_cache_gb == 50
         assert config.prefetch_enabled is True
 
-    @patch("torchfits.cache.psutil")
+    @patch("torchfits.cache.os.sysconf")
     @patch.object(CacheConfig, "_is_hpc_environment", return_value=False)
     @patch.object(CacheConfig, "_is_cloud_environment", return_value=True)
-    def test_for_environment_cloud(self, mock_cloud, mock_hpc, mock_psutil):
-        mock_memory = MagicMock()
-        mock_memory.total = 16 * (1024**3)  # 16 GB
-        mock_psutil.virtual_memory.return_value = mock_memory
+    def test_for_environment_cloud(self, mock_cloud, mock_hpc, mock_sysconf):
+        def sysconf_mock(name):
+            if name == "SC_PAGE_SIZE":
+                return 4096
+            if name == "SC_PHYS_PAGES":
+                return (16 * (1024**3)) // 4096
+            raise ValueError()
+        mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
         assert config.max_files == 500
@@ -523,14 +532,18 @@ class TestCacheConfig:
         assert config.disk_cache_gb == 20
         assert config.prefetch_enabled is True
 
-    @patch("torchfits.cache.psutil")
+    @patch("torchfits.cache.os.sysconf")
     @patch.object(CacheConfig, "_is_hpc_environment", return_value=False)
     @patch.object(CacheConfig, "_is_cloud_environment", return_value=False)
     @patch.object(CacheConfig, "_is_gpu_environment", return_value=True)
-    def test_for_environment_gpu(self, mock_gpu, mock_cloud, mock_hpc, mock_psutil):
-        mock_memory = MagicMock()
-        mock_memory.total = 32 * (1024**3)  # 32 GB
-        mock_psutil.virtual_memory.return_value = mock_memory
+    def test_for_environment_gpu(self, mock_gpu, mock_cloud, mock_hpc, mock_sysconf):
+        def sysconf_mock(name):
+            if name == "SC_PAGE_SIZE":
+                return 4096
+            if name == "SC_PHYS_PAGES":
+                return (32 * (1024**3)) // 4096
+            raise ValueError()
+        mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
         assert config.max_files == 200
@@ -538,14 +551,18 @@ class TestCacheConfig:
         assert config.disk_cache_gb == 30
         assert config.prefetch_enabled is True
 
-    @patch("torchfits.cache.psutil")
+    @patch("torchfits.cache.os.sysconf")
     @patch.object(CacheConfig, "_is_hpc_environment", return_value=False)
     @patch.object(CacheConfig, "_is_cloud_environment", return_value=False)
     @patch.object(CacheConfig, "_is_gpu_environment", return_value=False)
-    def test_for_environment_default(self, mock_gpu, mock_cloud, mock_hpc, mock_psutil):
-        mock_memory = MagicMock()
-        mock_memory.total = 8 * (1024**3)  # 8 GB
-        mock_psutil.virtual_memory.return_value = mock_memory
+    def test_for_environment_default(self, mock_gpu, mock_cloud, mock_hpc, mock_sysconf):
+        def sysconf_mock(name):
+            if name == "SC_PAGE_SIZE":
+                return 4096
+            if name == "SC_PHYS_PAGES":
+                return (8 * (1024**3)) // 4096
+            raise ValueError()
+        mock_sysconf.side_effect = sysconf_mock
 
         config = CacheConfig.for_environment()
         assert config.max_files == 100

@@ -4,11 +4,6 @@ Core FITS data type support and checksum handling.
 
 from __future__ import annotations
 
-import re
-
-
-_CUTOUT_SPEC_RE = re.compile(r"(.+?)\[(\d+)\]\[(.+?)\]")
-
 
 class ChecksumVerifier:
     """CFITSIO-backed FITS checksum helpers.
@@ -47,46 +42,3 @@ class ChecksumVerifier:
             "hdustatus": hdu_i,
             "ok": data_i == 1 and hdu_i == 1,
         }
-
-
-class FITSCore:
-    """Core FITS functionality."""
-
-    @staticmethod
-    def parse_cutout_spec(spec: str) -> tuple[str, int, tuple[slice, ...]]:
-        """
-        Parses a CFITSIO-style cutout specification string.
-
-        Args:
-            spec: The cutout specification string (e.g., 'myimage.fits[1][10:20,30:40]').
-
-        Returns:
-            A tuple containing the file path, HDU index, and a tuple of slices.
-        """
-        # Pattern: filename[hdu_index][slice_spec] - e.g., 'image.fits[1][10:20,30:40]'
-        match = _CUTOUT_SPEC_RE.match(spec)
-        if not match:
-            raise ValueError(f"Invalid cutout specification: {spec}")
-
-        file_path, hdu_str, slice_str = match.groups()
-        hdu_index = int(hdu_str)
-
-        slice_parts = slice_str.split(",")
-        slices = []
-        for part in slice_parts:
-            try:
-                if ":" in part:
-                    start_str, stop_str = part.split(":")
-                    start = int(start_str) if start_str else None
-                    stop = int(stop_str) if stop_str else None
-                    # FITS uses inclusive ranges, Python uses exclusive
-                    slices.append(slice(start, stop))
-                else:
-                    index = int(part)
-                    slices.append(slice(index, index + 1))
-            except ValueError as e:
-                raise ValueError(
-                    f"Invalid slice specification '{part}' in cutout spec: {spec}"
-                ) from e
-
-        return file_path, hdu_index, tuple(slices)

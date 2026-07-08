@@ -37,7 +37,6 @@ nanobind = ">=2.10.2"
 [package.run-dependencies]
 pytorch = ">=2.0,<2.11"
 
-psutil = ">=5.0"  # For system resource monitoring
 cfitsio = ">=4.6.3,<4.6.5"
 
 # Workspace dependencies - development environment
@@ -52,7 +51,6 @@ astropy = ">=5.0"
 fitsio = ">=1.2"
 matplotlib = ">=3.8"
 pandas = ">=2.2"
-psutil = ">=5.9"
 scikit-build-core = ">=0.11.6"
 cmake = ">=3.21"
 ninja = ">=1.10"
@@ -113,7 +111,6 @@ astropy = ">=5.0"
 fitsio = ">=1.2"
 matplotlib = ">=3.8"
 pandas = ">=2.2"
-psutil = ">=5.9"
 # Build deps needed so pip install -e . can compile the C++ extension
 cmake = ">=3.21"
 ninja = ">=1.10"

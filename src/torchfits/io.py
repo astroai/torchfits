@@ -220,18 +220,6 @@ def read_tensor(
     )
 
 
-def read_image(*args: Any, **kwargs: Any):
-    """Deprecated alias for read_tensor."""
-    import warnings
-
-    warnings.warn(
-        "read_image is deprecated and will be removed in a future version. Use read_tensor instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    kwargs.setdefault("fallback_get_header", get_header)
-    return _read_image_impl(*args, **kwargs)
-
 
 def read_table(
     path: str,

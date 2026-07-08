@@ -8,11 +8,6 @@ including local development, HPC clusters, and cloud platforms.
 import os
 from typing import Any, Dict, Optional
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
-
 
 # Single source of truth for env vars that trigger environment classification in
 # CacheConfig._is_hpc_environment / _is_cloud_environment. Tests, docs, and any
@@ -58,17 +53,16 @@ class CacheConfig:
     @classmethod
     def for_environment(cls) -> "CacheConfig":
         """Auto-detect optimal cache configuration."""
-        if psutil is None:
-            # Fallback if psutil is not available
-            return cls(
-                max_files=100,
-                max_memory_mb=1024,
-                disk_cache_gb=5,
-                prefetch_enabled=False,
-            )
-
-        # Get system memory
-        memory_gb = psutil.virtual_memory().total / (1024**3)
+        # Get system memory using POSIX system config if available
+        try:
+            pagesize = os.sysconf("SC_PAGE_SIZE")
+            physpages = os.sysconf("SC_PHYS_PAGES")
+            if pagesize > 0 and physpages > 0:
+                memory_gb = (pagesize * physpages) / (1024**3)
+            else:
+                memory_gb = 10.0
+        except Exception:
+            memory_gb = 10.0
 
         # Detect environment
         if cls._is_hpc_environment():

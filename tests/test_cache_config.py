@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock
 
 from torchfits.cache import (
@@ -7,18 +8,29 @@ from torchfits.cache import (
 import torchfits.cache
 
 
-# The autouse env-clear fixture lives in tests/conftest.py so every test in tests/
-# inherits the same sandbox-leak protection (single source of truth:
-# torchfits.cache.CACHE_ENV_SENTINELS).
+def _mock_sysconf_with_memory(monkeypatch, memory_gb: float):
+    total_bytes = int(memory_gb * (1024**3))
+    page_size = 4096
+    phys_pages = total_bytes // page_size
+
+    def sysconf_mock(name):
+        if name == "SC_PAGE_SIZE":
+            return page_size
+        if name == "SC_PHYS_PAGES":
+            return phys_pages
+        raise ValueError(f"Unknown sysconf: {name}")
+
+    monkeypatch.setattr(os, "sysconf", sysconf_mock)
 
 
 def test_optimal_cache_config_no_psutil(monkeypatch):
-    """Test fallback when psutil is not available."""
-    monkeypatch.setattr(torchfits.cache, "psutil", None)
+    """Test fallback when sysconf raises an error."""
 
-    # Ensure it doesn't think it's a GPU env
-    # Using patch.dict or monkeypatch for torch is harder if it's not installed,
-    # but CacheConfig._is_gpu_environment can be patched.
+    def sysconf_fail(name):
+        raise ValueError("Simulated sysconf error")
+
+    monkeypatch.setattr(os, "sysconf", sysconf_fail)
+
     monkeypatch.setattr(CacheConfig, "_is_gpu_environment", lambda: False)
 
     config = get_optimal_cache_config()
@@ -32,14 +44,8 @@ def test_optimal_cache_config_no_psutil(monkeypatch):
 
 def test_optimal_cache_config_local(monkeypatch):
     """Test default local environment."""
-    mock_psutil = MagicMock()
-    # 16 GB in bytes
-    mock_psutil.virtual_memory().total = 16 * (1024**3)
-    monkeypatch.setattr(torchfits.cache, "psutil", mock_psutil)
+    _mock_sysconf_with_memory(monkeypatch, 16.0)
 
-    # _clear_env_profile autouse fixture already removed all CACHE_ENV_SENTINELS.
-
-    # Mock GPU detection
     monkeypatch.setattr(CacheConfig, "_is_gpu_environment", lambda: False)
 
     config = get_optimal_cache_config()
@@ -52,10 +58,7 @@ def test_optimal_cache_config_local(monkeypatch):
 
 def test_optimal_cache_config_hpc(monkeypatch):
     """Test HPC environment detection."""
-    mock_psutil = MagicMock()
-    # 64 GB
-    mock_psutil.virtual_memory().total = 64 * (1024**3)
-    monkeypatch.setattr(torchfits.cache, "psutil", mock_psutil)
+    _mock_sysconf_with_memory(monkeypatch, 64.0)
 
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
 
@@ -71,10 +74,7 @@ def test_optimal_cache_config_hpc(monkeypatch):
 
 def test_optimal_cache_config_cloud(monkeypatch):
     """Test cloud environment detection."""
-    mock_psutil = MagicMock()
-    # 16 GB
-    mock_psutil.virtual_memory().total = 16 * (1024**3)
-    monkeypatch.setattr(torchfits.cache, "psutil", mock_psutil)
+    _mock_sysconf_with_memory(monkeypatch, 16.0)
 
     monkeypatch.setenv("AWS_EXECUTION_ENV", "lambda")
 
@@ -90,12 +90,8 @@ def test_optimal_cache_config_cloud(monkeypatch):
 
 def test_optimal_cache_config_gpu(monkeypatch):
     """Test GPU workstation detection."""
-    mock_psutil = MagicMock()
-    # 32 GB
-    mock_psutil.virtual_memory().total = 32 * (1024**3)
-    monkeypatch.setattr(torchfits.cache, "psutil", mock_psutil)
+    _mock_sysconf_with_memory(monkeypatch, 32.0)
 
-    # Mocking CacheConfig._is_gpu_environment directly
     monkeypatch.setattr(CacheConfig, "_is_gpu_environment", lambda: True)
 
     config = get_optimal_cache_config()

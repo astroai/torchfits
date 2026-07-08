@@ -83,17 +83,6 @@ class TestMainAPI:
         finally:
             os.unlink(filepath)
 
-    def test_read_image_deprecated(self):
-        """read_image should emit a deprecation warning and delegate to read_tensor."""
-        filepath, expected_data = self.create_test_fits()
-        try:
-            with pytest.deprecated_call():
-                result = torchfits.read_image(filepath, mmap=False)
-            assert isinstance(result, torch.Tensor)
-            assert result.shape == expected_data.shape
-        finally:
-            os.unlink(filepath)
-
     def test_read_tensor_matches_read(self):
         """read_tensor and default read should agree numerically."""
         filepath, _ = self.create_test_fits(shape=(128, 128), dtype=np.float64)

@@ -49,7 +49,7 @@ Repository = "https://github.com/astroai/torchfits"
 # For pixi environments, these are managed separately via features
 [project.optional-dependencies]
 
-cache = ["psutil>=5.0.0"]
+cache = []
 
 dev = [
     "pytest>=6.0",
@@ -63,7 +63,6 @@ bench = [
     "fitsio>=1.1",
     "pandas>=1.0",
     "matplotlib>=3.0",
-    "psutil>=5.0",
 ]
 test = [
     "pytest>=6.0",

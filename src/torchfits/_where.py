@@ -1,5 +1,6 @@
 from functools import lru_cache
 import re
+import ast
 from typing import Any, Optional, List, Tuple
 
 _WHERE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -117,184 +118,163 @@ def _normalize_where_syntax(where: str) -> str:
     return result
 
 
+def normalize_logical_operators(where: str) -> str:
+    parts = re.split(r"('[^']*'|\"[^\"]*\")", where)
+    for i in range(0, len(parts), 2):
+        s = parts[i]
+        s = re.sub(r"\bAND\b", "and", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bOR\b", "or", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bNOT\b", "not", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bIN\b", "in", s, flags=re.IGNORECASE)
+        parts[i] = s
+    return "".join(parts)
+
+
+def normalize_between(where: str) -> str:
+    where = re.sub(
+        r"\b(\w+)\s+NOT\s+BETWEEN\s+('[^']+'|\"[^\"]+\"|\S+)\s+AND\s+('[^']+'|\"[^\"]+\"|\S+)",
+        r"_not_between(\1, \2, \3)",
+        where,
+        flags=re.IGNORECASE,
+    )
+    where = re.sub(
+        r"\b(\w+)\s+BETWEEN\s+('[^']+'|\"[^\"]+\"|\S+)\s+AND\s+('[^']+'|\"[^\"]+\"|\S+)",
+        r"_between(\1, \2, \3)",
+        where,
+        flags=re.IGNORECASE,
+    )
+    return where
+
+
+def normalize_nulls(where: str) -> str:
+    where = re.sub(
+        r"\b(\w+)\s+IS\s+NOT\s+NULL\b", r"_isnotnull(\1)", where, flags=re.IGNORECASE
+    )
+    where = re.sub(
+        r"\b(\w+)\s+NOT\s+NULL\b", r"_isnotnull(\1)", where, flags=re.IGNORECASE
+    )
+    where = re.sub(
+        r"\b(\w+)\s+IS\s+NULL\b", r"_isnull(\1)", where, flags=re.IGNORECASE
+    )
+    return where
+
+
+def _get_constant_val(node):
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str) and node.value.upper() in {"NULL", "NONE"}:
+            return None
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id.upper() in {"NULL", "NONE"}:
+            return None
+        return node.id
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        val = _get_constant_val(node.operand)
+        if isinstance(val, (int, float)):
+            return -val
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+        return _get_constant_val(node.operand)
+    raise ValueError("Expected a constant value")
+
+
+def _extract_literals(node):
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [_get_constant_val(el) for el in node.elts]
+    return [_get_constant_val(node)]
+
+
+def _to_custom_ast(node):
+    if isinstance(node, ast.Expression):
+        return _to_custom_ast(node.body)
+
+    if isinstance(node, ast.BoolOp):
+        op_name = "and" if isinstance(node.op, ast.And) else "or"
+        current = _to_custom_ast(node.values[0])
+        for val in node.values[1:]:
+            current = (op_name, current, _to_custom_ast(val))
+        return current
+
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return ("not", _to_custom_ast(node.operand))
+
+    if isinstance(node, ast.Compare):
+        left = node.left
+        if not isinstance(left, ast.Name):
+            raise ValueError(
+                "where expects a column identifier before comparison operator"
+            )
+        col_name = left.id
+
+        if len(node.ops) != 1:
+            raise ValueError("Unsupported complex comparison")
+
+        op = node.ops[0]
+        comparator = node.comparators[0]
+
+        if isinstance(op, ast.In):
+            literals = _extract_literals(comparator)
+            return ("in", col_name, literals, False)
+
+        if isinstance(op, ast.NotIn):
+            literals = _extract_literals(comparator)
+            return ("in", col_name, literals, True)
+
+        op_map = {
+            ast.Eq: "==",
+            ast.NotEq: "!=",
+            ast.Gt: ">",
+            ast.GtE: ">=",
+            ast.Lt: "<",
+            ast.LtE: "<=",
+        }
+        if type(op) not in op_map:
+            raise ValueError(f"Unsupported operator: {op}")
+
+        literal = _get_constant_val(comparator)
+        return ("cmp", col_name, op_map[type(op)], literal)
+
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            if func_name in {"_between", "_not_between"}:
+                if len(node.args) != 3 or not isinstance(node.args[0], ast.Name):
+                    raise ValueError("Invalid between call")
+                col_name = node.args[0].id
+                low = _get_constant_val(node.args[1])
+                high = _get_constant_val(node.args[2])
+                negate = func_name == "_not_between"
+                return ("between", col_name, low, high, negate)
+
+            if func_name in {"_isnull", "_isnotnull"}:
+                if len(node.args) != 1 or not isinstance(node.args[0], ast.Name):
+                    raise ValueError("Invalid null check call")
+                col_name = node.args[0].id
+                negate = func_name == "_isnotnull"
+                return ("isnull", col_name, negate)
+
+    raise ValueError(
+        "where expects a comparison operator or IN/BETWEEN/IS NULL variants after column identifier"
+    )
+
+
 @lru_cache(maxsize=1024)
 def _parse_where_expression(where: str):
     if not isinstance(where, str) or not where.strip():
         raise ValueError("where must be a non-empty string expression")
-    where = _normalize_where_syntax(where)
+    try:
+        where_normalized = _normalize_where_syntax(where)
+        where_normalized = normalize_logical_operators(where_normalized)
+        where_normalized = normalize_between(where_normalized)
+        where_normalized = normalize_nulls(where_normalized)
 
-    tokens = _tokenize_where_expression(where)
-    if not tokens:
-        raise ValueError("where must be a non-empty string expression")
-
-    idx = 0
-
-    def _peek() -> Optional[Tuple[str, str]]:
-        return tokens[idx] if idx < len(tokens) else None
-
-    def _consume() -> Tuple[str, str]:
-        nonlocal idx
-        if idx >= len(tokens):
+        node = ast.parse(where_normalized.strip(), mode="eval")
+        return _to_custom_ast(node)
+    except SyntaxError as e:
+        if where.count("(") != where.count(")"):
+            raise ValueError("Unbalanced parentheses in where expression")
+        if "end of" in str(e) or "EOF" in str(e) or "unexpected EOF" in str(e):
             raise ValueError("Unexpected end of where expression")
-        out = tokens[idx]
-        idx += 1
-        return out
-
-    def _consume_logic(expected: str) -> None:
-        tok = _peek()
-        if tok is None or tok[0] != "WORD" or tok[1].upper() != expected:
-            raise ValueError(f"Expected '{expected}' in where expression")
-        _consume()
-
-    def _parse_literal_token(tok: Tuple[str, str]) -> Any:
-        if tok[0] == "LITERAL":
-            return tok[1]
-        if tok[0] == "WORD":
-            return _parse_where_literal(tok[1])
-        raise ValueError("where expects a literal value")
-
-    def _parse_literal_list() -> List[Any]:
-        head = _consume()
-        if head[0] != "LPAREN":
-            raise ValueError("where IN expects '(' after IN")
-        literals: List[Any] = []
-        while True:
-            tok = _peek()
-            if tok is None:
-                raise ValueError("Unexpected end of where expression in IN list")
-            if tok[0] == "RPAREN":
-                _consume()
-                break
-            if literals:
-                sep = _consume()
-                if sep[0] != "COMMA":
-                    raise ValueError("where IN expects ',' between list literals")
-            tok = _consume()
-            literals.append(_parse_literal_token(tok))
-        return literals
-
-    def _parse_comparison():
-        lhs = _consume()
-        if lhs[0] != "WORD" or _WHERE_IDENT_RE.fullmatch(lhs[1]) is None:
-            raise ValueError(
-                "where expects a column identifier before comparison operator"
-            )
-        op_tok = _peek()
-        if op_tok is None:
-            raise ValueError(
-                "where expects a comparison operator after column identifier"
-            )
-
-        if op_tok[0] == "OP":
-            _consume()
-            rhs = _consume()
-            literal = _parse_literal_token(rhs)
-            return ("cmp", lhs[1], op_tok[1], literal)
-
-        if op_tok[0] == "WORD" and op_tok[1].upper() == "IN":
-            _consume_logic("IN")
-            return ("in", lhs[1], _parse_literal_list(), False)
-
-        if op_tok[0] == "WORD" and op_tok[1].upper() == "BETWEEN":
-            _consume_logic("BETWEEN")
-            low = _parse_literal_token(_consume())
-            _consume_logic("AND")
-            high = _parse_literal_token(_consume())
-            return ("between", lhs[1], low, high, False)
-
-        if op_tok[0] == "WORD" and op_tok[1].upper() == "IS":
-            _consume_logic("IS")
-            next_tok = _peek()
-            negate = False
-            if (
-                next_tok is not None
-                and next_tok[0] == "WORD"
-                and next_tok[1].upper() == "NOT"
-            ):
-                _consume_logic("NOT")
-                negate = True
-            _consume_logic("NULL")
-            return ("isnull", lhs[1], negate)
-
-        if op_tok[0] == "WORD" and op_tok[1].upper() == "NOT":
-            _consume_logic("NOT")
-            next_tok = _peek()
-            if (
-                next_tok is not None
-                and next_tok[0] == "WORD"
-                and next_tok[1].upper() == "IN"
-            ):
-                _consume_logic("IN")
-                return ("in", lhs[1], _parse_literal_list(), True)
-            if (
-                next_tok is not None
-                and next_tok[0] == "WORD"
-                and next_tok[1].upper() == "BETWEEN"
-            ):
-                _consume_logic("BETWEEN")
-                low = _parse_literal_token(_consume())
-                _consume_logic("AND")
-                high = _parse_literal_token(_consume())
-                return ("between", lhs[1], low, high, True)
-            if (
-                next_tok is not None
-                and next_tok[0] == "WORD"
-                and next_tok[1].upper() == "NULL"
-            ):
-                _consume_logic("NULL")
-                return ("isnull", lhs[1], True)
-            raise ValueError("where expects IN/BETWEEN/NULL after NOT")
-
-        raise ValueError(
-            "where expects a comparison operator or IN/BETWEEN/IS NULL variants after column identifier"
-        )
-
-    def _parse_primary():
-        tok = _peek()
-        if tok is None:
-            raise ValueError("Unexpected end of where expression")
-        if tok[0] == "LPAREN":
-            _consume()
-            node = _parse_or()
-            tail = _consume()
-            if tail[0] != "RPAREN":
-                raise ValueError("Unbalanced parentheses in where expression")
-            return node
-        return _parse_comparison()
-
-    def _parse_not():
-        tok = _peek()
-        if tok is not None and tok[0] == "WORD" and tok[1].upper() == "NOT":
-            _consume_logic("NOT")
-            return ("not", _parse_not())
-        return _parse_primary()
-
-    def _parse_and():
-        node = _parse_not()
-        while True:
-            tok = _peek()
-            if tok is not None and tok[0] == "WORD" and tok[1].upper() == "AND":
-                _consume_logic("AND")
-                rhs = _parse_not()
-                node = ("and", node, rhs)
-                continue
-            return node
-
-    def _parse_or():
-        node = _parse_and()
-        while True:
-            tok = _peek()
-            if tok is not None and tok[0] == "WORD" and tok[1].upper() == "OR":
-                _consume_logic("OR")
-                rhs = _parse_and()
-                node = ("or", node, rhs)
-                continue
-            return node
-
-    ast = _parse_or()
-    if idx != len(tokens):
         raise ValueError("Unexpected trailing tokens in where expression")
-    return ast
 
 
 def _where_columns_from_ast(ast) -> List[str]:
