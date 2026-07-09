@@ -17,6 +17,7 @@ from .._table.cache import _acquire_cpp_handle
 from .._table.cache import _acquire_cpp_reader
 from .._where import parse_where_expression, where_columns_from_ast
 from .._table_engine import (
+    WhereReadPlan,
     WhereStrategy,
     choose_where_read_plan,
     should_skip_cpp_numpy_for_where,
@@ -625,16 +626,20 @@ def _read_table_with_where(
     except Exception:
         n_rows = 0
 
-    plan = choose_where_read_plan(
-        header=hdr,
-        header_ok=header_ok,
-        columns=columns,
-        backend=backend,
-        n_rows=n_rows,
-    ) if header_ok else WhereReadPlan(
-        strategy=WhereStrategy.ARROW_FILTER,
-        cpp_pushdown_safe=False,
-        unfiltered_backend=backend,
+    plan = (
+        choose_where_read_plan(
+            header=hdr,
+            header_ok=header_ok,
+            columns=columns,
+            backend=backend,
+            n_rows=n_rows,
+        )
+        if header_ok
+        else WhereReadPlan(
+            strategy=WhereStrategy.ARROW_FILTER,
+            cpp_pushdown_safe=False,
+            unfiltered_backend=backend,
+        )
     )
 
     if plan.strategy == WhereStrategy.CPP_PUSHDOWN:
@@ -1038,13 +1043,6 @@ def _read_cpp_numpy_table(
     import numpy as np
     import torchfits._C as cpp
 
-    has_numpy_row_api = hasattr(
-        cpp, "read_fits_table_rows_numpy_from_handle"
-    ) or hasattr(cpp, "read_fits_table_rows_numpy")
-    has_torch_table_api = hasattr(cpp, "read_fits_table")
-    if not has_numpy_row_api and not has_torch_table_api:
-        return None
-
     if rows is not None and row_slice is not None:
         raise ValueError("Only one of rows or row_slice may be provided")
 
@@ -1095,7 +1093,7 @@ def _read_cpp_numpy_table(
 
     col_list = columns if columns else []
 
-    # -- C++ dispatch chain (kept inline for stability) -------------------------
+    # -- C++ dispatch chain (simplified & unified) -------------------------
     from .engine import _read_ranges_as_chunk
 
     chunk = None
@@ -1107,7 +1105,7 @@ def _read_cpp_numpy_table(
         and not apply_fits_nulls
         and _can_use_torch_table_path_for_full_read(path, hdu, columns)
     )
-    if prefer_torch_full_path and has_torch_table_api:
+    if prefer_torch_full_path:
         if mmap and _can_use_mmap_row_path_for_full_read(path, hdu, columns):
             try:
                 chunk = cpp.read_fits_table(path, hdu, col_list, True)
@@ -1115,7 +1113,7 @@ def _read_cpp_numpy_table(
                 chunk = None
         if chunk is None:
             try:
-                if not col_list and hasattr(cpp, "read_fits_table_from_handle"):
+                if not col_list:
                     file_handle = _acquire_cpp_handle(path, cpp)
                     chunk = cpp.read_fits_table_from_handle(file_handle, hdu)
                 else:
@@ -1124,10 +1122,6 @@ def _read_cpp_numpy_table(
                 chunk = None
 
     if chunk is None and rows is not None:
-        if not hasattr(cpp, "TableReader") or not hasattr(
-            cpp.TableReader, "read_rows_numpy"
-        ):
-            return None
         rows_arr = np.asarray(rows, dtype=np.int64)
         if rows_arr.size == 0:
             pa = _require_pyarrow()
@@ -1170,29 +1164,15 @@ def _read_cpp_numpy_table(
             else:
                 chunk[name] = value
 
-    if (
-        chunk is None
-        and hasattr(cpp, "TableReader")
-        and hasattr(cpp.TableReader, "read_rows_numpy")
-    ):
+    if chunk is None:
         try:
-            reader = _acquire_cpp_reader(path, hdu, cpp)
-            chunk = reader.read_rows_numpy(col_list, start_row, num_rows)
-        except Exception:
-            chunk = None
-    if chunk is None and hasattr(cpp, "read_fits_table_rows_numpy_from_handle"):
-        try:
-            file_handle = _acquire_cpp_handle(path, cpp)
-            chunk = cpp.read_fits_table_rows_numpy_from_handle(
-                file_handle, hdu, col_list, start_row, num_rows
-            )
-        except Exception:
-            chunk = None
-    if chunk is None and hasattr(cpp, "read_fits_table_rows_numpy"):
-        try:
-            chunk = cpp.read_fits_table_rows_numpy(
-                path, hdu, col_list, start_row, num_rows, False
-            )
+            if mmap:
+                chunk = cpp.read_fits_table_rows_numpy(
+                    path, hdu, col_list, start_row, num_rows, True
+                )
+            else:
+                reader = _acquire_cpp_reader(path, hdu, cpp)
+                chunk = reader.read_rows_numpy(col_list, start_row, num_rows)
         except Exception:
             chunk = None
     if chunk is None:
@@ -1387,7 +1367,9 @@ def dataset(
         raise ImportError("pyarrow.dataset is required for dataset conversion") from exc
 
     if isinstance(data, str):
-        return ds.dataset(reader(data, **kwargs))
+        # In older pyarrow versions, ds.dataset() does not accept RecordBatchReader directly.
+        # We read all batches into a Table first.
+        return ds.dataset(reader(data, **kwargs).read_all())
     return ds.dataset(data)
 
 
@@ -1411,7 +1393,14 @@ def scanner(
         kwargs["where"] = where
 
     if isinstance(data, str):
-        dset = dataset(data, **kwargs)
+        rdr = reader(data, **kwargs)
+        return ds.Scanner.from_batches(
+            rdr,
+            columns=columns,
+            filter=filter,
+            batch_size=batch_size,
+            use_threads=use_threads,
+        )
     elif hasattr(data, "scanner"):
         dset = data
     else:

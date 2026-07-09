@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -199,11 +200,15 @@ class TableHDU(TensorFrame):
 
         return set(string_column_names(header))
 
-    @property
+    # ⚡ Bolt: Cache string column derivation to avoid redundant header parsing and
+    # string extraction on repeated access (e.g., during loops or schema validations).
+    @functools.cached_property
     def string_columns(self) -> List[str]:
         return sorted(self._get_string_columns(self.header))
 
-    @property
+    # ⚡ Bolt: Cache schema building to prevent O(N) header traversals
+    # for TTYPE*/TFORM* keys on every property access.
+    @functools.cached_property
     def schema(self) -> Dict[str, Any]:
         return self._build_schema()
 
@@ -264,7 +269,9 @@ class TableHDU(TensorFrame):
             decoded = np.char.rstrip(decoded, " \x00")
         return decoded.tolist()
 
-    @property
+    # ⚡ Bolt: Cache row count extraction to prevent scanning all column tensors
+    # and re-evaluating shapes on every length check.
+    @functools.cached_property
     def num_rows(self) -> int:
         if hasattr(self, "_raw_data") and self._raw_data:
             import numpy as np

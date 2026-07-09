@@ -251,11 +251,16 @@ class HDUList:
             html.append("<tr>")
             import html as pyhtml
 
-            for val, s in zip(row, styles):
+            for col_idx, (val, s) in enumerate(zip(row, styles)):
                 escaped_val = pyhtml.escape(str(val))
-                html.append(
-                    f"<td style='{s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{escaped_val}</td>"
-                )
+                if col_idx == 0:
+                    html.append(
+                        f'<th scope="row" style=\'font-weight: normal; {s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);\'>{escaped_val}</th>'
+                    )
+                else:
+                    html.append(
+                        f"<td style='{s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{escaped_val}</td>"
+                    )
             html.append("</tr>")
 
         html.append("</tbody></table></div>")

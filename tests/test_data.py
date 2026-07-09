@@ -1,7 +1,11 @@
 """Tests for torchfits.data — datasets, collate, and loader helpers."""
 
+import json as _json
 import os
+import subprocess as _subprocess
+import sys as _sys
 import tempfile
+import textwrap as _textwrap
 
 import numpy as np
 import pytest
@@ -414,10 +418,7 @@ class TestMakeLoader:
 # that pytest re-reads after the subprocess exits.
 
 
-import json as _json
-import subprocess as _subprocess
-import sys as _sys
-import textwrap as _textwrap
+
 
 
 class TestMultiWorkerDataLoader:
@@ -491,9 +492,7 @@ class TestMultiWorkerDataLoader:
         )
         assert report["count"] == len(files)
 
-    def test_multiprocess_iterable_shards_deterministically(
-        self, temp_image_dir
-    ):
+    def test_multiprocess_iterable_shards_deterministically(self, temp_image_dir):
         """IterableDataset with num_workers=2 yields total==len(files)."""
         _tmpdir, files = temp_image_dir
         report = self._run_in_subprocess(

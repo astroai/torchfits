@@ -46,6 +46,7 @@ jobs:
       CIBW_BUILD: cp310-* cp311-* cp312-* cp313-*
       CIBW_SKIP: pp* *-musllinux_* *-manylinux_i686 *-win32
       CIBW_ARCHS_LINUX: x86_64
+      CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
       # ponytail: macOS x86_64 hits nanobind LTO + libtorch link failures on GHA; arm64 is primary.
       CIBW_ARCHS_MACOS: arm64
       CIBW_TEST_REQUIRES: numpy

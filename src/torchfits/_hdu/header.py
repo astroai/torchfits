@@ -252,7 +252,7 @@ class Header(dict):
             c = pyhtml.escape(str(card.comment))
             html_parts.append("<tr>")
             html_parts.append(
-                f"<td style='padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-weight: bold;'>{k}</td>"
+                f'<th scope="row" style=\'text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-weight: bold;\'>{k}</th>'
             )
             html_parts.append(
                 f"<td style='padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{v}</td>"

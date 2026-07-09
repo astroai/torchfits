@@ -44,7 +44,6 @@ def choose_where_read_plan(
     Prefers C++ pushdown (mmap-based filtered read) when safe. Falls back to
     arrow-filter (read-all-then-filter) for VLA columns or explicit torch backend.
     """
-    is_vla_table = fits_schema.table_has_vla(header) if header_ok else False
     vla_in_projection = (
         fits_schema.selected_includes_vla(header, columns) if header_ok else True
     )

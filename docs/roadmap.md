@@ -196,7 +196,7 @@ In addition to the standard release gate:
 - [x] `read_unified` strategy refactor merged; `read_dispatch.py` removed; dispatcher split into
       `_io_engine/_read_pipeline.py` (CPU fast paths, strategies) + `_read_pipeline_fallback.py`
       (slow-but-reliable path). File sizes: ~770 + ~360 = ~1130 LOC (post A2 extraction was 779 LOC).
-- [ ] C++ `read_table_chunk` is the sole Python table-chunk entry *(deferred to 0.6.0b3)*
+- [x] C++ `read_table_chunk` is the sole Python table-chunk entry (simplified C++ dispatch)
 - [x] `torchfits.data` documented with multi-worker test coverage (`tests/test_data.py::TestMultiWorkerDataLoader`)
 - [x] `torchfits.transforms` round-trip tests for scaled images and tables
       (`tests/test_transforms.py` + `tests/test_transforms_e2e.py`, roundtripped via real FITS files)
