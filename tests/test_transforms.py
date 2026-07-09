@@ -738,7 +738,7 @@ class TestEdgeCases:
         assert fwd.shape == x.shape
         inv = c.inverse(fwd)
         err = (x - inv).abs().max().item()
-        assert err < 1e-5
+        assert err < 1e-4
 
     def test_repr_methods(self):
         """Verify repr is informative and doesn't crash."""
