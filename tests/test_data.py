@@ -489,9 +489,7 @@ class TestMultiWorkerDataLoader:
         )
         assert report["count"] == len(files)
 
-    def test_multiprocess_iterable_shards_deterministically(
-        self, temp_image_dir
-    ):
+    def test_multiprocess_iterable_shards_deterministically(self, temp_image_dir):
         """IterableDataset with num_workers=2 yields total==len(files)."""
         _tmpdir, files = temp_image_dir
         report = self._run_in_subprocess(

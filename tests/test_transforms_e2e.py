@@ -106,9 +106,7 @@ class TestEndToEndImageRoundTrip:
         physical = physical.reshape(64, 64).to(torch.float64)
         # Quantize to storage grid + back to physical so on-disk and physical
         # match at the bzero/bscale step level.
-        physical_grid = (
-            ((physical.double() - bzero) / bscale).round() * bscale + bzero
-        )
+        physical_grid = ((physical.double() - bzero) / bscale).round() * bscale + bzero
         with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp:
             path = tmp.name
         try:
@@ -155,14 +153,18 @@ class TestEndToEndImageRoundTrip:
     def test_int32_scaled_image(self):
         bscale = 0.001
         bzero = -100.0
-        physical = (torch.arange(0, 32 * 32, dtype=torch.float64) / bscale + bzero).reshape(32, 32)
+        physical = (
+            torch.arange(0, 32 * 32, dtype=torch.float64) / bscale + bzero
+        ).reshape(32, 32)
         physical_grid = (
             ((physical - bzero) / bscale).round() * bscale + bzero
         ).reshape(32, 32)
         with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp:
             path = tmp.name
         try:
-            _write_bscaled_image_fits(path, physical_grid, bscale=bscale, bzero=bzero, bitpix=32)
+            _write_bscaled_image_fits(
+                path, physical_grid, bscale=bscale, bzero=bzero, bitpix=32
+            )
             from torchfits import read_tensor
 
             recovered = read_tensor(path, hdu=0)
@@ -190,9 +192,7 @@ class TestEndToEndTableRoundTrip:
         )
         # Quantize to TSCAL grid so on-disk storage yields the same physical
         # value back via TSCAL*stored + TZERO.
-        physical_grid = (
-            ((physical - tzero) / tscal).round() * tscal + tzero
-        )
+        physical_grid = ((physical - tzero) / tscal).round() * tscal + tzero
         with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp:
             path = tmp.name
         try:
@@ -261,7 +261,9 @@ class TestEndToEndTableRoundTrip:
             recovered = torch.from_numpy(
                 arrow_table.column("VAL").to_numpy().astype("float64")
             )
-            assert torch.equal(recovered.round().to(torch.int32), physical.to(torch.int32))
+            assert torch.equal(
+                recovered.round().to(torch.int32), physical.to(torch.int32)
+            )
         finally:
             os.unlink(path)
 
