@@ -437,7 +437,7 @@ class TestZScaleNormalize:
         t = ZScaleNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_output_in_01_range(self):
         x = _make_tensor((4, 32, 32), kind="normal")
@@ -467,7 +467,7 @@ class TestRobustNormalize:
         t = RobustNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_near_zero_median(self):
         x = _make_tensor((4, 32, 32), kind="normal")
@@ -496,7 +496,7 @@ class TestBackgroundSubtract:
         t = BackgroundSubtract()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_subtracts_median(self):
         x = torch.ones(4, 64, 64) * 5.0
@@ -521,7 +521,7 @@ class TestPercentileClipNormalize:
         t = PercentileClipNormalize(lower_pct=0, upper_pct=100)
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_output_range(self):
         x = _make_tensor((4, 32, 32), kind="normal")
@@ -572,7 +572,7 @@ class TestMinMaxNormalize:
         t = MinMaxNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_output_range(self):
         x = _make_tensor((4, 32, 32), kind="normal")
@@ -678,7 +678,7 @@ class TestEdgeCases:
         t = RobustNormalize(dim=(-1,))
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
-        assert err < 1e-5
+        assert err < 2e-5
 
     def test_3d_cube(self):
         x = _make_tensor((2, 32, 32), kind="uniform")

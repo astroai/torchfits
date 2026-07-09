@@ -418,9 +418,6 @@ class TestMakeLoader:
 # that pytest re-reads after the subprocess exits.
 
 
-
-
-
 class TestMultiWorkerDataLoader:
     """Verify that ``make_loader(..., num_workers=N)`` shards files correctly."""
 

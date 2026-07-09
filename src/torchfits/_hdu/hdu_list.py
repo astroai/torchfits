@@ -255,7 +255,7 @@ class HDUList:
                 escaped_val = pyhtml.escape(str(val))
                 if col_idx == 0:
                     html.append(
-                        f'<th scope="row" style=\'font-weight: normal; {s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);\'>{escaped_val}</th>'
+                        f"<th scope=\"row\" style='font-weight: normal; {s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{escaped_val}</th>"
                     )
                 else:
                     html.append(
