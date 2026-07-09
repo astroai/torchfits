@@ -61,9 +61,7 @@ def render_quick(quick_dir: Path) -> str:
     ]
     for (_scope, label), data in zip(SCOPES.items(), rows):
         if data is None:
-            lines.append(
-                f"| — | {label} | _(no run yet)_ | — | — |"
-            )
+            lines.append(f"| — | {label} | _(no run yet)_ | — | — |")
             continue
         run_id = data.get("run_id", "—")
         command = data.get("command", "—")
