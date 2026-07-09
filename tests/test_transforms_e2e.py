@@ -15,13 +15,10 @@ import os
 import tempfile
 
 import numpy as np
-import pytest
 import torch
 
 from torchfits.transforms import (
     FITSHeaderNormalize,
-    FITSHeaderScale,
-    FITSScaleColumns,
     TNullToNan,
 )
 

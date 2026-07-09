@@ -1,7 +1,11 @@
 """Tests for torchfits.data — datasets, collate, and loader helpers."""
 
+import json as _json
 import os
+import subprocess as _subprocess
+import sys as _sys
 import tempfile
+import textwrap as _textwrap
 
 import numpy as np
 import pytest
@@ -412,12 +416,6 @@ class TestMakeLoader:
 # (forking inside pytest hangs the test runner on libomp / libcfitsio
 # threadpool handles).  Each subprocess writes a JSON report to a temp file
 # that pytest re-reads after the subprocess exits.
-
-
-import json as _json
-import subprocess as _subprocess
-import sys as _sys
-import textwrap as _textwrap
 
 
 class TestMultiWorkerDataLoader:
