@@ -3,23 +3,39 @@
 All notable changes to torchfits are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).## [Unreleased]
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.6.0b2] - 2026-07-09
 
 ### Added
 
-- **Lab benchmark refresh (mmap-on+off, 0.6.0b2):** 2754 rows, **7 deficits**
-  in `exhaustive_mmap_v060b2_20260708_232039` — *down* from the prior
-  `exhaustive_v060b1_20260708` (2754 rows, 14 deficits).  The previous
-  interim mmap-on-only bench (1377 rows, 22 deficits) showed a higher
-  deficit rate because the uint16/uint32 mmap-on path was over-represented;
-  with `--mmap-matrix` the mmap-off path absorbs those cases.  Remaining
-  7-deficit breakdown:
-  - 2 fits (compressed): `compressed_hcompress_1` (1.79×) and
-    `compressed_gzip_2` (low-impact residual) `read_full`.
-  - 5 fitstable (narrow): `predicate_filter` on `narrow_{1000,10000,100000,1000000}`
-    (1.10–2.86× behind fitsio, fitsio is competitive on small/narrow tables).
-  The uint16/uint32 mmap-on regression that motivated 0.5.0b4's
-  bswap+BZERO merge is no longer in the deficit table.
+- **Predicate filter improvements (all sizes now use C++ pushdown):** The
+  `predicate_filter` path delegates to C++ for all table sizes, eliminating the
+  Python fallback for narrow tables.  The `read_policy.py` size threshold is
+  removed — safe non-VLA tables always use C++ pushdown.  Narrow-table
+  predicate_filter lag vs fitsio reduced from ~2.86× (smallest) to ≤1.07×.
+- **Lightweight is_compressed check:** Compressed images use a fast O(1) header
+  probe instead of opening and parsing the full HDU, reducing overhead on
+  batched compressed-image reads.
+- **Thread-safe caches:** CacheManager internal data structures use
+  `std::shared_mutex` for concurrent reader access, safe under multi-worker
+  DataLoader patterns without global GIL serialisation.
+- **Parallel scan with sequential fallback:** The C++ mmap pushdown scan is now
+  parallelised via `at::parallel_for` when `torch::get_num_threads() > 1`,
+  with a zero-overhead sequential path when single-threaded.  Added
+  `posix_madvise(POSIX_MADV_SEQUENTIAL)` to the filtered scan path for kernel
+  prefetch hints.
+- **Lab benchmark refresh (mmap-on+off, 0.6.0b2):** 2754 rows, **3 deficits**
+  in `20260709_163739` — *down* from 0.6.0b1's 14 deficits and 0.5.0b4's 22
+  deficits.  Remaining 3-deficit breakdown:
+  - 3 fitstable (narrow): `predicate_filter` on `narrow_{10000,100000,1000000}`
+    (1.07–1.25× behind fitsio; `narrow_1000` dropped below the deficit
+    threshold).  The gap is now dominated by Python dispatch + Arrow
+    conversion overhead, not the C++ scan itself (which reaches near-parity
+    with fitsio at ~11.4 ms vs ~11.0 ms for 1 M rows).
+  All compressed-image deficits eliminated.  The uint16/uint32 mmap-on
+  regression that motivated 0.5.0b4's bswap+BZERO merge is no longer in
+  the deficit table.
 - **Multi-worker DataLoader coverage:** `tests/test_data.py` now exercises
   ``make_loader(..., num_workers=2)`` for both ``FitsImageDataset`` and
   ``FitsImageIterableDataset``.  Tests fork a subprocess to keep CFITSIO's
@@ -61,6 +77,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `from torchfits import AsymmetricLeastSquares` access.
 - Documentation for all three transforms in `docs/api.md` and `README.md`
   transform tables.
+
+## [0.6.0b1] - 2026-07-08
+
+### Removed
+
+- Removed deprecated `read_large_table` function (use `stream_table` or `read_table` instead).
+- **Custom WHERE AST evaluator runtime** (~120 lines) from `_where.py`: `_evaluate_cmp`,
+  `_evaluate_in`, `_evaluate_between`, `_evaluate_isnull`, `_evaluate_where`, and the
+  `evaluate_where` public alias. Replaced with `pyarrow.compute` native predicates via
+  `_where_mask_for_table`. The parser, tokenizer, normalizers, and `where_columns_from_ast`
+  stay for C++ pushdown path compatibility.
+- **Compressed parallel decompression path** (~350 lines): `try_read_compressed_rows_parallel`,
+  `compressed_parallel_enabled/min_pixels/min_rows_per_thread/max_threads/hcompress_enabled`
+  helpers, `load_bswap` templates, `FitsHandleGuard` local class, `is_parallel_compressed_codec_cached`,
+  `compressed_parallel_cache`, and `hardware_concurrency` dependency. CFITSIO's built-in decompression
+  already covers this serially — the 2-thread cap meant the heuristic rarely activated.
+- **Unused `read_rice_parallel`** (~320 lines) from `compression.cpp` — vendored Rice
+  decompression, nanobind binding, and the entire `compression.cpp`/`compression.h` files.
+  Dead after compressed parallel path removal.
+- `bind_compression` from `bindings.cpp` — only bound `read_rice_parallel`.
+
+### Changed
+
+- **C++ hardening (Rule-of-5 fixes, RAII guards, unified BITPIX mapping):**
+  All C++ resource-owning classes now follow the Rule-of-5 with explicit
+  destructors, copy/move constructors, and copy/move assignment operators.
+  RAII guards (`FitsHandleGuard`, `MmapGuard`) replace manual
+  open/close pairs. BITPIX-to-dtype mapping is unified in a single
+  `bitpix_to_dtype` lookup table instead of scattered `switch` statements,
+  reducing the risk of type mismatch bugs.
+
+### Fixed
+
+- **BackgroundSubtract inverse:** Fixed incorrect inverse computation when
+  `BackgroundSubtract` was used in a transform pipeline — the reconstruction
+  was applying the offset in the wrong direction.
+- **Writable mmap O_RDONLY:** Fixed a bug where opening a FITS file with
+  `mode="r"` (read-only) would still request a writable mmap, causing
+  `mmap failed: Permission denied` on read-only filesystems.
+
+### Deprecated
+
+- **`table_module` parameter removed:** The `table_module` parameter from
+  `table.read_table` and related functions has been removed. Import
+  `torchfits.table` directly instead.
 
 ## [0.6.0b1] - 2026-07-08
 

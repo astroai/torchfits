@@ -631,6 +631,10 @@ def _read_table_with_where(
         columns=columns,
         backend=backend,
         n_rows=n_rows,
+    ) if header_ok else WhereReadPlan(
+        strategy=WhereStrategy.ARROW_FILTER,
+        cpp_pushdown_safe=False,
+        unfiltered_backend=backend,
     )
 
     if plan.strategy == WhereStrategy.CPP_PUSHDOWN:

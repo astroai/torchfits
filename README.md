@@ -42,18 +42,19 @@ backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
 
 ## What's New in 0.6.0
 
-0.6.0 (beta) is a focused FITS I/O release: tensor-native reads/writes, Arrow tables with
-C++ predicate pushdown, mmap in-place table updates (BIT, complex, fixed-width strings),
-unsigned integer conventions, compressed-image parity, and test-backed compatibility
-with common `astropy.io.fits` and `fitsio` workflows.
+0.6.0 is a focused FITS I/O release with a maintainable Python/C++ core,
+first-class `torch.utils.data` integration, and header-aware preprocessing.
+Key improvements:
 
-Recent beta improvements:
+- **C++ engine hardening** — Rule-of-5 fixes, RAII guards, unified BITPIX mapping.
+- **Predicate filter C++ pushdown** — all table sizes use C++ for `where=` filtering.
+- **Lightweight is_compressed check** — O(1) header probe for compressed images.
+- **Thread-safe caches** — `std::shared_mutex` for concurrent multi-worker access.
+- **torchfits.data module** — `FitsImageDataset`, `make_loader` with automatic cache tuning.
+- **25+ ML-friendly transforms** — all with `.inverse()` for model output decoding.
+- **7 deficits remaining** (down from 22) in the lab exhaustive benchmark suite.
 
-- Shared FITS table schema parsing (`fits_schema`) — one code path for TFORM/VLA/string/bit/unsigned columns across table, HDU, and read dispatch.
-- Smarter `where=` reads — automatic choice between Arrow filter and C++ pushdown based on table size and column layout.
-- Cleaner cache boundaries — table handle caches live in `_table.cache` without circular imports through `io`.
-
-Full history: [docs/changelog.md](docs/changelog.md). Roadmap for the final 0.6.0 and beyond: [docs/roadmap.md](docs/roadmap.md).
+Full history: [docs/changelog.md](docs/changelog.md). Roadmap for 0.6.x and beyond: [docs/roadmap.md](docs/roadmap.md).
 
 ## Transforms
 

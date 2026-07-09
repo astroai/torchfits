@@ -233,10 +233,11 @@ Still supported; prefer the canonical paths above:
 
 All transforms are compatible with `torch.utils.data.Dataset` and `DataLoader`.
 Every transform provides a matching `.inverse()` for decoding model outputs
-back to physical units.  Import from the root:
+back to physical units.  Image and spectral transforms are in `torchfits.transforms`;
+continuum/baseline estimators are accessible from `torchfits` directly:
 
 ```python
-from torchfits import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
+from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
 pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
 ```
 

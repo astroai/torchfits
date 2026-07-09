@@ -316,9 +316,11 @@ void bind_table(nb::module_& m) {
             nb::handle val = item[2];
             if (nb::isinstance<float>(val)) {
                  f.val_d = nb::cast<double>(val);
+                 f.val_i = (int64_t)f.val_d;
                  f.type_idx = 0;
             } else if (nb::isinstance<int>(val)) {
                  f.val_i = nb::cast<int64_t>(val);
+                 f.val_d = (double)f.val_i;
                  f.type_idx = 1;
             } else {
                  throw std::runtime_error("Unsupported filter value type (only float/int)");

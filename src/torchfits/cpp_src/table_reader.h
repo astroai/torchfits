@@ -12,6 +12,8 @@
 #include <ATen/Parallel.h>
 #include <functional>
 #include <new>
+#include <mutex>
+#include <algorithm>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -1050,9 +1052,17 @@ public:
             if (!found) throw std::runtime_error("Filter column not found: " + f.col_name);
         }
 
-        // Scan rows
+        // Hints: sequential access pattern for kernel prefetch
+#if defined(POSIX_MADV_SEQUENTIAL)
+        {
+            size_t byte_len = static_cast<size_t>(nrows_) * row_width_bytes_;
+            posix_madvise(const_cast<uint8_t*>(data_ptr), byte_len, POSIX_MADV_SEQUENTIAL);
+        }
+#endif
+
+        // Scan rows (parallelized)
         std::vector<long> valid_indices;
-        valid_indices.reserve(nrows_); // Avoid reallocations for high selectivity
+        std::mutex indices_mutex;
 
         if (ctxs.size() == 1) {
             const auto& ctx = ctxs[0];
@@ -1079,155 +1089,111 @@ public:
                 return t;
             }();
 
-            if (ctx.is_int) {
-                const int32_t target = (int32_t)ctx.filter->val_i;
-                const int32_t pre_swapped = (int32_t)pre_swapped_target_int;
-                // EQ/NE: compare raw bytes without per-row bswap when possible
-                if (op == FilterOp::EQ) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint32_t raw; std::memcpy(&raw, val_ptr, 4);
-                        if (raw == (uint32_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else if (op == FilterOp::NE) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint32_t raw; std::memcpy(&raw, val_ptr, 4);
-                        if (raw != (uint32_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else {
-                    for (long i = 0; i < nrows_; i++) {
-                        uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint32_t tmp;
-                        std::memcpy(&tmp, val_ptr, 4);
-                        int32_t val = (int32_t)bswap_32(tmp);
+            valid_indices.reserve(nrows_);
 
-                        bool match = false;
-                        switch (op) {
-                            case FilterOp::GT: match = (val > target); break;
-                            case FilterOp::LT: match = (val < target); break;
-                            case FilterOp::GE: match = (val >= target); break;
-                            case FilterOp::LE: match = (val <= target); break;
-                            default: break;
+            // Scan body shared between sequential and parallel dispatch.
+            auto scan_chunk = [&](long start, long end, std::vector<long>& out) {
+                if (ctx.is_int) {
+                    const int32_t target = (int32_t)ctx.filter->val_i;
+                    const int32_t pre_swapped = (int32_t)pre_swapped_target_int;
+                    if (op == FilterOp::EQ) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint32_t raw; std::memcpy(&raw, val_ptr, 4);
+                            if (raw == (uint32_t)pre_swapped) out.push_back(i);
                         }
-                        if (match) valid_indices.push_back(i);
-                    }
-                }
-            } else if (ctx.is_short) {
-                const int16_t target = (int16_t)ctx.filter->val_i;
-                const int16_t pre_swapped = (int16_t)pre_swapped_target_int;
-                if (op == FilterOp::EQ) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint16_t raw; std::memcpy(&raw, val_ptr, 2);
-                        if (raw == (uint16_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else if (op == FilterOp::NE) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint16_t raw; std::memcpy(&raw, val_ptr, 2);
-                        if (raw != (uint16_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else {
-                    for (long i = 0; i < nrows_; i++) {
-                        uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint16_t tmp; std::memcpy(&tmp, val_ptr, 2);
-                        int16_t val = (int16_t)bswap_16(tmp);
-                        bool match = false;
-                        switch (op) {
-                            case FilterOp::GT: match = (val > target); break;
-                            case FilterOp::LT: match = (val < target); break;
-                            case FilterOp::GE: match = (val >= target); break;
-                            case FilterOp::LE: match = (val <= target); break;
-                            default: break;
+                    } else if (op == FilterOp::NE) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint32_t raw; std::memcpy(&raw, val_ptr, 4);
+                            if (raw != (uint32_t)pre_swapped) out.push_back(i);
                         }
-                        if (match) valid_indices.push_back(i);
-                    }
-                }
-            } else if (ctx.is_long) {
-                const int64_t target = ctx.filter->val_i;
-                const int64_t pre_swapped = pre_swapped_target_int;
-                if (op == FilterOp::EQ) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint64_t raw; std::memcpy(&raw, val_ptr, 8);
-                        if (raw == (uint64_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else if (op == FilterOp::NE) {
-                    for (long i = 0; i < nrows_; i++) {
-                        const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint64_t raw; std::memcpy(&raw, val_ptr, 8);
-                        if (raw != (uint64_t)pre_swapped) valid_indices.push_back(i);
-                    }
-                } else {
-                    for (long i = 0; i < nrows_; i++) {
-                        uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                        uint64_t tmp;
-                        std::memcpy(&tmp, val_ptr, 8);
-                        int64_t val = (int64_t)bswap_64(tmp);
-
-                        bool match = false;
-                        switch (op) {
-                            case FilterOp::GT: match = (val > target); break;
-                            case FilterOp::LT: match = (val < target); break;
-                            case FilterOp::GE: match = (val >= target); break;
-                            case FilterOp::LE: match = (val <= target); break;
-                            default: break;
+                    } else {
+                        for (long i = start; i < end; i++) {
+                            uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint32_t tmp; std::memcpy(&tmp, val_ptr, 4);
+                            int32_t val = (int32_t)bswap_32(tmp);
+                            bool match = false;
+                            switch (op) {
+                                case FilterOp::GT: match = (val > target); break;
+                                case FilterOp::LT: match = (val < target); break;
+                                case FilterOp::GE: match = (val >= target); break;
+                                case FilterOp::LE: match = (val <= target); break;
+                                default: break;
+                            }
+                            if (match) out.push_back(i);
                         }
-                        if (match) valid_indices.push_back(i);
                     }
-                }
-            } else if (ctx.is_float) {
-                const float target = (float)ctx.filter->val_d;
-                for (long i = 0; i < nrows_; i++) {
-                    uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                    uint32_t tmp;
-                    std::memcpy(&tmp, val_ptr, 4);
-                    tmp = bswap_32(tmp);
-                    float val;
-                    std::memcpy(&val, &tmp, 4);
-
-                    bool match = false;
-                    switch (op) {
-                        case FilterOp::EQ: match = (val == target); break;
-                        case FilterOp::NE: match = (val != target); break;
-                        case FilterOp::GT: match = (val > target); break;
-                        case FilterOp::LT: match = (val < target); break;
-                        case FilterOp::GE: match = (val >= target); break;
-                        case FilterOp::LE: match = (val <= target); break;
+                } else if (ctx.is_short) {
+                    const int16_t target = (int16_t)ctx.filter->val_i;
+                    const int16_t pre_swapped = (int16_t)pre_swapped_target_int;
+                    if (op == FilterOp::EQ) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint16_t raw; std::memcpy(&raw, val_ptr, 2);
+                            if (raw == (uint16_t)pre_swapped) out.push_back(i);
+                        }
+                    } else if (op == FilterOp::NE) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint16_t raw; std::memcpy(&raw, val_ptr, 2);
+                            if (raw != (uint16_t)pre_swapped) out.push_back(i);
+                        }
+                    } else {
+                        for (long i = start; i < end; i++) {
+                            uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint16_t tmp; std::memcpy(&tmp, val_ptr, 2);
+                            int16_t val = (int16_t)bswap_16(tmp);
+                            bool match = false;
+                            switch (op) {
+                                case FilterOp::GT: match = (val > target); break;
+                                case FilterOp::LT: match = (val < target); break;
+                                case FilterOp::GE: match = (val >= target); break;
+                                case FilterOp::LE: match = (val <= target); break;
+                                default: break;
+                            }
+                            if (match) out.push_back(i);
+                        }
                     }
-                    if (match) valid_indices.push_back(i);
-                }
-            } else if (ctx.is_double) {
-                const double target = ctx.filter->val_d;
-                for (long i = 0; i < nrows_; i++) {
-                    uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
-                    uint64_t tmp;
-                    std::memcpy(&tmp, val_ptr, 8);
-                    tmp = bswap_64(tmp);
-                    double val;
-                    std::memcpy(&val, &tmp, 8);
-
-                    bool match = false;
-                    switch (op) {
-                        case FilterOp::EQ: match = (val == target); break;
-                        case FilterOp::NE: match = (val != target); break;
-                        case FilterOp::GT: match = (val > target); break;
-                        case FilterOp::LT: match = (val < target); break;
-                        case FilterOp::GE: match = (val >= target); break;
-                        case FilterOp::LE: match = (val <= target); break;
+                } else if (ctx.is_long) {
+                    const int64_t target = ctx.filter->val_i;
+                    const int64_t pre_swapped = pre_swapped_target_int;
+                    if (op == FilterOp::EQ) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint64_t raw; std::memcpy(&raw, val_ptr, 8);
+                            if (raw == (uint64_t)pre_swapped) out.push_back(i);
+                        }
+                    } else if (op == FilterOp::NE) {
+                        for (long i = start; i < end; i++) {
+                            const uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint64_t raw; std::memcpy(&raw, val_ptr, 8);
+                            if (raw != (uint64_t)pre_swapped) out.push_back(i);
+                        }
+                    } else {
+                        for (long i = start; i < end; i++) {
+                            uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                            uint64_t tmp; std::memcpy(&tmp, val_ptr, 8);
+                            int64_t val = (int64_t)bswap_64(tmp);
+                            bool match = false;
+                            switch (op) {
+                                case FilterOp::GT: match = (val > target); break;
+                                case FilterOp::LT: match = (val < target); break;
+                                case FilterOp::GE: match = (val >= target); break;
+                                case FilterOp::LE: match = (val <= target); break;
+                                default: break;
+                            }
+                            if (match) out.push_back(i);
+                        }
                     }
-                    if (match) valid_indices.push_back(i);
-                }
-            } else {
-                // Fallback for byte type (other types handled above)
-                for (long i = 0; i < nrows_; i++) {
-                    uint8_t* row_ptr = data_ptr + i * row_width_bytes_;
-                    uint8_t* val_ptr = row_ptr + ctx.offset;
-                    bool match = false;
-                    if (ctx.is_byte) {
-                        uint8_t val = *val_ptr;
-                        int64_t target = ctx.filter->val_i;
+                } else if (ctx.is_float) {
+                    const float target = (float)ctx.filter->val_d;
+                    for (long i = start; i < end; i++) {
+                        uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                        uint32_t tmp; std::memcpy(&tmp, val_ptr, 4);
+                        tmp = bswap_32(tmp);
+                        float val; std::memcpy(&val, &tmp, 4);
+                        bool match = false;
                         switch (op) {
                             case FilterOp::EQ: match = (val == target); break;
                             case FilterOp::NE: match = (val != target); break;
@@ -1236,12 +1202,67 @@ public:
                             case FilterOp::GE: match = (val >= target); break;
                             case FilterOp::LE: match = (val <= target); break;
                         }
+                        if (match) out.push_back(i);
                     }
-                    if (match) valid_indices.push_back(i);
+                } else if (ctx.is_double) {
+                    const double target = ctx.filter->val_d;
+                    for (long i = start; i < end; i++) {
+                        uint8_t* val_ptr = data_ptr + i * row_width_bytes_ + offset;
+                        uint64_t tmp; std::memcpy(&tmp, val_ptr, 8);
+                        tmp = bswap_64(tmp);
+                        double val; std::memcpy(&val, &tmp, 8);
+                        bool match = false;
+                        switch (op) {
+                            case FilterOp::EQ: match = (val == target); break;
+                            case FilterOp::NE: match = (val != target); break;
+                            case FilterOp::GT: match = (val > target); break;
+                            case FilterOp::LT: match = (val < target); break;
+                            case FilterOp::GE: match = (val >= target); break;
+                            case FilterOp::LE: match = (val <= target); break;
+                        }
+                        if (match) out.push_back(i);
+                    }
+                } else {
+                    // Fallback for byte type
+                    for (long i = start; i < end; i++) {
+                        uint8_t* row_ptr = data_ptr + i * row_width_bytes_;
+                        uint8_t* val_ptr = row_ptr + ctx.offset;
+                        bool match = false;
+                        if (ctx.is_byte) {
+                            uint8_t val = *val_ptr;
+                            int64_t target = ctx.filter->val_i;
+                            switch (op) {
+                                case FilterOp::EQ: match = (val == target); break;
+                                case FilterOp::NE: match = (val != target); break;
+                                case FilterOp::GT: match = (val > target); break;
+                                case FilterOp::LT: match = (val < target); break;
+                                case FilterOp::GE: match = (val >= target); break;
+                                case FilterOp::LE: match = (val <= target); break;
+                            }
+                        }
+                        if (match) out.push_back(i);
+                    }
                 }
+            };
+
+            if (torch::get_num_threads() > 1) {
+                at::parallel_for(0, nrows_, 4096, [&](long start, long end) {
+                    std::vector<long> local;
+                    local.reserve(end - start);
+                    scan_chunk(start, end, local);
+                    if (!local.empty()) {
+                        std::lock_guard<std::mutex> lock(indices_mutex);
+                        valid_indices.insert(valid_indices.end(), local.begin(), local.end());
+                    }
+                });
+                std::sort(valid_indices.begin(), valid_indices.end());
+            } else {
+                scan_chunk(0, nrows_, valid_indices);
             }
         } else {
-            // Original multi-filter fallback
+            // Multi-filter fallback (single-threaded, uncommon case)
+            std::vector<long> local;
+            local.reserve(nrows_);
             for (long i = 0; i < nrows_; i++) {
                 uint8_t* row_ptr = data_ptr + i * row_width_bytes_;
                 bool row_match = true;
@@ -1322,8 +1343,9 @@ public:
                     }
                     if (!match) { row_match = false; break; }
                 }
-                if (row_match) valid_indices.push_back(i);
+                if (row_match) local.push_back(i);
             }
+            valid_indices = std::move(local);
         }
 
         // Gather results

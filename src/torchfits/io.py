@@ -87,6 +87,10 @@ def read_fast(
     raw_scale: bool = False,
     scale_on_device: bool = True,
 ):
+    """Fast-path image read with optional half-precision and CUDA direct.
+
+    Uses the C++ fast I/O path. Returns a torch.Tensor.
+    """
     from ._fastio import read as _read_fast
 
     return _read_fast(
@@ -164,6 +168,11 @@ def read(
     return_header: bool = False,
     **kwargs: Any,
 ):
+    """Read a FITS image or table from the given path and HDU.
+
+    Returns the data as a torch.Tensor (images) or pyarrow Table (tables),
+    optionally with the FITS header.
+    """
     if "mode" in kwargs:
         raise TypeError("read() got multiple values for argument 'mode'")
     kwargs = dict(kwargs)
@@ -230,6 +239,7 @@ def read_table(
     fast_header: bool = True,
     return_header: bool = False,
 ):
+    """Read a FITS table HDU as a pyarrow Table."""
     return _read_table_impl(
         read,
         path,
@@ -254,6 +264,7 @@ def read_hdus(
     mmap: bool = True,
     return_header: bool = False,
 ):
+    """Read multiple HDUs from a single FITS file. Returns a list of tensors."""
     return _read_hdus_impl(
         path, hdus, device=device, mmap=mmap, return_header=return_header
     )
@@ -268,6 +279,7 @@ def read_subset(
     y2: int,
     handle_cache_capacity: int = 16,
 ):
+    """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU."""
     return _read_subset_impl(
         get_cached_handle=_get_cached_handle_impl,
         path=path,
@@ -281,10 +293,12 @@ def read_subset(
 
 
 def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu"):
+    """Open a reusable subset reader for repeated cutout access on an image HDU."""
     return _open_subset_reader_impl(path, hdu=hdu, device=device)
 
 
 def open(path: str, mode: str = "r") -> HDUList:
+    """Open a FITS file and return an HDUList for low-level HDU/header access."""
     return _open_hdulist_impl(path, mode=mode)
 
 
@@ -295,6 +309,7 @@ def write(
     overwrite: bool = False,
     compress: bool | str = False,
 ) -> None:
+    """Write a tensor or numpy array to a FITS file (primary or image extension)."""
     return _write_impl(
         path, data, header=header, overwrite=overwrite, compress=compress
     )
@@ -322,6 +337,7 @@ def insert_hdu(
     header: dict[str, Any] | None = None,
     compress: bool | str = False,
 ) -> None:
+    """Insert a new image HDU into an existing FITS file at the given index."""
     return _insert_hdu_impl(path, data, index=index, header=header, compress=compress)
 
 
@@ -332,6 +348,7 @@ def replace_hdu(
     header: dict[str, Any] | None = None,
     compress: bool | str = False,
 ) -> None:
+    """Replace an existing HDU in a FITS file with new data."""
     return _replace_hdu_impl(path, hdu, data, header=header, compress=compress)
 
 
@@ -340,10 +357,12 @@ def delete_hdu(
     hdu: int | str,
     compress: bool | str = False,
 ) -> None:
+    """Delete an HDU from a FITS file by index or name."""
     return _delete_hdu_impl(path, hdu, compress=compress)
 
 
 def get_header(path: str, hdu: Any = None):
+    """Read the FITS header for the given HDU as a Header dict-like object."""
     return _get_header_impl(path, hdu, autodetect_hdu=_autodetect_hdu_impl)
 
 
@@ -361,6 +380,7 @@ def stream_table(
     mmap: bool = False,
     max_chunks: int | None = None,
 ):
+    """Stream a FITS table in row chunks, yielding pyarrow Tables."""
     return _stream_table_impl(
         get_header,
         file_path,
@@ -381,6 +401,7 @@ def read_batch(
     *,
     strict: bool = False,
 ):
+    """Read the same HDU from multiple FITS files as a batched tensor."""
     return _read_batch_impl(
         read_func=read,
         read_exc_types=_READ_EXC_TYPES,
@@ -393,10 +414,12 @@ def read_batch(
 
 
 def get_batch_info(file_paths: list[str]):
+    """Inspect shape and dtype consistency across files for batched reading."""
     return _get_batch_info_impl(file_paths)
 
 
 def get_cache_performance():
+    """Return cache hit/miss statistics for the handle and metadata caches."""
     return _get_cache_performance_impl()
 
 
@@ -410,6 +433,7 @@ def clear_file_cache(
     cpp: bool = True,
     cpp_module: Any = None,
 ) -> None:
+    """Clear the FITS file handle and metadata caches selectively."""
     return _clear_file_cache_impl(
         data=data,
         handles=handles,
@@ -422,10 +446,12 @@ def clear_file_cache(
 
 
 def cache_subsystem_policy(name: str) -> dict[str, bool]:
+    """Query which cache subsystems (data, handles, meta) are enabled for a policy."""
     return _cache_subsystem_policy_impl(name)
 
 
 def clear_cache_subsystem(name: str) -> None:
+    """Clear all caches for the given subsystem name."""
     _clear_cache_subsystem_impl(name)
 
 
@@ -438,10 +464,12 @@ atexit.register(_shutdown_fits_io_caches)
 
 
 def write_checksums(path: str, hdu: int = 0) -> None:
+    """Write DATASUM and CHECKSUM keywords for the given HDU."""
     return _write_checksums_impl(path, hdu=hdu)
 
 
 def verify_checksums(path: str, hdu: int = 0) -> dict[str, Any]:
+    """Verify DATASUM and CHECKSUM for the given HDU. Returns dict of status."""
     return _verify_checksums_impl(path, hdu=hdu)
 
 
@@ -458,6 +486,7 @@ def read_table_rows(
     fast_header: bool = True,
     return_header: bool = False,
 ):
+    """Read a contiguous range of rows from a FITS table HDU."""
     if not isinstance(hdu, int) or hdu < 0:
         raise ValueError("hdu must be a non-negative integer")
     if num_rows <= 0:

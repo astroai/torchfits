@@ -23,9 +23,9 @@ def test_choose_where_read_plan_small_table():
         columns=["MAG"],
         backend="auto",
         n_rows=50,
-        env={},
     )
-    assert plan.strategy == WhereStrategy.ARROW_FILTER
+    # All safe tables now use C++ pushdown regardless of size.
+    assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
     assert plan.unfiltered_backend == "cpp_numpy"
 
 
@@ -37,6 +37,5 @@ def test_choose_where_read_plan_large_table():
         columns=["MAG"],
         backend="auto",
         n_rows=500_000,
-        env={},
     )
     assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
