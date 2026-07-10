@@ -762,6 +762,36 @@ class TableHDU(TensorFrame):
             overwrite=overwrite,
         )
 
+    def _repr_html_(self):
+        import html as pyhtml
+
+        html_parts = [
+            '<div tabindex="0" aria-label="FITS Table HDU" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
+            "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
+            "<thead><tr>",
+        ]
+
+        name = self.header.get("EXTNAME", "TABLE")
+        html_parts.append(
+            f"<th colspan='2' style='text-align: left; padding: 8px; position: sticky; top: 0; background-color: var(--theme-ui-colors-background, white); border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>TableHDU: {pyhtml.escape(str(name))}</th>"
+        )
+        html_parts.append("</tr></thead><tbody>")
+
+        props = [("Rows", self.num_rows), ("Columns", len(self.columns))]
+
+        for k, v in props:
+            html_parts.append("<tr>")
+            html_parts.append(
+                f"<th scope=\"row\" style='text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-weight: bold;'>{pyhtml.escape(str(k))}</th>"
+            )
+            html_parts.append(
+                f"<td style='padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{pyhtml.escape(str(v))}</td>"
+            )
+            html_parts.append("</tr>")
+
+        html_parts.append("</tbody></table></div>")
+        return "".join(html_parts)
+
     def __repr__(self):
         name = self.header.get("EXTNAME", "TABLE")
         return (
