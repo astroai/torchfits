@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Union
+from typing import List, Optional, Union, NamedTuple, Dict, Any
 
 from .header import Header
 from .tensor_hdu import TensorHDU
 from .table_hdu import TableHDU
 from .table_hdu_ref import TableHDURef
+
+
+class _HDUInfo(NamedTuple):
+    index: int
+    type: int
+    header: Dict[str, Any]
 
 
 class HDUList:
@@ -48,14 +54,13 @@ class HDUList:
                     header_dict = cpp.read_header(handle, i)
                     hdu_type = cpp.get_hdu_type(handle, i)
 
-                    class Info:
-                        pass
-
-                    info = Info()
-                    info.index = i
-                    info.type = hdu_type
-                    info.header = header_dict
-                    hdu_infos.append(info)
+                    hdu_infos.append(
+                        _HDUInfo(
+                            index=i,
+                            type=hdu_type,
+                            header=header_dict,
+                        )
+                    )
 
             hdul._file_handle = handle
 

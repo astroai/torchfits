@@ -682,20 +682,21 @@ def _sanitize_table_header_for_write(
     return out
 
 
+class _TableWriteProxy:
+    def __init__(
+        self,
+        raw_data: Any,
+        header: Header,
+        schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        self._raw_data = raw_data
+        self.header = header
+        self._schema = schema
+
+
 def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> None:
     """Write an HDU sequence through the uncompressed C++ writer."""
     import torchfits._C as cpp
-
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
 
     payload: List[Any] = []
     for idx, hdu in enumerate(hdus):
@@ -749,17 +750,6 @@ def _write_hdus_with_optional_compression(
         return
 
     import torchfits._C as cpp
-
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
 
     payload = []
     for idx, hdu in enumerate(hdus):
