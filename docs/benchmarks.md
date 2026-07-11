@@ -152,7 +152,16 @@ TORCHFITS_GIT_REF=<sha> TORCHFITS_BENCH_RUN_ID=exhaustive_cuda_0.7.0_<stamp> \
 ```
 
 Launcher: `scripts/launch_canfar_gpu_bench.sh` (image `astroai/base:latest`,
-`--gpu 1`). In-container work uses **pixi**; stdout/stderr + CSVs tee to
+`--gpu 1`). Requires Harbor registry credentials in `canfar config` for private
+`astroai/*` images:
+
+```bash
+canfar config set registry.url https://images.canfar.net
+canfar config set registry.username <harbor-username>
+canfar config set registry.secret <harbor-token>
+```
+
+In-container work uses **pixi**; stdout/stderr + CSVs tee to
 `${TMP_SCRATCH_DIR}/torchfits-gpu-bench/<run-id>/`. Platform logs land under
 `benchmarks_results/canfar_<run-id>/` locally.
 

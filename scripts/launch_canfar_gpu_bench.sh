@@ -11,8 +11,8 @@ RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.7.0_$(date -u +%Y%m%d_%H%M%S
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
 GPU="${TORCHFITS_CANFAR_GPU:-1}"
-# ponytail: CANFAR session names allow [A-Za-z0-9-] only
-SAFE_TAG="${RUN_ID//_/-}"
+# ponytail: CANFAR session names allow [A-Za-z0-9-] only (no dots/underscores)
+SAFE_TAG="$(printf '%s' "${RUN_ID}" | tr '_.' '--' | tr -cd '[:alnum:]-')"
 NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
@@ -22,6 +22,19 @@ mkdir -p "$LOCAL_OUT"
 
 if ! command -v canfar >/dev/null; then
   echo "canfar CLI not found (install from canfar-portal or CANFAR image venv)" >&2
+  exit 1
+fi
+
+if [[ "${IMAGE}" == astroai/* ]] && ! canfar config get registry.username >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+astroai/* images are private on images.canfar.net — configure Harbor registry auth once:
+
+  canfar config set registry.url https://images.canfar.net
+  canfar config set registry.username <harbor-username>
+  canfar config set registry.secret <harbor-token-or-password>
+
+Then re-run: pixi run bench-canfar-gpu
+EOF
   exit 1
 fi
 
@@ -61,14 +74,18 @@ EOF
 )
 
 CREATE_LOG="${LOCAL_OUT}/create.log"
-if ! canfar create headless "${IMAGE}" \
+set +o pipefail
+canfar create headless "${IMAGE}" \
   --name "${NAME}" \
   --gpu "${GPU}" \
   --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}" \
   --env "TORCHFITS_BENCH_MODE=${MODE}" \
   --env "TORCHFITS_GIT_REF=${GIT_REF}" \
-  -- bash -lc "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"; then
-  echo "canfar create failed; see ${CREATE_LOG}" >&2
+  -- bash -lc "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
+CREATE_RC=${PIPESTATUS[0]}
+set -o pipefail
+if [[ "${CREATE_RC}" -ne 0 ]]; then
+  echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
   exit 1
 fi
 
