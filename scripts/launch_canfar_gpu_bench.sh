@@ -11,7 +11,9 @@ RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.7.0_$(date -u +%Y%m%d_%H%M%S
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
 GPU="${TORCHFITS_CANFAR_GPU:-1}"
-NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${RUN_ID}}"
+# ponytail: CANFAR session names allow [A-Za-z0-9-] only
+SAFE_TAG="${RUN_ID//_/-}"
+NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
