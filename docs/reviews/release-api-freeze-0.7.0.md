@@ -48,7 +48,7 @@ All **Supported** tier-1/2 rows in `docs/parity.md` have named test files.
 | Public API inventory | 50 root `__all__` symbols; `table`/`cache`/`cpp`/`data` namespaces |
 | `tests/test_docs_integrity.py` | Included in release-gate |
 | `tests/test_package_isolation.py` | No Python `astropy`/`fitsio` imports in `src/torchfits` |
-| Benchmark snapshot | `20260710_020649` — 3516 rows, **34 deficits** (8 CPU ≤1.32×; 26 MPS micro-lag) |
+| Benchmark snapshot | `exhaustive_0.7.0_20260711_022156` — 3516 rows, **39 deficits** (9 CPU ≤1.32×; 30 MPS micro-lag) |
 
 ## Version triplet
 

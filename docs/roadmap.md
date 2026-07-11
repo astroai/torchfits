@@ -214,12 +214,12 @@ deprecation cycle.
 | Dimension | Exit criterion | Status |
 |---|---|---|
 | **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*` | ✅ 0.7.0 — legacy `FITSDataset` removed |
-| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — run `20260710_020649`, CPU core deficits ≤1.32× (`predicate_filter` on narrow tables) |
+| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — run `exhaustive_0.7.0_20260711_022156`, CPU core deficits ≤1.32× (`predicate_filter` on narrow tables) |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
 | **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
 | **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
-| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3516 rows, 34 deficits (26 MPS micro-lag + 8 CPU) |
+| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3516 rows, 39 deficits (30 MPS micro-lag + 9 CPU) |
 | **GPU I/O** | E1–E3 verified on CANFAR staging (`astroai/base:latest`) | 0.8.0 target |
 | **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
 
