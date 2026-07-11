@@ -146,51 +146,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **C++ hardening (Rule-of-5 fixes, RAII guards, unified BITPIX mapping):**
-  All C++ resource-owning classes now follow the Rule-of-5 with explicit
-  destructors, copy/move constructors, and copy/move assignment operators.
-  RAII guards (`FitsHandleGuard`, `MmapGuard`) replace manual
-  open/close pairs. BITPIX-to-dtype mapping is unified in a single
-  `bitpix_to_dtype` lookup table instead of scattered `switch` statements,
-  reducing the risk of type mismatch bugs.
-
-### Fixed
-
-- **BackgroundSubtract inverse:** Fixed incorrect inverse computation when
-  `BackgroundSubtract` was used in a transform pipeline — the reconstruction
-  was applying the offset in the wrong direction.
-- **Writable mmap O_RDONLY:** Fixed a bug where opening a FITS file with
-  `mode="r"` (read-only) would still request a writable mmap, causing
-  `mmap failed: Permission denied` on read-only filesystems.
-
-### Deprecated
-
-- **`table_module` parameter removed:** The `table_module` parameter from
-  `table.read_table` and related functions has been removed. Import
-  `torchfits.table` directly instead.
-
-## [0.6.0b1] - 2026-07-08
-
-### Removed
-
-- Removed deprecated `read_large_table` function (use `stream_table` or `read_table` instead).
-- **Custom WHERE AST evaluator runtime** (~120 lines) from `_where.py`: `_evaluate_cmp`,
-  `_evaluate_in`, `_evaluate_between`, `_evaluate_isnull`, `_evaluate_where`, and the
-  `evaluate_where` public alias. Replaced with `pyarrow.compute` native predicates via
-  `_where_mask_for_table`. The parser, tokenizer, normalizers, and `where_columns_from_ast`
-  stay for C++ pushdown path compatibility.
-- **Compressed parallel decompression path** (~350 lines): `try_read_compressed_rows_parallel`,
-  `compressed_parallel_enabled/min_pixels/min_rows_per_thread/max_threads/hcompress_enabled`
-  helpers, `load_bswap` templates, `FitsHandleGuard` local class, `is_parallel_compressed_codec_cached`,
-  `compressed_parallel_cache`, and `hardware_concurrency` dependency. CFITSIO's built-in decompression
-  already covers this serially — the 2-thread cap meant the heuristic rarely activated.
-- **Unused `read_rice_parallel`** (~320 lines) from `compression.cpp` — vendored Rice
-  decompression, nanobind binding, and the entire `compression.cpp`/`compression.h` files.
-  Dead after compressed parallel path removal.
-- `bind_compression` from `bindings.cpp` — only bound `read_rice_parallel`.
-
-### Changed
-
 - **3→1 C++ read path merge:** Extracted a single `read_tensor_canonical()` in `fits_detail.h`
   and converted three read paths (`read_full_cached`, `read_full_nocache`, `FITSFile::read_tensor`)
   into thin wrappers, eliminating ~455 lines of duplication.

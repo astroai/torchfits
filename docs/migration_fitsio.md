@@ -51,10 +51,10 @@
 
 | Metric | fitsio | torchfits |
 |--------|--------|-----------|
-| Large float32 image (16 MB, CPU) | ~4.8 ms | ~2.0 ms (**2.4× faster**) |
-| Compressed Rice image (CPU) | ~16.2 ms | ~7.3 ms (**2.2× faster**) |
-| Table read (100k rows, 8 cols) | ~45 ms | ~48 μs (**~940× faster**) |
-| Table predicate (1M narrow) | ~6.3 ms | ~11.1 ms (**1.20× slower — narrow `predicate_filter` deficit**) |
-| 50× repeated 100×100 cutouts (CPU) | ~4.7 ms | ~3.4 ms (**1.4× faster**) |
+| Large float32 image (16 MB, CPU) | 6.09 ms | 3.93 ms (**1.6× faster**) |
+| Compressed Rice image (CPU) | 9.36 ms | 8.99 ms (**1.04× faster**) |
+| Table read (100k rows, 8 cols) | 59.41 ms | 86.9 μs (**~680× faster**) |
+| Table predicate (1M narrow) | 13.07 ms | 14.10 ms (**1.08× slower — `predicate_filter` deficit**) |
+| 50× repeated 100×100 cutouts (CPU) | 4.76 ms | 4.63 ms (**1.03× faster**) |
 
-*Benchmarks from `exhaustive_0.7.0_20260711_022156` (lab, mmap on+off matrix, MPS on Apple Silicon). torchfits dominates table I/O on most paths; narrow `predicate_filter` cases lag fitsio by up to ~1.32× on CPU — see [benchmarks.md](benchmarks.md) deficit table.*
+*Benchmarks from `exhaustive_cuda_0.7.0_20260711_055635` (CANFAR staging, mmap on+off matrix). Narrow `predicate_filter` cases lag fitsio by up to ~1.17× on CPU — see [benchmarks.md](benchmarks.md) deficit table.*

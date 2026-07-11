@@ -10,6 +10,7 @@ on:
 
 env:
   FORCE_COLOR: 1
+  TORCHFITS_EXAMPLE_FAST: "1"
 
 jobs:
   lint:

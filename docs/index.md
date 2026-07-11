@@ -25,7 +25,7 @@ See [Installation](install.md) for wheels, source builds, and GPU setup.
 | Public API | [API Reference](api.md) |
 | Runnable workflows | [Examples](examples.md) |
 | Supported vs out-of-scope | [Parity Matrix](parity.md) |
-| From Astropy / fitsio | [Migration guides](migration_astropy.md) |
+| From Astropy / fitsio | [migration_astropy.md](migration_astropy.md), [migration_fitsio.md](migration_fitsio.md) |
 | Dataset API changes | [Dataset migration](migration_datasets.md) |
 | Table / cutout datasets | [Examples](examples.md) — `example_data_catalogs.py` |
 | Performance numbers | [Benchmarks](benchmarks.md) |

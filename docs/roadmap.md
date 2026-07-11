@@ -214,18 +214,18 @@ deprecation cycle.
 | Dimension | Exit criterion | Status |
 |---|---|---|
 | **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*` | ✅ 0.7.0 — legacy `FITSDataset` removed |
-| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — run `exhaustive_0.7.0_20260711_022156`, CPU core deficits ≤1.32× (`predicate_filter` on narrow tables) |
+| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — `exhaustive_cuda_0.7.0_20260711_055635`: 11 deficits, all ≤1.17× (CPU `predicate_filter` + marginal CUDA int8) |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
 | **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
 | **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
-| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3516 rows, 39 deficits (30 MPS micro-lag + 9 CPU) |
+| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3626 rows, 11 deficits in published snapshot (`exhaustive_cuda_0.7.0_20260711_055635`) |
 | **GPU I/O** | E1–E3 verified on CANFAR staging (`astroai/base:latest`) | 0.8.0 target |
 | **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
 
 ### 1.0 exit checklist
 
-- [x] Performance floor ≤2× (3 deficits at 1.07–1.25×)
+- [x] Performance floor ≤2× (11 deficits at ≤1.17× in 0.7.0 CANFAR snapshot)
 - [x] `torchfits.data` complete (`FitsTableIterableDataset`, `FitsCutoutDataset`); legacy datasets removed
 - [x] `torchfits.transforms` round-trip tests
 - [x] C++ `read_table_chunk` sole table-chunk entry
@@ -253,7 +253,7 @@ High-priority benchmark gaps addressed before the 0.5.0 tag:
 | Dtype-fair GPU bench column | **Done** | `torchfits_dtype_fair_device` in `bench_gpu_transports.py` |
 | Training cache warm-up docs | **Done** | `optimize_for_dataset` in `example_image_dataset.py` |
 | ML loader diagnostic in release notes | **Done** | README + changelog cite `bench_ml_loader.py` CPU numbers |
-| Lab CUDA snapshot refresh | **Done** | `exhaustive_mmap_0.5.0b4_20260630_162835` — 3626 rows, **13 deficits** (was 22) |
+| Lab CUDA snapshot refresh | **Done** | `exhaustive_cuda_0.7.0_20260711_055635` — 3626 rows, **11 deficits** (CANFAR staging) |
 
 **Deferred to 0.6.0** (medium/low priority from perf triage):
 

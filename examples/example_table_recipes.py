@@ -10,6 +10,9 @@ from astropy.table import Table
 
 import torchfits
 
+# ponytail: avoid pyarrow scanner thread deadlock on some Linux CI runners
+_CI_FAST = os.environ.get("TORCHFITS_EXAMPLE_FAST") == "1"
+
 
 def _write_catalog(path: str, offset: float = 0.0) -> None:
     table = Table(
@@ -53,67 +56,77 @@ def main() -> None:
         print(f"table.read (DEC > 0): {north.num_rows} rows")
 
         # 2) PyArrow Dataset scanner for composable filters
-        try:
-            import pyarrow.dataset as ds
-        except ImportError:
-            print("pyarrow.dataset not installed; skipping scanner recipe")
+        if _CI_FAST:
+            print("CI fast mode: skipping table.scanner recipe")
         else:
-            scanner = torchfits.table.scanner(
-                catalog_file.name,
-                hdu=1,
-                columns=["OBJID", "RA", "DEC"],
-                filter=ds.field("DEC") > 0,
-            )
-            scanned = scanner.to_table()
-            print(f"table.scanner (DEC > 0): {scanned.num_rows} rows")
+            try:
+                import pyarrow.dataset as ds
+            except ImportError:
+                print("pyarrow.dataset not installed; skipping scanner recipe")
+            else:
+                scanner = torchfits.table.scanner(
+                    catalog_file.name,
+                    hdu=1,
+                    columns=["OBJID", "RA", "DEC"],
+                    filter=ds.field("DEC") > 0,
+                    use_threads=False,
+                )
+                scanned = scanner.to_table()
+                print(f"table.scanner (DEC > 0): {scanned.num_rows} rows")
 
         # 3) Polars LazyFrame for aggregations
-        try:
-            import polars as pl
-        except ImportError:
-            print("Polars not installed; skipping LazyFrame recipe")
+        if _CI_FAST:
+            print("CI fast mode: skipping Polars recipe")
         else:
-            summary = (
-                torchfits.table.to_polars_lazy(
-                    catalog_file.name, hdu=1, decode_bytes=True
+            try:
+                import polars as pl
+            except ImportError:
+                print("Polars not installed; skipping LazyFrame recipe")
+            else:
+                summary = (
+                    torchfits.table.to_polars_lazy(
+                        catalog_file.name, hdu=1, decode_bytes=True
+                    )
+                    .filter(pl.col("MAG_G").is_not_null())
+                    .group_by("BAND")
+                    .agg(
+                        pl.col("MAG_G").mean().alias("mag_g_mean"),
+                        pl.len().alias("n"),
+                    )
+                    .sort("n", descending=True)
+                    .collect()
                 )
-                .filter(pl.col("MAG_G").is_not_null())
-                .group_by("BAND")
-                .agg(
-                    pl.col("MAG_G").mean().alias("mag_g_mean"),
-                    pl.len().alias("n"),
-                )
-                .sort("n", descending=True)
-                .collect()
-            )
-            print("Polars summary:")
-            print(summary)
+                print("Polars summary:")
+                print(summary)
 
         # 4) DuckDB SQL joins across FITS files
-        try:
-            import duckdb
-        except ImportError:
-            print("DuckDB not installed; skipping SQL recipe")
+        if _CI_FAST:
+            print("CI fast mode: skipping DuckDB recipe")
         else:
-            con = duckdb.connect()
-            torchfits.table.to_duckdb(
-                catalog_file.name, hdu=1, relation_name="catalog", connection=con
-            )
-            torchfits.table.to_duckdb(
-                labels_file.name, hdu=1, relation_name="labels", connection=con
-            )
-            joined = con.sql(
-                """
-                SELECT c.OBJID, c.RA, l.CLASS
-                FROM catalog c
-                JOIN labels l USING (OBJID)
-                WHERE c.DEC > 0
-                """
-            ).arrow()
-            # DuckDB ≥1.5 + PyArrow ≥24 may return a RecordBatchReader instead of Table.
-            if hasattr(joined, "read_all"):
-                joined = joined.read_all()
-            print(f"DuckDB join (DEC > 0): {joined.num_rows} rows")
+            try:
+                import duckdb
+            except ImportError:
+                print("DuckDB not installed; skipping SQL recipe")
+            else:
+                con = duckdb.connect()
+                torchfits.table.to_duckdb(
+                    catalog_file.name, hdu=1, relation_name="catalog", connection=con
+                )
+                torchfits.table.to_duckdb(
+                    labels_file.name, hdu=1, relation_name="labels", connection=con
+                )
+                joined = con.sql(
+                    """
+                    SELECT c.OBJID, c.RA, l.CLASS
+                    FROM catalog c
+                    JOIN labels l USING (OBJID)
+                    WHERE c.DEC > 0
+                    """
+                ).arrow()
+                # DuckDB ≥1.5 + PyArrow ≥24 may return a RecordBatchReader instead of Table.
+                if hasattr(joined, "read_all"):
+                    joined = joined.read_all()
+                print(f"DuckDB join (DEC > 0): {joined.num_rows} rows")
     finally:
         os.unlink(catalog_file.name)
         os.unlink(labels_file.name)

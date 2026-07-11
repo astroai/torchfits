@@ -29,7 +29,7 @@ downstream sky-domain packages, not torchfits.
 | Write tensor | `torchfits.write_tensor(path, tensor, header=None, overwrite=False)` |
 | Header only | `torchfits.get_header(path, hdu=0)` |
 | Multi-HDU handle | `with torchfits.open(path) as hdul: ...` |
-| Table with pushdown | `where=` parameter in `read` / `read_table` / `stream_table` |
+| Table with pushdown | `torchfits.table.read(..., where=...)` or `torchfits.table.scan(...)` |
 | Arrow / Polars / DuckDB | `torchfits.table.to_polars_lazy(...)`, `torchfits.table.to_duckdb(...)` |
 
 ## Core I/O
@@ -38,16 +38,17 @@ downstream sky-domain packages, not torchfits.
 
 ```python
 data, hdr = torchfits.read("image.fits", hdu="auto", return_header=True)
-table = torchfits.read("cat.fits", hdu=1, columns=["RA", "DEC"], where="MAG_G < 20")
+table = torchfits.table.read("cat.fits", hdu=1, columns=["RA", "DEC"], where="MAG_G < 20")
 ```
 
-Unified reader. Auto-detects image or table HDUs when `mode="auto"`.
+Unified reader for images and simple table access. Auto-detects image or table HDUs when `mode="auto"`.
 
 - `hdu`: integer index, EXTNAME string, `"auto"`, or `None`.
 - `mode`: `"auto"`, `"image"`, or `"table"`.
 - `mmap`: `True`, `False`, or `"auto"`.
 - `return_header=True`: returns `(data, Header)`.
-- `where`: SQL-style table predicate pushdown.
+
+For table predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan` — root `read()` does not accept `where=`.
 
 ### Array and Tensor reads
 
@@ -175,13 +176,14 @@ torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
 ## Predicate Pushdown
 
 The `where=` parameter filters table rows before data reaches Python.
+Use it on `torchfits.table.read` / `torchfits.table.scan` — root `read()` does not accept `where=`.
 
 Supported operators include `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR`,
 `NOT`, `IN (...)`, `NOT IN (...)`, `BETWEEN ... AND ...`, `IS NULL`, and
 `IS NOT NULL`.
 
 ```python
-torchfits.read("cat.fits", hdu=1, where="MAG_G < 20 AND DEC > 0")
+torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20 AND DEC > 0")
 torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20", backend="auto")
 ```
 
@@ -194,6 +196,8 @@ torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20", backend="auto")
 | `"auto"` (default) | Prefer fast C++ torch path; for `where=`, choose Arrow filter vs C++ pushdown from table size and column layout |
 | `"cpp"` | C++ row/table reads as torch tensors, converted to Arrow at the boundary |
 | `"torch"` | `torchfits.stream_table` chunked path |
+
+`"cpp_numpy"` is accepted with a `DeprecationWarning` (alias for `"cpp"`).
 
 Public constant: `torchfits.table.TABLE_BACKENDS`.
 
@@ -299,6 +303,8 @@ residuals for perfect recovery.  Based on post-2021 astro-ML research
 | Transform | Description |
 |---|---|
 | `FITSHeaderScale(bscale=1.0, bzero=0.0)` | Apply/remove BSCALE/BZERO. `from_header(header)` factory. |
+| `FITSScaleColumns(columns, bscale=1.0, bzero=0.0)` | Per-column BSCALE/BZERO for table tensors (root re-export). |
+| `TNullToNan(columns)` | Map FITS TNULL sentinels to NaN in table columns (root re-export). |
 | `FITSHeaderNormalize(header, scale_floats=False)` | Auto-normalize from BITPIX/BSCALE/BZERO. Integer types → [0,1]; floats are identity by default. |
 
 ### Outlier rejection

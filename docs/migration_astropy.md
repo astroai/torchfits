@@ -54,11 +54,10 @@
 
 | Metric | astropy | torchfits |
 |--------|---------|-----------|
-| Large float32 image (16 MB, CPU) | ~15.7 ms | ~4.9 ms (**3.3× faster**) |
-| Same read @ CUDA | ~15.5 ms | ~3.3 ms (**4.7× faster**) |
-| Compressed Rice image (CPU) | ~28.7 ms | ~9.2 ms (**3.1× faster**) |
-| 50× repeated 100×100 cutouts (CPU) | ~80.3 ms | ~6.3 ms (**13.3× faster**) |
-| Table read (100k rows, 8 cols) | ~6.4 ms | ~0.10 ms (**62× faster**) |
-| Table read (1M rows, mixed cols) | ~53 ms | ~0.05 ms (**1111× faster**) |
+| Large float32 image (16 MB, CPU) | 7.60 ms | 3.93 ms (**1.9× faster**) |
+| Same read @ CUDA | 8.18 ms | 3.19 ms (**2.6× faster**) |
+| Compressed Rice image (CPU) | 28.14 ms | 8.99 ms (**3.1× faster**) |
+| 50× repeated 100×100 cutouts (CPU) | 76.04 ms | 4.63 ms (**16× faster**) |
+| Table read (100k rows, 8 cols) | 6.32 ms | 86.9 μs (**73× faster**) |
 
-*Benchmarks from `exhaustive_0.7.0_20260711_022156` (lab, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*
+*Benchmarks from `exhaustive_cuda_0.7.0_20260711_055635` (CANFAR staging, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*

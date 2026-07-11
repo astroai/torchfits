@@ -107,8 +107,8 @@ scope or not yet wired into the published tables.
 3. **`disk→RAM→GPU` is populated only when GPU rows exist in the CSV** — produced by
    `bench_gpu_transports.py` inside `bench-all` when `torch.cuda.is_available()` or MPS
    is available. GitHub Actions `bench-report` installs **CPU PyTorch**, so weekly CI
-   runs will **not** refresh GPU cells; the published CUDA numbers come from a manual
-   lab run (`exhaustive_mmap_0.5.0b4_20260630_162835`, via `pixi run -e bench-gpu bench-exhaustive`).
+   runs will **not** refresh GPU cells; published CUDA numbers come from CANFAR
+   staging (`exhaustive_cuda_0.7.0_20260711_055635`, via `pixi run bench-canfar-gpu`).
 4. **FITS tables have no GPU transport rows** — astropy/fitsio/torchfits table paths are
    CPU-buffered; GPU table benchmarks would mostly measure PyTorch copy overhead, not FITS
    decode, and are deliberately omitted.
@@ -650,7 +650,7 @@ Latest full lab benchmark:
 | Run ID | Scope | Rows | Deficits | Notes |
 |---|---|---:|---:|---|
 <!-- BENCH_SNAPSHOT_BEGIN -->
-| `exhaustive_cuda_0.7.0_20260711_055635` | fits + fitstable (lab) | 3626 | 11 | lab bench-all + `--mmap-matrix` + CUDA/MPS |
+| `exhaustive_cuda_0.7.0_20260711_055635` | fits + fitstable (CANFAR staging) | 3626 | 11 | lab bench-all + `--mmap-matrix` + CUDA |
 <!-- BENCH_SNAPSHOT_END -->
 
 Latest local quick benchmark evidence:
