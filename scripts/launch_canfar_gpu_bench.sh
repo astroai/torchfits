@@ -72,6 +72,21 @@ canfar create headless "${IMAGE}" \
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
 if [[ "${CREATE_RC}" -ne 0 ]]; then
+  if rg -q 'No authentication provided for unknown or private image' "${CREATE_LOG}" 2>/dev/null; then
+    cat >&2 <<EOF
+canfar create failed: private registry image (${IMAGE}).
+
+${IMAGE} is not in \`canfar image ls\`; x509 alone only pulls contributed/public
+images. For astroai/base configure Harbor once:
+
+  canfar config set registry.url https://images.canfar.net
+  canfar config set registry.username <harbor-user>
+  canfar config set registry.secret <harbor-token>
+
+Or use a listed image, e.g.:
+  TORCHFITS_CANFAR_IMAGE=astroai/notebook:latest pixi run bench-canfar-gpu
+EOF
+  fi
   echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
   exit 1
 fi
