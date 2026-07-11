@@ -244,9 +244,7 @@ def main() -> None:
             total += float(np.asarray(batch.column("RA")).sum())
         return total
 
-    methods.append(
-        ("torchfits_arrow_scan_sum_cpp", _torchfits_arrow_scan_sum_cpp)
-    )
+    methods.append(("torchfits_arrow_scan_sum_cpp", _torchfits_arrow_scan_sum_cpp))
 
     def _torchfits_scan_torch_sum_cpu():
         total = 0.0

@@ -25,20 +25,6 @@ if ! command -v canfar >/dev/null; then
   exit 1
 fi
 
-REG_USER="$(canfar config get registry.username 2>/dev/null || true)"
-if [[ "${IMAGE}" == astroai/* && -z "${REG_USER}" ]]; then
-  cat >&2 <<'EOF'
-astroai/* images are private on images.canfar.net — configure Harbor registry auth once:
-
-  canfar config set registry.url https://images.canfar.net
-  canfar config set registry.username <harbor-username>
-  canfar config set registry.secret <harbor-token-or-password>
-
-Then re-run: pixi run bench-canfar-gpu
-EOF
-  exit 1
-fi
-
 echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"

@@ -16,7 +16,10 @@ def _declared_version() -> str:
         return metadata.version("torchfits")
     except metadata.PackageNotFoundError:
         pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        import tomllib
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib
 
         with pyproject.open("rb") as fh:
             data = tomllib.load(fh)

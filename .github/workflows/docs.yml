@@ -16,11 +16,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "zensical>=0.0.50,<0.0.51"
+      - run: zensical build --clean
+
+  # Deploy only when explicitly requested until GitHub Pages is enabled in repo
+  # Settings (one-time). Push to main still verifies the Zensical build above.
   deploy:
+    name: Deploy GitHub Pages
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/configure-pages@v6
       - uses: actions/checkout@v4

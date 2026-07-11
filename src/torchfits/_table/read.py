@@ -829,9 +829,7 @@ def read(
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
-    if backend in {"auto", "cpp"} and not should_skip_cpp_for_where(
-        backend, where
-    ):
+    if backend in {"auto", "cpp"} and not should_skip_cpp_for_where(backend, where):
         single = _read_cpp_table_chunk(
             path=path,
             hdu=hdu,

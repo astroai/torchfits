@@ -343,9 +343,15 @@ def _eager_table_columns(
     for col_name in pa_table.column_names:
         col = pa_table.column(col_name)
         col_type = col.type
-        if pt.is_integer(col_type) or pt.is_floating(col_type) or pt.is_boolean(col_type):
+        if (
+            pt.is_integer(col_type)
+            or pt.is_floating(col_type)
+            or pt.is_boolean(col_type)
+        ):
             # Writable copy: Arrow buffers are often read-only for torch.from_numpy.
-            result[col_name] = torch.as_tensor(col.to_numpy(zero_copy_only=False).copy())
+            result[col_name] = torch.as_tensor(
+                col.to_numpy(zero_copy_only=False).copy()
+            )
             if device != "cpu":
                 result[col_name] = result[col_name].to(device)
         else:
@@ -373,7 +379,11 @@ def _tensor_columns_from_record_batch(batch: Any) -> dict[str, torch.Tensor | No
     for name in batch.schema.names:
         col = batch.column(name)
         col_type = col.type
-        if pt.is_integer(col_type) or pt.is_floating(col_type) or pt.is_boolean(col_type):
+        if (
+            pt.is_integer(col_type)
+            or pt.is_floating(col_type)
+            or pt.is_boolean(col_type)
+        ):
             columns[name] = torch.as_tensor(col.to_numpy(zero_copy_only=False).copy())
         else:
             columns[name] = None

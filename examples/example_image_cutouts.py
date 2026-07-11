@@ -61,7 +61,9 @@ def main() -> None:
             [(path, 0, x1, y1, x2, y2)],
             add_channel_dim=False,
         )
-        print(f"FitsCutoutDataset matches read_subset: {torch.equal(patch_ds[0], cutout)}")
+        print(
+            f"FitsCutoutDataset matches read_subset: {torch.equal(patch_ds[0], cutout)}"
+        )
     finally:
         os.unlink(path)
 

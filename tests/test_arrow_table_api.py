@@ -120,9 +120,7 @@ def test_arrow_cpp_backend_matches_default():
         t_default = torchfits.table.read(
             path, hdu=1, decode_bytes=True, backend="torch"
         )
-        t_cpp = torchfits.table.read(
-            path, hdu=1, decode_bytes=True, backend="cpp"
-        )
+        t_cpp = torchfits.table.read(path, hdu=1, decode_bytes=True, backend="cpp")
 
         assert t_default.num_rows == t_cpp.num_rows
         assert sorted(t_default.schema.names) == sorted(t_cpp.schema.names)
@@ -532,9 +530,7 @@ def test_arrow_read_where_in_missing_parenthesis_invalid():
     path = _make_table_file()
     try:
         with pytest.raises(ValueError):
-            _ = torchfits.table.read(
-                path, hdu=1, where="ID IN (1, 2", backend="cpp"
-            )
+            _ = torchfits.table.read(path, hdu=1, where="ID IN (1, 2", backend="cpp")
     finally:
         os.unlink(path)
 
@@ -610,9 +606,7 @@ def test_arrow_read_where_between_missing_and_invalid():
     path = _make_table_file()
     try:
         with pytest.raises(ValueError):
-            _ = torchfits.table.read(
-                path, hdu=1, where="ID BETWEEN 1 3", backend="cpp"
-            )
+            _ = torchfits.table.read(path, hdu=1, where="ID BETWEEN 1 3", backend="cpp")
     finally:
         os.unlink(path)
 
@@ -706,9 +700,7 @@ def test_arrow_bytes_without_decode_are_fixed_binary():
     pa = pytest.importorskip("pyarrow")
     path = _make_table_file()
     try:
-        table = torchfits.table.read(
-            path, hdu=1, decode_bytes=False, backend="cpp"
-        )
+        table = torchfits.table.read(path, hdu=1, decode_bytes=False, backend="cpp")
         assert table.num_rows == 3
         assert pa.types.is_fixed_size_binary(table.schema.field("NAME").type)
     finally:
@@ -752,9 +744,7 @@ def test_tnull_vector_to_arrow_nulls():
     pytest.importorskip("pyarrow")
     path = _make_tnull_table_file(vector=True)
     try:
-        table = torchfits.table.read(
-            path, hdu=1, backend="cpp", apply_fits_nulls=True
-        )
+        table = torchfits.table.read(path, hdu=1, backend="cpp", apply_fits_nulls=True)
         assert table.column("A").to_pylist() == [[1, None], [3, 4], [None, 6]]
     finally:
         os.unlink(path)

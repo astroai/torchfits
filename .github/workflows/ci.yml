@@ -50,7 +50,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli
       - name: Build and install
         run: pip install -e . --no-build-isolation
       - name: Pytest
@@ -71,7 +71,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli
           pip install -e . --no-build-isolation
       - name: bench_cpp_backend
         run: python benchmarks/bench_cpp_backend.py
@@ -90,7 +90,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli
           pip install -e . --no-build-isolation
       - name: Docs integrity
         run: pytest tests/test_docs_integrity.py tests/test_package_isolation.py -q
@@ -113,7 +113,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli
           pip install -e . --no-build-isolation
       - name: Release gate tests
         env:

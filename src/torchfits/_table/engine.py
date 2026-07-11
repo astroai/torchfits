@@ -34,7 +34,9 @@ def _read_ranges_as_chunk(
             buf = out_sorted.get(name)
             if buf is None:
                 if isinstance(value, torch.Tensor):
-                    buf = torch.empty((n_total,) + tuple(value.shape[1:]), dtype=value.dtype)
+                    buf = torch.empty(
+                        (n_total,) + tuple(value.shape[1:]), dtype=value.dtype
+                    )
                 else:
                     buf = [None] * n_total
                 out_sorted[name] = buf

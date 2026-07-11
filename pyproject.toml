@@ -57,6 +57,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0",
     "ipykernel",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 bench = [
     "astropy>=5.0",
