@@ -110,10 +110,10 @@ canfar logs "${SESSION_ID}" > "${LOCAL_OUT}/canfar_logs.txt" 2>&1 || true
 canfar events "${SESSION_ID}" > "${LOCAL_OUT}/canfar_events.txt" 2>&1 || true
 
 if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-  if python3 scripts/import_canfar_bench_artifacts.py "${LOCAL_OUT}/canfar_logs.txt" --dest "${ROOT_DIR}/benchmarks_results" 2>/dev/null; then
+  if python3 scripts/import_canfar_bench_artifacts.py "${LOCAL_OUT}/canfar_logs.txt" "${RUN_ID}" --dest "${ROOT_DIR}/benchmarks_results"; then
     echo "imported benchmarks_results/${RUN_ID} from session logs" | tee -a "${LOCAL_OUT}/launcher.log"
   else
-    echo "note: no embedded benchmark tarball in logs (older in-container script?)" | tee -a "${LOCAL_OUT}/launcher.log"
+    echo "warning: failed to import CSVs from session logs" | tee -a "${LOCAL_OUT}/launcher.log"
   fi
 fi
 

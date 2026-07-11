@@ -1,49 +1,46 @@
 #!/usr/bin/env python3
-"""Extract benchmarks_results tarball embedded in CANFAR session logs."""
+"""Extract gzipped CSV payloads embedded in CANFAR session logs."""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import io
 import re
-import tarfile
 from pathlib import Path
 
-_BEGIN = "TORCHFITS_BENCH_ARTIFACT_BEGIN"
-_END = "TORCHFITS_BENCH_ARTIFACT_END"
+_CSV_BLOCK = re.compile(
+    r"TORCHFITS_CSV_BEGIN\s+(\S+)\s*(.*?)\s*TORCHFITS_CSV_END\s+\1",
+    re.DOTALL,
+)
 
 
-def extract_artifact(log_text: str, out_dir: Path) -> bool:
-    pattern = re.compile(
-        rf"{re.escape(_BEGIN)}\s*(.*?)\s*{re.escape(_END)}",
-        re.DOTALL,
-    )
-    match = pattern.search(log_text)
-    if not match:
-        return False
-    payload = "".join(match.group(1).split())
-    data = base64.b64decode(payload, validate=False)
+def import_logs(log_text: str, run_id: str, dest: Path) -> list[Path]:
+    out_dir = dest / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-        tar.extractall(path=out_dir.parent)
-    return True
+    written: list[Path] = []
+    for name, payload in _CSV_BLOCK.findall(log_text):
+        data = base64.b64decode("".join(payload.split()), validate=False)
+        raw = gzip.decompress(data)
+        path = out_dir / name
+        path.write_bytes(raw)
+        written.append(path)
+    return written
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log_file", type=Path)
-    parser.add_argument(
-        "--dest",
-        type=Path,
-        default=Path("benchmarks_results"),
-        help="Parent directory for extracted run folder",
-    )
+    parser.add_argument("run_id")
+    parser.add_argument("--dest", type=Path, default=Path("benchmarks_results"))
     args = parser.parse_args()
     text = args.log_file.read_text(encoding="utf-8", errors="replace")
-    if not extract_artifact(text, args.dest):
-        raise SystemExit(f"no {_BEGIN} .. {_END} block in {args.log_file}")
-    print(f"extracted benchmark artifacts under {args.dest}")
+    paths = import_logs(text, args.run_id, args.dest)
+    if not paths:
+        raise SystemExit(f"no TORCHFITS_CSV blocks in {args.log_file}")
+    for path in paths:
+        print(path)
     return 0
 
 
