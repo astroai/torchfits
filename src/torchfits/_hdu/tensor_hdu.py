@@ -85,3 +85,39 @@ class TensorHDU:
     def __repr__(self):
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"
+
+    def _repr_html_(self):
+        import html as pyhtml
+
+        name = pyhtml.escape(str(self.header.get("EXTNAME", "PRIMARY")))
+        shape = pyhtml.escape(self._get_shape_str())
+        dtype = pyhtml.escape(self._get_dtype_str())
+
+        html = [
+            '<div tabindex="0" aria-label="TensorHDU Summary" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
+            "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
+            "<thead><tr>",
+        ]
+
+        headers = ["Property", "Value"]
+        for h in headers:
+            html.append(
+                f'<th scope="col" style=\'text-align: left; padding: 8px; position: sticky; top: 0; '
+                f"background-color: var(--theme-ui-colors-background, white); "
+                f"border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>{h}</th>"
+            )
+        html.append("</tr></thead><tbody>")
+
+        properties = [("Name", name), ("Shape", shape), ("Data Type", dtype)]
+        for i, (prop, val) in enumerate(properties):
+            html.append("<tr>")
+            html.append(
+                f"<th scope=\"row\" style='font-weight: normal; text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{prop}</th>"
+            )
+            html.append(
+                f"<td style='text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{val}</td>"
+            )
+            html.append("</tr>")
+
+        html.append("</tbody></table></div>")
+        return "".join(html)

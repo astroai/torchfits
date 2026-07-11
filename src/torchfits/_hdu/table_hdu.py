@@ -767,3 +767,39 @@ class TableHDU(TensorFrame):
         return (
             f"TableHDU(name='{name}', rows={self.num_rows}, cols={len(self.columns)})"
         )
+
+    def _repr_html_(self):
+        import html as pyhtml
+
+        name = pyhtml.escape(str(self.header.get("EXTNAME", "TABLE")))
+        rows = str(self.num_rows)
+        cols = str(len(self.columns))
+
+        html = [
+            '<div tabindex="0" aria-label="TableHDU Summary" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
+            "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
+            "<thead><tr>",
+        ]
+
+        headers = ["Property", "Value"]
+        for h in headers:
+            html.append(
+                f'<th scope="col" style=\'text-align: left; padding: 8px; position: sticky; top: 0; '
+                f"background-color: var(--theme-ui-colors-background, white); "
+                f"border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>{h}</th>"
+            )
+        html.append("</tr></thead><tbody>")
+
+        properties = [("Name", name), ("Rows", rows), ("Columns", cols)]
+        for i, (prop, val) in enumerate(properties):
+            html.append("<tr>")
+            html.append(
+                f"<th scope=\"row\" style='font-weight: normal; text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{prop}</th>"
+            )
+            html.append(
+                f"<td style='text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{val}</td>"
+            )
+            html.append("</tr>")
+
+        html.append("</tbody></table></div>")
+        return "".join(html)
