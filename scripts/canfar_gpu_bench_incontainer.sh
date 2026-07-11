@@ -27,7 +27,6 @@ echo "TMP_SRC_DIR=${TMP_SRC_DIR:-unset}"
 if command -v nvidia-smi >/dev/null; then
   nvidia-smi -L || true
 fi
-python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)"
 
 bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
 
@@ -35,6 +34,8 @@ pixi install
 pixi run -e bench-gpu gpu-bootstrap
 pixi run -e bench-gpu bench-gpu-install
 pixi run -e bench-gpu gpu-env-check
+
+pixi run -e bench-gpu python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)"
 
 case "${TORCHFITS_BENCH_MODE}" in
   smoke)
