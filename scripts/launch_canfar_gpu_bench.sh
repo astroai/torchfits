@@ -17,6 +17,7 @@ NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
+CLONE_DIR="/tmp/torchfits"
 
 mkdir -p "$LOCAL_OUT"
 
@@ -29,8 +30,9 @@ echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
-# ponytail: no $ or & in remote cmd — skaha passes args as URL query params (& splits params)
-REMOTE_CMD="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} /tmp/torchfits; cd /tmp/torchfits; bash scripts/canfar_gpu_bench_incontainer.sh"
+# ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
+REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
 
 CREATE_LOG="${LOCAL_OUT}/create.log"
 set +o pipefail
@@ -41,7 +43,7 @@ canfar create headless "${IMAGE}" \
   --env "TORCHFITS_BENCH_MODE=${MODE}" \
   --env "TORCHFITS_GIT_REF=${GIT_REF}" \
   --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
-  -- bash -lc "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
+  -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
 if [[ "${CREATE_RC}" -ne 0 ]]; then
@@ -81,7 +83,7 @@ echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
 echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 terminal_status() {
-  canfar ps --json 2>/dev/null | SESSION_ID="${SESSION_ID}" python3 - <<'PY'
+  canfar ps --json 2>/dev/null | SESSION_ID="${SESSION_ID}" python3 -c '
 import json, os, sys
 
 sid = os.environ["SESSION_ID"]
@@ -90,7 +92,7 @@ for row in json.load(sys.stdin):
         print(row.get("status", ""))
         raise SystemExit(0)
 print("")
-PY
+'
 }
 
 STATUS=""
@@ -110,7 +112,7 @@ canfar events "${SESSION_ID}" > "${LOCAL_OUT}/canfar_events.txt" 2>&1 || true
 
 echo "finished status=${STATUS}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "local artifacts: ${LOCAL_OUT}" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "scratch path (ephemeral): \$TMP_SCRATCH_DIR/torchfits-gpu-bench/${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "scratch path (ephemeral): torchfits-gpu-bench/${RUN_ID} under TMP_SCRATCH_DIR" | tee -a "${LOCAL_OUT}/launcher.log"
 
 case "${STATUS}" in
   Succeeded|Completed) exit 0 ;;
