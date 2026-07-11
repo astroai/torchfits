@@ -150,9 +150,15 @@ def test_docs_examples_reference_existing_scripts() -> None:
 def test_zensical_config_targets_existing_docs() -> None:
     config = tomllib.loads((ROOT / "zensical.toml").read_text(encoding="utf-8"))
     project = config["project"]
-    assert project["site_url"] == "https://astroai.github.io/torchfits/"
+    site_url = project["site_url"]
+    assert site_url == "https://astroai.github.io/torchfits/"
     assert project["repo_url"] == "https://github.com/astroai/torchfits"
 
     nav_paths = _collect_nav_paths(project["nav"])
     missing = [path for path in nav_paths if not (ROOT / "docs" / path).exists()]
     assert not missing, f"zensical.toml nav references missing docs: {missing}"
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'Documentation = "{site_url.rstrip("/")}/"' in pyproject, (
+        "pyproject.toml Documentation URL must match zensical site_url"
+    )

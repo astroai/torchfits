@@ -104,4 +104,5 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
 - [ ] `pip install torchfits==X.Y.Z` works in a fresh environment.
 - [ ] `import torchfits; print(torchfits.__version__)` shows correct version.
 - [ ] `torchfits.read(...)` runs without import errors.
+- [ ] [Documentation site](https://astroai.github.io/torchfits/) loads (GitHub Pages deploy from `docs.yml` on `main`).
 - [ ] Changelog and release notes links resolve.

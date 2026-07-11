@@ -43,6 +43,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/astroai/torchfits"
+Documentation = "https://astroai.github.io/torchfits/"
 Repository = "https://github.com/astroai/torchfits"
 
 # Defines optional dependencies for different use cases.
