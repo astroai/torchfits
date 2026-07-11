@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lab benchmark refresh (`exhaustive_0.7.0_20260711_022156`)** — full exhaustive
   lab run (3516 rows, mmap matrix + MPS); CPU performance floor unchanged (core
   deficits ≤1.33×).
+- **CANFAR CUDA exhaustive (`exhaustive_cuda_0.7.0_20260711_055635`)** — 3626 rows,
+  11 deficits on staging GPU; artifacts archived to `vos:sfabbro/torchfits-gpu-bench/`.
+- **CANFAR bench launcher** — headless GPU sessions on staging with VOS persistence
+  via `vcp` (`scripts/launch_canfar_gpu_bench.sh`, `scripts/fetch_canfar_bench_vos.sh`).
 
 ### Changed
 
