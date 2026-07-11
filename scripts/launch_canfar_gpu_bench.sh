@@ -17,6 +17,7 @@ NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
+MAX_WAIT_SECS="${TORCHFITS_CANFAR_MAX_WAIT_SECS:-14400}"
 CLONE_DIR="/scratch/torchfits"
 VOS_DEST="${TORCHFITS_VOS_DEST:-vos:sfabbro/torchfits-gpu-bench/${RUN_ID}}"
 
@@ -88,16 +89,44 @@ echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
 echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 terminal_status() {
-  canfar info "${SESSION_ID}" 2>/dev/null | python3 -c '
+  local info_status ps_status
+  info_status="$(
+    canfar info "${SESSION_ID}" 2>/dev/null | python3 -c '
 import re, sys
 
 text = sys.stdin.read()
 m = re.search(r"^\s*Status\s+(\S+)", text, re.MULTILINE)
 print(m.group(1) if m else "")
-'
+' || true
+  )"
+  if [[ -n "${info_status}" ]]; then
+    echo "${info_status}"
+    return
+  fi
+
+  # ponytail: completed headless sessions may 404 on info; ps --all keeps history
+  ps_status="$(
+    canfar ps --all --json 2>/dev/null | SESSION_ID="${SESSION_ID}" python3 -c '
+import json, os, sys
+
+sid = os.environ["SESSION_ID"]
+try:
+    rows = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(0)
+for row in rows:
+    if row.get("id") == sid:
+        print(row.get("status", ""))
+        break
+' 2>/dev/null || true
+  )"
+  if [[ -n "${ps_status}" ]]; then
+    echo "${ps_status}"
+  fi
 }
 
 STATUS=""
+POLL_START="$(date +%s)"
 while true; do
   STATUS="$(terminal_status || true)"
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) status=${STATUS:-unknown}" | tee -a "${LOCAL_OUT}/launcher.log"
@@ -106,6 +135,11 @@ while true; do
       break
       ;;
   esac
+  if (( $(date +%s) - POLL_START > MAX_WAIT_SECS )); then
+    echo "timeout after ${MAX_WAIT_SECS}s waiting for terminal status" | tee -a "${LOCAL_OUT}/launcher.log"
+    STATUS="Failed"
+    break
+  fi
   sleep "${POLL_SECS}"
 done
 
