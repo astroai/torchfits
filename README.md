@@ -100,17 +100,17 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 
 ## Performance
 
-Median wall-clock from the lab exhaustive benchmark suite (run `20260709_163739`,
-CPU unless noted). See [docs/benchmarks.md](docs/benchmarks.md) for methodology,
+Median wall-clock from the lab exhaustive benchmark suite (run `20260710_020649`,
+CPU + MPS on Apple Silicon; see [docs/benchmarks.md](docs/benchmarks.md) for methodology,
 deficit transparency, and reproducible commands.
 
 | Case | torchfits | astropy | fitsio | Speedup vs astropy |
 |---|---:|---:|---:|---:|
-| Large float32 image read (16 MB, CPU) | 1.99 ms | 13.76 ms | 4.80 ms | **7.4×** |
-| Compressed Rice image (CPU) | 7.27 ms | 18.55 ms | 16.17 ms | **2.6×** |
-| 50× repeated 100×100 cutouts (CPU) | 3.38 ms | 52.14 ms | 4.69 ms | **16.5×** |
-| Table read (100k rows, 8 cols) | 48.3 μs | 4.35 ms | 45.4 ms | **90×** |
-| Varlen table read (100k rows, 3 cols) | 46.9 μs | 2.26 ms | 130 ms | **48×** |
+| Large float32 image read (16 MB, CPU) | 2.80 ms | 6.13 ms | 3.07 ms | **2.2×** |
+| Compressed Rice image (CPU) | 6.72 ms | 18.78 ms | 6.82 ms | **2.8×** |
+| 50× repeated 100×100 cutouts (CPU) | 5.16 ms | 65.38 ms | 5.10 ms | **12.7×** |
+| Table read (100k rows, 8 cols) | 76.4 μs | 3.51 ms | 53.0 ms | **46×** |
+| Varlen table read (100k rows, 3 cols) | 71.3 μs | 2.77 ms | 120 ms | **39×** |
 
 **ML DataLoader (local diagnostic, not in lab CSV):** 30×512² float32, CPU, 2
 epochs — torchfits **1.12×** vs fitsio on Rice-compressed files; uncompressed

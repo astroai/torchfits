@@ -57,4 +57,4 @@
 | Table predicate (1M narrow) | ~6.3 ms | ~11.1 ms (**1.20× slower — narrow `predicate_filter` deficit**) |
 | 50× repeated 100×100 cutouts (CPU) | ~4.7 ms | ~3.4 ms (**1.4× faster**) |
 
-*Benchmarks from `20260709_163739` (lab, mmap on+off matrix). torchfits dominates table I/O on most paths; three narrow `predicate_filter` cases lag fitsio by 1.07–1.25× — see [benchmarks.md](benchmarks.md) deficit table.*
+*Benchmarks from `20260710_020649` (lab, mmap on+off matrix, MPS on Apple Silicon). torchfits dominates table I/O on most paths; narrow `predicate_filter` cases lag fitsio by up to ~1.32× on CPU — see [benchmarks.md](benchmarks.md) deficit table.*

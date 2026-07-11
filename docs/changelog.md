@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`transforms.__all__`** — explicit public transform catalog.
 - **CI `release-gate` job** — upstream parity, docs contract, data, transforms,
   and security smokes on Python 3.13.
+- **Lab benchmark refresh (`20260710_020649`)** — 3516 rows (lab + mmap matrix +
+  MPS GPU transports on Apple Silicon); CPU performance floor unchanged (core
+  deficits ≤1.32×).
 
 ### Changed
 
