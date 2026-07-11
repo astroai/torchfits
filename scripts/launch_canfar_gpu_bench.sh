@@ -29,36 +29,8 @@ echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
-REMOTE_CMD=$(
-  cat <<EOF
-set -euo pipefail
-SCRATCH="\${TMP_SCRATCH_DIR:-/scratch}"
-RUN_DIR="\${SCRATCH}/torchfits-gpu-bench/${RUN_ID}"
-mkdir -p "\$RUN_DIR"
-exec > >(tee "\$RUN_DIR/stdout.log") 2> >(tee "\$RUN_DIR/stderr.log" >&2)
-SRC="\${TMP_SRC_DIR:-/tmp/src}"
-mkdir -p "\$SRC"
-cd "\$SRC"
-if [[ -d torchfits/.git ]]; then
-  cd torchfits
-  git fetch origin --tags
-  git checkout ${GIT_REF}
-  git pull --ff-only origin ${GIT_REF} 2>/dev/null || true
-else
-  if git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} torchfits 2>/dev/null; then
-    cd torchfits
-  else
-    git clone ${REPO_URL} torchfits
-    cd torchfits
-    git checkout ${GIT_REF}
-  fi
-fi
-export TORCHFITS_BENCH_RUN_ID=${RUN_ID}
-export TORCHFITS_BENCH_MODE=${MODE}
-export TORCHFITS_BENCH_LOG_REDIRECTED=1
-bash scripts/canfar_gpu_bench_incontainer.sh
-EOF
-)
+# ponytail: no $ or & in remote cmd — skaha passes args as URL query params (& splits params)
+REMOTE_CMD="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} /tmp/torchfits; cd /tmp/torchfits; bash scripts/canfar_gpu_bench_incontainer.sh"
 
 CREATE_LOG="${LOCAL_OUT}/create.log"
 set +o pipefail
@@ -68,6 +40,7 @@ canfar create headless "${IMAGE}" \
   --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}" \
   --env "TORCHFITS_BENCH_MODE=${MODE}" \
   --env "TORCHFITS_GIT_REF=${GIT_REF}" \
+  --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
   -- bash -lc "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
@@ -108,9 +81,10 @@ echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
 echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 terminal_status() {
-  canfar ps --json | python3 - "${SESSION_ID}" <<'PY'
-import json, sys
-sid = sys.argv[1]
+  canfar ps --json 2>/dev/null | SESSION_ID="${SESSION_ID}" python3 - <<'PY'
+import json, os, sys
+
+sid = os.environ["SESSION_ID"]
 for row in json.load(sys.stdin):
     if row.get("id") == sid:
         print(row.get("status", ""))
@@ -136,7 +110,7 @@ canfar events "${SESSION_ID}" > "${LOCAL_OUT}/canfar_events.txt" 2>&1 || true
 
 echo "finished status=${STATUS}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "local artifacts: ${LOCAL_OUT}" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "scratch path (ephemeral): \${TMP_SCRATCH_DIR:-/scratch}/torchfits-gpu-bench/${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "scratch path (ephemeral): \$TMP_SCRATCH_DIR/torchfits-gpu-bench/${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 case "${STATUS}" in
   Succeeded|Completed) exit 0 ;;
