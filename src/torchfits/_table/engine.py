@@ -1,13 +1,14 @@
 """Shared C++ table read dispatch engine.
 
 Provides :func:`_read_ranges_as_chunk` — reads multiple row ranges from a
-C++ TableReader and assembles them into a single NumPy-backed dict. Used by
-the Arrow table module to avoid duplicate range-assembly logic.
+C++ TableReader and assembles them into a single torch-backed dict.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+import torch
 
 from .arrow_convert import _is_vla_tuple
 
@@ -25,24 +26,20 @@ def _read_ranges_as_chunk(
 
     cursor = 0
     for start0, length in ranges:
-        seg = reader.read_rows_numpy(col_list, start0 + 1, length)
+        seg = reader.read_rows(col_list, start0 + 1, length)
         if not seg:
             cursor += length
             continue
         for name, value in seg.items():
             buf = out_sorted.get(name)
             if buf is None:
-                if isinstance(value, np.ndarray):
-                    buf = np.empty((n_total,) + value.shape[1:], dtype=value.dtype)
-                elif isinstance(value, list):
-                    buf = [None] * n_total
-                elif _is_vla_tuple(value):
-                    buf = [None] * n_total
+                if isinstance(value, torch.Tensor):
+                    buf = torch.empty((n_total,) + tuple(value.shape[1:]), dtype=value.dtype)
                 else:
                     buf = [None] * n_total
                 out_sorted[name] = buf
 
-            if isinstance(value, np.ndarray):
+            if isinstance(value, torch.Tensor):
                 buf[cursor : cursor + length] = value
             elif isinstance(value, list):
                 buf[cursor : cursor + length] = value

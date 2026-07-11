@@ -1,13 +1,34 @@
 from __future__ import annotations
 
+import re
+import tomllib
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _collect_nav_paths(nav: list[Any]) -> list[str]:
+    paths: list[str] = []
+    for item in nav:
+        if isinstance(item, str):
+            paths.append(item)
+            continue
+        if isinstance(item, dict):
+            for value in item.values():
+                if isinstance(value, str):
+                    if not value.startswith("http"):
+                        paths.append(value)
+                else:
+                    paths.extend(_collect_nav_paths(value))
+    return paths
+
+
 def test_docs_reference_existing_local_files() -> None:
     expected_paths = [
+        "docs/index.md",
+        "zensical.toml",
         "docs/api.md",
         "docs/benchmarks.md",
         "docs/changelog.md",
@@ -15,11 +36,16 @@ def test_docs_reference_existing_local_files() -> None:
         "docs/install.md",
         "docs/parity.md",
         "docs/roadmap.md",
-        "docs/release.md",
+        "docs/migration_datasets.md",
+        "docs/migration_fitsio.md",
+        "docs/migration_astropy.md",
         "examples/example_image.py",
         "examples/example_image_cube.py",
         "examples/example_image_cutouts.py",
         "examples/example_image_dataset.py",
+        "examples/example_data_catalogs.py",
+        "examples/example_transforms.py",
+        "examples/example_hyperspectral.py",
         "examples/example_image_mef.py",
         "examples/example_polars.py",
         "examples/example_table.py",
@@ -49,6 +75,7 @@ def test_public_docs_do_not_claim_torchfits_owns_sky_domain_features() -> None:
         ROOT / "docs" / "changelog.md",
         ROOT / "docs" / "contributing.md",
         ROOT / "docs" / "examples.md",
+        ROOT / "docs" / "index.md",
         ROOT / "docs" / "parity.md",
         ROOT / "docs" / "release.md",
         ROOT / "docs" / "roadmap.md",
@@ -95,3 +122,23 @@ def test_public_docs_do_not_reference_missing_root_cache_aliases() -> None:
                 offenders.append(f"{path.relative_to(ROOT)} references {call!r}")
 
     assert not offenders, "\n".join(offenders)
+
+
+def test_docs_examples_reference_existing_scripts() -> None:
+    text = (ROOT / "docs" / "examples.md").read_text(encoding="utf-8")
+    refs = re.findall(r"\]\(\.\./examples/([^)]+)\)", text)
+    missing_scripts = [name for name in refs if not (ROOT / "examples" / name).exists()]
+    assert not missing_scripts, (
+        f"docs/examples.md references missing scripts: {missing_scripts}"
+    )
+
+
+def test_zensical_config_targets_existing_docs() -> None:
+    config = tomllib.loads((ROOT / "zensical.toml").read_text(encoding="utf-8"))
+    project = config["project"]
+    assert project["site_url"] == "https://astroai.github.io/torchfits/"
+    assert project["repo_url"] == "https://github.com/astroai/torchfits"
+
+    nav_paths = _collect_nav_paths(project["nav"])
+    missing = [path for path in nav_paths if not (ROOT / "docs" / path).exists()]
+    assert not missing, f"zensical.toml nav references missing docs: {missing}"

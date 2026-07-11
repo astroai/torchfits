@@ -13,9 +13,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from torchfits.data import (
+    FitsCutoutDataset,
     FitsImageDataset,
     FitsImageIterableDataset,
     FitsTableDataset,
+    FitsTableIterableDataset,
     fits_collate_fn,
     make_loader,
 )
@@ -98,6 +100,11 @@ class TestFitsCollateFn:
             {"tensor_col": torch.randn(3), "list_col": [4, 5]},
         ]
         with pytest.raises(ValueError, match="non-tensor column"):
+            fits_collate_fn(batch)
+
+    def test_non_tensor_error_mentions_custom_collate(self):
+        batch = [{"tensor_col": torch.randn(3), "list_col": [1, 2, 3]}]
+        with pytest.raises(ValueError, match="custom collate_fn"):
             fits_collate_fn(batch)
 
     def test_unsupported_type_raises(self):
@@ -341,6 +348,70 @@ class TestFitsTableDataset:
 
 
 # ---------------------------------------------------------------------------
+# Test: FitsTableIterableDataset
+# ---------------------------------------------------------------------------
+
+
+class TestFitsTableIterableDataset:
+    def test_yields_all_rows(self, temp_table_file):
+        ds = FitsTableIterableDataset(temp_table_file, batch_size=4)
+        rows = list(ds)
+        assert len(rows) == 8
+        assert "flux" in rows[0]
+        assert rows[0]["flux"].item() == pytest.approx(1.0)
+
+    def test_where_filter(self, temp_table_file):
+        ds = FitsTableIterableDataset(temp_table_file, where="flux > 4.0", batch_size=3)
+        rows = list(ds)
+        assert len(rows) == 4
+        assert rows[0]["flux"].item() == pytest.approx(5.0)
+
+    def test_repr(self, temp_table_file):
+        ds = FitsTableIterableDataset(temp_table_file)
+        assert "FitsTableIterableDataset" in repr(ds)
+
+
+# ---------------------------------------------------------------------------
+# Test: FitsCutoutDataset
+# ---------------------------------------------------------------------------
+
+
+class TestFitsCutoutDataset:
+    def test_len_and_shape(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        path = files[0]
+        ds = FitsCutoutDataset([(path, 0, 0, 0, 16, 16)])
+        assert len(ds) == 1
+        cutout = ds[0]
+        assert cutout.shape == (1, 16, 16)
+
+    def test_xy_size_form(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        path = files[0]
+        ds = FitsCutoutDataset([(path, 0, 4, 4, 8)])
+        cutout = ds[0]
+        assert cutout.shape[-2:] == (8, 8)
+
+    def test_files_attribute(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        ds = FitsCutoutDataset([(files[0], 0, 0, 0, 8, 8), (files[1], 0, 0, 0, 8, 8)])
+        assert len(ds.files) == 2
+
+    def test_same_file_distinct_cutouts(self, temp_image_dir):
+        """ponytail: re-opens file per row; values must differ per window."""
+        _tmpdir, files = temp_image_dir
+        path = files[0]
+        ds = FitsCutoutDataset([(path, 0, 0, 0, 8, 8), (path, 0, 8, 8, 16, 16)])
+        assert len(ds) == 2
+        assert not torch.equal(ds[0], ds[1])
+
+    def test_invalid_cutout_spec_raises(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        with pytest.raises(ValueError, match="cutout must be"):
+            FitsCutoutDataset([(files[0], 0, 0, 0)])
+
+
+# ---------------------------------------------------------------------------
 # Test: make_loader
 # ---------------------------------------------------------------------------
 
@@ -524,6 +595,23 @@ class TestMultiWorkerDataLoader:
             """
         )
         assert report["count"] == len(files)
+
+    def test_multiprocess_table_iterable_sees_all_rows(self, temp_table_file):
+        """FitsTableIterableDataset with num_workers=2 yields every table row."""
+        report = self._run_in_subprocess(
+            f"""
+            from torchfits.data import FitsTableIterableDataset, make_loader
+            ds = FitsTableIterableDataset({temp_table_file!r}, batch_size=2)
+            loader = make_loader(
+                ds, batch_size=4, num_workers=2, optimize_cache=False
+            )
+            seen = 0
+            for batch in loader:
+                seen += batch["flux"].shape[0]
+            report = {{'count': seen}}
+            """
+        )
+        assert report["count"] == 8
 
     def test_single_worker_matches_no_worker(self, temp_image_dir):
         """num_workers=0 (main process) yields every file exactly once."""

@@ -94,3 +94,34 @@ jobs:
           pip install -e . --no-build-isolation
       - name: Docs integrity
         run: pytest tests/test_docs_integrity.py tests/test_package_isolation.py -q
+      - name: Zensical build
+        run: |
+          pip install "zensical>=0.0.50,<0.0.51"
+          zensical build --clean
+
+  release-gate:
+    name: Release gate (py3.13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Vendor CFITSIO
+        run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow
+          pip install -e . --no-build-isolation
+      - name: Release gate tests
+        env:
+          KMP_DUPLICATE_LIB_OK: "TRUE"
+        run: >-
+          pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py
+          tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py
+          tests/test_read_policy.py tests/test_examples_runner.py tests/test_scale_on_device.py
+          tests/test_data.py tests/test_transforms.py tests/test_transforms_e2e.py
+          tests/test_api.py tests/test_arrow_table_api.py tests/test_security.py
+          tests/test_release_smoke.py -q

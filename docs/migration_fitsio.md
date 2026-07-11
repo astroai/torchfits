@@ -51,10 +51,10 @@
 
 | Metric | fitsio | torchfits |
 |--------|--------|-----------|
-| Large float32 image (16 MB, CPU) | ~1.8 ms | ~1.8 ms (**parity**) |
-| Compressed Rice image (CPU) | ~10.3 ms | ~9.2 ms (**1.12× faster**) |
-| Table read (100k rows, mixed) | ~4.3 ms | ~0.05 ms (**94× faster**) |
-| Table predicate (1M narrow) | ~6.2 ms | ~10.1 ms (**0.6× — fitsio faster on narrow predicates**) |
-| 50× repeated 100×100 cutouts (CPU) | ~3.3 ms | ~3.1 ms (**1.09× faster**) |
+| Large float32 image (16 MB, CPU) | ~4.8 ms | ~2.0 ms (**2.4× faster**) |
+| Compressed Rice image (CPU) | ~16.2 ms | ~7.3 ms (**2.2× faster**) |
+| Table read (100k rows, 8 cols) | ~45 ms | ~48 μs (**~940× faster**) |
+| Table predicate (1M narrow) | ~6.3 ms | ~11.1 ms (**1.20× slower — narrow `predicate_filter` deficit**) |
+| 50× repeated 100×100 cutouts (CPU) | ~4.7 ms | ~3.4 ms (**1.4× faster**) |
 
-*Benchmarks from `exhaustive_mmap_v060b2_20260708_232039` (lab, H100 CUDA). torchfits dominates table I/O and is competitive on image reads. Narrow predicate_filter lags fitsio by ~1.5×–2.1× on small tables; see [benchmarks.md](benchmarks.md) for details.*
+*Benchmarks from `20260709_163739` (lab, mmap on+off matrix). torchfits dominates table I/O on most paths; three narrow `predicate_filter` cases lag fitsio by 1.07–1.25× — see [benchmarks.md](benchmarks.md) deficit table.*

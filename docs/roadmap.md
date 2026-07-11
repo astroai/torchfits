@@ -118,7 +118,7 @@ Proposed module: **`torchfits.data`** (lazy-imported like `torchfits.table`).
 | `FitsTableDataset` | Row-indexable catalog: projection + `where=` pushdown; columns → tensor dict per `__getitem__` |
 | `FitsTableIterableDataset` | Wraps `table.scan` / C++ chunk iterator; constant-memory epoch over 100M+ rows |
 | `FitsCutoutDataset` | `(path, x, y, w, h)` index table + `open_subset_reader` for patch training |
-| `fits_collate_fn` | Stack homogeneous tensors; explicit error on ragged/VLA unless `vla_policy=` set |
+| `fits_collate_fn` | Stack homogeneous tensors; `ValueError` on string/VLA columns (custom `collate_fn` to handle) |
 | `DataLoader` helpers | `make_loader(dataset, *, pin_memory, prefetch, cache_policy=…)` applying `cache.optimize_for_dataset` |
 
 Design rules:
@@ -211,67 +211,30 @@ deprecation cycle.
 
 ### What must be true at 1.0
 
-| Dimension | Exit criterion | Status (2026-07) |
+| Dimension | Exit criterion | Status |
 |---|---|---|
-| **API surface** | `torchfits.read`, `read_tensor`, `table.read_table`, `write`, `hdu`, `cache` are the stable public surface | 0.6.0b1: `_table/` split done; `table.py` is re-exports; `read_table` API stable |
-| **Performance floor** | No buffered-read deficit > 2× vs *any* comparator (astropy, fitsio) on core image/table paths | **❌ uint16/uint32 2D reads 5–10× vs fitsio**; all other paths within 2× |
-| **Parity tiers** | All tier 1–2 parity rows in `docs/parity.md` have test-backed evidence | ✅ fitsio + astropy upstream smoke gates pass |
-| **Data loading** | `torchfits.data` ships with documented `Dataset`/`IterableDataset` classes and multi-worker tests | ❌ not started (Track C, 0.6.0) |
-| **Transforms** | FITS-native `torchfits.transforms` for BSCALE/BZERO/TSCAL/TZERO/TNULL with round-trip tests | ❌ not started (Track D, 0.6.0) |
-| **C++ engine** | Single C++ entry point per domain (`read_table_chunk`, `read_images_batch`); no Python fallback spaghetti | ❌ not started (Tracks B1–B4, 0.6.0) |
-| **Benchmark evidence** | Exhaustive `bench-all` CSV published with release; highlights + deficits tables in `docs/benchmarks.md` | ✅ `v050_refresh` — 1,377 rows, 16 deficits documented |
-| **Docs contract** | No stale WCS/HEALPix/sphere ownership claims; parity matrix is current | ✅ release-gate checks pass |
-
-### Critical gap: unsigned integer 2D reads
-
-The single largest performance gap on the path to 1.0. fitsio reads `uint16_2d`
-and `uint32_2d` arrays 5–10× faster than torchfits on large payloads.
-
-**Root cause:** The C++ mmap fast path in `read_full_cached` (fits_bindings.cpp)
-treats BZERO-offset unsigned images as `scaled=true`, which gates them out of the
-`pread()` + parallel `bswap` mmap fast path. They fall through to `fits_read_img`
-(CFITSIO's generic CPU read), and the Python-side `_try_raw_scale_post` then
-re-reads the header and raw bytes in a second pass.
-
-**Fix (targeted for 0.6.0):** ~15 lines in `fits_bindings.cpp` — detect the
-unsigned convention (`BSCALE=1.0, BZERO=32768/2147483648`) before the scale gate,
-map to `kUInt16`/`kUInt32` dtype, and let the existing `SHORT_IMG`/`LONG_IMG`
-mmap path handle the raw bytes. Expected: parity with fitsio (~1.0×).
-
-**Remaining deficits after uint fix (expected):**
-
-| Deficit | Lag vs fitsio | Priority | Notes |
-|---|---|---|---|
-| `compressed_hcompress_1` read | 1.03× | Low | Within measurement noise |
-| `large_int8_1d` read | 1.03× | Low | Marginal; likely cache-line artifact |
-| `large_int64_2d` read | 1.01× | Low | Fractional; within noise |
-
-After the uint fix, torchfits would lead on **all** core buffered-read paths.
-
-### What stays out of scope permanently
-
-These are not 1.0 blockers — they belong in downstream packages:
-
-- WCS solving, astrometric distortion, celestial coordinate transforms
-- HEALPix tessellation, sphere geometry, sky pixelization
-- Full CFITSIO C API exposure or astropy/fitsio API replacement
-- GPU-native FITS writes (GPUDirect / cuFile)
-- Sky-domain simulation, source extraction, photometry pipelines
-- Training orchestration (schedulers, distributed launchers, checkpointing)
-
-torchfits at 1.0 is a **FITS → PyTorch tensor I/O package** with caching,
-header-aware transforms, and DataLoader integration. Nothing more.
+| **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*` | ✅ 0.7.0 — legacy `FITSDataset` removed |
+| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — run `20260709_163739`, 3 narrow `predicate_filter` deficits at 1.07–1.25× |
+| **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
+| **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
+| **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
+| **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
+| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 2754 rows, 3 deficits |
+| **GPU I/O** | E1–E3 verified on CANFAR staging (`astroai/base:latest`) | 0.8.0 target |
+| **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
 
 ### 1.0 exit checklist
 
-- [ ] uint16/uint32 mmap fast path merged; `bench-all` deficits ≤ 2 per domain
-- [ ] `torchfits.data` shipped; `bench_ml_loader` in release gate
-- [ ] `torchfits.transforms` shipped; round-trip tests for scaled images/tables
-- [ ] C++ `read_table_chunk` is sole Python table-chunk entry point
-- [ ] Public API freeze review (`.cursor/skills/release-api-freeze-review/`)
-- [ ] Docs migration guide: 0.6.x custom Dataset → 1.0 `torchfits.data`
-- [ ] All parity tiers have test-backed evidence; no undocumented claims
-- [ ] Changelog final entry before 1.0.0rc1
+- [x] Performance floor ≤2× (3 deficits at 1.07–1.25×)
+- [x] `torchfits.data` complete (`FitsTableIterableDataset`, `FitsCutoutDataset`); legacy datasets removed
+- [x] `torchfits.transforms` round-trip tests
+- [x] C++ `read_table_chunk` sole table-chunk entry
+- [ ] GPU I/O E1–E3 + CANFAR bench sign-off
+- [x] Zensical docs site
+- [x] `release-gate` expanded + CI
+- [x] Public API freeze review (`docs/reviews/release-api-freeze-0.7.0.md`)
+- [x] Breaking-change migration guide (`migration_datasets.md`)
+- [ ] Changelog + `1.0.0rc1` → `1.0.0`
 
 ### Legacy note — 0.5.0 quick wins *(done)*
 

@@ -26,9 +26,13 @@ class WhereReadPlan:
     unfiltered_backend: str
 
 
-def should_skip_cpp_numpy_for_where(backend: str, where: str | None) -> bool:
-    """In auto mode, where= forces the pushdown/scanner path instead of cpp_numpy."""
+def should_skip_cpp_for_where(backend: str, where: str | None) -> bool:
+    """In auto mode, where= forces the pushdown/scanner path instead of cpp."""
     return backend == "auto" and where is not None
+
+
+# ponytail: internal alias; remove when no callers remain
+should_skip_cpp_numpy_for_where = should_skip_cpp_for_where
 
 
 def choose_where_read_plan(
@@ -53,7 +57,7 @@ def choose_where_read_plan(
     strategy = (
         WhereStrategy.ARROW_FILTER if use_arrow_first else WhereStrategy.CPP_PUSHDOWN
     )
-    unfiltered_backend = "cpp_numpy" if backend == "auto" else backend
+    unfiltered_backend = "cpp" if backend == "auto" else backend
 
     return WhereReadPlan(
         strategy=strategy,

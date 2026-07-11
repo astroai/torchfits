@@ -150,17 +150,19 @@ def main() -> None:
         decoded = pipeline.inverse(preprocessed)
         print(f"  Inverse error (max): {(image - decoded).abs().max().item():.2e}")
 
-        # ----- 3. Use with torchfits.FITSDataset -----
+        # ----- 3. Use with torchfits.data.FitsImageDataset -----
         from torch.utils.data import DataLoader
 
-        dataset = torchfits.FITSDataset(
+        from torchfits.data import FitsImageDataset
+
+        dataset = FitsImageDataset(
             path,
             hdu=0,
-            transform=pipeline,  # auto-applied in __getitem__
+            transform=pipeline,
         )
-        for sample in DataLoader(dataset, batch_size=1):
+        for sample, _label in DataLoader(dataset, batch_size=1):
             print(
-                f"\nFITSDataset + transform pipeline: shape={sample.shape}, "
+                f"\nFitsImageDataset + transform pipeline: shape={sample.shape}, "
                 f"device={sample.device}"
             )
 

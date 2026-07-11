@@ -47,11 +47,7 @@ SPECIALIZED_METHODS = [
 
 
 class FITSBenchmarkSuite:
-    """FITS-only version of the pre-extraction exhaustive fixture suite.
-
-    This preserves the historical 84 image workflows without retaining the
-    WCS/sphere benchmark implementation that moved out of torchfits.
-    """
+    """FITS-only version of the pre-extraction exhaustive fixture suite."""
 
     EXPECTED_FILE_COUNT = 87
     EXPECTED_WORKFLOW_COUNT = 91
@@ -61,9 +57,6 @@ class FITSBenchmarkSuite:
         *,
         output_dir: Path,
         use_mmap: bool,
-        include_tables: bool = False,
-        include_wcs: bool = False,
-        include_sphere: bool = False,
         profile: str = "user",
     ) -> None:
         self.output_dir = Path(output_dir)
@@ -705,7 +698,7 @@ def _normalize_legacy_rows(
 
     for raw in raw_rows:
         domain_file_type = str(raw.get("file_type", ""))
-        if domain_file_type in {"table", "wcs", "sphere"}:
+        if domain_file_type == "table":
             continue
 
         case_id = f"{raw.get('filename')}::{raw.get('operation', 'read_full')}"
@@ -793,7 +786,7 @@ def _benchmark_headers(
 
     for name, path in sorted(files.items()):
         file_type = suite._get_file_type(name)
-        if file_type in {"table", "wcs", "sphere"}:
+        if file_type == "table":
             continue
         hdu = _hdu_for_file_type(file_type)
         case_id = f"{name}::header_read"
@@ -877,20 +870,13 @@ def run_fits_domain(
     suite = FITSBenchmarkSuite(
         output_dir=raw_dir,
         use_mmap=use_mmap,
-        include_tables=False,
-        include_wcs=False,
-        include_sphere=False,
         profile=profile,
     )
     _strict_patch_astropy(suite)
 
     try:
         files = suite.create_test_files()
-        files = {
-            k: v
-            for k, v in files.items()
-            if (not k.startswith("table_")) and ("wcs" not in k.lower())
-        }
+        files = {k: v for k, v in files.items() if not k.startswith("table_")}
         if case_filter:
             rx = re.compile(case_filter)
             files = {k: v for k, v in files.items() if rx.search(k)}

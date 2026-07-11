@@ -108,20 +108,20 @@ def test_arrow_scan_and_read():
         os.unlink(path)
 
 
-def test_arrow_cpp_numpy_backend_matches_default():
+def test_arrow_cpp_backend_matches_default():
     pytest.importorskip("pyarrow")
     path = _make_table_file()
     try:
         import torchfits.cpp as cpp
 
-        if not hasattr(cpp, "read_fits_table_rows_numpy_from_handle"):
-            pytest.skip("cpp numpy backend not available")
+        if not hasattr(cpp, "read_fits_table_rows"):
+            pytest.skip("cpp table backend not available")
 
         t_default = torchfits.table.read(
             path, hdu=1, decode_bytes=True, backend="torch"
         )
         t_cpp = torchfits.table.read(
-            path, hdu=1, decode_bytes=True, backend="cpp_numpy"
+            path, hdu=1, decode_bytes=True, backend="cpp"
         )
 
         assert t_default.num_rows == t_cpp.num_rows
@@ -319,7 +319,7 @@ def test_arrow_read_where_projection_pushdown():
             hdu=1,
             columns=["ID"],
             where="ID >= 2",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column_names == ["ID"]
         assert table.column("ID").to_pylist() == [2, 3]
@@ -337,7 +337,7 @@ def test_arrow_read_where_with_row_slice():
             columns=["ID"],
             row_slice=slice(0, 2),
             where="ID >= 2",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [2]
     finally:
@@ -355,7 +355,7 @@ def test_arrow_scan_where_batches():
                 columns=["ID"],
                 where="ID >= 2",
                 batch_size=1,
-                backend="cpp_numpy",
+                backend="cpp",
             )
         )
         assert len(batches) == 2
@@ -386,7 +386,7 @@ def test_arrow_read_where_invalid_expression():
     path = _make_table_file()
     try:
         with pytest.raises(ValueError):
-            _ = torchfits.table.read(path, hdu=1, where="ID ~~ 2", backend="cpp_numpy")
+            _ = torchfits.table.read(path, hdu=1, where="ID ~~ 2", backend="cpp")
     finally:
         os.unlink(path)
 
@@ -400,7 +400,7 @@ def test_arrow_read_where_and_or():
             hdu=1,
             columns=["ID"],
             where="ID == 1 OR ID == 3",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 3]
     finally:
@@ -416,7 +416,7 @@ def test_arrow_read_where_parentheses_precedence():
             hdu=1,
             columns=["ID"],
             where="(ID == 1 OR ID == 2) AND RA > 10.15",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [2]
     finally:
@@ -429,7 +429,7 @@ def test_arrow_read_where_unbalanced_parentheses():
     try:
         with pytest.raises(ValueError):
             _ = torchfits.table.read(
-                path, hdu=1, where="(ID == 1 OR ID == 2", backend="cpp_numpy"
+                path, hdu=1, where="(ID == 1 OR ID == 2", backend="cpp"
             )
     finally:
         os.unlink(path)
@@ -444,7 +444,7 @@ def test_arrow_read_where_not_clause():
             hdu=1,
             columns=["ID"],
             where="NOT (ID == 2)",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 3]
     finally:
@@ -460,7 +460,7 @@ def test_arrow_read_where_not_precedence():
             hdu=1,
             columns=["ID"],
             where="NOT ID == 1 AND ID <= 3",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [2, 3]
     finally:
@@ -473,7 +473,7 @@ def test_arrow_read_where_trailing_not_invalid():
     try:
         with pytest.raises(ValueError):
             _ = torchfits.table.read(
-                path, hdu=1, where="ID == 1 AND NOT", backend="cpp_numpy"
+                path, hdu=1, where="ID == 1 AND NOT", backend="cpp"
             )
     finally:
         os.unlink(path)
@@ -488,7 +488,7 @@ def test_arrow_read_where_in_list():
             hdu=1,
             columns=["ID"],
             where="ID IN (1, 3)",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 3]
     finally:
@@ -504,7 +504,7 @@ def test_arrow_read_where_not_in_list():
             hdu=1,
             columns=["ID"],
             where="ID NOT IN (2)",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 3]
     finally:
@@ -520,7 +520,7 @@ def test_arrow_read_where_in_with_strings_and_or():
             hdu=1,
             columns=["ID"],
             where="NAME IN ('STAR_A', 'STAR_C') OR ID == 2",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 2, 3]
     finally:
@@ -533,7 +533,7 @@ def test_arrow_read_where_in_missing_parenthesis_invalid():
     try:
         with pytest.raises(ValueError):
             _ = torchfits.table.read(
-                path, hdu=1, where="ID IN (1, 2", backend="cpp_numpy"
+                path, hdu=1, where="ID IN (1, 2", backend="cpp"
             )
     finally:
         os.unlink(path)
@@ -548,7 +548,7 @@ def test_arrow_read_where_between():
             hdu=1,
             columns=["ID"],
             where="ID BETWEEN 2 AND 3",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [2, 3]
     finally:
@@ -564,7 +564,7 @@ def test_arrow_read_where_not_between():
             hdu=1,
             columns=["ID"],
             where="ID NOT BETWEEN 2 AND 2",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert table.column("ID").to_pylist() == [1, 3]
     finally:
@@ -580,7 +580,7 @@ def test_arrow_read_where_is_null():
             hdu=1,
             columns=["A"],
             where="A IS NULL",
-            backend="cpp_numpy",
+            backend="cpp",
             apply_fits_nulls=True,
         )
         assert table.column("A").to_pylist() == [None]
@@ -597,7 +597,7 @@ def test_arrow_read_where_is_not_null():
             hdu=1,
             columns=["A"],
             where="A IS NOT NULL",
-            backend="cpp_numpy",
+            backend="cpp",
             apply_fits_nulls=True,
         )
         assert table.column("A").to_pylist() == [1, 3]
@@ -611,7 +611,7 @@ def test_arrow_read_where_between_missing_and_invalid():
     try:
         with pytest.raises(ValueError):
             _ = torchfits.table.read(
-                path, hdu=1, where="ID BETWEEN 1 3", backend="cpp_numpy"
+                path, hdu=1, where="ID BETWEEN 1 3", backend="cpp"
             )
     finally:
         os.unlink(path)
@@ -622,7 +622,7 @@ def test_scan_where_matches_python_filter():
     path = _make_table_file()
     try:
         where = "ID >= 2 AND RA < 10.3"
-        full = torchfits.table.read(path, hdu=1, decode_bytes=True, backend="cpp_numpy")
+        full = torchfits.table.read(path, hdu=1, decode_bytes=True, backend="cpp")
         ids = full.column("ID").to_pylist()
         ras = full.column("RA").to_pylist()
         expected = [i for i, r in zip(ids, ras) if i >= 2 and r < 10.3]
@@ -633,7 +633,7 @@ def test_scan_where_matches_python_filter():
                 hdu=1,
                 where=where,
                 decode_bytes=True,
-                backend="cpp_numpy",
+                backend="cpp",
                 batch_size=1,
             )
         )
@@ -656,7 +656,7 @@ def test_scan_where_with_projection():
                 where="ID IN (1, 3)",
                 columns=["ID"],
                 decode_bytes=True,
-                backend="cpp_numpy",
+                backend="cpp",
                 batch_size=2,
             )
         )
@@ -707,7 +707,7 @@ def test_arrow_bytes_without_decode_are_fixed_binary():
     path = _make_table_file()
     try:
         table = torchfits.table.read(
-            path, hdu=1, decode_bytes=False, backend="cpp_numpy"
+            path, hdu=1, decode_bytes=False, backend="cpp"
         )
         assert table.num_rows == 3
         assert pa.types.is_fixed_size_binary(table.schema.field("NAME").type)
@@ -724,7 +724,7 @@ def test_to_pandas_path_accepts_io_kwargs():
             path,
             row_slice=slice(1, 3),
             decode_bytes=True,
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert df.shape[0] == 2
         assert df["ID"].tolist() == [2, 3]
@@ -737,10 +737,10 @@ def test_tnull_scalar_to_arrow_nulls():
     path = _make_tnull_table_file(vector=False)
     try:
         t_with_nulls = torchfits.table.read(
-            path, hdu=1, backend="cpp_numpy", apply_fits_nulls=True
+            path, hdu=1, backend="cpp", apply_fits_nulls=True
         )
         t_without_nulls = torchfits.table.read(
-            path, hdu=1, backend="cpp_numpy", apply_fits_nulls=False
+            path, hdu=1, backend="cpp", apply_fits_nulls=False
         )
         assert t_with_nulls.column("A").to_pylist() == [1, None, 3]
         assert t_without_nulls.column("A").to_pylist() == [1, -999, 3]
@@ -753,7 +753,7 @@ def test_tnull_vector_to_arrow_nulls():
     path = _make_tnull_table_file(vector=True)
     try:
         table = torchfits.table.read(
-            path, hdu=1, backend="cpp_numpy", apply_fits_nulls=True
+            path, hdu=1, backend="cpp", apply_fits_nulls=True
         )
         assert table.column("A").to_pylist() == [[1, None], [3, 4], [None, 6]]
     finally:
@@ -767,7 +767,7 @@ def test_scaled_scalar_column_preserves_physical_values():
         with fits.open(path) as hdul:
             expected = hdul[1].data["A"].astype(np.float64)
 
-        table = torchfits.table.read(path, hdu=1, backend="cpp_numpy")
+        table = torchfits.table.read(path, hdu=1, backend="cpp")
         got = np.asarray(table.column("A"))
         assert got.dtype == np.float64
         assert np.allclose(got, expected)
@@ -782,7 +782,7 @@ def test_scaled_vector_column_preserves_physical_values():
         with fits.open(path) as hdul:
             expected = hdul[1].data["A"].astype(np.float64)
 
-        table = torchfits.table.read(path, hdu=1, backend="cpp_numpy")
+        table = torchfits.table.read(path, hdu=1, backend="cpp")
         got = np.asarray(table.column("A").to_pylist(), dtype=np.float64)
         assert got.shape == expected.shape
         assert np.allclose(got, expected)
@@ -824,7 +824,7 @@ def test_bit_and_vla_columns_readable():
         ]
         assert len(legacy["VLA"]) == 3
 
-        table = torchfits.table.read(path, hdu=1, backend="cpp_numpy")
+        table = torchfits.table.read(path, hdu=1, backend="cpp")
         assert set(table.column_names) == {"BITS", "VLA"}
         assert table.column("VLA").to_pylist() == [[1, 2], [3], [4, 5, 6]]
         bits_py = table.column("BITS").to_pylist()
@@ -842,7 +842,7 @@ def test_bit_and_vla_columns_readable():
         os.unlink(path)
 
 
-def test_cpp_numpy_vla_returns_flat_tuple():
+def test_cpp_vla_returns_flat_tuple():
     path = _make_bit_vla_table_file()
     try:
         import torchfits.cpp as cpp

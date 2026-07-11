@@ -61,4 +61,4 @@
 | Table read (100k rows, 8 cols) | ~6.4 ms | ~0.10 ms (**62× faster**) |
 | Table read (1M rows, mixed cols) | ~53 ms | ~0.05 ms (**1111× faster**) |
 
-*Benchmarks from `exhaustive_mmap_v060b2_20260708_232039` (lab, H100 CUDA). See [benchmarks.md](benchmarks.md) for methodology.*
+*Benchmarks from `20260709_163739` (lab, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*

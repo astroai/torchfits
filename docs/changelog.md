@@ -5,6 +5,38 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-10
+
+### Added
+
+- **`FitsTableIterableDataset`** — constant-memory table streaming via `table.scan`
+  with worker sharding by scan batch index.
+- **`FitsCutoutDataset`** — map-style patch training from `(path, hdu, x, y, …)`
+  cutout specs.
+- **Zensical documentation site** — `zensical.toml`, `docs/index.md`, GitHub Pages
+  workflow, and `pixi run docs-build` / `docs-serve`.
+- **`migration_datasets.md`** — breaking-change guide for removed legacy datasets.
+- **`transforms.__all__`** — explicit public transform catalog.
+- **CI `release-gate` job** — upstream parity, docs contract, data, transforms,
+  and security smokes on Python 3.13.
+
+### Changed
+
+- **Torch-first `table.read` C++ path** — `backend="cpp"` reads via `read_fits_table_rows`
+  / `TableReader.read_rows` (torch tensors) instead of the numpy hop; Arrow conversion
+  stays at the PyArrow boundary only.
+- **Table backend rename** — public backend `"cpp_numpy"` renamed to `"cpp"`; the old
+  name still accepted with `DeprecationWarning`.
+- **Legacy datasets removed** — `torchfits.FITSDataset` and
+  `torchfits.IterableFITSDataset` deleted; use `torchfits.data` typed datasets.
+- **`table.py` trim** — re-exports public API only (private `_` helpers no longer
+  re-exported from `torchfits.table`).
+- **Package description** — PyPI/README positioning for ML datasets + transforms.
+
+### Removed
+
+- **`src/torchfits/datasets.py`** — superseded by `torchfits.data`.
+
 ## [0.6.0] - 2026-07-09
 
 ### Changed
@@ -363,7 +395,9 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v0.6.0b1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/astroai/torchfits/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/astroai/torchfits/releases/tag/v0.6.0
 [0.6.0b1]: https://github.com/astroai/torchfits/releases/tag/v0.6.0b1
 [0.5.0b4]: https://github.com/astroai/torchfits/releases/tag/v0.5.0b4
 [0.5.0b3]: https://github.com/astroai/torchfits/releases/tag/v0.5.0b3

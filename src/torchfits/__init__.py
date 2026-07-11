@@ -10,7 +10,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -55,9 +55,6 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "TensorHDU": ("torchfits.hdu", "TensorHDU"),
     "TableHDU": ("torchfits.hdu", "TableHDU"),
     "TableHDURef": ("torchfits.hdu", "TableHDURef"),
-    "FITSDataset": ("torchfits.datasets", "FITSDataset"),
-    "IterableFITSDataset": ("torchfits.datasets", "IterableFITSDataset"),
-    # Transforms (public API)
     "SpectralBinning": ("torchfits.transforms", "SpectralBinning"),
     "ContinuumRemoval": ("torchfits.transforms", "ContinuumRemoval"),
     "BandMath": ("torchfits.transforms", "BandMath"),
@@ -106,8 +103,6 @@ __all__ = tuple(
         "write_checksums",
         "write_tensor",
         "read_fast",
-        "FITSDataset",
-        "IterableFITSDataset",
         "to_pandas",
         "to_arrow",
         "to_polars",
@@ -212,8 +207,6 @@ if TYPE_CHECKING:
     from .hdu import TableHDU as TableHDU
     from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
-    from .datasets import FITSDataset as FITSDataset
-    from .datasets import IterableFITSDataset as IterableFITSDataset
     from .io import get_header as get_header
     from .io import open as open
     from .io import read as read

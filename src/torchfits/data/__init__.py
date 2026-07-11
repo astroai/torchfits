@@ -14,20 +14,17 @@ Basic usage::
     for images, labels in loader:
         ...
 
-See the :ref:`data loading documentation <data>` for multi-worker setup and
+See [API Reference — Data Module](api.md#data-module) for multi-worker setup and
 cache tuning.
 """
 
 from __future__ import annotations
 
 import glob as _glob
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
-
-# Re-export the generic FITSDataset classes from torchfits.datasets
-from torchfits.datasets import FITSDataset, IterableFITSDataset  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +222,8 @@ class FitsTableDataset(Dataset):
 
     Each ``__getitem__`` returns a ``dict[str, Tensor]`` for one row.
     Supports column projection and ``where=`` pushdown for filtered access.
+    **Loads the full filtered table at ``__init__``** — small/medium catalogs
+    only; use :class:`FitsTableIterableDataset` for large files.
 
     Parameters
     ----------
@@ -264,31 +263,14 @@ class FitsTableDataset(Dataset):
 
         # Read all data once and index by row.
         # Small-to-medium catalogs only; see roadmap for streaming variant.
-        import torchfits.table
-
-        pa_table = torchfits.table.read(
+        self._data = _eager_table_columns(
             self.path,
             hdu=self.hdu,
             columns=self.columns,
             where=self.where,
+            device=self.device,
+            mmap=self.mmap,
         )
-        # torchfits.table.read returns a pyarrow.Table; convert to dict
-        # Numeric/boolean columns → torch.Tensor; string/VLA → list
-        import pyarrow.types as pt
-
-        result: dict[str, Any] = {}
-        for col_name in pa_table.column_names:
-            col = pa_table.column(col_name)
-            t = col.type
-            if pt.is_integer(t) or pt.is_floating(t) or pt.is_boolean(t):
-                tensor = torch.from_numpy(col.to_numpy())
-                if self.device != "cpu":
-                    tensor = tensor.to(self.device)
-                result[col_name] = tensor
-            else:
-                result[col_name] = col.to_pylist()
-        self._data = result
-        # Determine row count from the first tensor or list column
         self._n_rows = 0
         for v in self._data.values():
             if isinstance(v, (torch.Tensor, list)):
@@ -309,6 +291,283 @@ class FitsTableDataset(Dataset):
             f"FitsTableDataset(path={self.path!r}, hdu={self.hdu}, "
             f"n_rows={self._n_rows})"
         )
+
+
+def _resolve_table_mmap(mmap: bool | str) -> bool:
+    return True if mmap == "auto" else bool(mmap)
+
+
+def _move_table_chunk(chunk: dict[str, Any], device: str) -> dict[str, Any]:
+    if device == "cpu":
+        return chunk
+    moved: dict[str, Any] = {}
+    for key, value in chunk.items():
+        if isinstance(value, torch.Tensor):
+            moved[key] = value.to(device)
+        else:
+            moved[key] = value
+    return moved
+
+
+def _eager_table_columns(
+    path: str,
+    *,
+    hdu: int,
+    columns: list[str] | None,
+    where: str | None,
+    device: str,
+    mmap: bool | str,
+) -> dict[str, Any]:
+    """Load a full table into columnar storage (tensors or python lists)."""
+    if where is None:
+        try:
+            import torchfits._C as cpp
+
+            col_list = list(columns) if columns else []
+            chunk = cpp.read_fits_table(path, hdu, col_list, _resolve_table_mmap(mmap))
+            if chunk:
+                return _move_table_chunk(_normalize_cpp_chunk(chunk), device)
+        except Exception:
+            pass
+
+    import torchfits.table
+    import pyarrow.types as pt
+
+    pa_table = torchfits.table.read(
+        path,
+        hdu=hdu,
+        columns=columns,
+        where=where,
+    )
+    result: dict[str, Any] = {}
+    for col_name in pa_table.column_names:
+        col = pa_table.column(col_name)
+        col_type = col.type
+        if pt.is_integer(col_type) or pt.is_floating(col_type) or pt.is_boolean(col_type):
+            # Writable copy: Arrow buffers are often read-only for torch.from_numpy.
+            result[col_name] = torch.as_tensor(col.to_numpy(zero_copy_only=False).copy())
+            if device != "cpu":
+                result[col_name] = result[col_name].to(device)
+        else:
+            result[col_name] = col.to_pylist()
+    return result
+
+
+def _normalize_cpp_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, value in chunk.items():
+        if isinstance(value, torch.Tensor):
+            out[name] = value
+        elif isinstance(value, list):
+            out[name] = value
+        else:
+            out[name] = value
+    return out
+
+
+def _tensor_columns_from_record_batch(batch: Any) -> dict[str, torch.Tensor | None]:
+    """Numeric Arrow columns as tensors; None marks non-numeric columns."""
+    import pyarrow.types as pt
+
+    columns: dict[str, torch.Tensor | None] = {}
+    for name in batch.schema.names:
+        col = batch.column(name)
+        col_type = col.type
+        if pt.is_integer(col_type) or pt.is_floating(col_type) or pt.is_boolean(col_type):
+            columns[name] = torch.as_tensor(col.to_numpy(zero_copy_only=False).copy())
+        else:
+            columns[name] = None
+    return columns
+
+
+def _row_from_record_batch(
+    batch: Any,
+    row_idx: int,
+    tensor_cols: dict[str, torch.Tensor | None],
+    device: str,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for name in batch.schema.names:
+        tensor_col = tensor_cols.get(name)
+        if tensor_col is not None:
+            value = tensor_col[row_idx]
+            row[name] = value.to(device) if device != "cpu" else value
+        else:
+            row[name] = batch.column(name)[row_idx].as_py()
+    return row
+
+
+def _row_from_torch_chunk(chunk: dict[str, Any], row_idx: int) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for name, value in chunk.items():
+        if isinstance(value, torch.Tensor):
+            row[name] = value[row_idx]
+        elif isinstance(value, list):
+            row[name] = value[row_idx]
+        else:
+            row[name] = value
+    return row
+
+
+def _arrow_batch_row_dict(batch: Any, row_idx: int, device: str) -> dict[str, Any]:
+    """One row from a pyarrow RecordBatch (legacy helper; prefer batch tensors)."""
+    tensor_cols = _tensor_columns_from_record_batch(batch)
+    return _row_from_record_batch(batch, row_idx, tensor_cols, device)
+
+
+# ---------------------------------------------------------------------------
+# FitsTableIterableDataset — constant-memory table streaming
+# ---------------------------------------------------------------------------
+
+
+class FitsTableIterableDataset(IterableDataset):
+    """Iterable dataset streaming FITS table rows via ``table.scan``.
+
+    Yields one ``dict[str, Tensor]`` per row. ponytail: workers shard by scan
+    batch index (``batch_idx % num_workers``), not by row index — fine for
+    large single-file catalogs; uneven if ``batch_size`` ≫ row count.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        hdu: int = 1,
+        columns: list[str] | None = None,
+        where: str | None = None,
+        batch_size: int = 65536,
+        transform: Callable | None = None,
+        device: str = "cpu",
+        mmap: bool | str = "auto",
+    ) -> None:
+        self.path = path
+        self.hdu = hdu
+        self.columns = columns
+        self.where = where
+        self.batch_size = batch_size
+        self.transform = transform
+        self.device = device
+        self.mmap = mmap
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = 0 if worker_info is None else worker_info.id
+        num_workers = 1 if worker_info is None else worker_info.num_workers
+
+        if self.where is None:
+            import torchfits.table
+
+            for batch_idx, chunk in enumerate(
+                torchfits.table.scan_torch(
+                    self.path,
+                    hdu=self.hdu,
+                    columns=self.columns,
+                    batch_size=self.batch_size,
+                    mmap=_resolve_table_mmap(self.mmap),
+                    device=self.device,
+                )
+            ):
+                if batch_idx % num_workers != worker_id:
+                    continue
+                if not chunk:
+                    continue
+                n_rows = next(
+                    (v.shape[0] for v in chunk.values() if isinstance(v, torch.Tensor)),
+                    0,
+                )
+                for row_idx in range(n_rows):
+                    row = _row_from_torch_chunk(chunk, row_idx)
+                    if self.transform is not None:
+                        row = self.transform(row)
+                    yield row
+            return
+
+        import torchfits.table
+
+        for batch_idx, batch in enumerate(
+            torchfits.table.scan(
+                self.path,
+                hdu=self.hdu,
+                columns=self.columns,
+                where=self.where,
+                batch_size=self.batch_size,
+                mmap=self.mmap,
+            )
+        ):
+            if batch_idx % num_workers != worker_id:
+                continue
+            tensor_cols = _tensor_columns_from_record_batch(batch)
+            for row_idx in range(batch.num_rows):
+                row = _row_from_record_batch(batch, row_idx, tensor_cols, self.device)
+                if self.transform is not None:
+                    row = self.transform(row)
+                yield row
+
+    def __repr__(self) -> str:
+        return (
+            f"FitsTableIterableDataset(path={self.path!r}, hdu={self.hdu}, "
+            f"batch_size={self.batch_size})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# FitsCutoutDataset — patch training from cutout index table
+# ---------------------------------------------------------------------------
+
+CutoutSpec = tuple[str, int, int, int, int, int]
+"""(path, hdu, x1, y1, x2, y2) inclusive pixel bounds."""
+
+
+class FitsCutoutDataset(Dataset):
+    """Map-style dataset for fixed cutouts from one or more FITS images.
+
+    Each ``__getitem__`` calls ``read_subset`` for one window. ponytail:
+    same-path cutouts re-open the file each row; use ``open_subset_reader``
+    when one mosaic dominates.
+    """
+
+    def __init__(
+        self,
+        cutouts: Sequence[CutoutSpec | tuple[str, int, int, int, int]],
+        transform: Callable | None = None,
+        device: str = "cpu",
+        add_channel_dim: bool = True,
+    ) -> None:
+        normalized: list[CutoutSpec] = []
+        for spec in cutouts:
+            if len(spec) == 5:
+                path, hdu, x, y, size = spec
+                normalized.append((path, hdu, x, y, x + size, y + size))
+            elif len(spec) == 6:
+                normalized.append(tuple(spec))  # type: ignore[arg-type]
+            else:
+                raise ValueError(
+                    "cutout must be (path, hdu, x, y, size) or "
+                    "(path, hdu, x1, y1, x2, y2)"
+                )
+        self.cutouts = normalized
+        self.transform = transform
+        self.device = device
+        self.add_channel_dim = add_channel_dim
+        self.files = sorted({c[0] for c in self.cutouts})
+
+    def __len__(self) -> int:
+        return len(self.cutouts)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        from torchfits import read_subset
+
+        path, hdu, x1, y1, x2, y2 = self.cutouts[idx]
+        image = read_subset(path, hdu, x1, y1, x2, y2)
+        if self.device != "cpu":
+            image = image.to(self.device)
+        if self.add_channel_dim and image.ndim == 2:
+            image = image.unsqueeze(0)
+        if self.transform is not None:
+            image = self.transform(image)
+        return image
+
+    def __repr__(self) -> str:
+        return f"FitsCutoutDataset(n={len(self.cutouts)}, device={self.device!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +607,7 @@ def fits_collate_fn(
             if not all(isinstance(v, torch.Tensor) for v in values):
                 raise ValueError(
                     f"Cannot collate non-tensor column {key!r}. "
-                    f"Use vla_policy= to handle variable-length arrays."
+                    f"Drop string/VLA columns or supply a custom collate_fn."
                 )
             out[key] = torch.stack(values)
         return out
@@ -446,11 +705,12 @@ def make_loader(
 
 
 __all__ = [
-    "FITSDataset",
+    "CutoutSpec",
     "FitsImageDataset",
     "FitsImageIterableDataset",
     "FitsTableDataset",
-    "IterableFITSDataset",
+    "FitsTableIterableDataset",
+    "FitsCutoutDataset",
     "fits_collate_fn",
     "make_loader",
 ]

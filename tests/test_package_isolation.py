@@ -22,3 +22,24 @@ def test_torchfits_contains_only_fits_native_sources() -> None:
     assert not (native_root / "healpix.cpp").exists()
     assert not (PACKAGE_ROOT / "wcs").exists()
     assert not (PACKAGE_ROOT / "sphere").exists()
+
+
+def test_torchfits_python_sources_never_import_astropy_or_fitsio() -> None:
+    """Runtime I/O must use vendored CFITSIO + _C, not Python astropy/fitsio."""
+    forbidden = (
+        "import astropy",
+        "from astropy",
+        "import fitsio",
+        "from fitsio",
+    )
+    offenders: list[str] = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for pattern in forbidden:
+                if pattern in stripped:
+                    offenders.append(f"{path.relative_to(PACKAGE_ROOT)}: {stripped}")
+    assert not offenders, "\n".join(offenders)

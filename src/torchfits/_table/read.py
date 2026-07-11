@@ -20,17 +20,14 @@ from .._table_engine import (
     WhereReadPlan,
     WhereStrategy,
     choose_where_read_plan,
-    should_skip_cpp_numpy_for_where,
+    should_skip_cpp_for_where,
     validate_table_backend,
 )
 from .._table.utils import _normalize_row_slice, _require_pyarrow
 from .._table.arrow_convert import (
     _chunk_to_record_batch,
-    _column_tnull_from_meta,
-    _is_vla_tuple,
-    _numpy_to_arrow_array,
     _pa_array,
-    _vla_tuple_to_arrow_array,
+    _tensor_to_arrow_array,
 )
 from .._table.write import _resolve_table_hdu_index_and_columns
 
@@ -382,7 +379,7 @@ def _can_use_torch_table_path_for_full_read(
     return any_selected
 
 
-def _iter_chunks_cpp_numpy(
+def _iter_chunks_cpp_table(
     path: str,
     hdu: int,
     columns: Optional[list[str]],
@@ -394,7 +391,7 @@ def _iter_chunks_cpp_numpy(
     import torchfits
     import torchfits._C as cpp
 
-    if not hasattr(cpp, "read_fits_table_rows_numpy_from_handle"):
+    if not hasattr(cpp, "read_fits_table_rows_from_handle"):
         return None
 
     header = torchfits.get_header(path, hdu)
@@ -434,7 +431,7 @@ def _iter_chunks_cpp_numpy(
 
                 if file_handle is None:
                     file_handle = cpp.open_fits_file(path, "r")
-                yield cpp.read_fits_table_rows_numpy_from_handle(
+                yield cpp.read_fits_table_rows_from_handle(
                     file_handle, hdu, col_list, row, size
                 )
                 row += size
@@ -505,8 +502,8 @@ def _read_table_unfiltered(
     apply_fits_nulls: bool,
     backend: str,
 ) -> Any:
-    if backend in {"auto", "cpp_numpy"}:
-        single = _read_cpp_numpy_table(
+    if backend in {"auto", "cpp"}:
+        single = _read_cpp_table_chunk(
             path=path,
             hdu=hdu,
             columns=columns,
@@ -559,7 +556,7 @@ def _try_cpp_where_pushdown(
     try:
         target_cols = columns
         if target_cols is None:
-            target_cols = list(schema(path, hdu=hdu, backend="cpp_numpy").names)
+            target_cols = list(schema(path, hdu=hdu, backend="cpp").names)
 
         data_dict = cpp.read_fits_table_filtered(path, hdu, target_cols, filters)
         pushdown_tforms = (
@@ -574,13 +571,9 @@ def _try_cpp_where_pushdown(
                 continue
             val = data_dict[name]
             if isinstance(val, torch.Tensor):
-                if val.device.type != "cpu":
-                    val = val.cpu()
-                if not val.is_contiguous():
-                    val = val.contiguous()
-                arr = _numpy_to_arrow_array(
+                arr = _tensor_to_arrow_array(
                     pa,
-                    val.numpy(),
+                    val,
                     decode_bytes,
                     encoding,
                     strip,
@@ -685,7 +678,7 @@ def _resolve_rows_from_where_cpp(
 ) -> Optional[list[int]]:
     where_ast = parse_where_expression(where)
     where_columns = where_columns_from_ast(where_ast)
-    predicate_table = _read_cpp_numpy_table(
+    predicate_table = _read_cpp_table_chunk(
         path=path,
         hdu=hdu,
         columns=where_columns,
@@ -737,7 +730,7 @@ def scan(
 
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
-    validate_table_backend(backend)
+    backend = validate_table_backend(backend)
 
     if where is not None:
         table = read(
@@ -784,8 +777,8 @@ def scan(
         preferred_order = None
 
     chunk_iter = None
-    if backend in {"auto", "cpp_numpy"}:
-        chunk_iter = _iter_chunks_cpp_numpy(
+    if backend in {"auto", "cpp"}:
+        chunk_iter = _iter_chunks_cpp_table(
             path, hdu, columns, start_row, num_rows, batch_size, mmap
         )
     if chunk_iter is None or backend == "torch":
@@ -831,15 +824,15 @@ def read(
     apply_fits_nulls: bool = True,
     backend: str = "auto",
 ):
-    validate_table_backend(backend)
+    backend = validate_table_backend(backend)
     pa = _require_pyarrow()
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
-    if backend in {"auto", "cpp_numpy"} and not should_skip_cpp_numpy_for_where(
+    if backend in {"auto", "cpp"} and not should_skip_cpp_for_where(
         backend, where
     ):
-        single = _read_cpp_numpy_table(
+        single = _read_cpp_table_chunk(
             path=path,
             hdu=hdu,
             columns=columns,
@@ -994,7 +987,7 @@ def schema(
     backend: str = "auto",
 ):
     pa = _require_pyarrow()
-    validate_table_backend(backend)
+    backend = validate_table_backend(backend)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
@@ -1026,7 +1019,7 @@ def schema(
     return first.schema
 
 
-def _read_cpp_numpy_table(
+def _read_cpp_table_chunk(
     path: str,
     hdu: int,
     columns: Optional[list[str]],
@@ -1040,6 +1033,7 @@ def _read_cpp_numpy_table(
     include_fits_metadata: bool,
     apply_fits_nulls: bool,
 ):
+    """Read a table chunk via C++ TableReader (torch tensors) and convert to Arrow."""
     import numpy as np
     import torchfits._C as cpp
 
@@ -1093,7 +1087,6 @@ def _read_cpp_numpy_table(
 
     col_list = columns if columns else []
 
-    # -- C++ dispatch chain (simplified & unified) -------------------------
     from .engine import _read_ranges_as_chunk
 
     chunk = None
@@ -1157,7 +1150,9 @@ def _read_cpp_numpy_table(
         inv[order] = np.arange(len(order))
         chunk = {}
         for name, value in chunk_sorted.items():
-            if isinstance(value, np.ndarray):
+            if isinstance(value, torch.Tensor):
+                chunk[name] = value[inv]
+            elif isinstance(value, np.ndarray):
                 chunk[name] = value[inv]
             elif isinstance(value, list):
                 chunk[name] = [value[i] for i in inv]
@@ -1167,12 +1162,12 @@ def _read_cpp_numpy_table(
     if chunk is None:
         try:
             if mmap:
-                chunk = cpp.read_fits_table_rows_numpy(
+                chunk = cpp.read_fits_table_rows(
                     path, hdu, col_list, start_row, num_rows, True
                 )
             else:
                 reader = _acquire_cpp_reader(path, hdu, cpp)
-                chunk = reader.read_rows_numpy(col_list, start_row, num_rows)
+                chunk = reader.read_rows(col_list, start_row, num_rows)
         except Exception:
             chunk = None
     if chunk is None:
@@ -1181,67 +1176,6 @@ def _read_cpp_numpy_table(
     pa = _require_pyarrow()
     if not chunk:
         return pa.table({})
-
-    if not field_meta and not table_meta:
-        arrays: list[Any] = []
-        names_out: list[str] = []
-        names = preferred_order[:] if preferred_order else list(chunk.keys())
-        for name in names:
-            if name not in chunk:
-                continue
-            value = chunk[name]
-            null_sentinel = (
-                _column_tnull_from_meta(field_meta, name) if apply_fits_nulls else None
-            )
-            if isinstance(value, np.ndarray):
-                arr = _numpy_to_arrow_array(
-                    pa,
-                    value,
-                    decode_bytes,
-                    encoding,
-                    strip,
-                    null_sentinel=null_sentinel,
-                    fits_tform=col_tforms.get(name) if col_tforms else None,
-                    unsigned_dtype=unsigned_dtypes.get(name),
-                )
-            elif isinstance(value, torch.Tensor):
-                t = value.detach()
-                if t.device.type != "cpu":
-                    t = t.cpu()
-                if not t.is_contiguous():
-                    t = t.contiguous()
-                arr = _numpy_to_arrow_array(
-                    pa,
-                    t.numpy(),
-                    decode_bytes,
-                    encoding,
-                    strip,
-                    null_sentinel=null_sentinel,
-                    fits_tform=col_tforms.get(name) if col_tforms else None,
-                    unsigned_dtype=unsigned_dtypes.get(name),
-                )
-            elif isinstance(value, list):
-                converted = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        t = item.detach()
-                        if t.device.type != "cpu":
-                            t = t.cpu()
-                        if not t.is_contiguous():
-                            t = t.contiguous()
-                        converted.append(t.numpy())
-                    else:
-                        converted.append(item)
-                arr = _pa_array(pa, converted)
-            elif _is_vla_tuple(value):
-                arr = _vla_tuple_to_arrow_array(pa, value, null_sentinel=null_sentinel)
-            else:
-                arr = _pa_array(pa, value)
-            names_out.append(name)
-            arrays.append(arr)
-        if not arrays:
-            return pa.table({})
-        return pa.Table.from_arrays(arrays, names=names_out)
 
     batch = _chunk_to_record_batch(
         chunk,
@@ -1333,7 +1267,7 @@ def reader(
     backend: str = "auto",
 ):
     pa = _require_pyarrow()
-    validate_table_backend(backend)
+    backend = validate_table_backend(backend)
     scan_backend = backend
     batches = scan(
         path,

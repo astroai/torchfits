@@ -143,7 +143,7 @@ def main() -> None:
                 decode_bytes=False,
                 apply_fits_nulls=False,
                 batch_size=args.batch_size,
-                backend="cpp_numpy",
+                backend="cpp",
             ),
         )
     )
@@ -156,7 +156,7 @@ def main() -> None:
                 decode_bytes=True,
                 apply_fits_nulls=False,
                 batch_size=args.batch_size,
-                backend="cpp_numpy",
+                backend="cpp",
             ),
         )
     )
@@ -196,7 +196,7 @@ def main() -> None:
                 decode_bytes=False,
                 apply_fits_nulls=False,
                 batch_size=args.batch_size,
-                backend="cpp_numpy",
+                backend="cpp",
             ),
         )
     )
@@ -231,7 +231,7 @@ def main() -> None:
 
     methods.append(("torchfits_arrow_scan_sum", _torchfits_arrow_scan_sum))
 
-    def _torchfits_arrow_scan_sum_cpp_numpy():
+    def _torchfits_arrow_scan_sum_cpp():
         total = 0.0
         for batch in torchfits.table.scan(
             str(file_path),
@@ -239,13 +239,13 @@ def main() -> None:
             decode_bytes=False,
             apply_fits_nulls=False,
             batch_size=args.batch_size,
-            backend="cpp_numpy",
+            backend="cpp",
         ):
             total += float(np.asarray(batch.column("RA")).sum())
         return total
 
     methods.append(
-        ("torchfits_arrow_scan_sum_cpp_numpy", _torchfits_arrow_scan_sum_cpp_numpy)
+        ("torchfits_arrow_scan_sum_cpp", _torchfits_arrow_scan_sum_cpp)
     )
 
     def _torchfits_scan_torch_sum_cpu():

@@ -24,7 +24,10 @@ Runnable scripts covering the main torchfits workflows. Each script is self-cont
 
 | Script | What it demonstrates |
 |---|---|
-| [`example_image_dataset.py`](../examples/example_image_dataset.py) | PyTorch `Dataset` with `read_tensor`, `get_header`, and `read_batch` |
+| [`example_image_dataset.py`](../examples/example_image_dataset.py) | `FitsImageDataset` + `make_loader` |
+| [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset` |
+| [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline + `FitsImageDataset` |
+| [`example_hyperspectral.py`](../examples/example_hyperspectral.py) | Spectral/hyperspectral transforms on tensor cubes |
 
 ## Running
 

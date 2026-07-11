@@ -32,14 +32,17 @@ docs. Status values are:
 | Scaled image data | Supported | FITS BSCALE/BZERO semantics | `tests/test_astropy_upstream_smoke.py`, `tests/test_integration.py`, `benchmarks/bench_fits_io.py` |
 | Scaled table columns | Partial | CFITSIO-backed table path | buffered reads are covered; mmap updates are unsupported |
 | GPU reads | Supported | PyTorch device transfer after FITS decode | `tests/test_api.py`, examples |
-| GPU writes | Partial | torch tensor inputs | non-CPU tensors are copied to host before FITS write |
+| GPU writes | Partial | torch tensor inputs | non-CPU tensors copied to host before FITS write |
+| `torchfits.data` datasets | Supported | PyTorch `Dataset` / `IterableDataset` | `tests/test_data.py`, `examples/example_image_dataset.py`, `examples/example_data_catalogs.py` |
+| `torchfits.transforms` | Supported | header-aware preprocessing | `tests/test_transforms.py`, `tests/test_transforms_e2e.py` |
+| `read_batch` / multi-file image reads | Supported | ML training throughput | `tests/test_api.py`, `examples/example_image_dataset.py` |
 | Arrow/Pandas/Polars/DuckDB interop | Partial | optional ecosystem libraries | `tests/test_interop.py`, `tests/test_arrow_table_api.py`; optional dependencies control availability |
 | Full Astropy API parity | Out of scope | Astropy package surface | torchfits targets common FITS I/O workflows only |
 | Full fitsio API parity | Out of scope | fitsio package surface | torchfits targets common FITS I/O workflows only |
 | Full CFITSIO API parity | Out of scope | CFITSIO C API | torchfits exposes selected PyTorch-native behavior only |
-| WCS solving/modeling | Out of scope | Astropy WCS / wcslib-style domains | use specialized WCS packages |
-| Sky coordinates, sphere geometry, HEALPix | Out of scope | sky-domain packages | outside torchfits |
-| Sky-domain simulation and training pipelines | Out of scope | application/domain code | belongs outside torchfits |
+
+Sky-domain packages (WCS, HEALPix, sphere geometry, simulation orchestration)
+are outside torchfits.
 
 ## Why full parity is not claimed
 

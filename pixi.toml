@@ -8,8 +8,8 @@ platforms = ["osx-arm64", "linux-64"]
 
 [package]
 name = "torchfits"
-version = "0.6.0"
-description = "High-performance FITS I/O for PyTorch"
+version = "0.7.0"
+description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = ["Seb Fabbro <sebfabbro@gmail.com>"]
 
 [package.build]
@@ -36,7 +36,8 @@ nanobind = ">=2.10.2"
 # Run dependencies - packages needed at runtime
 [package.run-dependencies]
 pytorch = ">=2.0,<2.11"
-
+numpy = ">=1.20"
+pyarrow = ">=5.0"
 cfitsio = ">=4.6.3,<4.6.5"
 
 # Workspace dependencies - development environment
@@ -67,10 +68,14 @@ duckdb = ">=1.5.4,<2"
 dev = "pip install -e . --no-build-isolation"
 build = "pixi build"
 test = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/"
-release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_scale_on_device.py tests/test_data.py tests/test_transforms.py tests/test_transforms_e2e.py -q"
+release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_scale_on_device.py tests/test_data.py tests/test_transforms.py tests/test_transforms_e2e.py tests/test_api.py tests/test_arrow_table_api.py tests/test_security.py tests/test_release_smoke.py -q"
 lint = "ruff check . && ruff format ."
+preflight-push = "ruff check . && ruff format --check . && python -m compileall -q src/torchfits tests"
+ci-local = "pixi run preflight-push && pixi run test"
 setup-hooks = "pre-commit install"
 pre-commit = "pre-commit run --all-files"
+docs-build = "zensical build --clean"
+docs-serve = "zensical serve"
 
 # Core benchmarks (essential)
 # After a fresh clone, run:  pixi run bench-install
@@ -171,4 +176,7 @@ cfitsio = ">=4.6.4,<4.6.5"
 
 [target.linux-64.dependencies]
 cfitsio = ">=4.6.3,<4.6.4"
+
+[pypi-dependencies]
+zensical = ">=0.0.50, <0.0.51"
 

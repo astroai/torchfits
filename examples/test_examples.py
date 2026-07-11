@@ -17,6 +17,8 @@ REQUIRED = [
     "example_image_cube.py",
     "example_image_mef.py",
     "example_image_dataset.py",
+    "example_data_catalogs.py",
+    "example_transforms.py",
     "example_table.py",
     "example_table_interop.py",
     "example_table_recipes.py",

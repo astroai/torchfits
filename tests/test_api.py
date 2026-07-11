@@ -539,5 +539,16 @@ class TestTableAPI:
             os.unlink(filepath)
 
 
+def test_table_transforms_and_data_export_only_public_api() -> None:
+    import torchfits.data as data
+    import torchfits.table as table
+    import torchfits.transforms as transforms
+
+    for mod in (data, table, transforms):
+        assert not any(name.startswith("_") for name in mod.__all__)
+        for name in mod.__all__:
+            assert hasattr(mod, name), f"{mod.__name__} missing {name!r}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -53,6 +53,15 @@ def main() -> None:
         # Full image via read_tensor (contrast with cutout APIs)
         full = torchfits.read_tensor(path, hdu=0)
         print(f"read_tensor full shape: {full.shape}")
+
+        # Dataset wrapper for a fixed cutout list (see example_data_catalogs.py)
+        from torchfits.data import FitsCutoutDataset
+
+        patch_ds = FitsCutoutDataset(
+            [(path, 0, x1, y1, x2, y2)],
+            add_channel_dim=False,
+        )
+        print(f"FitsCutoutDataset matches read_subset: {torch.equal(patch_ds[0], cutout)}")
     finally:
         os.unlink(path)
 

@@ -1,0 +1,51 @@
+[project]
+site_name = "torchfits"
+site_description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
+site_url = "https://astroai.github.io/torchfits/"
+repo_url = "https://github.com/astroai/torchfits"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright &copy; 2026 torchfits contributors"
+
+nav = [
+  {"Home" = "index.md"},
+  {"Getting started" = "install.md"},
+  {"API Reference" = "api.md"},
+  {"Guides" = [
+    "examples.md",
+    "benchmarks.md",
+    "parity.md",
+    "roadmap.md",
+  ]},
+  {"Migration" = [
+    "migration_astropy.md",
+    "migration_fitsio.md",
+    "migration_datasets.md",
+  ]},
+  {"Project" = [
+    "changelog.md",
+    "contributing.md",
+    "release.md",
+  ]},
+]
+
+[project.theme]
+features = [
+  "content.action.edit",
+  "content.action.view",
+  "navigation.tabs",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"

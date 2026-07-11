@@ -36,7 +36,7 @@ def test_table_docs_workflow_smoke():
             columns=["ID", "RA"],
             where="DEC > 0",
             decode_bytes=True,
-            backend="cpp_numpy",
+            backend="cpp",
         )
         assert subset.column_names == ["ID", "RA"]
         assert subset.column("ID").to_pylist() == [2, 3]
@@ -49,7 +49,7 @@ def test_table_docs_workflow_smoke():
             columns=["ID"],
             where="ID >= 2",
             batch_size=1,
-            backend="cpp_numpy",
+            backend="cpp",
         ):
             ids.extend(batch.column("ID").to_pylist())
         assert ids == [2, 3]
@@ -60,7 +60,7 @@ def test_table_docs_workflow_smoke():
             hdu=1,
             columns=["ID"],
             where="ID IN (1, 3)",
-            backend="cpp_numpy",
+            backend="cpp",
         )
         from_reader = []
         for batch in reader:

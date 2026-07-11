@@ -195,6 +195,60 @@ def _tensor_to_arrow_array(
     )
 
 
+def _column_value_to_arrow_array(
+    pa,
+    value: Any,
+    decode_bytes: bool,
+    encoding: str,
+    strip: bool,
+    null_sentinel: Any = None,
+    *,
+    fits_tform: str | None = None,
+    unsigned_dtype: str | None = None,
+):
+    """Convert one C++ table column value to a PyArrow array."""
+    import numpy as np
+
+    if isinstance(value, torch.Tensor):
+        return _tensor_to_arrow_array(
+            pa,
+            value,
+            decode_bytes,
+            encoding,
+            strip,
+            null_sentinel=null_sentinel,
+            fits_tform=fits_tform,
+            unsigned_dtype=unsigned_dtype,
+        )
+    if isinstance(value, np.ndarray):
+        return _numpy_to_arrow_array(
+            pa,
+            value,
+            decode_bytes,
+            encoding,
+            strip,
+            null_sentinel=null_sentinel,
+            fits_tform=fits_tform,
+            unsigned_dtype=unsigned_dtype,
+        )
+    if isinstance(value, list):
+        converted = []
+        for item in value:
+            if isinstance(item, torch.Tensor):
+                t = item.detach()
+                if t.device.type != "cpu":
+                    t = t.cpu()
+                if not t.is_contiguous():
+                    t = t.contiguous()
+                converted.append(t.numpy())
+            else:
+                converted.append(item)
+        return _pa_array(pa, converted)
+    if _is_vla_tuple(value):
+        return _vla_tuple_to_arrow_array(pa, value, null_sentinel=null_sentinel)
+    return _pa_array(pa, value)
+
+
 # -- VLA helpers -------------------------------------------------------------------
 
 
@@ -280,14 +334,9 @@ def _chunk_to_record_batch(
                 _column_tnull_from_meta(null_meta, name) if apply_fits_nulls else None
             )
             if isinstance(value, torch.Tensor):
-                t = value.detach()
-                if t.device.type != "cpu":
-                    t = t.cpu()
-                if not t.is_contiguous():
-                    t = t.contiguous()
-                pydict[name] = _numpy_to_arrow_array(
+                pydict[name] = _tensor_to_arrow_array(
                     pa,
-                    t.numpy(),
+                    value,
                     decode_bytes,
                     encoding,
                     strip,
