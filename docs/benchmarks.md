@@ -134,18 +134,33 @@ For apples-to-apples integer GPU timing, the exhaustive suite also records
 call `torchfits.cache.optimize_for_dataset(paths, avg_file_size_mb=…)` before
 `DataLoader` epochs so handle caches stay warm (see `examples/example_image_dataset.py`).
 
-### Refreshing GPU numbers
+### Refreshing GPU numbers (CANFAR staging)
+
+CUDA lab numbers come from a **headless GPU session** on `@staging`, not GitHub
+Actions. Push to GitHub, then from a machine with `canfar` x509 auth:
 
 ```bash
-# Linux + NVIDIA
-pixi run -e bench-gpu bench-gpu
+# Full exhaustive lab bench-all + mmap matrix (CUDA rows)
+TORCHFITS_BENCH_MODE=exhaustive pixi run bench-canfar-gpu
 
-# Apple Silicon (MPS transport rows; separate from CUDA lab numbers)
+# Release gate on GPU
+TORCHFITS_BENCH_MODE=release-gate pixi run bench-canfar-gpu
+
+# Pin a commit SHA after push
+TORCHFITS_GIT_REF=<sha> TORCHFITS_BENCH_RUN_ID=exhaustive_cuda_0.7.0_<stamp> \
+  bash scripts/launch_canfar_gpu_bench.sh
+```
+
+Launcher: `scripts/launch_canfar_gpu_bench.sh` (image `astroai/base:latest`,
+`--gpu 1`). In-container work uses **pixi**; stdout/stderr + CSVs tee to
+`${TMP_SCRATCH_DIR}/torchfits-gpu-bench/<run-id>/`. Platform logs land under
+`benchmarks_results/canfar_<run-id>/` locally.
+
+```bash
+# Apple Silicon dev only (MPS transport rows — not the CUDA release gate)
 pixi run bench-mps
 
-# Re-render docs from the merged CSV
-pixi run -e bench-gpu bench-exhaustive
-# or, from an existing run directory:
+# Re-render docs from a merged CSV (after downloading scratch artifacts or local run)
 pixi run bench-table-render -- --csv benchmarks_results/<run-id>/results.csv
 python scripts/patch_bench_docs.py --csv ... --deficits ... --run-id <run-id>
 ```

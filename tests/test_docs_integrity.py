@@ -59,6 +59,8 @@ def test_docs_reference_existing_local_files() -> None:
         "benchmarks/bench_fitstable_io.py",
         "benchmarks/bench_gpu_transports.py",
         "benchmarks/bench_table.py",
+        "scripts/launch_canfar_gpu_bench.sh",
+        "scripts/canfar_gpu_bench_incontainer.sh",
         "scripts/run_exhaustive_bench_and_patch_docs.sh",
     ]
 
