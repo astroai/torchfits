@@ -70,6 +70,10 @@ esac
 BENCH_OUT="benchmarks_results/${TORCHFITS_BENCH_RUN_ID}"
 if [[ -d "${BENCH_OUT}" ]]; then
   cp -a "${BENCH_OUT}" "${RUN_DIR}/benchmarks_results"
+  # ponytail: scratch is ephemeral; stream tarball into platform logs for local import
+  echo "TORCHFITS_BENCH_ARTIFACT_BEGIN"
+  tar czf - -C "benchmarks_results" "${TORCHFITS_BENCH_RUN_ID}" | base64 -w 76
+  echo "TORCHFITS_BENCH_ARTIFACT_END"
 fi
 
 {

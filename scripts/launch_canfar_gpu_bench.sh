@@ -109,6 +109,14 @@ done
 canfar logs "${SESSION_ID}" > "${LOCAL_OUT}/canfar_logs.txt" 2>&1 || true
 canfar events "${SESSION_ID}" > "${LOCAL_OUT}/canfar_events.txt" 2>&1 || true
 
+if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+  if python3 scripts/import_canfar_bench_artifacts.py "${LOCAL_OUT}/canfar_logs.txt" --dest "${ROOT_DIR}/benchmarks_results" 2>/dev/null; then
+    echo "imported benchmarks_results/${RUN_ID} from session logs" | tee -a "${LOCAL_OUT}/launcher.log"
+  else
+    echo "note: no embedded benchmark tarball in logs (older in-container script?)" | tee -a "${LOCAL_OUT}/launcher.log"
+  fi
+fi
+
 echo "finished status=${STATUS}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "local artifacts: ${LOCAL_OUT}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "scratch path (ephemeral): torchfits-gpu-bench/${RUN_ID} under TMP_SCRATCH_DIR" | tee -a "${LOCAL_OUT}/launcher.log"
