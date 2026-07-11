@@ -25,7 +25,8 @@ if ! command -v canfar >/dev/null; then
   exit 1
 fi
 
-if [[ "${IMAGE}" == astroai/* ]] && ! canfar config get registry.username >/dev/null 2>&1; then
+REG_USER="$(canfar config get registry.username 2>/dev/null || true)"
+if [[ "${IMAGE}" == astroai/* && -z "${REG_USER}" ]]; then
   cat >&2 <<'EOF'
 astroai/* images are private on images.canfar.net — configure Harbor registry auth once:
 
