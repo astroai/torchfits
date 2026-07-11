@@ -19,6 +19,6 @@ if command -v vmkdir >/dev/null; then
   vmkdir -p "${vos_dest}" 2>/dev/null || true
 fi
 
-# ponytail: vcp is recursive; trailing slashes copy directory contents
-vcp "${bench_out}/" "${vos_dest}/"
+# ponytail: copy directory *contents* (not the directory name) into vos_dest
+vcp "${bench_out}/." "${vos_dest}/"
 echo "TORCHFITS_VOS_URI=${vos_dest}"
