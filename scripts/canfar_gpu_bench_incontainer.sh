@@ -44,8 +44,11 @@ pixi run -e bench-gpu python -c "import torch; print('torch', torch.__version__,
 
 case "${TORCHFITS_BENCH_MODE}" in
   smoke)
+    mkdir -p benchmarks_results
     pixi run -e bench-gpu pytest tests/test_scale_on_device.py -q
-    pixi run -e bench-gpu python benchmarks/bench_gpu_transports.py
+    pixi run -e bench-gpu python benchmarks/bench_gpu_transports.py \
+      --run-id "${TORCHFITS_BENCH_RUN_ID}" \
+      --output "benchmarks_results/${TORCHFITS_BENCH_RUN_ID}/gpu_transports.csv"
     ;;
   release-gate)
     pixi run -e bench-gpu release-gate
