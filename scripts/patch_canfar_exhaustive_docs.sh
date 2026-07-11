@@ -14,8 +14,13 @@ if [[ ! -f "${CSV}" ]]; then
   cat >&2 <<EOF
 missing ${CSV}
 
-Copy scratch artifacts first, e.g. from canfar logs or:
-  benchmarks_results/canfar_<run-id>/canfar_logs.txt
+Fetch from VOSpace (after a CANFAR session completes):
+
+  bash scripts/fetch_canfar_bench_vos.sh ${RUN_ID}
+
+Or if vcp is unavailable, fall back to log import:
+  python3 scripts/import_canfar_bench_artifacts.py \\
+    benchmarks_results/canfar_${RUN_ID}/canfar_logs.txt ${RUN_ID}
 
 Expected layout:
   benchmarks_results/${RUN_ID}/results.csv

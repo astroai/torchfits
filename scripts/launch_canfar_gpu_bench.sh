@@ -18,6 +18,7 @@ REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
 CLONE_DIR="/scratch/torchfits"
+VOS_DEST="${TORCHFITS_VOS_DEST:-vos:sfabbro/torchfits-gpu-bench/${RUN_ID}}"
 
 mkdir -p "$LOCAL_OUT"
 
@@ -29,6 +30,7 @@ fi
 echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "vos_dest=${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
 REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
@@ -45,6 +47,7 @@ canfar create headless "${IMAGE}" \
   --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
   --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
   --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
+  --env "TORCHFITS_VOS_DEST=${VOS_DEST}" \
   -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
@@ -110,16 +113,19 @@ canfar logs "${SESSION_ID}" > "${LOCAL_OUT}/canfar_logs.txt" 2>&1 || true
 canfar events "${SESSION_ID}" > "${LOCAL_OUT}/canfar_events.txt" 2>&1 || true
 
 if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-  if python3 scripts/import_canfar_bench_artifacts.py "${LOCAL_OUT}/canfar_logs.txt" "${RUN_ID}" --dest "${ROOT_DIR}/benchmarks_results"; then
-    echo "imported benchmarks_results/${RUN_ID} from session logs" | tee -a "${LOCAL_OUT}/launcher.log"
+  if command -v vcp >/dev/null && bash scripts/fetch_canfar_bench_vos.sh "${RUN_ID}"; then
+    echo "fetched benchmarks_results/${RUN_ID} from ${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
+  elif python3 scripts/import_canfar_bench_artifacts.py "${LOCAL_OUT}/canfar_logs.txt" "${RUN_ID}" --dest "${ROOT_DIR}/benchmarks_results" 2>/dev/null; then
+    echo "imported benchmarks_results/${RUN_ID} from session logs (vcp fallback)" | tee -a "${LOCAL_OUT}/launcher.log"
   else
-    echo "warning: failed to import CSVs from session logs" | tee -a "${LOCAL_OUT}/launcher.log"
+    echo "fetch results: bash scripts/fetch_canfar_bench_vos.sh ${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+    echo "  (vos: ${VOS_DEST})" | tee -a "${LOCAL_OUT}/launcher.log"
   fi
 fi
 
 echo "finished status=${STATUS}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "local artifacts: ${LOCAL_OUT}" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "scratch path (ephemeral): torchfits-gpu-bench/${RUN_ID} under TMP_SCRATCH_DIR" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "vos artifacts: ${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 case "${STATUS}" in
   Succeeded|Completed) exit 0 ;;

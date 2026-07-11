@@ -149,7 +149,10 @@ TORCHFITS_CANFAR_IMAGE=astroai/notebook:latest TORCHFITS_BENCH_MODE=smoke \
 TORCHFITS_CANFAR_IMAGE=astroai/notebook:latest TORCHFITS_BENCH_MODE=exhaustive \
   pixi run bench-canfar-gpu
 
-# After scratch CSV is copied locally:
+# Download CSVs from VOSpace (if launcher did not auto-fetch via vcp):
+bash scripts/fetch_canfar_bench_vos.sh exhaustive_cuda_0.7.0_<stamp>
+
+# Patch docs from local CSV:
 bash scripts/patch_canfar_exhaustive_docs.sh exhaustive_cuda_0.7.0_<stamp>
 ```
 
@@ -167,9 +170,10 @@ Skaha passes headless `args` as URL query parameters (spaces/`$`/`&` break remot
 bash). The launcher tab-encodes the clone+bench script; ops may want a proper
 argv array in the API long term.
 
-In-container work uses **pixi**; stdout/stderr + CSVs tee to
-`${TMP_SCRATCH_DIR}/torchfits-gpu-bench/<run-id>/`. Platform logs land under
-`benchmarks_results/canfar_<run-id>/` locally.
+In-container work uses **pixi**; bench CSVs upload to **`vos:sfabbro/torchfits-gpu-bench/<run-id>/`**
+via `vcp` (x509 in the session). Platform logs land under
+`benchmarks_results/canfar_<run-id>/` locally. Download results with
+`scripts/fetch_canfar_bench_vos.sh` (needs `pip install vos` + cert locally).
 
 ```bash
 # Local CI + docs before push (mirrors GitHub workflows)

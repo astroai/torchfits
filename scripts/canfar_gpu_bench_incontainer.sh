@@ -70,14 +70,9 @@ esac
 BENCH_OUT="benchmarks_results/${TORCHFITS_BENCH_RUN_ID}"
 if [[ -d "${BENCH_OUT}" ]]; then
   cp -a "${BENCH_OUT}" "${RUN_DIR}/benchmarks_results"
-  # ponytail: scratch is ephemeral; emit gzipped CSVs at end of stdout for log import
-  for name in results.csv torchfits_deficits.csv; do
-    if [[ -f "${BENCH_OUT}/${name}" ]]; then
-      echo "TORCHFITS_CSV_BEGIN ${name}"
-      gzip -c "${BENCH_OUT}/${name}" | base64 -w 76
-      echo "TORCHFITS_CSV_END ${name}"
-    fi
-  done
+  if [[ -n "${TORCHFITS_VOS_DEST:-}" ]]; then
+    bash scripts/publish_canfar_bench_vos.sh "${BENCH_OUT}" "${TORCHFITS_VOS_DEST}"
+  fi
 fi
 
 {
@@ -85,6 +80,9 @@ fi
   echo "TORCHFITS_BENCH_RUN_ID=${TORCHFITS_BENCH_RUN_ID}"
   echo "TORCHFITS_BENCH_MODE=${TORCHFITS_BENCH_MODE}"
   echo "TORCHFITS_BENCH_GIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [[ -n "${TORCHFITS_VOS_DEST:-}" ]]; then
+    echo "TORCHFITS_VOS_URI=${TORCHFITS_VOS_DEST}"
+  fi
 } > "${RUN_DIR}/manifest.txt"
 
 echo "=== done; artifacts on scratch: ${RUN_DIR} ==="

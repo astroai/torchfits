@@ -70,6 +70,8 @@ def test_docs_reference_existing_local_files() -> None:
         "scripts/gpu-bootstrap.sh",
         "scripts/ci_local.sh",
         "scripts/patch_canfar_exhaustive_docs.sh",
+        "scripts/publish_canfar_bench_vos.sh",
+        "scripts/fetch_canfar_bench_vos.sh",
         "scripts/import_canfar_bench_artifacts.py",
         "scripts/run_exhaustive_bench_and_patch_docs.sh",
     ]
