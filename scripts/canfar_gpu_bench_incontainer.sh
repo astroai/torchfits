@@ -10,6 +10,11 @@ SCRATCH="${TMP_SCRATCH_DIR:-/scratch}"
 RUN_DIR="${SCRATCH}/torchfits-gpu-bench/${TORCHFITS_BENCH_RUN_ID}"
 mkdir -p "$RUN_DIR"
 
+# ponytail: notebook image ships pixi pointed at /usr/local/share (not writable); use scratch
+export PIXI_HOME="${PIXI_HOME:-${SCRATCH}/torchfits-pixi-home}"
+export PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-${SCRATCH}/torchfits-pixi-cache}"
+mkdir -p "${PIXI_HOME}" "${PIXI_CACHE_DIR}"
+
 if [[ -z "${TORCHFITS_BENCH_LOG_REDIRECTED:-}" ]]; then
   export TORCHFITS_BENCH_LOG_REDIRECTED=1
   exec > >(tee -a "${RUN_DIR}/stdout.log") 2> >(tee -a "${RUN_DIR}/stderr.log" >&2)

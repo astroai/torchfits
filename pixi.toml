@@ -163,7 +163,7 @@ gpu-env-check = "python -c \"import torch; assert torch.cuda.is_available(), 'gp
 # compile time; they're dlopen-time only — without this LD_LIBRARY_PATH the loader fails on
 # `import torchfits._C` with libcudart.so.12 / libc10_cuda.so errors.
 [feature.gpu.activation.env]
-LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.13/site-packages/torch/lib:$CONDA_PREFIX/lib/python3.13/site-packages/nvidia/cuda_runtime/lib:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.13/site-packages/torch/lib:$CONDA_PREFIX/lib/python3.13/site-packages/nvidia/cuda_runtime/lib:$CONDA_PREFIX/lib/python3.13/site-packages/nvidia/nccl/lib:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 
 [environments]
 default = { features = ["prod"] }

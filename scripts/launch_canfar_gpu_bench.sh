@@ -17,7 +17,7 @@ NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 LOCAL_OUT="${ROOT_DIR}/benchmarks_results/canfar_${RUN_ID}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
-CLONE_DIR="/tmp/torchfits"
+CLONE_DIR="/scratch/torchfits"
 
 mkdir -p "$LOCAL_OUT"
 
@@ -43,6 +43,8 @@ canfar create headless "${IMAGE}" \
   --env "TORCHFITS_BENCH_MODE=${MODE}" \
   --env "TORCHFITS_GIT_REF=${GIT_REF}" \
   --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
+  --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
+  --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
   -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
@@ -83,15 +85,12 @@ echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
 echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 terminal_status() {
-  canfar ps --json 2>/dev/null | SESSION_ID="${SESSION_ID}" python3 -c '
-import json, os, sys
+  canfar info "${SESSION_ID}" 2>/dev/null | python3 -c '
+import re, sys
 
-sid = os.environ["SESSION_ID"]
-for row in json.load(sys.stdin):
-    if row.get("id") == sid:
-        print(row.get("status", ""))
-        raise SystemExit(0)
-print("")
+text = sys.stdin.read()
+m = re.search(r"^\s*Status\s+(\S+)", text, re.MULTILINE)
+print(m.group(1) if m else "")
 '
 }
 

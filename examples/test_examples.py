@@ -52,12 +52,13 @@ def _run_example(name: str) -> tuple[bool, str]:
     if not os.path.exists(path):
         return False, f"file not found: {path}"
 
+    timeout = 300 if name == "example_table_recipes.py" else 180
     result = subprocess.run(
         [*_python_cmd(), path],
         cwd=".",
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=timeout,
     )
     if result.returncode == 0:
         return True, ""

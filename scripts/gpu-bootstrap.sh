@@ -10,10 +10,12 @@ case "$(uname)" in
         ;;
 esac
 
+INDEX="${TORCHFITS_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
+
 python -m pip install \
     --no-cache-dir \
     --force-reinstall \
-    "torch>=2,<3"
+    torch \
+    --index-url "${INDEX}"
 
-# CUDA runtime libraries (nvidia-* packages) are dynamically resolved and installed
-# automatically by pip without hardcoded version pins.
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available())"
