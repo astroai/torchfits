@@ -1,5 +1,9 @@
 # Migration from astropy to torchfits
 
+Side-by-side replacements for common **FITS I/O** tasks. torchfits does not
+mirror all of Astropy — see [Parity](parity.md) for scope. For runnable
+workflows, start with [Examples](examples.md).
+
 ## Reading an image
 
 | Operation | astropy | torchfits |

@@ -1,36 +1,54 @@
 # API Reference
 
-`torchfits` owns FITS file I/O and FITS-native ML helpers: images, HDUs,
-headers, binary/ASCII tables, checksums, compression, caching, table interop,
-`torchfits.data` datasets, and `torchfits.transforms` preprocessing.
+`torchfits` covers FITS file I/O (images, tables, headers, compression) and
+ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
+(WCS, coordinates, simulation) is out of scope — use downstream packages.
 
-Sky-domain modelling (WCS, coordinates, simulation frameworks) belongs in
-downstream sky-domain packages, not torchfits.
+## How to use this page
 
-## Quick Paths
+1. **Find your task** in [Quick paths](#quick-paths) below (grouped by I/O, tables, ML).
+2. **Skim [Core I/O](#core-io)** for read/write patterns and GPU notes.
+3. **Tables with filters** → [Table module](#table-module) and [Predicate pushdown](#predicate-pushdown).
+4. **Training loops** → [Data module](#data-module) and [Transforms](#transforms).
+
+Root `torchfits.read()` is for images and simple table access. For `where=`
+predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
+
+## Quick paths
+
+### Images and files
+
+| Goal | Entry point |
+|---|---|
+| Read N-D array/tensor | `torchfits.read_tensor(path, hdu=0, mmap=True)` |
+| Read image or table (auto) | `torchfits.read(path, hdu=..., return_header=True)` |
+| Cutout | `torchfits.read_subset(path, hdu, x1, y1, x2, y2)` |
+| Multi-HDU arrays | `torchfits.read_hdus(path, hdus=[0, 1, 2])` |
+| Repeated cutouts | `torchfits.open_subset_reader(path, hdu)` |
+| Write tensor | `torchfits.write_tensor(path, tensor, header=None, overwrite=False)` |
+| Header only | `torchfits.get_header(path, hdu=0)` |
+| Multi-HDU handle | `with torchfits.open(path) as hdul: ...` |
+
+### Tables
+
+| Goal | Entry point |
+|---|---|
+| Read table (tensor dict) | `torchfits.read_table(path, hdu=1, columns=[...])` |
+| Row slice | `torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=N)` |
+| Stream chunks | `torchfits.stream_table(path, chunk_rows=10000)` |
+| Filter + project (`where=`) | `torchfits.table.read(..., where=...)` or `torchfits.table.scan(...)` |
+| Arrow / Polars / DuckDB | `torchfits.table.to_polars_lazy(...)`, `torchfits.table.to_duckdb(...)` |
+
+### ML training
 
 | Goal | Entry point |
 |---|---|
 | Image map-style DataLoader | `torchfits.data.FitsImageDataset(paths)` |
 | Image streaming DataLoader | `torchfits.data.FitsImageIterableDataset(paths)` |
-| Table map-style DataLoader | `torchfits.data.FitsTableDataset(path)` |
-| Table streaming DataLoader | `torchfits.data.FitsTableIterableDataset(path)` |
+| Table map-style (small catalog) | `torchfits.data.FitsTableDataset(path)` |
+| Table streaming (large catalog) | `torchfits.data.FitsTableIterableDataset(path)` |
 | Patch / cutout training | `torchfits.data.FitsCutoutDataset(cutouts)` |
 | Sensible DataLoader factory | `torchfits.data.make_loader(ds)` |
-| Read image or table | `torchfits.read(path, hdu=..., return_header=True)` |
-| Read N-D array/tensor | `torchfits.read_tensor(path, hdu=0, mmap=True)` |
-| Read table only | `torchfits.read_table(path, hdu=1, columns=[...])` |
-| Row slice | `torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=N)` |
-| Cutout | `torchfits.read_subset(path, hdu, x1, y1, x2, y2)` |
-| Multi-HDU arrays | `torchfits.read_hdus(path, hdus=[0, 1, 2])` |
-| Repeated cutouts | `torchfits.open_subset_reader(path, hdu)` |
-| Stream table | `torchfits.stream_table(path, chunk_rows=10000)` |
-| Write generic | `torchfits.write(path, data, header=None, overwrite=False)` |
-| Write tensor | `torchfits.write_tensor(path, tensor, header=None, overwrite=False)` |
-| Header only | `torchfits.get_header(path, hdu=0)` |
-| Multi-HDU handle | `with torchfits.open(path) as hdul: ...` |
-| Table with pushdown | `torchfits.table.read(..., where=...)` or `torchfits.table.scan(...)` |
-| Arrow / Polars / DuckDB | `torchfits.table.to_polars_lazy(...)`, `torchfits.table.to_duckdb(...)` |
 
 ## Core I/O
 
@@ -322,6 +340,11 @@ residuals for perfect recovery.  Based on post-2021 astro-ML research
 | `FITSTransform` | Base class: override `forward` and `inverse`. `__call__` delegates to `forward`. |
 
 ## Data Module
+
+Map-style and iterable `torch.utils.data.Dataset` implementations plus
+`make_loader`. **Chooser:** small image list → `FitsImageDataset`; large table
+→ `FitsTableIterableDataset`; fixed cutouts → `FitsCutoutDataset`. See
+[Examples → Which dataset class?](examples.md#which-dataset-class).
 
 The `torchfits.data` namespace provides map-style and iterable-style
 `torch.utils.data.Dataset` implementations, a default collate function,

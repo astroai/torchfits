@@ -1,9 +1,23 @@
 # Benchmarks
 
-`torchfits` benchmarks cover FITS image I/O and FITS table I/O. WCS, HEALPix,
-sphere, and sky-domain benchmarks are out of scope for this repository.
+`torchfits` benchmarks cover FITS **image** and **table** I/O vs astropy and fitsio.
 
-## Comparison Targets
+## How to read this page
+
+You do **not** need every table on first visit.
+
+| If you want… | Jump to |
+|---|---|
+| Headline wins (image read, cutouts, tables) | [Performance highlights](#performance-highlights) |
+| Cases where torchfits is not #1 | [Performance deficits](#performance-deficits) |
+| GPU transport rows (CUDA/MPS) | [I/O transport and backend](#io-transport-and-backend) |
+| Reproduce numbers locally | [Reproducing](#reproducing) |
+| Every measured configuration | [Exhaustive benchmark results](#exhaustive-benchmark-results) (long) |
+
+Published GPU numbers come from a CANFAR staging run (`exhaustive_cuda_0.7.0_20260711_055635`).
+GitHub Actions weekly benches use CPU-only PyTorch and do not refresh GPU cells.
+
+## Comparison targets
 
 | Domain | torchfits module | Compared against |
 |---|---|---|
@@ -185,7 +199,7 @@ CI_LOCAL_FAST=1 bash scripts/ci_local.sh
 pixi run bench-mps
 ```
 
-## I/O Transport × Backend
+## I/O transport and backend
 
 > **GPU summary:** Image **`disk→CPU→GPU`** and **`disk→RAM→GPU`** rows appear only when the benchmark CSV was
 > produced on CUDA or MPS hardware. **`disk→GPU`** is intentionally empty (unsupported by
@@ -239,7 +253,7 @@ aggregation rules.
   `row_slice`, etc.) and payload sizes; treat the per-cell ms as a
   coarse representative number, not a precise benchmark.
 
-## Performance Highlights
+## Performance highlights
 
 <!-- BENCH_HIGHLIGHTS_BEGIN -->
 The following table showcases median wall-clock execution times of key representative FITS benchmarks.

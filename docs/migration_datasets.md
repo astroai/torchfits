@@ -1,7 +1,9 @@
 # Dataset API migration (0.7+)
 
-Legacy `torchfits.FITSDataset` and `torchfits.IterableFITSDataset` were removed.
-Use `torchfits.data` instead.
+**Read this if** you used `torchfits.FITSDataset` or `IterableFITSDataset` before
+0.7.0. New code should start from [Examples → PyTorch training](examples.md#pytorch-training).
+
+Legacy classes were removed. Use `torchfits.data` instead.
 
 ## Image catalogs
 

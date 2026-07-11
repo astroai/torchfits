@@ -1,8 +1,9 @@
 # Compatibility and Parity Matrix
 
-This matrix is the public compatibility contract for torchfits. It is based on
-the current source, tests, and local comparator packages, not on older overview
-docs. Status values are:
+**Use this page to answer:** “Does torchfits support X?” — not “how do I call X?”
+(for that, see [API Reference](api.md) or [Examples](examples.md)).
+
+Status values:
 
 - **Supported**: implemented and covered by tests or benchmark gates.
 - **Partial**: usable for documented cases with listed limitations.

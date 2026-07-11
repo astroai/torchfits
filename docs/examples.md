@@ -1,8 +1,45 @@
 # Examples
 
-Runnable scripts covering the main torchfits workflows. Each script is self-contained, creates temporary FITS files as needed, and cleans up after itself.
+Runnable scripts under `examples/`. Each creates temporary FITS files,
+prints results, and cleans up. Run the full smoke suite:
 
-## Arrays and Tensors
+```bash
+pixi run python examples/test_examples.py
+```
+
+## Suggested order
+
+Read and run in this sequence the first time through:
+
+| Step | Script | You learn |
+|:---:|---|---|
+| 1 | [`example_image.py`](../examples/example_image.py) | `read_tensor`, headers, `write_tensor` |
+| 2 | [`example_image_cutouts.py`](../examples/example_image_cutouts.py) | `read_subset`, `open_subset_reader` |
+| 3 | [`example_table.py`](../examples/example_table.py) | `table.read` + `where=`, `stream_table` |
+| 4 | [`example_image_dataset.py`](../examples/example_image_dataset.py) | `FitsImageDataset`, `make_loader`, cache warmup |
+| 5 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline |
+| 6 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | Table + cutout datasets |
+
+Then explore by interest:
+
+- **3D / MEF** — [`example_image_cube.py`](../examples/example_image_cube.py), [`example_image_mef.py`](../examples/example_image_mef.py)
+- **Table interop** — [`example_table_interop.py`](../examples/example_table_interop.py), [`example_polars.py`](../examples/example_polars.py), [`example_table_recipes.py`](../examples/example_table_recipes.py)
+- **Spectral** — [`example_hyperspectral.py`](../examples/example_hyperspectral.py)
+
+## Which dataset class?
+
+| Your data | Catalog size | Class |
+|---|---|---|
+| Image files (paths list) | Any | `FitsImageDataset` (map) or `FitsImageIterableDataset` (shuffle / many workers) |
+| One table HDU | Fits in RAM (under a few million rows) | `FitsTableDataset` |
+| One table HDU | Too large to load at once | `FitsTableIterableDataset` |
+| Fixed (path, x, y) cutouts | Any | `FitsCutoutDataset` |
+
+Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`, and optional cache warmup.
+
+## By topic
+
+### Arrays and tensors
 
 | Script | What it demonstrates |
 |---|---|
@@ -11,7 +48,7 @@ Runnable scripts covering the main torchfits workflows. Each script is self-cont
 | [`example_image_cube.py`](../examples/example_image_cube.py) | 3D cubes with `read_tensor` and tensor slicing |
 | [`example_image_mef.py`](../examples/example_image_mef.py) | Multi-extension files with `open`, `read_hdus`, and table `filter` |
 
-## Tables
+### Tables
 
 | Script | What it demonstrates |
 |---|---|
@@ -20,7 +57,7 @@ Runnable scripts covering the main torchfits workflows. Each script is self-cont
 | [`example_polars.py`](../examples/example_polars.py) | Direct FITS → Polars via `table.to_polars` and `table.to_polars_lazy` |
 | [`example_table_recipes.py`](../examples/example_table_recipes.py) | Arrow scanner, Polars lazy frames, and DuckDB SQL on FITS tables |
 
-## PyTorch dataset pattern
+### PyTorch training
 
 | Script | What it demonstrates |
 |---|---|
@@ -29,21 +66,10 @@ Runnable scripts covering the main torchfits workflows. Each script is self-cont
 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline + `FitsImageDataset` |
 | [`example_hyperspectral.py`](../examples/example_hyperspectral.py) | Spectral/hyperspectral transforms on tensor cubes |
 
-## Running
+## Optional dependencies
 
-Run every example (including optional-deps skips):
-
-```bash
-pixi run python examples/test_examples.py
-```
-
-Or run one script directly:
-
-```bash
-pixi run python examples/example_image.py
-```
-
-Some examples require optional dependencies (Polars, DuckDB). They exit cleanly with a message when those packages are missing. Install them with:
+Polars, DuckDB, and some interop paths need extra packages. Examples print a
+skip message and exit 0 when a dependency is missing:
 
 ```bash
 pip install polars duckdb pyarrow

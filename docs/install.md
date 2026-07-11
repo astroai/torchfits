@@ -10,6 +10,8 @@ Pre-built wheels are available for Linux (x86_64, aarch64) and macOS (x86_64, ar
 
 Requires Python **3.10+** (development uses **3.13** via pixi) and [PyTorch](https://pytorch.org/) 2.0+.
 
+**Next:** [Home → I want to…](index.md#i-want-to) or run [`examples/example_image.py`](../examples/example_image.py).
+
 ## From source
 
 ### Prerequisites
@@ -70,7 +72,15 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
 pip install torch
 ```
 
-Then pass `device="cuda"` or `device="mps"` to `torchfits.read()`.
+Then pass `device="cuda"` or `device="mps"` to `torchfits.read_tensor()` (or `read()`).
+
+### Verify install
+
+```python
+import torchfits
+print(torchfits.__version__)
+_ = torchfits.read_tensor  # extension loaded
+```
 
 ## Development setup (pixi)
 
