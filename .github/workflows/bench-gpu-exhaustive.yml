@@ -1,0 +1,94 @@
+name: GPU exhaustive benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Benchmark run ID (default auto)"
+        required: false
+        default: ""
+      require_cuda:
+        description: "Fail if CUDA unavailable (1=yes, 0=allow CPU-only rows)"
+        required: false
+        default: "1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bench-gpu-exhaustive:
+    name: Lab bench-all + mmap matrix (CUDA when available)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Vendor CFITSIO
+        run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
+
+      - name: Install (CUDA PyTorch wheel)
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+          python -m pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow pandas
+          python -m pip install -e . --no-build-isolation
+
+      - name: GPU probe
+        id: gpu
+        run: |
+          python - <<'PY'
+          import torch
+          ok = torch.cuda.is_available()
+          print("cuda_available=", ok)
+          if ok:
+              print("device=", torch.cuda.get_device_name(0))
+          PY
+          if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)"; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail when CUDA required but missing
+        if: inputs.require_cuda == '1' && steps.gpu.outputs.available != 'true'
+        run: |
+          echo "::error::No CUDA GPU on this runner. Use a GPU larger runner / self-hosted GPU host, or run scripts/run_canfar_gpu_exhaustive.sh on CANFAR."
+          exit 1
+
+      - name: Run exhaustive bench
+        env:
+          TORCHFITS_BENCH_REQUIRE_CUDA: ${{ inputs.require_cuda }}
+        run: |
+          RUN_ID="${{ inputs.run_id }}"
+          if [[ -z "$RUN_ID" ]]; then
+            RUN_ID="ci_gpu_exhaustive_0.7.0_$(date -u +%Y%m%d_%H%M%S)"
+          fi
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          bash scripts/run_exhaustive_bench_ci.sh "$RUN_ID"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ env.RUN_ID }}
+          path: benchmarks_results/${{ env.RUN_ID }}/
+
+      - name: Open PR with doc updates
+        if: steps.gpu.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="chore/bench-gpu-${RUN_ID}"
+          git checkout -b "$BRANCH"
+          git add docs/benchmarks.md README.md docs/migration_astropy.md docs/migration_fitsio.md docs/roadmap.md docs/changelog.md
+          git diff --staged --quiet && echo "No doc changes" && exit 0
+          git commit -m "bench: GPU exhaustive ${RUN_ID}"
+          git push -u origin "$BRANCH"
+          gh pr create --title "bench: GPU exhaustive ${RUN_ID}" \
+            --body "CUDA exhaustive lab bench-all. Artifacts: benchmarks_results/${RUN_ID}/"
