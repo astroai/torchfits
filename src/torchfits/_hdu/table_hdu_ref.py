@@ -435,7 +435,9 @@ class TableHDURef:
 
         name = pyhtml.escape(str(self.header.get("EXTNAME", "TABLE")))
         rows = pyhtml.escape(str(self.num_rows))
-        cols = pyhtml.escape(str(len(self.columns)) if self._columns is not None else "?")
+        cols = pyhtml.escape(
+            str(len(self.columns)) if self._columns is not None else "?"
+        )
 
         html_parts = [
             '<div tabindex="0" aria-label="TableHDURef Summary" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
