@@ -4,6 +4,8 @@ import math
 import pytest
 import torch
 
+from transforms_reference import upper_envelope_per_spectrum
+
 from torchfits.transforms import (
     AlphaShapeContinuum,
     ArcsinhStretch,
@@ -41,6 +43,7 @@ from torchfits.transforms import (
     _normalize_dims,
     _quantile,
     _reduce_keepdim,
+    _unflatten_result,
     estimate_background,
     safe_arcsinh,
     safe_log,
@@ -1508,102 +1511,6 @@ class TestWaveletDecompose:
 # ---------------------------------------------------------------------------
 
 
-def _upper_envelope_per_spectrum(
-    x_flat: torch.Tensor,
-    window: int,
-    smooth: float,
-    is_local_max: torch.Tensor,
-) -> torch.Tensor:
-    """Reference per-spectrum implementation of UpperEnvelopeContinuum.
-
-    Mirrors the vectorized cummax-based algorithm using Python for-loops
-    over spectra and positions.  Used to verify correctness of the
-    batched cummax approach.
-
-    Parameters
-    ----------
-    x_flat : [N, L]
-        Flattened input tensor.
-    window : int
-        Half-width for local-max detection (unused here — passed for
-        signature compatibility; is_local_max is pre-computed).
-    smooth : float
-        Gaussian sigma for optional smoothing (0 = no smoothing).
-    is_local_max : [N, L]
-        Boolean mask where local maxima occur (pre-computed batched).
-
-    Returns
-    -------
-    continuum : [N, L]
-    """
-    n_spectra, length = x_flat.shape
-    continuum = torch.empty_like(x_flat)
-
-    for i in range(n_spectra):
-        lm = is_local_max[i]
-        lm_count = lm.sum().item()
-
-        if lm_count < 2:
-            # Fallback: use global max for this spectrum
-            continuum[i] = x_flat[i].max()
-            continue
-
-        for j in range(length):
-            # Find nearest local max to the left
-            left_pos = float("-inf")
-            for k in range(j, -1, -1):
-                if lm[k]:
-                    left_pos = float(k)
-                    break
-
-            # Find nearest local max to the right
-            right_pos = float("-inf")
-            for k in range(j, length):
-                if lm[k]:
-                    right_pos = float(k)
-                    break
-
-            # Clean up inf values (same logic as vectorized)
-            if left_pos == float("-inf"):
-                left_pos = right_pos
-            if right_pos == float("-inf"):
-                right_pos = left_pos
-            if left_pos == float("-inf"):
-                left_pos = 0.0
-                right_pos = 0.0
-
-            # Gather values and interpolate
-            li = int(left_pos)
-            ri = int(right_pos)
-            left_val = x_flat[i, li].item()
-            right_val = x_flat[i, ri].item()
-
-            denom = right_pos - left_pos
-            if denom < 1e-30:
-                continuum[i, j] = left_val
-            else:
-                frac = (float(j) - left_pos) / denom
-                continuum[i, j] = left_val + (right_val - left_val) * frac
-
-    # Optional Gaussian smoothing (same as vectorized)
-    if smooth > 0:
-        half = int(math.ceil(3.0 * smooth))
-        t_kernel = torch.arange(
-            -half, half + 1, device=x_flat.device, dtype=x_flat.dtype
-        )
-        kernel = torch.exp(-0.5 * (t_kernel / smooth) ** 2)
-        kernel = kernel / kernel.sum()
-        kernel_1d = kernel.view(1, 1, -1)
-        cont_padded = torch.nn.functional.pad(
-            continuum.unsqueeze(1), (half, half), mode="reflect"
-        )
-        continuum = torch.nn.functional.conv1d(
-            cont_padded, kernel_1d.to(device=x_flat.device, dtype=x_flat.dtype)
-        ).squeeze(1)
-
-    return continuum
-
-
 class TestUpperEnvelopeContinuumVectorized:
     """Verify the cummax-based vectorized envelope matches per-spectrum loop."""
 
@@ -1630,7 +1537,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=3)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 3)
-        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1644,7 +1551,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=11)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 11)
-        ref = _upper_envelope_per_spectrum(x_flat, 11, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1657,7 +1564,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=5)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 5)
-        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1671,7 +1578,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=5, smooth=3.0)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 5)
-        ref = _upper_envelope_per_spectrum(x_flat, 5, 3.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm, smooth=3.0)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1685,7 +1592,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=3)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 3)
-        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1697,7 +1604,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=3)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 3)
-        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         # All points are 5, so continuum should be 5 everywhere
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
@@ -1712,7 +1619,7 @@ class TestUpperEnvelopeContinuumVectorized:
         x_moved = x.movedim(0, -1)  # [3, 128]
         x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [3, 128]
         is_lm = self._compute_is_local_max(x_flat, 5)
-        ref_flat = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref_flat = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref_flat.reshape(x_moved.shape).movedim(-1, 0)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1725,7 +1632,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=5, dim=-1)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 5)
-        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1739,7 +1646,7 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=5)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 5)
-        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
             f"max diff: {(vec - ref).abs().max().item():.2e}"
@@ -1752,11 +1659,343 @@ class TestUpperEnvelopeContinuumVectorized:
         vec = self._run_vectorized(x, window=1)
         x_flat = x.reshape(-1, x.shape[-1])
         is_lm = self._compute_is_local_max(x_flat, 1)
-        ref = _upper_envelope_per_spectrum(x_flat, 1, 0.0, is_lm)
+        ref = upper_envelope_per_spectrum(x_flat, is_lm)
         ref = ref.reshape(x.shape)
         # Verify vectorized matches reference; with window=1 almost every
         # point is its own nearest local max, so continuum ≈ signal.
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# PhaseFold — vectorized scatter_add_ vs per-bin loop parity tests
+# ---------------------------------------------------------------------------
+
+
+def _phase_fold_per_bin(
+    x_flat: torch.Tensor,
+    n_bins: int,
+    bin_idx: torch.Tensor,
+) -> torch.Tensor:
+    """Reference per-bin loop for PhaseFold.
+
+    Mirrors the scatter_add_ + bincount vectorized approach using an
+    explicit per-bin Python for-loop: for each bin, mask the values,
+    sum them, and divide by the count.
+
+    *bin_idx* is pre-computed externally via _compute_bins.
+    """
+    n_samples, _length = x_flat.shape
+    folded = torch.zeros(n_samples, n_bins, device=x_flat.device, dtype=x_flat.dtype)
+    for b in range(n_bins):
+        mask = bin_idx == b
+        count = mask.sum().item()
+        if count > 0:
+            folded[:, b] = x_flat[:, mask].sum(dim=1) / float(count)
+    return folded
+
+
+class TestPhaseFoldVectorized:
+    """Verify the scatter_add_-based PhaseFold matches a per-bin loop."""
+
+    @staticmethod
+    def _compute_bins(
+        length: int,
+        period: float,
+        n_bins: int,
+        t0: float,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Compute bin indices exactly as PhaseFold does."""
+        t = torch.arange(length, device=device, dtype=dtype)
+        phase = ((t - t0) / period) % 1.0
+        edges = torch.linspace(0.0, 1.0, n_bins + 1, device=device, dtype=dtype)
+        bin_idx = torch.bucketize(phase, edges[:-1]) - 1
+        return torch.clamp(bin_idx, 0, n_bins - 1)
+
+    @staticmethod
+    def _run_vectorized(
+        x: torch.Tensor,
+        period: float = 1.0,
+        n_bins: int = 64,
+        t0: float = 0.0,
+    ) -> torch.Tensor:
+        """Run the real vectorized PhaseFold and return folded output."""
+        t = PhaseFold(period=period, n_bins=n_bins, t0=t0)
+        return t.forward(x)
+
+    def test_sine_period20(self):
+        """Sine wave with period 20, 200 steps, 32 bins."""
+        torch.manual_seed(42)
+        length = 200
+        t_arr = torch.arange(length, dtype=torch.float32)
+        signal = torch.sin(2 * math.pi * t_arr / 20.0)
+        x = signal.unsqueeze(0)
+        period, n_bins, t0 = 20.0, 32, 0.0
+        vec = self._run_vectorized(x, period=period, n_bins=n_bins, t0=t0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx = self._compute_bins(length, period, n_bins, t0, x.device, x.dtype)
+        ref = _phase_fold_per_bin(x_flat, n_bins, bin_idx)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_batched_spectra(self):
+        """8 spectra, distinct signals, 64 bins."""
+        torch.manual_seed(42)
+        x = torch.randn(8, 150) * 2 + 10
+        period, n_bins, t0 = 10.0, 64, 0.0
+        vec = self._run_vectorized(x, period=period, n_bins=n_bins, t0=t0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx = self._compute_bins(150, period, n_bins, t0, x.device, x.dtype)
+        ref = _phase_fold_per_bin(x_flat, n_bins, bin_idx)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_few_bins(self):
+        """Minimum bin count (2)."""
+        torch.manual_seed(42)
+        x = torch.randn(3, 100) * 2 + 5
+        period, n_bins, t0 = 5.0, 2, 0.0
+        vec = self._run_vectorized(x, period=period, n_bins=n_bins, t0=t0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx = self._compute_bins(100, period, n_bins, t0, x.device, x.dtype)
+        ref = _phase_fold_per_bin(x_flat, n_bins, bin_idx)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+
+    def test_period_longer_than_signal(self):
+        """Period >> signal length: all points fall in first few bins."""
+        torch.manual_seed(42)
+        # 100 steps, period=1000 → phases tightly clustered near 0
+        x = torch.randn(1, 100) * 2 + 10
+        period, n_bins, t0 = 1000.0, 32, 0.0
+        vec = self._run_vectorized(x, period=period, n_bins=n_bins, t0=t0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx = self._compute_bins(100, period, n_bins, t0, x.device, x.dtype)
+        ref = _phase_fold_per_bin(x_flat, n_bins, bin_idx)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_t0_offset(self):
+        """Non-zero phase offset changes bin assignments."""
+        torch.manual_seed(42)
+        x = torch.randn(1, 100) * 2 + 10
+        period, n_bins = 10.0, 32
+        vec_t0_0 = self._run_vectorized(x, period=period, n_bins=n_bins, t0=0.0)
+        vec_t0_3 = self._run_vectorized(x, period=period, n_bins=n_bins, t0=3.0)
+        # With t0 offset, bin assignments shift — outputs should differ
+        assert not torch.allclose(vec_t0_0, vec_t0_3, atol=1e-5)
+        # But both should individually match their per-bin references
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx_3 = self._compute_bins(100, period, n_bins, 3.0, x.device, x.dtype)
+        ref_3 = _phase_fold_per_bin(x_flat, n_bins, bin_idx_3)
+        ref_3 = ref_3.reshape(vec_t0_3.shape)
+        assert torch.allclose(vec_t0_3, ref_3, atol=1e-5, rtol=1e-5)
+
+    def test_many_bins(self):
+        """Large number of bins (256)."""
+        torch.manual_seed(42)
+        x = torch.randn(2, 512) * 2 + 10
+        period, n_bins, t0 = 50.0, 256, 0.0
+        vec = self._run_vectorized(x, period=period, n_bins=n_bins, t0=t0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        bin_idx = self._compute_bins(512, period, n_bins, t0, x.device, x.dtype)
+        ref = _phase_fold_per_bin(x_flat, n_bins, bin_idx)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# SigmaClip — zero-alloc buffer vs naive per-iteration-alloc parity tests
+# ---------------------------------------------------------------------------
+
+
+def _sigma_clip_naive(
+    x: torch.Tensor,
+    n_sigma: float,
+    max_iter: int,
+    dims: tuple[int, ...],
+    fill: str,
+) -> torch.Tensor:
+    """Reference naive SigmaClip: allocates fresh tensors each iteration.
+
+    Mirrors the zero-alloc buffer implementation using the simpler
+    (less memory-efficient) approach of freshly allocating zeros
+    and intermediate tensors in every iteration.
+    """
+    ndim = x.ndim
+    dims_norm: tuple[int, ...] = ()
+    if len(dims) > 0:
+        dims_norm = _normalize_dims(ndim, dims)
+
+    mask = torch.ones_like(x, dtype=torch.bool)
+
+    for _ in range(max_iter):
+        # Compute mean of unmasked values (naive: fresh allocations)
+        zeros = torch.zeros_like(x)
+        masked_values = torch.where(mask, x, zeros)
+        mask_f = mask.to(x.dtype)
+
+        if len(dims_norm) > 0:
+            x_flat = _flatten_dims(masked_values, dims_norm)
+            c_flat = _flatten_dims(mask_f, dims_norm)
+            total_sum = x_flat.sum(dim=-1, keepdim=True)
+            total_cnt = c_flat.sum(dim=-1, keepdim=True)
+            mean_v = total_sum / torch.clamp_min(total_cnt, 1.0)
+            mean_v_full = _unflatten_result(mean_v, x.shape, dims_norm)
+
+            # Compute std: diff^2 only on unmasked pixels
+            diff_sq = (x - mean_v_full) ** 2
+            var_sum = torch.where(mask, diff_sq, zeros)
+            d_flat = _flatten_dims(var_sum, dims_norm)
+            var = d_flat.sum(dim=-1, keepdim=True) / torch.clamp_min(total_cnt, 1.0)
+            std_v_full = _unflatten_result(
+                torch.sqrt(torch.clamp_min(var, 0.0)), x.shape, dims_norm
+            )
+        else:
+            cnt = mask_f.sum()
+            mean_scalar_val = (masked_values.sum() / max(cnt.item(), 1.0)).item()
+            mean_v_full = torch.full_like(x, mean_scalar_val)
+            diff_sq = (x - mean_v_full) ** 2
+            var = torch.where(mask, diff_sq, zeros).sum() / max(cnt.item(), 1.0)
+            std_scalar = math.sqrt(max(var.item(), 0.0))
+            std_v_full = torch.full_like(x, std_scalar)
+
+        new_mask = (x >= mean_v_full - n_sigma * std_v_full) & (
+            x <= mean_v_full + n_sigma * std_v_full
+        )
+        if torch.equal(new_mask, mask):
+            break
+        mask = new_mask
+
+    # Fill clipped values
+    if fill == "mean":
+        zeros = torch.zeros_like(x)
+        masked_values = torch.where(mask, x, zeros)
+        mask_f = mask.to(x.dtype)
+        if len(dims_norm) > 0:
+            xf = _flatten_dims(masked_values, dims_norm)
+            cf = _flatten_dims(mask_f, dims_norm)
+            fill_val = _unflatten_result(
+                xf.sum(dim=-1, keepdim=True)
+                / torch.clamp_min(cf.sum(dim=-1, keepdim=True), 1.0),
+                x.shape,
+                dims_norm,
+            )
+        else:
+            cnt = mask_f.sum()
+            fill_val = masked_values.sum() / max(cnt.item(), 1.0)
+    else:
+        fill_val = _median(
+            torch.where(
+                mask,
+                x,
+                torch.tensor(float("inf"), device=x.device, dtype=x.dtype),
+            ),
+            dims_norm if dims_norm else (-1,),
+        )
+        fill_val = torch.where(
+            torch.isinf(fill_val), torch.zeros_like(fill_val), fill_val
+        )
+
+    return torch.where(mask, x, fill_val)
+
+
+class TestSigmaClipVectorized:
+    """Verify the zero-alloc buffer SigmaClip matches naive per-iteration alloc."""
+
+    @staticmethod
+    def _run_vectorized(
+        x: torch.Tensor,
+        n_sigma: float = 3.0,
+        max_iter: int = 5,
+        dim: tuple[int, ...] = (-2, -1),
+        fill: str = "mean",
+    ) -> torch.Tensor:
+        """Run the real zero-alloc SigmaClip and return clipped output."""
+        t = SigmaClip(n_sigma=n_sigma, max_iter=max_iter, dim=dim, fill=fill)
+        return t.forward(x)
+
+    def test_removes_single_outlier(self):
+        """Single extreme outlier in a uniform field."""
+        torch.manual_seed(42)
+        x = torch.ones(10, 10) * 5.0
+        x[0, 0] = 100.0
+        vec = self._run_vectorized(x, dim=(-2, -1))
+        ref = _sigma_clip_naive(x, 3.0, 5, (-2, -1), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+        # Outlier should be replaced with ~5
+        assert vec[0, 0].item() < 10.0
+
+    def test_clean_data_no_clipping(self):
+        """Clean normal data with wide threshold — no clipping."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 32, 32) * 5 + 100
+        vec = self._run_vectorized(x, n_sigma=10.0, dim=(-2, -1))
+        ref = _sigma_clip_naive(x, 10.0, 3, (-2, -1), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_per_channel(self):
+        """Clipping computed independently per image (dim=-2,-1)."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 16, 16) * 3 + 10
+        x[0, 0, 0] = 50.0
+        x[2, 0, 0] = -20.0
+        vec = self._run_vectorized(x, dim=(-2, -1))
+        ref = _sigma_clip_naive(x, 3.0, 5, (-2, -1), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_median_fill(self):
+        """Fill clipped values with median instead of mean."""
+        torch.manual_seed(42)
+        x = torch.ones(8, 8) * 5.0
+        x[0, 0] = 100.0
+        x[1, 1] = -20.0
+        vec = self._run_vectorized(x, dim=(-2, -1), fill="median")
+        ref = _sigma_clip_naive(x, 3.0, 5, (-2, -1), "median")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_wide_threshold_noop(self):
+        """Very wide sigma threshold: no pixels clipped → output == input."""
+        torch.manual_seed(42)
+        x = torch.randn(3, 32, 32) * 5 + 20
+        vec = self._run_vectorized(x, n_sigma=100.0, dim=(-2, -1))
+        ref = _sigma_clip_naive(x, 100.0, 3, (-2, -1), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(vec, x, atol=1e-4)
+
+    def test_global_dim(self):
+        """Global sigma-clip (no dim specified → all pixels considered)."""
+        torch.manual_seed(42)
+        x = torch.randn(32, 32) * 5 + 10
+        x[0, 0] = 100.0
+        vec = self._run_vectorized(x, dim=(), fill="mean")
+        ref = _sigma_clip_naive(x, 3.0, 5, (), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_constant_image(self):
+        """Constant image: std=0, no clipping."""
+        x = torch.ones(4, 32, 32) * 42.0
+        vec = self._run_vectorized(x, dim=(-2, -1))
+        ref = _sigma_clip_naive(x, 3.0, 5, (-2, -1), "mean")
+        assert torch.allclose(vec, ref, atol=1e-5)
+        assert torch.allclose(vec, x, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -1923,6 +2162,172 @@ class TestAlphaShapeContinuum:
         r = repr(AlphaShapeContinuum(half_window=20, iterations=2))
         assert "AlphaShapeContinuum" in r
         assert "20" in r
+
+
+# ---------------------------------------------------------------------------
+# AlphaShapeContinuum — unfold/max/min vs per-spectrum loop parity tests
+# ---------------------------------------------------------------------------
+
+
+def _alpha_shape_per_spectrum(
+    x_flat: torch.Tensor,
+    half_window: int,
+    iterations: int,
+) -> torch.Tensor:
+    """Reference per-spectrum dilation/erosion loop for AlphaShapeContinuum.
+
+    Mirrors the vectorized unfold/max/min morphological closing using
+    per-spectrum, per-position Python for-loops with explicit reflection
+    padding at the edges.
+    """
+    n_spectra, length = x_flat.shape
+    continuum = x_flat.clone()
+
+    for _ in range(iterations):
+        # Dilation: running max over window [j - hw, j + hw]
+        dilated = torch.empty_like(continuum)
+        for i in range(n_spectra):
+            for j in range(length):
+                vals = []
+                for k in range(j - half_window, j + half_window + 1):
+                    # Reflect padding
+                    if k < 0:
+                        idx = -k
+                    elif k >= length:
+                        idx = 2 * length - k - 2
+                    else:
+                        idx = k
+                    # Clamp to valid range (belt-and-suspenders)
+                    idx = max(0, min(idx, length - 1))
+                    vals.append(continuum[i, idx].item())
+                dilated[i, j] = max(vals)
+
+        # Erosion: running min of dilated signal over same window
+        eroded = torch.empty_like(dilated)
+        for i in range(n_spectra):
+            for j in range(length):
+                vals = []
+                for k in range(j - half_window, j + half_window + 1):
+                    if k < 0:
+                        idx = -k
+                    elif k >= length:
+                        idx = 2 * length - k - 2
+                    else:
+                        idx = k
+                    idx = max(0, min(idx, length - 1))
+                    vals.append(dilated[i, idx].item())
+                eroded[i, j] = min(vals)
+
+        continuum = eroded
+
+    return continuum
+
+
+class TestAlphaShapeContinuumVectorized:
+    """Verify the unfold/max/min closing matches a per-spectrum loop."""
+
+    @staticmethod
+    def _run_vectorized(
+        x: torch.Tensor,
+        half_window: int = 15,
+        iterations: int = 1,
+        dim: int = -1,
+    ) -> torch.Tensor:
+        """Run the real vectorized AlphaShapeContinuum and return continuum."""
+        t = AlphaShapeContinuum(half_window=half_window, iterations=iterations, dim=dim)
+        return t.forward(x)
+
+    def test_single_spectrum_upper_envelope(self):
+        """Sine wave: closing should produce an upper envelope >= signal."""
+        torch.manual_seed(42)
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 100)).unsqueeze(0)
+        hw = 10
+        vec = self._run_vectorized(x, half_window=hw)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, hw, 1)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+        # Morphological closing is guaranteed >= signal
+        assert torch.all(vec >= x - 1e-6)
+
+    def test_batched_spectra(self):
+        """Multiple spectra with distinct baselines."""
+        torch.manual_seed(42)
+        x = torch.randn(6, 150) * 2 + 10
+        vec = self._run_vectorized(x, half_window=15)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, 15, 1)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_bridges_absorption_dip(self):
+        """Narrow absorption dip in continuum should be bridged."""
+        torch.manual_seed(42)
+        t_arr = torch.linspace(-1, 1, 200)
+        continuum = 10.0 + 2.0 * t_arr
+        dip = -3.0 * torch.exp(-((t_arr - 0.1) ** 2) / (2 * 0.02**2))
+        x = (continuum + dip).unsqueeze(0)
+        hw = 20
+        vec = self._run_vectorized(x, half_window=hw)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, hw, 1)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+        # At the dip minimum, continuum should be significantly above
+        dip_min_idx = dip.argmin().item()
+        assert vec[0, dip_min_idx].item() > x[0, dip_min_idx].item() + 2.0
+
+    def test_multiple_iterations(self):
+        """Multiple closing iterations progressively smooth the continuum."""
+        torch.manual_seed(42)
+        x = torch.linspace(0, 100, 150).unsqueeze(0)
+        x = x + torch.sin(torch.linspace(0, 8 * math.pi, 150)).unsqueeze(0)
+        vec = self._run_vectorized(x, half_window=8, iterations=3)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, 8, 3)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_small_window(self):
+        """Minimum half_window=1: closing over +/-1 neighbours."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 64) * 2 + 10
+        vec = self._run_vectorized(x, half_window=1)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, 1, 1)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+        # With hw=1, continuum should still be >= signal
+        assert torch.all(vec >= x - 1e-6)
+
+    def test_constant_input(self):
+        """Constant signal: closing is identity."""
+        x = torch.ones(2, 64) * 7.0
+        vec = self._run_vectorized(x, half_window=5)
+        x_flat = x.reshape(-1, x.shape[-1])
+        ref = _alpha_shape_per_spectrum(x_flat, 5, 1)
+        ref = ref.reshape(vec.shape)
+        assert torch.allclose(vec, ref, atol=1e-5)
+        assert torch.allclose(vec, x, atol=1e-5)
+
+    def test_non_default_dim(self):
+        """Operate along dim=0."""
+        torch.manual_seed(42)
+        x = torch.randn(128, 3)  # [L, B] — dim=0 is length
+        vec = self._run_vectorized(x, half_window=7, dim=0)
+        x_moved = x.movedim(0, -1)  # [3, 128]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])
+        ref_flat = _alpha_shape_per_spectrum(x_flat, 7, 1)
+        ref = ref_flat.reshape(x_moved.shape).movedim(-1, 0)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
 
 
 # ---------------------------------------------------------------------------
