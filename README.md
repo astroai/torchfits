@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/astroai/torchfits/actions/workflows/ci.yml/badge.svg)](https://github.com/astroai/torchfits/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **torchfits** is FITS I/O for PyTorch: a multi-threaded C++ engine with vendored
 CFITSIO that reads and writes images, headers, HDUs, compressed images, and
@@ -241,4 +241,4 @@ The project uses [pixi](https://pixi.sh) for environment management, [ruff](http
 
 ## License
 
-[GPL-2.0](LICENSE)
+[MIT](LICENSE)
