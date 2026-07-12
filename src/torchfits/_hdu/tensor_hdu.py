@@ -85,3 +85,42 @@ class TensorHDU:
     def __repr__(self):
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"
+
+    def _repr_html_(self):
+        import html as pyhtml
+
+        name = pyhtml.escape(str(self.header.get("EXTNAME", "PRIMARY")))
+        shape = pyhtml.escape(self._get_shape_str())
+        dtype = pyhtml.escape(self._get_dtype_str())
+
+        html_parts = [
+            '<div tabindex="0" aria-label="TensorHDU Summary" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
+            "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
+            "<thead><tr>",
+        ]
+
+        headers = ["Name", "Shape", "DType"]
+        styles = ["text-align: left;", "text-align: left;", "text-align: left;"]
+
+        for h, s in zip(headers, styles):
+            html_parts.append(
+                f'<th scope="col" style=\'{s} padding: 8px; position: sticky; top: 0; '
+                f"background-color: var(--theme-ui-colors-background, white); "
+                f"border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>{h}</th>"
+            )
+
+        html_parts.append("</tr></thead><tbody><tr>")
+
+        row = [name, shape, dtype]
+        for col_idx, (val, s) in enumerate(zip(row, styles)):
+            if col_idx == 0:
+                html_parts.append(
+                    f"<th scope=\"row\" style='font-weight: normal; {s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{val}</th>"
+                )
+            else:
+                html_parts.append(
+                    f"<td style='{s} padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{val}</td>"
+                )
+
+        html_parts.append("</tr></tbody></table></div>")
+        return "".join(html_parts)
