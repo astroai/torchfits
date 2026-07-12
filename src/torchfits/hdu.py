@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from ._hdu.card import Card as Card
 
+from ._hdu.dataview import DataView as DataView
+
 from ._hdu.header import Header as Header
 
 # -- image / cube HDU --------------------------------------------------------------
@@ -25,6 +27,8 @@ from ._hdu.tensor_hdu import TensorHDU as TensorHDU
 # -- table HDU ---------------------------------------------------------------------
 
 from ._hdu.table_hdu import TableHDU as TableHDU
+from ._hdu.table_hdu import TableDataAccessor as TableDataAccessor
+from ._hdu.table_hdu import TensorFrame as TensorFrame
 
 from ._hdu.table_hdu_ref import TableHDURef as TableHDURef
 
@@ -34,9 +38,12 @@ from ._hdu.hdu_list import HDUList as HDUList
 
 __all__ = [
     "Card",
+    "DataView",
     "Header",
     "HDUList",
     "TableHDU",
+    "TableDataAccessor",
     "TableHDURef",
+    "TensorFrame",
     "TensorHDU",
 ]

@@ -54,7 +54,7 @@ Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`, and op
 |---|---|
 | [`example_table.py`](../examples/example_table.py) | `read_table`, `table.read` with `where=`, `stream_table`, and `table.write` |
 | [`example_table_interop.py`](../examples/example_table_interop.py) | VLA columns and `to_pandas` / `to_arrow` / `to_polars` conversion |
-| [`example_polars.py`](../examples/example_polars.py) | Direct FITS → Polars via `table.to_polars` and `table.to_polars_lazy` |
+| [`example_polars.py`](../examples/example_polars.py) | Direct FITS → Polars via `read_polars`, `scan_polars`, `to_polars`, and `to_polars_lazy` |
 | [`example_table_recipes.py`](../examples/example_table_recipes.py) | Arrow scanner, Polars lazy frames, and DuckDB SQL on FITS tables |
 
 ### PyTorch training

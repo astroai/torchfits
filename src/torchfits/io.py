@@ -312,7 +312,7 @@ def write(
     """Write a tensor or numpy array to a FITS file (primary or image extension)."""
     return _write_impl(
         path, data, header=header, overwrite=overwrite, compress=compress
-    )
+    )  # type: ignore[arg-type]
 
 
 def write_tensor(

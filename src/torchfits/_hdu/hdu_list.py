@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from .header import Header
 from .tensor_hdu import TensorHDU
@@ -14,9 +14,9 @@ class HDUList:
     def __init__(
         self, hdus: Optional[List[Union[TensorHDU, TableHDU, TableHDURef]]] = None
     ):
-        self._hdus = hdus or []
+        self._hdus: List[Union[TensorHDU, TableHDU, TableHDURef]] = hdus or []
         self._file_handle = None
-        self._extname_idx = None
+        self._extname_idx: Optional[dict[str, int]] = None
 
     @classmethod
     def fromfile(cls, path: str, mode: str = "r") -> "HDUList":
@@ -49,7 +49,9 @@ class HDUList:
                     hdu_type = cpp.get_hdu_type(handle, i)
 
                     class Info:
-                        pass
+                        index: int
+                        type: str
+                        header: Any
 
                     info = Info()
                     info.index = i
@@ -70,7 +72,7 @@ class HDUList:
                 i = info.index
 
                 if hdu_type == "IMAGE":
-                    hdu = TensorHDU(
+                    hdu: Any = TensorHDU(
                         header=header, file_handle=handle, hdu_index=i, source_path=path
                     )
                 elif hdu_type in ["ASCII_TABLE", "BINARY_TABLE"]:
@@ -93,7 +95,9 @@ class HDUList:
     def __len__(self) -> int:
         return len(self._hdus)
 
-    def __getitem__(self, key: Union[int, str]) -> Union[TensorHDU, TableHDU]:
+    def __getitem__(
+        self, key: Union[int, str]
+    ) -> Union[TensorHDU, TableHDU, TableHDURef]:
         if isinstance(key, int):
             return self._hdus[key]
 

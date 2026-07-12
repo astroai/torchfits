@@ -5,6 +5,47 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 0.8.0
+
+### Added
+
+- **`read_polars()`** — one-call FITS-to-Polars convenience function. Calls `read()`
+  with `include_fits_metadata=True`, converts via `pl.from_arrow(rechunk=False)`,
+  and returns a `FITSPolarsFrame` wrapper that preserves FITS column metadata
+  (TFORM, TUNIT, TDIM, TNULL, TSCAL, TZERO) alongside the `pl.DataFrame`.
+  Delegates `__getattr__`, `__getitem__`, `__len__` to the wrapped DataFrame.
+- **`scan_polars()`** — genuine streaming Polars path. Yields `pl.DataFrame` batches
+  via `pl.from_arrow(batch, rechunk=False)` over `scan()`, without materializing
+  the entire Arrow table. Unlike `to_polars_lazy()`, no full table is built.
+- **`FITSPolarsFrame`** — lightweight dataclass wrapper around `pl.DataFrame` with
+  `field_meta` and `table_meta` dicts for FITS metadata preservation.
+
+### Changed
+
+- **`rechunk=False` default** on `to_polars()`, `to_polars_lazy()`, `scan_polars()`,
+  `read_polars()`, and top-level `to_polars()`. Avoids Polars' unnecessary chunk
+  concatenation when Arrow data is already single-chunk (the common case from
+  `read()`). Pass `rechunk=True` explicitly to restore the old behavior.
+- **`to_polars_lazy()` docstring** — clarified that it materializes the entire Arrow
+  table eagerly before wrapping as `LazyFrame`. Users seeking true streaming should
+  use `scan_polars()` instead.
+
+### Removed
+
+- **`"cpp_numpy"` table backend alias** — the deprecation alias introduced in
+  0.7.0 is removed. Pass `backend="cpp"` instead of `"cpp_numpy"`. The
+  `DeprecationWarning` is now a hard `ValueError`.
+- **`should_skip_cpp_numpy_for_where`** — internal alias removed from
+  `torchfits._table_engine`. Use `should_skip_cpp_for_where`.
+
+### Changed
+
+- **Blocking mypy in CI** — the `mypy src/` step in GitHub Actions is now a
+  hard gate (previously non-blocking via `|| echo`). All 103 type errors have
+  been resolved across 18+ source files. Added `[[tool.mypy.overrides]]` in
+  `pyproject.toml` for `pyarrow.compute` (`attr-defined`) and `pyarrow.*`
+  (`ignore_missing_imports`).
+
 ## [0.7.0] - 2026-07-10
 
 ### Added
@@ -358,6 +399,7 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
 [Unreleased]: https://github.com/astroai/torchfits/compare/v0.7.0...HEAD
+[0.8.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/astroai/torchfits/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/astroai/torchfits/releases/tag/v0.6.0
 [0.6.0b1]: https://github.com/astroai/torchfits/releases/tag/v0.6.0b1

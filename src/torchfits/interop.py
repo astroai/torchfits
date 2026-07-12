@@ -2,10 +2,16 @@ from typing import TYPE_CHECKING, Any, Dict, cast
 
 import torch
 
+from ._string_decode import decode_byte_tensor as _decode_byte_tensor
+from ._tensor_buffer import tensor_to_arrow_array as _tensor_to_arrow_array
+
 if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
     import pyarrow as pa
+
+
+# -- public interop functions ----------------------------------------------------
 
 
 def to_pandas(
@@ -17,7 +23,10 @@ def to_pandas(
 ) -> "pd.DataFrame":
     """
     Convert a dictionary of PyTorch tensors to a Pandas DataFrame.
-    Attempts to use zero-copy conversion where possible (via numpy).
+
+    Routes through :func:`to_arrow` then ``pyarrow.Table.to_pandas`` so no
+    numpy hop is required.  Zero-copy is used where possible for numeric
+    columns.
 
     Args:
         data: Dictionary mapping column names to PyTorch tensors or lists of tensors (VLA).
@@ -26,47 +35,25 @@ def to_pandas(
         pd.DataFrame: A Pandas DataFrame containing the data.
     """
     try:
-        import pandas as pd
+        import pandas as pd  # noqa: F401
     except ImportError:
-        raise ImportError("Pandas is required for to_pandas conversion.")
-    import numpy as np
+        raise ImportError("Pandas is required for to_pandas conversion.") from None
 
-    processed_data = {}
-    for key, value in data.items():
-        if isinstance(value, torch.Tensor):
-            if decode_bytes and value.dtype == torch.uint8 and value.dim() == 2:
-                # Vectorized fixed-width byte decode using numpy
-                arr = value.cpu().numpy()
-                width = arr.shape[1]
-                if width == 0:
-                    processed_data[key] = [""] * arr.shape[0]
-                else:
-                    byte_view = arr.view(f"S{width}").ravel()
-                    decoded = np.char.decode(
-                        byte_view, encoding=encoding, errors="ignore"
-                    )
-                    if strip:
-                        decoded = np.char.rstrip(decoded, " \x00")
-                    processed_data[key] = decoded.tolist()
-            else:
-                processed_data[key] = value.numpy()
-        elif isinstance(value, list):
-            # Handle VLA (list of tensors)
-            # We convert each tensor to numpy. This creates a list of numpy arrays.
-            # Pandas handles this as object column.
-            if vla_policy == "object":
-                processed_data[key] = [
-                    t.numpy() if isinstance(t, torch.Tensor) else t for t in value
-                ]
-            elif vla_policy == "drop":
-                continue
-            else:
-                raise ValueError("vla_policy must be 'object' or 'drop'")
-        else:
-            # Pass through other types (e.g. strings if any)
-            processed_data[key] = value
-
-    return pd.DataFrame(processed_data)
+    # Map pandas VLA policies to Arrow VLA policies.
+    if vla_policy == "object":
+        arrow_vla = "list"
+    elif vla_policy == "drop":
+        arrow_vla = "drop"
+    else:
+        raise ValueError("vla_policy must be 'object' or 'drop'")
+    arrow_table = to_arrow(
+        data,
+        decode_bytes=decode_bytes,
+        encoding=encoding,
+        strip=strip,
+        vla_policy=arrow_vla,
+    )
+    return arrow_table.to_pandas()
 
 
 def to_polars(
@@ -75,12 +62,19 @@ def to_polars(
     encoding: str = "ascii",
     strip: bool = True,
     vla_policy: str = "list",
+    *,
+    rechunk: bool = False,
 ) -> "pl.DataFrame":
     """
     Convert a dictionary of PyTorch tensors to a Polars DataFrame (via PyArrow).
 
     Same arguments as :func:`to_arrow`; uses :func:`polars.from_arrow` on the
     intermediate table so the result stays Arrow-backed.
+
+    Args:
+        rechunk: When True (default False), force Polars to concatenate chunks
+            into a single contiguous block.  Leaving False avoids an unnecessary
+            copy when the Arrow data is already a single chunk.
     """
     try:
         import polars as pl
@@ -96,7 +90,8 @@ def to_polars(
                 encoding=encoding,
                 strip=strip,
                 vla_policy=vla_policy,
-            )
+            ),
+            rechunk=rechunk,
         ),
     )
 
@@ -110,7 +105,10 @@ def to_arrow(
 ) -> "pa.Table":
     """
     Convert a dictionary of PyTorch tensors to a PyArrow Table.
-    Attempts to use zero-copy conversion where possible.
+
+    Uses ``bytes(tensor.untyped_storage())`` + ``pa.Array.from_buffers`` for
+    numeric columns (one copy, same cost as the previous numpy path) and
+    pure-Python byte decoding for string columns.  No numpy dependency.
 
     Args:
         data: Dictionary mapping column names to PyTorch tensors or lists of tensors (VLA).
@@ -121,8 +119,7 @@ def to_arrow(
     try:
         import pyarrow as pa
     except ImportError:
-        raise ImportError("PyArrow is required for to_arrow conversion.")
-    import numpy as np
+        raise ImportError("PyArrow is required for to_arrow conversion.") from None
 
     arrays = []
     names = []
@@ -131,30 +128,16 @@ def to_arrow(
         names.append(key)
         if isinstance(value, torch.Tensor):
             if decode_bytes and value.dtype == torch.uint8 and value.dim() == 2:
-                # Vectorized fixed-width byte decode using numpy
-                arr = value.cpu().numpy()
-                width = arr.shape[1]
-                if width == 0:
-                    arrays.append(pa.array([""] * arr.shape[0]))
-                else:
-                    byte_view = arr.view(f"S{width}").ravel()
-                    decoded = np.char.decode(
-                        byte_view, encoding=encoding, errors="ignore"
-                    )
-                    if strip:
-                        decoded = np.char.rstrip(decoded, " \x00")
-                    arrays.append(pa.array(decoded))
+                # Decode fixed-width byte column to strings (pure Python).
+                decoded = _decode_byte_tensor(value, encoding=encoding, strip=strip)
+                arrays.append(pa.array(decoded))
             else:
-                arrays.append(pa.array(value.numpy()))
+                arrays.append(_tensor_to_arrow_array(value, pa))
         elif isinstance(value, list):
-            # Handle VLA
-            # For VLA, we might want a ListArray.
-            # But constructing it from list of numpy arrays might involve copy.
-            # Let's just let pyarrow infer.
-            # If elements are tensors, convert to numpy first.
+            # Handle VLA (list of tensors).
             if vla_policy == "list":
                 converted_list = [
-                    t.numpy() if isinstance(t, torch.Tensor) else t for t in value
+                    t.tolist() if isinstance(t, torch.Tensor) else t for t in value
                 ]
                 arrays.append(pa.array(converted_list))
             elif vla_policy == "drop":

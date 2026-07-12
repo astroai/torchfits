@@ -52,7 +52,20 @@ def main() -> None:
         print(f"\ntable.to_polars (with where=): {df.height} rows in {t1 - t0:.3f}s")
         print(df.head(3))
 
+        # read_polars: one-call FITS-to-Polars with FITS metadata preserved
+        t0 = time.perf_counter()
+        result = torchfits.table.read_polars(
+            path, hdu=1, columns=["id", "ra", "flux_g", "class"]
+        )
+        t1 = time.perf_counter()
+        print(f"\ntable.read_polars: {result.height} rows in {t1 - t0:.3f}s")
+        print(f"  FITS metadata keys: {list(result.table_meta.keys())}")
+        print(f"  Column metadata (flux_g): {result.field_meta.get('flux_g', {})}")
+        print(result.head(3))
+
         # LazyFrame for complex aggregations
+        # NOTE: to_polars_lazy materializes the full table eagerly.
+        # For large tables, use scan_polars() for genuine streaming.
         summary = (
             torchfits.table.to_polars_lazy(path, hdu=1)
             .filter(pl.col("flux_g") > 500)
@@ -67,6 +80,13 @@ def main() -> None:
         )
         print("\nLazyFrame summary:")
         print(summary)
+
+        # Streaming Polars: process large FITS tables in batches
+        # without materializing the entire table at once.
+        total = 0
+        for frame in torchfits.table.scan_polars(path, hdu=1, batch_size=10_000):
+            total += frame.filter(pl.col("flux_g") > 500).height
+        print(f"\nscan_polars streaming: {total} rows with flux_g > 500")
     finally:
         os.unlink(path)
 

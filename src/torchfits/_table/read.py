@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import functools
 import itertools
 import logging
 from typing import TYPE_CHECKING, Any, Optional
@@ -51,9 +52,16 @@ def _row_slice_from_start_num(start_row: int, num_rows: int) -> Optional[slice]:
     return slice(start0, start0 + num_rows)
 
 
+@functools.lru_cache(maxsize=128)
 def _compile_where_to_simple_predicates(
     where: str,
-) -> Optional[list[tuple[str, str, Any]]]:
+) -> Optional[tuple[tuple[str, str, Any], ...]]:
+    """Parse a where string into simple predicates (cached).
+
+    Returns a tuple of (col, op, literal) triples, or None if the where
+    clause cannot be reduced to simple predicates.  The tuple is immutable
+    so the cached value cannot be corrupted by callers.
+    """
     try:
         ast = parse_where_expression(where)
     except Exception:
@@ -84,12 +92,14 @@ def _compile_where_to_simple_predicates(
 
     if not _visit(ast):
         return None
-    return predicates
+    return tuple(predicates)
 
 
 def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
     pa = _require_pyarrow()
-    import pyarrow.compute as pc
+    import pyarrow.compute as _pc
+
+    pc: Any = _pc
 
     ast = parsed_ast if parsed_ast is not None else parse_where_expression(where)
 
@@ -204,10 +214,12 @@ def _build_fits_metadata(
     path: str,
     hdu: int,
     selected_columns: Optional[set[str]] = None,
+    header: Any = None,
 ) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
-    import torchfits
+    if header is None:
+        import torchfits
 
-    header = torchfits.get_header(path, hdu)
+        header = torchfits.get_header(path, hdu)
     field_meta: dict[str, dict[str, str]] = {}
     table_meta: dict[str, str] = {
         "fits_hdu": str(hdu),
@@ -262,14 +274,16 @@ def _column_tforms_for_decode(
     path: str,
     hdu: int,
     selected_columns: Optional[set[str]],
+    header: Any = None,
 ) -> dict[str, str]:
     """Delegates to fits_schema for TFORM lookup."""
-    import torchfits
+    if header is None:
+        import torchfits
 
-    try:
-        header = torchfits.get_header(path, hdu)
-    except Exception:
-        return {}
+        try:
+            header = torchfits.get_header(path, hdu)
+        except Exception:
+            return {}
     out: dict[str, str] = {}
     for col in fits_schema.iter_table_columns(header, selected=selected_columns):
         out[col.name] = col.tform
@@ -280,14 +294,16 @@ def _unsigned_column_dtypes(
     path: str,
     hdu: int,
     selected_columns: Optional[set[str]],
+    header: Any = None,
 ) -> dict[str, str]:
     """Delegates to fits_schema.unsigned_column_dtypes_from_header."""
-    import torchfits
+    if header is None:
+        import torchfits
 
-    try:
-        header = torchfits.get_header(path, hdu)
-    except Exception:
-        return {}
+        try:
+            header = torchfits.get_header(path, hdu)
+        except Exception:
+            return {}
     torch_dtype_map = fits_schema.unsigned_column_dtypes_from_header(header)
     return {
         col: str(dt).split(".")[-1]
@@ -300,11 +316,16 @@ def _can_use_mmap_row_path_for_full_read(
     path: str,
     hdu: int,
     selected_columns: Optional[list[str]],
+    header: Any = None,
 ) -> bool:
-    import torchfits
+    if header is None:
+        import torchfits
 
+        try:
+            header = torchfits.get_header(path, hdu)
+        except Exception:
+            return False
     try:
-        header = torchfits.get_header(path, hdu)
         tf_count = int(header.get("TFIELDS", 0))
     except Exception:
         return False
@@ -343,11 +364,16 @@ def _can_use_torch_table_path_for_full_read(
     path: str,
     hdu: int,
     selected_columns: Optional[list[str]],
+    header: Any = None,
 ) -> bool:
-    import torchfits
+    if header is None:
+        import torchfits
 
+        try:
+            header = torchfits.get_header(path, hdu)
+        except Exception:
+            return False
     try:
-        header = torchfits.get_header(path, hdu)
         tf_count = int(header.get("TFIELDS", 0))
     except Exception:
         return False
@@ -413,7 +439,9 @@ def _iter_chunks_cpp_table(
     def _generator():
         can_mmap_rows = mmap and hasattr(cpp, "read_fits_table_rows")
         if can_mmap_rows:
-            can_mmap_rows = _can_use_mmap_row_path_for_full_read(path, hdu, columns)
+            can_mmap_rows = _can_use_mmap_row_path_for_full_read(
+                path, hdu, columns, header=header
+            )
         file_handle = None
         try:
             row = start_row
@@ -444,7 +472,7 @@ def _iter_chunks_cpp_table(
 
 def _filter_table_with_where(pa, table: Any, where: str) -> Any:
     mask = _where_mask_for_table(table, where)
-    if len(mask) == 0 or pa.compute.sum(mask).as_py() == 0:
+    if len(mask) == 0 or pa.compute.sum(mask).as_py() == 0:  # type: ignore[union-attr,attr-defined]
         return table.slice(0, 0)
     return table.filter(mask)
 
@@ -545,6 +573,7 @@ def _try_cpp_where_pushdown(
     decode_bytes: bool,
     encoding: str,
     strip: bool,
+    header: Any = None,
 ) -> Any | None:
     import torchfits._C as cpp
 
@@ -556,14 +585,30 @@ def _try_cpp_where_pushdown(
     try:
         target_cols = columns
         if target_cols is None:
-            target_cols = list(schema(path, hdu=hdu, backend="cpp").names)
+            if header is not None:
+                target_cols = [
+                    col.name for col in fits_schema.iter_table_columns(header)
+                ]
+            else:
+                target_cols = list(schema(path, hdu=hdu, backend="cpp").names)
 
-        data_dict = cpp.read_fits_table_filtered(path, hdu, target_cols, filters)
-        pushdown_tforms = (
-            _column_tforms_for_decode(path, hdu, set(target_cols))
-            if decode_bytes
-            else None
-        )
+        # filters is a tuple (immutable, cached) — C++ binding expects a list.
+        data_dict = cpp.read_fits_table_filtered(path, hdu, target_cols, list(filters))
+
+        # Only look up tforms when string/bit columns are present
+        # (numeric 1D columns don't need tform for Arrow conversion).
+        pushdown_tforms = None
+        if decode_bytes:
+            needs_tforms = header is None
+            if not needs_tforms:
+                for col in fits_schema.iter_table_columns(
+                    header, selected=set(target_cols) if target_cols else None
+                ):
+                    if col.tform_info.is_string or col.tform_info.is_bit:
+                        needs_tforms = True
+                        break
+            if needs_tforms:
+                pushdown_tforms = _column_tforms_for_decode(path, hdu, set(target_cols))
         arrays = []
         names_out = []
         for name in target_cols:
@@ -645,6 +690,7 @@ def _read_table_with_where(
             decode_bytes=decode_bytes,
             encoding=encoding,
             strip=strip,
+            header=hdr if header_ok else None,
         )
         if pushed is not None:
             return pushed
@@ -696,8 +742,9 @@ def _resolve_rows_from_where_cpp(
         return None
     if predicate_table.num_rows == 0:
         return []
+    import pyarrow.compute as _pc
 
-    import pyarrow.compute as pc
+    pc: Any = _pc
 
     mask = _where_mask_for_table(predicate_table, where, parsed_ast=where_ast)
     if len(mask) == 0 or pc.sum(mask).as_py() == 0:
@@ -757,17 +804,29 @@ def scan(
     if num_rows == 0:
         return
     selected = set(columns) if columns else None
+
+    # Read the header once and pass it to all helper functions to avoid
+    # redundant get_header() calls.
+    try:
+        _hdr = torchfits.get_header(path, hdu)
+    except (OSError, ValueError):
+        _hdr = None
+
     col_tforms = (
-        _column_tforms_for_decode(path, hdu, selected) if decode_bytes else None
+        _column_tforms_for_decode(path, hdu, selected, header=_hdr)
+        if decode_bytes
+        else None
     )
-    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected)
+    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected, header=_hdr)
     field_meta: dict[str, dict[str, str]] = {}
     table_meta: dict[str, str] = {}
     need_field_meta = include_fits_metadata or apply_fits_nulls
     if need_field_meta:
         try:
-            field_meta, table_meta = _build_fits_metadata(path, hdu, selected)
-        except Exception:
+            field_meta, table_meta = _build_fits_metadata(
+                path, hdu, selected, header=_hdr
+            )
+        except (OSError, ValueError):
             field_meta, table_meta = {}, {}
     if columns:
         preferred_order = columns[:]
@@ -1064,17 +1123,32 @@ def _read_cpp_table_chunk(
         num_rows = -1
 
     selected = set(columns) if columns else None
+
+    # Read the header once and pass it to all helper functions to avoid
+    # redundant get_header() calls (each of which hits the C++ cache or
+    # re-reads the FITS header).
+    import torchfits
+
+    try:
+        _hdr = torchfits.get_header(path, hdu)
+    except (OSError, ValueError):
+        _hdr = None
+
     col_tforms = (
-        _column_tforms_for_decode(path, hdu, selected) if decode_bytes else None
+        _column_tforms_for_decode(path, hdu, selected, header=_hdr)
+        if decode_bytes
+        else None
     )
-    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected)
+    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected, header=_hdr)
     field_meta: dict[str, dict[str, str]] = {}
     table_meta: dict[str, str] = {}
     need_field_meta = include_fits_metadata or apply_fits_nulls
     if need_field_meta:
         try:
-            field_meta, table_meta = _build_fits_metadata(path, hdu, selected)
-        except Exception:
+            field_meta, table_meta = _build_fits_metadata(
+                path, hdu, selected, header=_hdr
+            )
+        except (OSError, ValueError):
             pass
     if columns:
         preferred_order = columns[:]
@@ -1094,10 +1168,12 @@ def _read_cpp_table_chunk(
         and not decode_bytes
         and not include_fits_metadata
         and not apply_fits_nulls
-        and _can_use_torch_table_path_for_full_read(path, hdu, columns)
+        and _can_use_torch_table_path_for_full_read(path, hdu, columns, header=_hdr)
     )
     if prefer_torch_full_path:
-        if mmap and _can_use_mmap_row_path_for_full_read(path, hdu, columns):
+        if mmap and _can_use_mmap_row_path_for_full_read(
+            path, hdu, columns, header=_hdr
+        ):
             try:
                 chunk = cpp.read_fits_table(path, hdu, col_list, True)
             except Exception:
@@ -1207,7 +1283,12 @@ def scan_torch(
     start_row, num_rows = _normalize_row_slice(row_slice)
     use_mmap = mmap
     if use_mmap:
-        use_mmap = _can_use_mmap_row_path_for_full_read(path, hdu, columns)
+        # Read header once for the capability check.
+        try:
+            _hdr = torchfits.get_header(path, hdu)
+        except Exception:
+            _hdr = None
+        use_mmap = _can_use_mmap_row_path_for_full_read(path, hdu, columns, header=_hdr)
 
     for chunk in torchfits.stream_table(
         path,

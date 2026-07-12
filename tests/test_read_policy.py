@@ -26,13 +26,9 @@ def test_choose_where_read_plan_auto_uses_cpp_unfiltered():
     assert plan.unfiltered_backend == "cpp"
 
 
-def test_cpp_numpy_backend_deprecated():
-    import warnings
+def test_cpp_numpy_backend_rejected():
+    """The legacy 'cpp_numpy' backend alias was removed in 0.8.0."""
+    import pytest
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        assert validate_table_backend("cpp_numpy") == "cpp"
-    assert any(
-        issubclass(w.category, DeprecationWarning) and "cpp_numpy" in str(w.message)
-        for w in caught
-    )
+    with pytest.raises(ValueError, match="backend must be one of"):
+        validate_table_backend("cpp_numpy")

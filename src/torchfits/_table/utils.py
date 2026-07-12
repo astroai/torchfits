@@ -77,7 +77,7 @@ def _arrow_column_to_python(pa, column, name: str) -> Any:
         return values.reshape((len(column), size))
     if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
         pylist_values: list[Any] = column.to_pylist()
-        out: list[np.ndarray] = []
+        out: list[Any] = []
         for item in pylist_values:
             if item is None:
                 out.append([])

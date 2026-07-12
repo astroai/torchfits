@@ -1504,6 +1504,262 @@ class TestWaveletDecompose:
 
 
 # ---------------------------------------------------------------------------
+# UpperEnvelopeContinuum — vectorized-vs-per-spectrum parity tests
+# ---------------------------------------------------------------------------
+
+
+def _upper_envelope_per_spectrum(
+    x_flat: torch.Tensor,
+    window: int,
+    smooth: float,
+    is_local_max: torch.Tensor,
+) -> torch.Tensor:
+    """Reference per-spectrum implementation of UpperEnvelopeContinuum.
+
+    Mirrors the vectorized cummax-based algorithm using Python for-loops
+    over spectra and positions.  Used to verify correctness of the
+    batched cummax approach.
+
+    Parameters
+    ----------
+    x_flat : [N, L]
+        Flattened input tensor.
+    window : int
+        Half-width for local-max detection (unused here — passed for
+        signature compatibility; is_local_max is pre-computed).
+    smooth : float
+        Gaussian sigma for optional smoothing (0 = no smoothing).
+    is_local_max : [N, L]
+        Boolean mask where local maxima occur (pre-computed batched).
+
+    Returns
+    -------
+    continuum : [N, L]
+    """
+    n_spectra, length = x_flat.shape
+    continuum = torch.empty_like(x_flat)
+
+    for i in range(n_spectra):
+        lm = is_local_max[i]
+        lm_count = lm.sum().item()
+
+        if lm_count < 2:
+            # Fallback: use global max for this spectrum
+            continuum[i] = x_flat[i].max()
+            continue
+
+        for j in range(length):
+            # Find nearest local max to the left
+            left_pos = float("-inf")
+            for k in range(j, -1, -1):
+                if lm[k]:
+                    left_pos = float(k)
+                    break
+
+            # Find nearest local max to the right
+            right_pos = float("-inf")
+            for k in range(j, length):
+                if lm[k]:
+                    right_pos = float(k)
+                    break
+
+            # Clean up inf values (same logic as vectorized)
+            if left_pos == float("-inf"):
+                left_pos = right_pos
+            if right_pos == float("-inf"):
+                right_pos = left_pos
+            if left_pos == float("-inf"):
+                left_pos = 0.0
+                right_pos = 0.0
+
+            # Gather values and interpolate
+            li = int(left_pos)
+            ri = int(right_pos)
+            left_val = x_flat[i, li].item()
+            right_val = x_flat[i, ri].item()
+
+            denom = right_pos - left_pos
+            if denom < 1e-30:
+                continuum[i, j] = left_val
+            else:
+                frac = (float(j) - left_pos) / denom
+                continuum[i, j] = left_val + (right_val - left_val) * frac
+
+    # Optional Gaussian smoothing (same as vectorized)
+    if smooth > 0:
+        half = int(math.ceil(3.0 * smooth))
+        t_kernel = torch.arange(
+            -half, half + 1, device=x_flat.device, dtype=x_flat.dtype
+        )
+        kernel = torch.exp(-0.5 * (t_kernel / smooth) ** 2)
+        kernel = kernel / kernel.sum()
+        kernel_1d = kernel.view(1, 1, -1)
+        cont_padded = torch.nn.functional.pad(
+            continuum.unsqueeze(1), (half, half), mode="reflect"
+        )
+        continuum = torch.nn.functional.conv1d(
+            cont_padded, kernel_1d.to(device=x_flat.device, dtype=x_flat.dtype)
+        ).squeeze(1)
+
+    return continuum
+
+
+class TestUpperEnvelopeContinuumVectorized:
+    """Verify the cummax-based vectorized envelope matches per-spectrum loop."""
+
+    @staticmethod
+    def _compute_is_local_max(x_flat: torch.Tensor, window: int) -> torch.Tensor:
+        """Compute local-max mask using the same unfold/max logic as the class."""
+        x_padded = torch.nn.functional.pad(x_flat, (window, window), mode="reflect")
+        windows = x_padded.unfold(-1, 2 * window + 1, 1)
+        return x_flat == windows.max(dim=-1).values
+
+    @staticmethod
+    def _run_vectorized(
+        x: torch.Tensor, window: int = 7, smooth: float = 0.0, dim: int = -1
+    ) -> torch.Tensor:
+        """Run the real vectorized UpperEnvelopeContinuum and return continuum."""
+        t = UpperEnvelopeContinuum(window=window, smooth=smooth, dim=dim)
+        return t.forward(x)
+
+    def test_single_spectrum_window3(self):
+        """Simple spectrum: window=3, verify exact allclose."""
+        torch.manual_seed(42)
+        x = (torch.sin(torch.linspace(0, 6 * math.pi, 100)) + 1.0).unsqueeze(0)
+        x = x + 0.3 * torch.randn_like(x)
+        vec = self._run_vectorized(x, window=3)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 3)
+        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_single_spectrum_window11(self):
+        """Larger window, more local maxima."""
+        torch.manual_seed(42)
+        x = (torch.sin(torch.linspace(0, 8 * math.pi, 200)) * 2 + 0.5).unsqueeze(0)
+        x = x + 0.2 * torch.randn_like(x)
+        vec = self._run_vectorized(x, window=11)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 11)
+        ref = _upper_envelope_per_spectrum(x_flat, 11, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_batched_spectra(self):
+        """Multiple spectra processed simultaneously."""
+        torch.manual_seed(42)
+        x = torch.randn(8, 150) * 2 + 10
+        vec = self._run_vectorized(x, window=5)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 5)
+        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_with_smoothing(self):
+        """Gaussian smoothing enabled."""
+        torch.manual_seed(42)
+        x = torch.sin(torch.linspace(0, 4 * math.pi, 100)).unsqueeze(0) + 0.5
+        x = x + 0.1 * torch.randn_like(x)
+        vec = self._run_vectorized(x, window=5, smooth=3.0)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 5)
+        ref = _upper_envelope_per_spectrum(x_flat, 5, 3.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_few_local_maxima(self):
+        """Spectrum with < 2 local maxima uses global max fallback."""
+        torch.manual_seed(42)
+        # Monotonically increasing: at most 1 local max (at the end)
+        x = torch.linspace(0, 10, 50).unsqueeze(0)
+        vec = self._run_vectorized(x, window=3)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 3)
+        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_constant_input(self):
+        """Constant signal: every point is a local max."""
+        x = torch.ones(1, 64) * 5.0
+        vec = self._run_vectorized(x, window=3)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 3)
+        ref = _upper_envelope_per_spectrum(x_flat, 3, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        # All points are 5, so continuum should be 5 everywhere
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(vec, x, atol=1e-5)
+
+    def test_non_default_dim(self):
+        """Operate along dim=0 (batched over other dims)."""
+        torch.manual_seed(42)
+        x = torch.randn(128, 3)  # [L, B] — dim=0 is length
+        vec = self._run_vectorized(x, window=5, dim=0)
+        # The class moves dim=0 to last, so we need to match that
+        x_moved = x.movedim(0, -1)  # [3, 128]
+        x_flat = x_moved.reshape(-1, x_moved.shape[-1])  # [3, 128]
+        is_lm = self._compute_is_local_max(x_flat, 5)
+        ref_flat = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = ref_flat.reshape(x_moved.shape).movedim(-1, 0)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_3d_tensor(self):
+        """[C, H, W] tensor with spectral dim=-1."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 16, 64) * 2 + 10
+        vec = self._run_vectorized(x, window=5, dim=-1)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 5)
+        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_mixed_batch_with_few_lm(self):
+        """Batch where one spectrum has < 2 LM, others have many."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 100) * 2 + 10
+        x[0, :] = torch.linspace(0, 10, 100)  # monotonic → 1 LM
+        vec = self._run_vectorized(x, window=5)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 5)
+        ref = _upper_envelope_per_spectrum(x_flat, 5, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5), (
+            f"max diff: {(vec - ref).abs().max().item():.2e}"
+        )
+
+    def test_window1(self):
+        """Minimum window size: every point is a local max."""
+        torch.manual_seed(42)
+        x = torch.randn(1, 64) * 2 + 5
+        vec = self._run_vectorized(x, window=1)
+        x_flat = x.reshape(-1, x.shape[-1])
+        is_lm = self._compute_is_local_max(x_flat, 1)
+        ref = _upper_envelope_per_spectrum(x_flat, 1, 0.0, is_lm)
+        ref = ref.reshape(x.shape)
+        # Verify vectorized matches reference; with window=1 almost every
+        # point is its own nearest local max, so continuum ≈ signal.
+        assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
 # AsymmetricLeastSquares (Tier 2 — Eilers 2003, additive decomposition)
 # ---------------------------------------------------------------------------
 

@@ -225,7 +225,7 @@ def _normalize_mutation_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(
+            values = _coerce_table_string_values(  # type: ignore[assignment]
                 col_name, value, expected_rows=expected_rows
             )
             if expected_rows is None:
@@ -314,7 +314,7 @@ def _read_table_for_rewrite(path: str, hdu: int, columns: list[str]) -> dict[str
                         converted.append(np.ascontiguousarray(np.asarray(item)))
                 out[name] = converted
             elif name in string_cols:
-                out[name] = table_hdu.get_string_column(name)
+                out[name] = table_hdu.get_string_column(name)  # type: ignore[assignment]
             else:
                 value = table_hdu[name]
                 if isinstance(value, torch.Tensor):
@@ -1067,7 +1067,7 @@ def update_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(
+            values = _coerce_table_string_values(  # type: ignore[assignment]
                 col_name, value, expected_rows=expected_rows
             )
             if expected_rows is None:

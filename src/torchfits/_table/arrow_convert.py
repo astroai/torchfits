@@ -12,6 +12,21 @@ if TYPE_CHECKING:
 # -- imported from the parent table module (resolved via bottom-of-file import) -----
 
 from .._table.utils import _fits_tform_is_bit, _require_pyarrow  # noqa: E402
+from .._tensor_buffer import tensor_to_arrow_array  # noqa: E402
+
+# Dtypes supported by the numpy-free buffer-protocol fast path.
+_BUFFER_SUPPORTED_DTYPES = frozenset(
+    {
+        torch.float32,
+        torch.float64,
+        torch.float16,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+        torch.uint8,
+    }
+)
 
 
 # -- low-level Arrow array constructors --------------------------------------------
@@ -177,6 +192,18 @@ def _tensor_to_arrow_array(
     fits_tform: str | None = None,
     unsigned_dtype: str | None = None,
 ):
+    # Numpy-free fast path: 1D contiguous CPU tensor with no null/unsigned/
+    # multi-dim handling needed.  Uses the shared buffer-protocol helper.
+    if (
+        null_sentinel is None
+        and unsigned_dtype is None
+        and tensor.dim() <= 1
+        and tensor.dtype in _BUFFER_SUPPORTED_DTYPES
+    ):
+        return tensor_to_arrow_array(tensor, pa)
+
+    # General path: detach, CPU, contiguous, then delegate to numpy-based
+    # conversion for null masks, unsigned dtype casting, 2-D decode, etc.
     t = tensor.detach()
     if t.device.type != "cpu":
         t = t.cpu()

@@ -2060,58 +2060,80 @@ public:
 
         // Optimized loops for common types.
         // FITS binary tables are big-endian; swap on little-endian hosts only.
+        //
+        // Each row writes to a non-overlapping region of dest
+        // (dest + i * total_width), so parallelizing across rows is
+        // thread-safe.  This matches the mmap path's at::parallel_for
+        // with grain size 2048, bringing the buffered read path to
+        // parity with the mmap path for multi-core systems.
         const bool swap_endian = host_is_little_endian();
 
         if (col.type == FITSColumnType::LOGICAL) {
              // Convert 'T'/'F' (or '1'/'0') to bool
              bool* out = reinterpret_cast<bool*>(dest);
-             for (long i = 0; i < num_rows; i++) {
-                 const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                 for (int j = 0; j < col.repeat; j++) {
-                     const uint8_t v = src_cell[j];
-                     out[i * col.repeat + j] = (v == 'T' || v == '1');
+             const int repeat = col.repeat;
+             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                 for (long i = start; i < end; i++) {
+                     const uint8_t* src_cell = buffer + i * row_stride + col_offset;
+                     for (int j = 0; j < repeat; j++) {
+                         const uint8_t v = src_cell[j];
+                         out[i * repeat + j] = (v == 'T' || v == '1');
+                     }
                  }
-             }
+             });
         } else if (col.type == FITSColumnType::STRING || col.type == FITSColumnType::BYTE) {
              // No swapping needed for bytes/strings
-             for (long i = 0; i < num_rows; i++) {
-                 std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
-             }
+             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                 for (long i = start; i < end; i++) {
+                     std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
+                 }
+             });
         } else if (col_width == 2) {
-            for (long i = 0; i < num_rows; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint16_t* dest_cell = (uint16_t*)(dest + i * total_width);
-                for (int j = 0; j < col.repeat; j++) {
-                    uint16_t val;
-                    std::memcpy(&val, src_cell + j * 2, 2);
-                    dest_cell[j] = swap_endian ? bswap_16(val) : val;
+            const int repeat = col.repeat;
+            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                for (long i = start; i < end; i++) {
+                    const uint8_t* src_cell = buffer + i * row_stride + col_offset;
+                    uint16_t* dest_cell = (uint16_t*)(dest + i * total_width);
+                    for (int j = 0; j < repeat; j++) {
+                        uint16_t val;
+                        std::memcpy(&val, src_cell + j * 2, 2);
+                        dest_cell[j] = swap_endian ? bswap_16(val) : val;
+                    }
                 }
-            }
+            });
         } else if (col_width == 4) {
-            for (long i = 0; i < num_rows; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint32_t* dest_cell = (uint32_t*)(dest + i * total_width);
-                for (int j = 0; j < col.repeat; j++) {
-                    uint32_t val;
-                    std::memcpy(&val, src_cell + j * 4, 4);
-                    dest_cell[j] = swap_endian ? bswap_32(val) : val;
+            const int repeat = col.repeat;
+            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                for (long i = start; i < end; i++) {
+                    const uint8_t* src_cell = buffer + i * row_stride + col_offset;
+                    uint32_t* dest_cell = (uint32_t*)(dest + i * total_width);
+                    for (int j = 0; j < repeat; j++) {
+                        uint32_t val;
+                        std::memcpy(&val, src_cell + j * 4, 4);
+                        dest_cell[j] = swap_endian ? bswap_32(val) : val;
+                    }
                 }
-            }
+            });
         } else if (col_width == 8) {
-            for (long i = 0; i < num_rows; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint64_t* dest_cell = (uint64_t*)(dest + i * total_width);
-                for (int j = 0; j < col.repeat; j++) {
-                    uint64_t val;
-                    std::memcpy(&val, src_cell + j * 8, 8);
-                    dest_cell[j] = swap_endian ? bswap_64(val) : val;
+            const int repeat = col.repeat;
+            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                for (long i = start; i < end; i++) {
+                    const uint8_t* src_cell = buffer + i * row_stride + col_offset;
+                    uint64_t* dest_cell = (uint64_t*)(dest + i * total_width);
+                    for (int j = 0; j < repeat; j++) {
+                        uint64_t val;
+                        std::memcpy(&val, src_cell + j * 8, 8);
+                        dest_cell[j] = swap_endian ? bswap_64(val) : val;
+                    }
                 }
-            }
+            });
         } else {
             // Fallback memcpy (should not happen for standard types needing swap)
-             for (long i = 0; i < num_rows; i++) {
-                 std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
-             }
+             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                 for (long i = start; i < end; i++) {
+                     std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
+                 }
+             });
         }
     }
 

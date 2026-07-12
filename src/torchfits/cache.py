@@ -38,6 +38,13 @@ CACHE_ENV_SENTINELS: tuple[str, ...] = HPC_ENV_SENTINELS + CLOUD_ENV_SENTINELS
 class CacheConfig:
     """Cache configuration for different environments."""
 
+    # NOTE: torch.cuda.is_available() is already cached internally by PyTorch
+    # after the first call, and os.sysconf() is a cheap syscall.  Env-var
+    # checks are cheap dict lookups.  Therefore we do NOT add a separate
+    # cache layer here — it would only break test mocking of these methods.
+    # The structural improvement is extracting detection into named methods
+    # for clarity and testability.
+
     def __init__(
         self,
         max_files: int = 100,
@@ -50,21 +57,34 @@ class CacheConfig:
         self.disk_cache_gb = disk_cache_gb
         self.prefetch_enabled = prefetch_enabled
 
-    @classmethod
-    def for_environment(cls) -> "CacheConfig":
-        """Auto-detect optimal cache configuration."""
-        # Get system memory using POSIX system config if available
+    @staticmethod
+    def _detect_gpu() -> bool:
+        """Detect GPU availability (delegates to torch, which caches internally)."""
+        try:
+            import torch
+
+            return torch.cuda.is_available() and torch.cuda.device_count() > 0
+        except ImportError:
+            return False
+
+    @staticmethod
+    def _detect_memory_gb() -> float:
+        """Detect system memory in GB via POSIX sysconf."""
         try:
             pagesize = os.sysconf("SC_PAGE_SIZE")
             physpages = os.sysconf("SC_PHYS_PAGES")
             if pagesize > 0 and physpages > 0:
-                memory_gb = (pagesize * physpages) / (1024**3)
-            else:
-                memory_gb = 10.0
+                return (pagesize * physpages) / (1024**3)
         except Exception:
-            memory_gb = 10.0
+            pass
+        return 10.0
 
-        # Detect environment
+    @classmethod
+    def for_environment(cls) -> "CacheConfig":
+        """Auto-detect optimal cache configuration."""
+        memory_gb = cls._detect_memory_gb()
+
+        # Detect environment using the static methods (test-patchable)
         if cls._is_hpc_environment():
             # HPC: Large memory, shared filesystem
             return cls(
@@ -111,12 +131,7 @@ class CacheConfig:
     @staticmethod
     def _is_gpu_environment() -> bool:
         """Detect GPU environment."""
-        try:
-            import torch
-
-            return torch.cuda.is_available() and torch.cuda.device_count() > 0
-        except ImportError:
-            return False
+        return CacheConfig._detect_gpu()
 
 
 class CacheManager:

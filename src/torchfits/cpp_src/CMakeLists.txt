@@ -13,6 +13,16 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # Using only -O3 (avoid -funroll-loops as it may conflict with manual SIMD unrolling)
     add_compile_options(-O3)
+    # Disable semantic interposition so the compiler can inline internal calls
+    # and skip PLT lookups — standard optimization for Python C extensions.
+    # (PyTorch itself uses this flag.)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        add_compile_options(-fno-semantic-interposition)
+        # Hide all symbols by default — reduces symbol table size, enables
+        # more aggressive inlining, and avoids accidental symbol clashes
+        # with other extensions in the same process.
+        add_compile_options(-fvisibility=hidden)
+    endif()
 endif()
 
 # Enable IPO/LTO when available (portable opt-in)
@@ -22,6 +32,35 @@ if(IPO_SUPPORTED)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 else()
     message(STATUS "IPO/LTO not supported: ${IPO_ERROR}")
+endif()
+
+# ---------------------------------------------------------------------------
+# Profile-Guided Optimization (PGO) — opt-in via CMake option.
+# Two-step build:
+#   1. cmake -DTORCHFITS_PGO=generate ... && make  (run representative workload)
+#   2. cmake -DTORCHFITS_PGO=use ...    && make  (rebuild with profile data)
+# ---------------------------------------------------------------------------
+set(TORCHFITS_PGO "off" CACHE STRING "PGO mode: off, generate, or use")
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    if(TORCHFITS_PGO STREQUAL "generate")
+        add_compile_options(-fprofile-generate)
+        message(STATUS "PGO: generating profile data")
+    elseif(TORCHFITS_PGO STREQUAL "use")
+        add_compile_options(-fprofile-use -fprofile-correction)
+        message(STATUS "PGO: using profile data")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Finite-math-only — opt-in via CMake option.
+# Assumes no NaN/Inf, enabling more aggressive vectorization and FMA fusion.
+# UNSAFE for code that relies on NaN sentinel semantics (e.g., FITS null values).
+# Only enable for benchmarks or when you know your codepath is NaN-free.
+# ---------------------------------------------------------------------------
+option(TORCHFITS_FINITE_MATH_ONLY "Assume no NaN/Inf (UNSAFE with null sentinels)" OFF)
+if(TORCHFITS_FINITE_MATH_ONLY AND NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    add_compile_options(-ffinite-math-only)
+    message(STATUS "WARNING: -ffinite-math-only enabled — NaN sentinel codepaths will break")
 endif()
 
 # Enable SIMD optimizations globally (propagates to cfitsio)

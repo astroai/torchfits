@@ -30,7 +30,7 @@ jobs:
       - name: Ruff format
         run: ruff format --check .
       - name: Mypy type check
-        run: mypy src/ --ignore-missing-imports --no-error-unused-ignore || echo "mypy warnings (non-blocking)"
+        run: mypy src/ --ignore-missing-imports
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})

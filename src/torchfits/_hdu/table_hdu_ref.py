@@ -38,7 +38,7 @@ class TableHDURef:
         self.header = header or Header()
         self._source_path = source_path
         self._source_hdu = source_hdu
-        self._columns = tuple(columns) if columns else None
+        self._columns: Optional[tuple[str, ...]] = tuple(columns) if columns else None
         self._row_slice = row_slice
         self._all_columns_cache: tuple[str, ...] | None = None
 
@@ -108,7 +108,9 @@ class TableHDURef:
 
         return build_table_schema_dict(
             self.header,
-            selected_columns=self._columns,
+            selected_columns=(
+                list(self._columns) if self._columns is not None else None
+            ),
         )
 
     def select(self, cols: List[str]) -> "TableHDURef":
@@ -129,7 +131,7 @@ class TableHDURef:
             header=self.header,
             source_path=self._source_path,
             source_hdu=self._source_hdu,
-            columns=self._columns,
+            columns=list(self._columns) if self._columns is not None else None,
             row_slice=slice(0, n),
         )
 
@@ -176,7 +178,7 @@ class TableHDURef:
 
         path, hdu = self._require_source()
         if columns is None:
-            columns = self._columns
+            columns = list(self._columns) if self._columns is not None else None
         if row_slice is None:
             row_slice = self._row_slice
         start_row, num_rows = self._normalize_row_slice(row_slice)
@@ -240,17 +242,9 @@ class TableHDURef:
             raise TypeError(
                 f"Column '{name}' is not a uint8 (rows,width) encoded string column"
             )
-        import numpy as np
+        from .._string_decode import decode_byte_tensor
 
-        arr = value.detach().cpu().numpy()
-        width = arr.shape[1]
-        if width == 0:
-            return [""] * arr.shape[0]
-        byte_view = arr.view(f"S{width}").ravel()
-        decoded = np.char.decode(byte_view, encoding=encoding, errors="ignore")
-        if strip:
-            decoded = np.char.rstrip(decoded, " \x00")
-        return decoded.tolist()
+        return decode_byte_tensor(value, encoding=encoding, strip=strip)
 
     def get_vla_column(self, name: str) -> List[Tensor]:
         value = self[name]

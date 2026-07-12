@@ -18,6 +18,7 @@ _NAMESPACES: dict[str, str] = {
     "cpp": "torchfits.cpp",
     "transforms": "torchfits.transforms",
     "data": "torchfits.data",
+    "where": "torchfits.where",
 }
 
 _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
@@ -106,6 +107,7 @@ __all__ = tuple(
         "to_pandas",
         "to_arrow",
         "to_polars",
+        "where",
         "SpectralBinning",
         "ContinuumRemoval",
         "BandMath",
@@ -200,6 +202,7 @@ if TYPE_CHECKING:
         cache as cache,
         transforms as transforms,
         data as data,
+        where as where,
     )
     from .hdu import Card as Card
     from .hdu import HDUList as HDUList

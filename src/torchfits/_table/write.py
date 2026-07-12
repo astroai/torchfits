@@ -65,6 +65,7 @@ def write(
         raise ValueError("table_type must be 'binary' or 'ascii'")
     if schema is not None and not isinstance(schema, dict):
         raise TypeError("schema must be a dictionary when provided")
+    hdr: dict[str, Any] | None = None
     if extname is not None:
         hdr = dict(header or {})
         hdr["EXTNAME"] = str(extname)
@@ -95,7 +96,8 @@ def write(
         _invalidate_path_caches(path)
         return
 
-    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)
+    # TODO(1.0): widen io.write() header param to Header | dict[str, Any] | None
+    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)  # type: ignore[arg-type]
 
 
 def _header_cards_to_mapping(header_cards: Any) -> dict[str, Any]:

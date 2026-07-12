@@ -338,7 +338,7 @@ def read_fallback_table(
         cache_stats["cache_size"] = len(file_cache)
 
     if device != "cpu":
-        new_data = {}
+        new_data: dict[str, Any] = {}
         for key, value in table_data.items():
             if isinstance(value, torch.Tensor):
                 new_data[key] = value.to(device)

@@ -37,7 +37,7 @@ predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
 | Row slice | `torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=N)` |
 | Stream chunks | `torchfits.stream_table(path, chunk_rows=10000)` |
 | Filter + project (`where=`) | `torchfits.table.read(..., where=...)` or `torchfits.table.scan(...)` |
-| Arrow / Polars / DuckDB | `torchfits.table.to_polars_lazy(...)`, `torchfits.table.to_duckdb(...)` |
+| Arrow / Polars / DuckDB | `torchfits.table.read_polars(...)`, `scan_polars(...)`, `to_polars_lazy(...)`, `to_duckdb(...)` |
 
 ### ML training
 
@@ -147,6 +147,8 @@ with torchfits.open("mef.fits") as hdul:
 - `TensorHDU`: image HDU with lazy `.data` and `.header`.
 - `TableHDU`: in-memory table HDU.
 - `TableHDURef`: lazy file-backed table handle.
+- `DataView`, `TableDataAccessor`, and `TensorFrame`: stable table/HDU
+  interchange helpers for downstream packages.
 - `Header`: dict-like FITS header preserving FITS card semantics.
 
 ## Table Module
@@ -174,13 +176,29 @@ torchfits.table.drop_columns(path, columns, hdu=1)
 Interop:
 
 ```python
-torchfits.table.to_polars_lazy(path, hdu=1, decode_bytes=True)
+torchfits.table.read_polars(path, hdu=1)          # one-call FITS → Polars (metadata preserved)
+torchfits.table.scan_polars(path, hdu=1)          # streaming FITS → Polars (yields pl.DataFrame batches)
+torchfits.table.to_polars_lazy(path, hdu=1)       # materializes eagerly, wraps as LazyFrame
 torchfits.table.to_duckdb(path, hdu=1, relation_name="tbl", connection=con)
 torchfits.table.duckdb_query(path, sql, hdu=1)
 torchfits.table.scanner(path, hdu=1, columns=None, where=None)
 torchfits.to_arrow(table_dict, decode_bytes=True, vla_policy="list")
 torchfits.to_pandas(table_dict, decode_bytes=True, vla_policy="object")
 ```
+
+**Polars ergonomics:**
+
+- `read_polars()` — one-call FITS-to-Polars convenience. Returns a `FITSPolarsFrame`
+  (a lightweight wrapper around `pl.DataFrame` that preserves FITS column metadata —
+  TFORM, TUNIT, TDIM, TNULL, TSCAL, TZERO — and delegates `__getattr__`, `__getitem__`,
+  `__len__` to the wrapped DataFrame).
+- `scan_polars()` — genuine streaming path: yields `pl.DataFrame` batches without
+  materializing the entire table.  Unlike `to_polars_lazy()`, no full Arrow table is built.
+- `to_polars()` and `to_polars_lazy()` accept `rechunk=False` (default) to skip
+  Polars' unnecessary chunk concatenation when the Arrow data is already single-chunk.
+  Pass `rechunk=True` explicitly to restore the old behavior.
+- `to_polars_lazy()` **materializes eagerly** then wraps as `LazyFrame`.  For true
+  streaming, use `scan_polars()` instead.
 
 Advanced table utilities (optional dependencies may apply):
 
@@ -190,6 +208,12 @@ torchfits.table.scan_torch(path, hdu=1, batch_size=10000, device="cpu")
 torchfits.table.dataset(path, hdu=1, decode_bytes=True)
 torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
 ```
+
+Downstream workflow packages may use `torchfits.table.clear_cache()` for
+deterministic cleanup. The table path-selection helpers
+`can_use_mmap_row_path_for_full_read`, `can_use_torch_table_path_for_full_read`,
+and `column_name_index_map` are public, read-only decision helpers; cache
+storage objects themselves are intentionally not part of the contract.
 
 ## Predicate Pushdown
 
@@ -205,6 +229,24 @@ torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20 AND DEC > 0")
 torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20", backend="auto")
 ```
 
+### Predicate helpers
+
+Applications that need to inspect or evaluate a predicate outside a table
+read may use the stable `torchfits.where` module. The parser and evaluator
+share the same AST and operator semantics as `table.read`:
+
+```python
+from torchfits.where import evaluate_where, parse_where_expression
+
+ast = parse_where_expression("MAG_G < 20 AND DEC IS NOT NULL")
+mask = evaluate_where(ast, {"MAG_G": magnitudes, "DEC": declinations})
+```
+
+`parse_where_literal`, `tokenize_where_expression`, `normalize_where_syntax`,
+and `where_columns_from_ast` are also public for adapters that need to inspect
+the parsed expression. Internal `_where` implementation names are not part
+of the public contract.
+
 ### Table read backends
 
 `torchfits.table.read` and `scan` accept `backend=`:
@@ -215,7 +257,7 @@ torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20", backend="auto")
 | `"cpp"` | C++ row/table reads as torch tensors, converted to Arrow at the boundary |
 | `"torch"` | `torchfits.stream_table` chunked path |
 
-`"cpp_numpy"` is accepted with a `DeprecationWarning` (alias for `"cpp"`).
+The legacy `"cpp_numpy"` alias was removed in 0.8.0 — use `"cpp"`.
 
 Public constant: `torchfits.table.TABLE_BACKENDS`.
 

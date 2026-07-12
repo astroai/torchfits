@@ -49,7 +49,7 @@ def _unsigned_image_storage_for_fits_write(
     """
     tensor = _host_tensor_for_fits_write(tensor)
     if tensor.dtype == torch.uint16:
-        raw = (tensor.to(torch.int32) - 32768).to(torch.int16)
+        raw: Tensor = (tensor.to(torch.int32) - 32768).to(torch.int16)
         return raw, {"BSCALE": 1.0, "BZERO": 32768.0}
     if tensor.dtype == torch.uint32:
         raw = (tensor.to(torch.int64) - 2147483648).to(torch.int32)
@@ -92,7 +92,7 @@ def _write_header_cards_if_supported(
 def write(
     path: str,
     data: Any,
-    header: Header = None,
+    header: Optional[Header] = None,
     overwrite: bool = False,
     compress: Union[bool, str] = False,
 ) -> None:
@@ -169,14 +169,14 @@ def write(
             return
 
         if isinstance(data, HDUList):
-            _write_hdus_uncompressed(path, list(getattr(data, "_hdus", [])), overwrite)
+            _write_hdus_uncompressed(path, list(getattr(data, "_hdus", [])), overwrite)  # type: ignore[arg-type]
             return
 
         if isinstance(data, dict) and "data" not in data:
             data, table_schema, _ = _prepare_unsigned_table_data_for_write(data)
             if _can_use_cpp_table_writer(data):
                 data = _normalize_cpp_table_data(data)
-                header_obj = Header(header) if header else Header()
+                header_obj: Header = Header(header) if header else Header()
                 cpp.write_fits_table(
                     path,
                     data,
@@ -202,14 +202,14 @@ def write(
                     if "data" in item:
                         payload = item["data"]
                         if isinstance(payload, Tensor):
-                            merged = dict(item)
+                            item_merged = dict(item)
                             hdu_dict = _image_hdu_dict_for_fits_write(
-                                payload, merged.get("header")
+                                payload, item_merged.get("header")
                             )
-                            merged["data"] = hdu_dict["data"]
+                            item_merged["data"] = hdu_dict["data"]
                             if "header" in hdu_dict:
-                                merged["header"] = hdu_dict["header"]
-                            hdus_to_write.append(merged)
+                                item_merged["header"] = hdu_dict["header"]
+                            hdus_to_write.append(item_merged)
                         else:
                             hdus_to_write.append(item)
                 elif isinstance(item, Tensor):
@@ -402,10 +402,10 @@ def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float]
 
     if isinstance(value, np.ndarray):
         if value.dtype == np.uint16:
-            raw = (value.astype(np.int32, copy=False) - 32768).astype(np.int16)
+            raw = (value.astype(np.int32, copy=False) - 32768).astype(np.int16)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "I", 32768.0
         if value.dtype == np.uint32:
-            raw = (value.astype(np.int64, copy=False) - 2147483648).astype(np.int32)
+            raw = (value.astype(np.int64, copy=False) - 2147483648).astype(np.int32)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "J", 2147483648.0
         return None
 
@@ -698,7 +698,7 @@ def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> Non
             self._schema = schema
 
     payload: List[Any] = []
-    for idx, hdu in enumerate(hdus):
+    for idx, hdu in enumerate(hdus):  # noqa: B007
         if isinstance(hdu, TableHDURef):
             hdu = hdu.materialize(device="cpu")
 
@@ -717,11 +717,11 @@ def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> Non
             raw_data = dict(getattr(hdu, "_raw_data", {}))
             raw_data, schema, _ = _prepare_unsigned_table_data_for_write(raw_data)
             scale_cards = _table_schema_scale_header_cards(schema)
-            header = _merge_fits_write_header(
+            tbl_header = _merge_fits_write_header(
                 _sanitize_table_header_for_write(hdu.header), scale_cards
             )
             raw_data = _normalize_cpp_table_data(raw_data)
-            payload.append(_TableWriteProxy(raw_data, header, schema))
+            payload.append(_TableWriteProxy(raw_data, tbl_header, schema))
             continue
 
         if not isinstance(hdu, TensorHDU):
@@ -761,8 +761,8 @@ def _write_hdus_with_optional_compression(
             self.header = header
             self._schema = schema
 
-    payload = []
-    for idx, hdu in enumerate(hdus):
+    payload: list[Any] = []
+    for idx, hdu in enumerate(hdus):  # noqa: B007
         if isinstance(hdu, TableHDURef):
             hdu = hdu.materialize(device="cpu")
 
@@ -781,11 +781,11 @@ def _write_hdus_with_optional_compression(
             raw_data = dict(getattr(hdu, "_raw_data", {}))
             raw_data, schema, _ = _prepare_unsigned_table_data_for_write(raw_data)
             scale_cards = _table_schema_scale_header_cards(schema)
-            header = _merge_fits_write_header(
+            tbl_header = _merge_fits_write_header(
                 _sanitize_table_header_for_write(hdu.header), scale_cards
             )
             raw_data = _normalize_cpp_table_data(raw_data)
-            payload.append(_TableWriteProxy(raw_data, header, schema))
+            payload.append(_TableWriteProxy(raw_data, tbl_header, schema))
             continue
 
         if not isinstance(hdu, TensorHDU):
@@ -810,10 +810,10 @@ def _write_hdus_with_optional_compression(
         hdu_dict = _image_hdu_dict_for_fits_write(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
-        header = getattr(hdu, "header", None)
-        if header:
+        hdr = getattr(hdu, "header", None)
+        if hdr:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(
-                hdu_dict.get("header", header)
+                hdu_dict.get("header", hdr)
             )
         payload.append(hdu_dict)
 
@@ -835,7 +835,10 @@ def insert_hdu(
     if isinstance(data, TableHDU) or isinstance(data, TensorHDU):
         new_hdu = data
         if header is not None:
-            new_hdu.header = Header(header)
+            if isinstance(new_hdu, TensorHDU):
+                new_hdu._header = Header(header)
+            else:
+                new_hdu.header = Header(header)  # type: ignore[misc]
     elif isinstance(data, dict) and "data" not in data:
         new_hdu = TableHDU(data, header=Header(header or {}))
     elif isinstance(data, Tensor):
@@ -864,7 +867,10 @@ def replace_hdu(
     if isinstance(data, TableHDU) or isinstance(data, TensorHDU):
         new_hdu = data
         if header is not None:
-            new_hdu.header = Header(header)
+            if isinstance(new_hdu, TensorHDU):
+                new_hdu._header = Header(header)
+            else:
+                new_hdu.header = Header(header)  # type: ignore[misc]
     elif isinstance(data, dict) and "data" not in data:
         new_hdu = TableHDU(data, header=Header(header or {}))
     elif isinstance(data, Tensor):
@@ -877,14 +883,14 @@ def replace_hdu(
     if isinstance(hdu, int):
         if hdu < 0 or hdu >= len(hdus):
             raise IndexError(f"hdu index {hdu} out of range for {len(hdus)} HDUs")
-        target = hdu
+        target: int = hdu
     elif isinstance(hdu, str):
-        target = None
+        target = -1
         for idx, item in enumerate(hdus):
             if item.header.get("EXTNAME") == hdu:
                 target = idx
                 break
-        if target is None:
+        if target < 0:
             raise KeyError(f"HDU '{hdu}' not found")
     else:
         raise TypeError("hdu must be an int index or EXTNAME string")
@@ -916,14 +922,14 @@ def delete_hdu(
     if isinstance(hdu, int):
         if hdu < 0 or hdu >= len(hdus):
             raise IndexError(f"hdu index {hdu} out of range for {len(hdus)} HDUs")
-        target = hdu
+        target: int = hdu
     elif isinstance(hdu, str):
-        target = None
+        target = -1
         for idx, item in enumerate(hdus):
             if item.header.get("EXTNAME") == hdu:
                 target = idx
                 break
-        if target is None:
+        if target < 0:
             raise KeyError(f"HDU '{hdu}' not found")
     else:
         raise TypeError("hdu must be an int index or EXTNAME string")

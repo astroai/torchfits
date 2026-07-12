@@ -58,6 +58,42 @@ choices, not work items to be closed:
 - Consider additional CFITSIO-backed capabilities only when they can be exposed
   through a small PyTorch-native API and covered by tests.
 
+## AstroAI 1.0 integration commitments
+
+These items are the torchfits portion of the wider AstroAI refactor. They keep
+the repository focused on FITS interchange while making the boundary reliable
+for downstream sky packages and survey applications.
+
+### Public downstream boundary
+
+- Freeze the documented `torchfits.data`, `torchfits.hdu`, `torchfits.table`,
+  `torchfits.where`, and root I/O contracts used by downstream consumers.
+- Require downstream integration tests to import only public torchfits names;
+  no consumer may import `torchfits._*` modules.
+- Keep legacy dataset migration explicit: `FITSDataset` and
+  `IterableFITSDataset` remain removed from the root namespace; use the typed
+  classes under `torchfits.data`.
+- Publish a compatibility matrix covering supported Python, PyTorch, Arrow,
+  and downstream package versions before the 1.0 release candidate.
+
+### Deterministic survey I/O
+
+- Add reproducible local-scratch and network-mounted-storage fixtures for
+  images, compressed HDUs, tables, checksums, and cache cleanup.
+- Preserve row order, null/mask meaning, units, dtype, and header metadata at
+  every tensor/Arrow/table-batch boundary.
+- Keep storage behavior observable with bounded-memory and deterministic
+  cleanup tests; performance claims require replayable benchmark inputs.
+
+### Release evidence
+
+- Run the release gate from a clean install, not only an editable checkout,
+  across the supported Python/platform matrix.
+- Require the downstream integration smoke, public API inventory,
+  migration guide, parity matrix, and benchmark snapshot before `1.0.0rc1`.
+- Do not promote an AstroAI application result as a torchfits release claim;
+  scientific acceptance remains owned by the application repository.
+
 ## 0.6.0 — maintainable core + ML-native FITS pipelines
 
 **Vision:** 0.5.0 proved torchfits can beat astropy/fitsio on FITS I/O. 0.6.0 makes that
@@ -213,7 +249,7 @@ deprecation cycle.
 
 | Dimension | Exit criterion | Status |
 |---|---|---|
-| **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*` | ✅ 0.7.0 — legacy `FITSDataset` removed |
+| **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*`, and downstream boundary modules | 🟡 0.8.0 implementation; 1.0 public-boundary freeze pending |
 | **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — `exhaustive_cuda_0.7.0_20260711_055635`: 11 deficits, all ≤1.17× (CPU `predicate_filter` + marginal CUDA int8) |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
@@ -222,6 +258,8 @@ deprecation cycle.
 | **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3626 rows, 11 deficits in published snapshot (`exhaustive_cuda_0.7.0_20260711_055635`) |
 | **GPU I/O** | E1–E3 verified on CANFAR staging (`astroai/base:latest`) | 0.8.0 target |
 | **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
+| **Downstream integration** | Public-only consumer contract and compatibility matrix | 🟡 Focused contract exists; clean-install matrix pending |
+| **Storage evidence** | Scratch/network fixtures, deterministic cleanup, replayable benchmarks | 🟡 Core coverage exists; network/replay expansion pending |
 
 ### 1.0 exit checklist
 
@@ -234,6 +272,8 @@ deprecation cycle.
 - [x] `release-gate` expanded + CI
 - [x] Public API freeze review (`docs/reviews/release-api-freeze-0.7.0.md`)
 - [x] Breaking-change migration guide (`migration_datasets.md`)
+- [ ] Downstream public-boundary and compatibility matrix
+- [ ] Scratch/network deterministic I/O fixtures and replay bundle
 - [ ] Changelog + `1.0.0rc1` → `1.0.0`
 
 ### Legacy note — 0.5.0 quick wins *(done)*

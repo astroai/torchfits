@@ -35,7 +35,7 @@ See ``examples/example_transforms.py`` for a full walkthrough.
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import torch
 import torch.linalg
@@ -118,6 +118,19 @@ def _quantile(x: torch.Tensor, q: float, dim: Tuple[int, ...]) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 
+def _upcast_for_precision(x: torch.Tensor) -> torch.Tensor:
+    """Upcast to float64 for numerical stability, skipping if already float64.
+
+    For float16/bfloat16, use float32 (sufficient precision, avoids
+    unnecessary 4× memory doubling from float16→float64).
+    """
+    if x.dtype == torch.float64:
+        return x
+    if x.dtype in (torch.float16, torch.bfloat16):
+        return x.float()
+    return x.double()
+
+
 def safe_arcsinh(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     """Compute ``arcsinh(scale * x)`` using float64 internally.
 
@@ -125,7 +138,7 @@ def safe_arcsinh(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     astronomical images (LSST / SDSS convention).
     """
     orig_dtype = x.dtype
-    out = torch.arcsinh(x.double() * scale)
+    out = torch.arcsinh(_upcast_for_precision(x) * scale)
     return out.to(orig_dtype)
 
 
@@ -135,7 +148,7 @@ def safe_log(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
     Uses float64 internally for precision.
     """
     orig_dtype = x.dtype
-    out = torch.log(torch.clamp_min(x.double(), eps))
+    out = torch.log(torch.clamp_min(_upcast_for_precision(x), eps))
     return out.to(orig_dtype)
 
 
@@ -197,13 +210,13 @@ class FITSTransform:
     Calling an instance directly delegates to :meth:`forward`.
     """
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Any) -> Any:
         raise NotImplementedError
 
-    def inverse(self, x: torch.Tensor) -> torch.Tensor:
+    def inverse(self, x: Any) -> Any:
         raise NotImplementedError
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: Any) -> Any:
         return self.forward(x)
 
 
@@ -265,7 +278,9 @@ class ArcsinhStretch(FITSTransform):
         return safe_arcsinh(x, self.a).div_(self._norm)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.sinh(x.double() * self._norm).div_(self.a).to(x.dtype)
+        return (
+            torch.sinh(_upcast_for_precision(x) * self._norm).div_(self.a).to(x.dtype)
+        )
 
     def __repr__(self) -> str:
         return f"ArcsinhStretch(a={self.a})"
@@ -303,7 +318,7 @@ class LogStretch(FITSTransform):
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
-        val = torch.pow(10.0, x.double() * self._norm).sub_(1.0)
+        val = torch.pow(10.0, _upcast_for_precision(x) * self._norm).sub_(1.0)
         return val.div_(self.a).to(orig_dtype)
 
     def __repr__(self) -> str:
@@ -561,36 +576,58 @@ class FITSHeaderScale(FITSTransform):
 def _fit_poly_continuum(
     x: torch.Tensor, order: int = 3, n_sigma: float = 2.0, max_iter: int = 3
 ) -> torch.Tensor:
-    """Fit a low-order polynomial continuum via iterative sigma-clipping."""
+    """Fit a low-order polynomial continuum via iterative sigma-clipping.
+
+    Uses batched normal equations (``torch.linalg.solve`` on the whole
+    batch at once) instead of a per-spectrum ``torch.linalg.lstsq`` loop,
+    reducing the Python-loop overhead from O(n) lstsq calls to a single
+    batched solve.
+    """
     n, length = x.shape
     t = torch.linspace(-1.0, 1.0, length, device=x.device, dtype=x.dtype)
     A = torch.stack([t**k for k in range(order + 1)], dim=1)  # [length, order+1]
+    ridge = 1e-6 * torch.eye(order + 1, device=x.device, dtype=x.dtype)
 
     mask = torch.ones(n, length, dtype=torch.bool, device=x.device)
     for _ in range(max_iter):
-        coeffs = torch.zeros(n, order + 1, device=x.device, dtype=x.dtype)
-        for i in range(n):
-            mi = mask[i]
-            if mi.sum() <= order:
-                mi = torch.ones(length, dtype=torch.bool, device=x.device)
-            Am = A[mi]
-            ym = x[i][mi]
-            try:
-                coeffs[i] = torch.linalg.lstsq(Am, ym.unsqueeze(1)).solution.squeeze(1)
-            except RuntimeError:
-                # Fallback: use all points (singular / underdetermined)
-                coeffs[i] = torch.linalg.lstsq(A, x[i].unsqueeze(1)).solution.squeeze(1)
+        # Ensure each spectrum has enough unmasked points; reset
+        # masks that are too sparse before the batched solve.
+        counts = mask.sum(dim=1)  # [n]
+        too_few = counts <= order
+        if too_few.any():
+            mask = mask.clone()
+            mask[too_few] = True
+
+        # Batched normal equations: solve (A^T W A) c = A^T W y
+        # where W = diag(mask) for each spectrum.  A is shared across
+        # all spectra, so we broadcast and use bmm.
+        A_exp = A.unsqueeze(0)  # [1, length, order+1]
+        mask_f = mask.unsqueeze(2).to(x.dtype)  # [n, length, 1]
+        A_masked = A_exp * mask_f  # [n, length, order+1]
+        AtA = torch.bmm(A_masked.transpose(1, 2), A_masked) + ridge
+        Aty = torch.bmm(A_masked.transpose(1, 2), x.unsqueeze(2))  # [n, order+1, 1]
+        try:
+            coeffs = torch.linalg.solve(AtA, Aty).squeeze(2)  # [n, order+1]
+        except RuntimeError:
+            # Fallback for singular matrices (rare with ridge)
+            coeffs = torch.zeros(n, order + 1, device=x.device, dtype=x.dtype)
+            for i in range(n):
+                try:
+                    coeffs[i] = torch.linalg.solve(AtA[i], Aty[i]).squeeze(1)
+                except RuntimeError:
+                    pass  # Leave zeros
 
         continuum = (A @ coeffs.T).T  # [n, length]
         residuals = x - continuum
         # Compute std only on currently-unmasked pixels (masked outliers
         # would inflate the std and prevent convergence).
-        masked_res = torch.where(mask, residuals, torch.zeros_like(residuals))
-        count = mask.float().sum(dim=1, keepdim=True)
-        mean_res = masked_res.sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
-        var = torch.where(
-            mask, (residuals - mean_res) ** 2, torch.zeros_like(residuals)
-        ).sum(dim=1, keepdim=True) / torch.clamp_min(count, 1.0)
+        count = mask_f.sum(dim=1)  # [n, 1]
+        mean_res = (residuals * mask_f.squeeze(2)).sum(
+            dim=1, keepdim=True
+        ) / torch.clamp_min(count, 1.0)
+        var = ((residuals - mean_res) ** 2 * mask_f.squeeze(2)).sum(
+            dim=1, keepdim=True
+        ) / torch.clamp_min(count, 1.0)
         std = torch.sqrt(torch.clamp_min(var, 0.0))
         new_mask = residuals.abs() < n_sigma * torch.clamp_min(std, 1e-9)
         if torch.equal(new_mask, mask):
@@ -940,13 +977,11 @@ class PhaseFold(FITSTransform):
         # Clamp out-of-range values
         bin_idx = torch.clamp(bin_idx, 0, self.n_bins - 1)
 
-        # Scatter sum into bins
+        # Scatter sum into bins — vectorized via scatter_add_ + bincount
         folded = torch.zeros(n_samples, self.n_bins, device=x.device, dtype=x.dtype)
-        counts = torch.zeros(self.n_bins, device=x.device, dtype=x.dtype)
-        for b in range(self.n_bins):
-            mask = bin_idx == b
-            folded[:, b] = x_2d[:, mask].sum(dim=1)
-            counts[b] = mask.sum()
+        bin_idx_exp = bin_idx.unsqueeze(0).expand(n_samples, -1)
+        folded.scatter_add_(1, bin_idx_exp, x_2d)
+        counts = torch.bincount(bin_idx, minlength=self.n_bins).to(x.dtype)
 
         # Normalise by counts (mean per bin)
         folded = folded / torch.clamp_min(counts.unsqueeze(0), 1.0)
@@ -1615,20 +1650,66 @@ class UpperEnvelopeContinuum(FITSTransform):
             # A point is a local max if it equals the window maximum
             is_local_max = x_flat == windows.max(dim=-1).values  # [N, L]
 
-            continuum = torch.zeros_like(x_flat)
-            for i in range(n_spectra):
-                max_mask = is_local_max[i]
-                if max_mask.sum() < 2:
-                    # Fallback: use overall max as flat continuum
-                    continuum[i] = x_flat[i].max()
-                    continue
-                max_idx = torch.where(max_mask)[0]
-                # Linear interpolation between local maxima
-                continuum[i] = _linear_interp_1d(
-                    x_flat[i : i + 1],
-                    max_idx.float(),
-                    torch.arange(length, device=x.device, dtype=x.dtype),
-                ).squeeze(0)
+            # Vectorized upper envelope via cummax-based nearest local max lookup.
+            # For each position, find the nearest local max to the left and right,
+            # then linearly interpolate between their values.
+            positions = torch.arange(length, device=x.device, dtype=x.dtype)
+            pos_exp = positions.unsqueeze(0).expand(n_spectra, -1)  # [N, L]
+
+            # Nearest local max to the left: forward-fill local max positions.
+            # Set non-local-max positions to -inf, then cummax gives the running
+            # maximum position (i.e., nearest local max to the left).
+            lm_positions = torch.where(
+                is_local_max, pos_exp, torch.full_like(pos_exp, float("-inf"))
+            )
+            left_max_pos, _ = torch.cummax(lm_positions, dim=1)  # [N, L]
+
+            # Nearest local max to the right: reverse, cummax, reverse back.
+            rev_pos = length - 1 - pos_exp
+            rev_lm = torch.where(
+                is_local_max.flip(1),
+                rev_pos.flip(1),
+                torch.full_like(rev_pos.flip(1), float("-inf")),
+            )
+            rev_cummax, _ = torch.cummax(rev_lm, dim=1)
+            right_max_pos = (length - 1) - rev_cummax.flip(1)  # [N, L]
+
+            # Clean up inf/-inf: where no left max exists, use right; vice versa.
+            left_max_pos = torch.where(
+                torch.isinf(left_max_pos), right_max_pos, left_max_pos
+            )
+            right_max_pos = torch.where(
+                torch.isinf(right_max_pos), left_max_pos, right_max_pos
+            )
+            # If both were inf (no local maxima at all), clamp to 0.
+            left_max_pos = torch.where(
+                torch.isinf(left_max_pos), torch.zeros_like(left_max_pos), left_max_pos
+            )
+            right_max_pos = torch.where(
+                torch.isinf(right_max_pos),
+                torch.zeros_like(right_max_pos),
+                right_max_pos,
+            )
+
+            # Gather values at nearest left/right local max positions.
+            left_idx = left_max_pos.long().clamp(0, length - 1)
+            right_idx = right_max_pos.long().clamp(0, length - 1)
+            left_vals = torch.gather(x_flat, 1, left_idx)  # [N, L]
+            right_vals = torch.gather(x_flat, 1, right_idx)  # [N, L]
+
+            # Linear interpolation between left and right local max values.
+            denom = torch.clamp_min(right_max_pos - left_max_pos, 1e-30)
+            frac = (pos_exp - left_max_pos) / denom
+            continuum_vec = left_vals + (right_vals - left_vals) * frac
+
+            # Fallback for spectra with < 2 local maxima: use global max.
+            has_enough = is_local_max.sum(dim=1) >= 2  # [N]
+            max_vals = x_flat.max(dim=1, keepdim=True).values  # [N, 1]
+            continuum = torch.where(
+                has_enough.unsqueeze(1),
+                continuum_vec,
+                max_vals.expand(-1, length),
+            )
 
             # Optional Gaussian smoothing
             if self.smooth > 0:
@@ -1818,39 +1899,154 @@ class WaveletDecompose(FITSTransform):
         return f"WaveletDecompose(levels={self.levels}, dim={self.dim})"
 
 
-def _build_d2_matrix(n: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    """Build the n×n second-difference penalty matrix D^T D.
+def _build_d2_diagonals(
+    n: int, device: torch.device, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build the 3 upper diagonals of the symmetric pentadiagonal D^T D matrix.
 
-    D is the (n-2)×n second-difference operator with rows
-    [0, ..., 1, -2, 1, ..., 0].  D^T D is the n×n pentadiagonal
-    matrix used in the Whittaker smoother / AsLS penalty term.
+    D is the (n-2)×n second-difference operator.  D^T D is n×n pentadiagonal.
+    This returns only the 3 non-zero upper diagonals (the matrix is symmetric),
+    reducing storage from O(n²) to O(n) and enabling O(n) banded Cholesky.
+
+    Returns
+    -------
+    d0 : Tensor, shape [n]
+        Main diagonal.
+    d1 : Tensor, shape [n-1]
+        First super-diagonal (offset +1).
+    d2 : Tensor, shape [n-2]
+        Second super-diagonal (offset +2).
     """
-    D2 = torch.zeros(n, n, device=device, dtype=dtype)
     if n < 4:
-        return D2
-    # Main diagonal: 6 (two contributions from overlapping D rows)
-    D2[0, 0] = 1.0
-    D2[0, 1] = -2.0
-    D2[0, 2] = 1.0
-    D2[1, 0] = -2.0
-    D2[1, 1] = 5.0
-    D2[1, 2] = -4.0
-    D2[1, 3] = 1.0
-    for i in range(2, n - 2):
-        D2[i, i - 2] = 1.0
-        D2[i, i - 1] = -4.0
-        D2[i, i] = 6.0
-        D2[i, i + 1] = -4.0
-        D2[i, i + 2] = 1.0
-    if n >= 3:
-        D2[n - 2, n - 4] = 1.0
-        D2[n - 2, n - 3] = -4.0
-        D2[n - 2, n - 2] = 5.0
-        D2[n - 2, n - 1] = -2.0
-        D2[n - 1, n - 3] = 1.0
-        D2[n - 1, n - 2] = -2.0
-        D2[n - 1, n - 1] = 1.0
-    return D2
+        # For n < 4 the second-difference penalty vanishes (D has < 2 rows).
+        d0 = torch.zeros(n, device=device, dtype=dtype)
+        d1 = torch.zeros(max(n - 1, 0), device=device, dtype=dtype)
+        d2 = torch.zeros(max(n - 2, 0), device=device, dtype=dtype)
+        return d0, d1, d2
+
+    d0 = torch.full((n,), 6.0, device=device, dtype=dtype)
+    d0[0] = 1.0
+    d0[1] = 5.0
+    d0[n - 2] = 5.0
+    d0[n - 1] = 1.0
+
+    d1 = torch.full((n - 1,), -4.0, device=device, dtype=dtype)
+    d1[0] = -2.0
+    d1[n - 2] = -2.0
+
+    d2 = torch.ones(n - 2, device=device, dtype=dtype)
+    return d0, d1, d2
+
+
+def _banded_chol_solve_batched(
+    w: torch.Tensor,
+    lam_d0: torch.Tensor,
+    lam_d1: torch.Tensor,
+    lam_d2: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    """Solve ``(diag(W) + λD^T D) z = b`` via banded Cholesky factorization.
+
+    The matrix is symmetric positive-definite pentadiagonal (bandwidth 2).
+    The Cholesky factorization and triangular solves are O(n) per spectrum —
+    a dramatic improvement over the O(n³) dense ``torch.linalg.solve``.
+
+    All inputs must be in the same dtype (typically float64 for stability).
+    The loop over spectrum positions is sequential, but each step is
+    vectorized over the batch (spectra) dimension.
+
+    Parameters
+    ----------
+    w : Tensor, shape [N, L]
+        Diagonal weights (the W matrix as a 2D tensor).
+    lam_d0 : Tensor, shape [L]
+        λ * main diagonal of D^T D (precomputed, shared across iterations).
+    lam_d1 : Tensor, shape [L-1]
+        λ * first super-diagonal of D^T D.
+    lam_d2 : Tensor, shape [L-2]
+        λ * second super-diagonal of D^T D.
+    b : Tensor, shape [N, L]
+        Right-hand side.
+
+    Returns
+    -------
+    z : Tensor, shape [N, L]
+        Solution.
+    """
+    n_batch, length = w.shape
+
+    # --- Build A's diagonals: A = diag(W) + λD² ---
+    # Only a0 changes per iteration; a1, a2 are fixed (= lam_d1, lam_d2).
+    a0 = w + lam_d0.unsqueeze(0)  # [N, L]
+    a1 = lam_d1.unsqueeze(0).expand(n_batch, -1)  # [N, L-1]
+    a2 = lam_d2.unsqueeze(0).expand(n_batch, -1)  # [N, L-2]
+
+    # --- Cholesky factorization: A = L L^T, L has bandwidth 2 ---
+    l0 = torch.empty_like(a0)  # [N, L]   main diagonal of L
+    l1 = torch.empty_like(a1)  # [N, L-1] first sub-diagonal of L
+    l2 = torch.empty_like(a2)  # [N, L-2] second sub-diagonal of L
+
+    # j = 0
+    l0[:, 0] = torch.sqrt(torch.clamp_min(a0[:, 0], 1e-30))
+    l1[:, 0] = a1[:, 0] / l0[:, 0]
+    if length > 2:
+        l2[:, 0] = a2[:, 0] / l0[:, 0]
+
+    # j = 1
+    if length > 1:
+        l0[:, 1] = torch.sqrt(torch.clamp_min(a0[:, 1] - l1[:, 0] ** 2, 1e-30))
+        l1[:, 1] = (a1[:, 1] - l2[:, 0] * l1[:, 0]) / l0[:, 1]
+        if length > 3:
+            l2[:, 1] = a2[:, 1] / l0[:, 1]
+
+    # j = 2 .. n-3 (interior points)
+    for j in range(2, length - 2):
+        l0[:, j] = torch.sqrt(
+            torch.clamp_min(a0[:, j] - l1[:, j - 1] ** 2 - l2[:, j - 2] ** 2, 1e-30)
+        )
+        l1[:, j] = (a1[:, j] - l2[:, j - 1] * l1[:, j - 1]) / l0[:, j]
+        l2[:, j] = a2[:, j] / l0[:, j]
+
+    # j = n-2
+    if length > 2:
+        l0[:, length - 2] = torch.sqrt(
+            torch.clamp_min(
+                a0[:, length - 2] - l1[:, length - 3] ** 2 - l2[:, length - 4] ** 2,
+                1e-30,
+            )
+        )
+        l1[:, length - 2] = (
+            a1[:, length - 2] - l2[:, length - 3] * l1[:, length - 3]
+        ) / l0[:, length - 2]
+
+    # j = n-1
+    l0[:, length - 1] = torch.sqrt(
+        torch.clamp_min(
+            a0[:, length - 1] - l1[:, length - 2] ** 2 - l2[:, length - 3] ** 2, 1e-30
+        )
+    )
+
+    # --- Forward substitution: L y = b ---
+    y = torch.empty_like(b)
+    y[:, 0] = b[:, 0] / l0[:, 0]
+    if length > 1:
+        y[:, 1] = (b[:, 1] - l1[:, 0] * y[:, 0]) / l0[:, 1]
+    for j in range(2, length):
+        y[:, j] = (
+            b[:, j] - l1[:, j - 1] * y[:, j - 1] - l2[:, j - 2] * y[:, j - 2]
+        ) / l0[:, j]
+
+    # --- Backward substitution: L^T z = y ---
+    z = torch.empty_like(y)
+    z[:, length - 1] = y[:, length - 1] / l0[:, length - 1]
+    if length > 1:
+        z[:, length - 2] = (
+            y[:, length - 2] - l1[:, length - 2] * z[:, length - 1]
+        ) / l0[:, length - 2]
+    for j in range(length - 3, -1, -1):
+        z[:, j] = (y[:, j] - l1[:, j] * z[:, j + 1] - l2[:, j] * z[:, j + 2]) / l0[:, j]
+
+    return z
 
 
 class AsymmetricLeastSquares(FITSTransform):
@@ -1921,29 +2117,41 @@ class AsymmetricLeastSquares(FITSTransform):
         n_spectra, length = x_flat.shape
 
         with torch.no_grad():
-            # Build penalty matrix once in float64 for numerical stability
-            # when λ is large (shared across all spectra of same length).
-            D2 = _build_d2_matrix(length, x.device, torch.float64)
+            if length < 4:
+                # D² penalty vanishes for n < 4: (W + 0) z = W y  →  z = y.
+                baseline = x_flat.clone()
+            else:
+                # Precompute λ * D² diagonals once (shared across all
+                # spectra and all reweighting iterations).
+                d0, d1, d2 = _build_d2_diagonals(length, x.device, torch.float64)
+                lam_d0 = self.lam * d0
+                lam_d1 = self.lam * d1
+                lam_d2 = self.lam * d2
 
-            baseline = torch.zeros_like(x_flat)
-            for i in range(n_spectra):
-                y = x_flat[i]
+                # Work in float64 for numerical stability with large λ.
+                y = x_flat.double()  # [N, L]
                 z = y.clone()  # initial estimate = signal
+
                 for _ in range(self.max_iter):
                     # Weights: p for positive residuals (above baseline),
                     # 1-p for negative residuals (below baseline)
-                    w = torch.where(y > z, self.p, 1.0 - self.p)
-                    W = torch.diag(w)
-                    # Solve (W + λ D^T D) z_new = W y in float64.
-                    A = W.double() + self.lam * D2
-                    b = W.double() @ y.double()
-                    z_new = torch.linalg.solve(A, b).to(x.dtype)
-                    # Check convergence
+                    w = torch.where(y > z, self.p, 1.0 - self.p)  # [N, L]
+
+                    # RHS: W y (element-wise since W is diagonal)
+                    b = w * y  # [N, L]
+
+                    # Solve (W + λD²) z_new = W y via batched banded Cholesky.
+                    # O(N*L) per iteration vs O(N*L³) for the dense solve.
+                    z_new = _banded_chol_solve_batched(w, lam_d0, lam_d1, lam_d2, b)
+
+                    # Check convergence across all spectra (same semantics
+                    # as the old per-spectrum allclose with atol=1e-6, rtol=1e-5).
                     if torch.allclose(z_new, z, atol=1e-6):
                         z = z_new
                         break
                     z = z_new
-                baseline[i] = z
+
+                baseline = z.to(x.dtype)
 
         baseline = baseline.reshape(x_moved.shape).movedim(-1, dim)
         self._residuals = x - baseline
@@ -2093,7 +2301,13 @@ class SigmaClip(FITSTransform):
         self._last_mask: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Iteratively sigma-clip outliers and fill with mean or median."""
+        """Iteratively sigma-clip outliers and fill with mean or median.
+
+        Optimised to minimise per-iteration allocations: uses a single
+        pre-allocated masked-copy buffer and in-place arithmetic instead
+        of allocating fresh ``torch.zeros_like`` / ``torch.where`` tensors
+        each iteration.
+        """
         ndim = x.ndim
         dims: tuple[int, ...] = ()
         if len(self.dim) > 0:
@@ -2101,39 +2315,44 @@ class SigmaClip(FITSTransform):
 
         with torch.no_grad():
             mask = torch.ones_like(x, dtype=torch.bool)
+            # Pre-allocate working buffers for masked values and zeros
+            # to avoid per-iteration torch.zeros_like allocations.
+            masked_buf = x.clone()
+            zeros_buf = torch.zeros_like(x)
             for _ in range(self.max_iter):
-                # Count and sum of unmasked pixels per group
-                good_x = torch.where(mask, x, torch.zeros_like(x))
-                good_cnt = mask.float()
+                # Zero out masked-out positions, sum, and count.
+                torch.where(mask, x, zeros_buf, out=masked_buf)
+                mask_f = mask.to(x.dtype)
 
                 if len(dims) > 0:
-                    x_flat = _flatten_dims(good_x, dims)
-                    c_flat = _flatten_dims(good_cnt, dims)
+                    x_flat = _flatten_dims(masked_buf, dims)
+                    c_flat = _flatten_dims(mask_f, dims)
                     total_sum = x_flat.sum(dim=-1, keepdim=True)
                     total_cnt = c_flat.sum(dim=-1, keepdim=True)
                     mean_v = total_sum / torch.clamp_min(total_cnt, 1.0)
-                    # Broadcast mean back to original shape
                     mean_v_full = _unflatten_result(mean_v, x.shape, dims)
-                    diff_sq = torch.where(
-                        mask, (x - mean_v_full) ** 2, torch.zeros_like(x)
-                    )
-                    d_flat = _flatten_dims(diff_sq, dims)
+                    # Compute variance using the same buffer
+                    masked_buf.sub_(mean_v_full).pow_(2)
+                    torch.where(mask, masked_buf, zeros_buf, out=masked_buf)
+                    d_flat = _flatten_dims(masked_buf, dims)
                     var = d_flat.sum(dim=-1, keepdim=True) / torch.clamp_min(
                         total_cnt, 1.0
                     )
                     std_v_full = _unflatten_result(
                         torch.sqrt(torch.clamp_min(var, 0.0)), x.shape, dims
                     )
+                    # Restore buffer for next iteration
+                    masked_buf.copy_(x)
                 else:
-                    cnt = good_cnt.sum()
-                    mean_v_full = torch.full_like(
-                        x, good_x.sum() / max(cnt.item(), 1.0)
-                    )
-                    diff_sq = torch.where(
-                        mask, (x - mean_v_full) ** 2, torch.zeros_like(x)
-                    )
-                    var = diff_sq.sum() / max(cnt.item(), 1.0)
-                    std_v_full = torch.full_like(x, math.sqrt(max(var.item(), 0.0)))
+                    cnt = mask_f.sum()
+                    mean_scalar = (masked_buf.sum() / max(cnt.item(), 1.0)).item()
+                    mean_v_full = x.new_full(x.shape, mean_scalar)
+                    masked_buf.sub_(mean_scalar).pow_(2)
+                    torch.where(mask, masked_buf, zeros_buf, out=masked_buf)
+                    var = masked_buf.sum() / max(cnt.item(), 1.0)
+                    std_scalar = math.sqrt(max(var.item(), 0.0))
+                    std_v_full = x.new_full(x.shape, std_scalar)
+                    masked_buf.copy_(x)
 
                 new_mask = (x >= mean_v_full - self.n_sigma * std_v_full) & (
                     x <= mean_v_full + self.n_sigma * std_v_full
@@ -2146,11 +2365,11 @@ class SigmaClip(FITSTransform):
 
             # Fill clipped values with per-group mean or median
             if self.fill == "mean":
-                good_x_final = torch.where(mask, x, torch.zeros_like(x))
-                good_c_final = mask.float()
+                torch.where(mask, x, zeros_buf, out=masked_buf)
+                mask_f = mask.to(x.dtype)
                 if len(dims) > 0:
-                    xf = _flatten_dims(good_x_final, dims)
-                    cf = _flatten_dims(good_c_final, dims)
+                    xf = _flatten_dims(masked_buf, dims)
+                    cf = _flatten_dims(mask_f, dims)
                     fill_val = _unflatten_result(
                         xf.sum(dim=-1, keepdim=True)
                         / torch.clamp_min(cf.sum(dim=-1, keepdim=True), 1.0),
@@ -2158,8 +2377,8 @@ class SigmaClip(FITSTransform):
                         dims,
                     )
                 else:
-                    cnt = good_c_final.sum()
-                    fill_val = good_x_final.sum() / max(cnt.item(), 1.0)
+                    cnt = mask_f.sum()
+                    fill_val = masked_buf.sum() / max(cnt.item(), 1.0)
             else:
                 # Median fill: use the existing _median helper
                 fill_val = _median(

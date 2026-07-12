@@ -14,8 +14,10 @@ ImageMeta = tuple[int, int, tuple[int, ...], float, float, bool]
 
 
 def _parse_image_meta(header_data: Mapping[str, Any]) -> ImageMeta:
-    bitpix = int(header_data.get("BITPIX", 0))
-    naxis = int(header_data.get("NAXIS", 0))
+    bitpix_raw = header_data.get("BITPIX", 0)
+    naxis_raw = header_data.get("NAXIS", 0)
+    bitpix = int(bitpix_raw) if bitpix_raw is not None else 0
+    naxis = int(naxis_raw) if naxis_raw is not None else 0
     try:
         bscale = float(header_data.get("BSCALE", 1.0))
     except Exception:
@@ -29,7 +31,7 @@ def _parse_image_meta(header_data: Mapping[str, Any]) -> ImageMeta:
         key = f"NAXIS{i}"
         if key in header_data:
             try:
-                dims.append(int(header_data.get(key)))
+                dims.append(int(header_data.get(key, 0)))
             except Exception:
                 break
     zimage = header_data.get("ZIMAGE", False)
@@ -48,7 +50,9 @@ def get_image_meta(
 ) -> ImageMeta | None:
     """Fetch and cache compact FITS image metadata for policy decisions."""
     if cpp_module is None:
-        import torchfits._C as cpp_module
+        import torchfits._C as _cpp
+
+        cpp_module = _cpp
 
     sig = (path, hdu)
     cached = image_meta_cache.get(sig)
@@ -56,7 +60,7 @@ def get_image_meta(
         return cached
 
     try:
-        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))
+        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))  # type: ignore[union-attr]
     except Exception:
         meta = None
 

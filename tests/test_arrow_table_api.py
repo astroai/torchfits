@@ -864,6 +864,246 @@ def test_to_polars_lazy_expression():
         os.unlink(path)
 
 
+def test_read_polars_basic():
+    """read_polars should return a FITSPolarsFrame with data and metadata."""
+    pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(path, hdu=1, decode_bytes=True)
+        assert isinstance(result, torchfits.table.FITSPolarsFrame)
+        assert isinstance(result.frame, pl.DataFrame)
+        assert result.height == 3
+        assert result["ID"].to_list() == [1, 2, 3]
+        # FITS metadata should be preserved
+        assert "fits_hdu" in result.table_meta
+        assert result.table_meta["fits_hdu"] == "1"
+        # Column-level metadata (TFORM) should be present
+        assert "RA" in result.field_meta
+        assert "fits_tform" in result.field_meta["RA"]
+    finally:
+        os.unlink(path)
+
+
+def test_read_polars_with_where():
+    """read_polars should support where= filtering."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(
+            path, hdu=1, columns=["ID"], where="ID >= 2", decode_bytes=True
+        )
+        assert result.height == 2
+        assert result["ID"].to_list() == [2, 3]
+    finally:
+        os.unlink(path)
+
+
+def test_read_polars_with_columns():
+    """read_polars should support column projection."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(
+            path, hdu=1, columns=["ID", "RA"], decode_bytes=True
+        )
+        assert set(result.columns) == {"ID", "RA"}
+        # Metadata should only include selected columns
+        assert "ID" in result.field_meta
+        assert "NAME" not in result.field_meta
+    finally:
+        os.unlink(path)
+
+
+def test_read_polars_attribute_delegation():
+    """FITSPolarsFrame should delegate attribute access to the wrapped DataFrame."""
+    pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(path, hdu=1, decode_bytes=True)
+        # Delegated attributes
+        assert result.height == 3
+        assert result.width == 3
+        assert result.columns == ["RA", "ID", "NAME"]
+        # Delegated methods
+        filtered = result.filter(pl.col("ID") >= 2)
+        assert filtered.height == 2
+        # __len__ delegation
+        assert len(result) == 3
+    finally:
+        os.unlink(path)
+
+
+def test_read_polars_rechunk_true():
+    """read_polars with rechunk=True should still work correctly."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(
+            path, hdu=1, decode_bytes=True, rechunk=True
+        )
+        assert result.height == 3
+        assert result["ID"].to_list() == [1, 2, 3]
+        # Metadata should still be preserved with rechunk=True
+        assert "fits_hdu" in result.table_meta
+    finally:
+        os.unlink(path)
+
+
+def test_read_polars_import_error(monkeypatch):
+    """read_polars should raise ImportError when polars is not installed."""
+    pytest.importorskip("pyarrow")
+    import sys
+
+    path = _make_table_file()
+    try:
+        monkeypatch.setitem(sys.modules, "polars", None)
+        with pytest.raises(ImportError, match="polars is required"):
+            torchfits.table.read_polars(path, hdu=1)
+    finally:
+        os.unlink(path)
+
+
+def test_fitspolarsframe_repr():
+    """FITSPolarsFrame repr should include metadata when present."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        result = torchfits.table.read_polars(path, hdu=1, decode_bytes=True)
+        repr_str = repr(result)
+        assert "FITSPolarsFrame" in repr_str
+        assert "field_meta" in repr_str
+        assert "table_meta" in repr_str
+    finally:
+        os.unlink(path)
+
+
+def test_to_polars_rechunk_false_default():
+    """to_polars should pass rechunk=False to pl.from_arrow by default."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        df = torchfits.table.to_polars(path, hdu=1, decode_bytes=True)
+        assert df.height == 3
+        assert df["ID"].to_list() == [1, 2, 3]
+        # With rechunk=False the chunked array keeps original chunk structure.
+        # Verify data correctness regardless of chunking.
+        assert df["RA"].to_list() == [10.1, 10.2, 10.3]
+    finally:
+        os.unlink(path)
+
+
+def test_to_polars_stream_rechunk_false():
+    """to_polars with stream=True should also use rechunk=False."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        frames = list(
+            torchfits.table.to_polars(
+                path, hdu=1, batch_size=2, decode_bytes=True, stream=True
+            )
+        )
+        assert len(frames) == 2
+        all_ids = []
+        for frame in frames:
+            all_ids.extend(frame["ID"].to_list())
+        assert all_ids == [1, 2, 3]
+    finally:
+        os.unlink(path)
+
+
+def test_to_polars_rechunk_true_explicit():
+    """to_polars with rechunk=True should still work correctly."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        df = torchfits.table.to_polars(path, hdu=1, decode_bytes=True, rechunk=True)
+        assert df.height == 3
+        assert df["ID"].to_list() == [1, 2, 3]
+    finally:
+        os.unlink(path)
+
+
+def test_scan_polars_basic():
+    """scan_polars should yield pl.DataFrame batches without full materialization."""
+    pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        frames = list(
+            torchfits.table.scan_polars(path, hdu=1, batch_size=2, decode_bytes=True)
+        )
+        assert len(frames) == 2
+        assert isinstance(frames[0], pl.DataFrame)
+        assert frames[0].height == 2
+        assert frames[1].height == 1
+
+        all_ids: list[int] = []
+        for frame in frames:
+            all_ids.extend(frame["ID"].to_list())
+        assert all_ids == [1, 2, 3]
+    finally:
+        os.unlink(path)
+
+
+def test_scan_polars_with_where():
+    """scan_polars should support where= filtering."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        frames = list(
+            torchfits.table.scan_polars(
+                path, hdu=1, batch_size=10, where="ID >= 2", decode_bytes=True
+            )
+        )
+        all_ids: list[int] = []
+        for frame in frames:
+            all_ids.extend(frame["ID"].to_list())
+        assert all_ids == [2, 3]
+    finally:
+        os.unlink(path)
+
+
+def test_scan_polars_with_columns():
+    """scan_polars should support column projection."""
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    path = _make_table_file()
+    try:
+        frames = list(
+            torchfits.table.scan_polars(
+                path, hdu=1, batch_size=10, columns=["ID"], decode_bytes=True
+            )
+        )
+        assert frames
+        assert set(frames[0].columns) == {"ID"}
+    finally:
+        os.unlink(path)
+
+
+def test_scan_polars_import_error(monkeypatch):
+    """scan_polars should raise ImportError when polars is not installed."""
+    pytest.importorskip("pyarrow")
+    import sys
+
+    path = _make_table_file()
+    try:
+        monkeypatch.setitem(sys.modules, "polars", None)
+        with pytest.raises(ImportError, match="polars is required"):
+            next(torchfits.table.scan_polars(path, hdu=1))
+    finally:
+        os.unlink(path)
+
+
 def test_duckdb_query_on_fits_table():
     pytest.importorskip("pyarrow")
     pytest.importorskip("duckdb")

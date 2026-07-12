@@ -500,7 +500,7 @@ class FitsTableIterableDataset(IterableDataset):
                 columns=self.columns,
                 where=self.where,
                 batch_size=self.batch_size,
-                mmap=self.mmap,
+                mmap=bool(self.mmap),  # type: ignore[arg-type]
             )
         ):
             if batch_idx % num_workers != worker_id:

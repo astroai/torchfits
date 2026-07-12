@@ -17,14 +17,14 @@ _CACHE_STATS_DEFAULT = {
 }
 
 cache_stats: dict[str, int] = dict(_CACHE_STATS_DEFAULT)
-file_cache = OrderedDict()
-file_handle_cache = OrderedDict()
-file_handle_sig_cache = OrderedDict()
-image_meta_cache = OrderedDict()
-hdu_type_cache = OrderedDict()
-cold_nommap_cache = OrderedDict()
-auto_mmap_cache = OrderedDict()
-auto_hdu_cache = OrderedDict()
+file_cache: OrderedDict[Any, Any] = OrderedDict()
+file_handle_cache: OrderedDict[str, Any] = OrderedDict()
+file_handle_sig_cache: OrderedDict[str, tuple[int, int, int] | None] = OrderedDict()
+image_meta_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
+hdu_type_cache: OrderedDict[tuple[str, int], str | None] = OrderedDict()
+cold_nommap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
+auto_mmap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
+auto_hdu_cache: OrderedDict[Any, Any] = OrderedDict()
 
 IO_CACHE_SUBSYSTEMS = MappingProxyType(
     {
@@ -424,7 +424,9 @@ def clear_file_cache(
 
     try:
         if cpp_module is None:
-            import torchfits._C as cpp_module
+            import torchfits._C as _cpp
+
+            cpp_module = _cpp
 
         cpp_module.clear_file_cache()
         if hasattr(cpp_module, "clear_shared_read_meta_cache"):

@@ -262,7 +262,11 @@ def unsigned_column_dtypes_from_header(
             continue
         if col.tscal != 1.0:
             continue
-        target = _UNSIGNED_TZERO_TARGETS.get((code, col.tzero))
+        target = (
+            _UNSIGNED_TZERO_TARGETS.get((code, col.tzero))
+            if col.tzero is not None
+            else None
+        )
         if target is not None:
             out[col.name] = target
     return out

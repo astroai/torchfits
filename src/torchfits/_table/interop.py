@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 # -- helpers shared with table.py ------------------------------------------------
@@ -73,13 +74,16 @@ def write_parquet(
         else:
             data = read(data, **kwargs)
 
+    # Normalize to a concrete iterable after the str → reader/read path.
+    data_iter: Any = data
+
     if not stream:
-        if hasattr(data, "read_next_batch"):
-            table = pa.Table.from_batches(list(data))
-        elif hasattr(data, "to_batches"):
-            table = data
+        if hasattr(data_iter, "read_next_batch"):
+            table = pa.Table.from_batches(list(data_iter))
+        elif hasattr(data_iter, "to_batches"):
+            table = data_iter
         else:
-            table = pa.Table.from_batches(list(data))
+            table = pa.Table.from_batches(list(data_iter))
         pq.write_table(
             table, where, compression=compression, row_group_size=row_group_size
         )
@@ -87,10 +91,10 @@ def write_parquet(
 
     writer = None
     try:
-        if hasattr(data, "read_next_batch"):
+        if hasattr(data_iter, "read_next_batch"):
             while True:
                 try:
-                    batch = data.read_next_batch()
+                    batch = data_iter.read_next_batch()
                 except StopIteration:
                     break
                 if writer is None:
@@ -99,7 +103,7 @@ def write_parquet(
                     )
                 writer.write_batch(batch, row_group_size=row_group_size)
         else:
-            for batch in data:
+            for batch in data_iter:
                 if writer is None:
                     writer = pq.ParquetWriter(
                         where, batch.schema, compression=compression
@@ -153,6 +157,8 @@ def to_pandas(
 def to_polars(
     data: str | Any | Iterable[Any],
     stream: bool = False,
+    *,
+    rechunk: bool = False,
     **kwargs,
 ):
     """
@@ -161,6 +167,9 @@ def to_polars(
     Args:
         data: FITS file path, pyarrow.Table, or iterable of pyarrow.RecordBatch.
         stream: When True, return an iterator of polars DataFrames.
+        rechunk: When True (default False), force Polars to concatenate chunks
+            into a single contiguous block.  Leaving this False avoids an
+            unnecessary copy when the Arrow data is already a single chunk.
     """
     try:
         import polars as pl
@@ -170,21 +179,36 @@ def to_polars(
     if isinstance(data, str):
         io_kwargs, _ = _split_io_kwargs(kwargs)
         if stream:
-            return (pl.from_arrow(batch) for batch in scan(data, **io_kwargs))
-        return pl.from_arrow(read(data, **io_kwargs))
+            return (
+                pl.from_arrow(batch, rechunk=rechunk)
+                for batch in scan(data, **io_kwargs)
+            )
+        return pl.from_arrow(read(data, **io_kwargs), rechunk=rechunk)
 
     if stream:
-        return (pl.from_arrow(batch) for batch in data)
+        return (pl.from_arrow(batch, rechunk=rechunk) for batch in data)
 
-    return pl.from_arrow(data)
+    return pl.from_arrow(data, rechunk=rechunk)  # type: ignore[union-attr]
 
 
 def to_polars_lazy(
     data: str | Any | Iterable[Any],
+    *,
+    rechunk: bool = False,
     **kwargs,
 ):
     """
     Convert table data into a Polars LazyFrame for complex expressions.
+
+    .. note::
+        This function **materializes** the entire Arrow table eagerly before
+        wrapping it in a LazyFrame.  It is *not* a lazy FITS I/O path.
+        For genuine streaming, use :func:`scan_polars` which yields batches
+        without materializing the full table.
+
+    Args:
+        data: FITS file path, pyarrow.Table, or iterable of pyarrow.RecordBatch.
+        rechunk: When True (default False), force Polars to concatenate chunks.
     """
     try:
         import polars as pl
@@ -192,7 +216,146 @@ def to_polars_lazy(
         raise ImportError("polars is required for to_polars_lazy conversion") from exc
 
     table = _materialize_arrow_table(data, **kwargs)
-    return pl.from_arrow(table).lazy()
+    return pl.from_arrow(table, rechunk=rechunk).lazy()  # type: ignore[union-attr]
+
+
+def scan_polars(
+    path: str,
+    *,
+    batch_size: int = 65536,
+    rechunk: bool = False,
+    **kwargs,
+) -> Iterator[Any]:
+    """Stream FITS table data as Polars DataFrames, one batch at a time.
+
+    Unlike :func:`to_polars_lazy`, this is a genuine streaming path: it yields
+    one ``pl.DataFrame`` per internal batch without materializing the entire
+    table.  Use this for large FITS tables that do not fit comfortably in
+    memory or when you want to process chunks incrementally.
+
+    Args:
+        path: FITS file path.
+        batch_size: Maximum number of rows per yielded DataFrame.
+        rechunk: When True (default False), force Polars to concatenate chunks.
+        **kwargs: Additional keyword arguments passed to :func:`scan`
+            (e.g. ``hdu``, ``columns``, ``where``, ``mmap``, ``decode_bytes``).
+
+    Yields:
+        polars.DataFrame: One batch of rows as a Polars DataFrame.
+    """
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise ImportError("polars is required for scan_polars conversion") from exc
+
+    kwargs.setdefault("batch_size", batch_size)
+    for batch in scan(path, **kwargs):
+        yield pl.from_arrow(batch, rechunk=rechunk)
+
+
+@dataclass
+class FITSPolarsFrame:
+    """A Polars DataFrame paired with FITS column/schema metadata.
+
+    Returned by :func:`read_polars` so that FITS-specific metadata (TFORM,
+    TUNIT, TDIM, TNULL, TSCAL, TZERO, HDU identity) is preserved alongside
+    the Polars DataFrame.  The metadata is stored as a plain dict mapping
+    column names to dicts of FITS keyword-value strings, plus a top-level
+    ``table_meta`` dict for HDU-level information.
+
+    Attribute access (``.height``, ``.columns``, ``.filter()``, etc.) delegates
+    to the wrapped ``frame`` so the wrapper can be used like a regular
+    ``pl.DataFrame`` in most contexts.
+    """
+
+    frame: Any
+    field_meta: dict[str, dict[str, str]] = field(default_factory=dict)
+    table_meta: dict[str, str] = field(default_factory=dict)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.frame, name)
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+    def __getitem__(self, key: Any) -> Any:
+        return self.frame[key]
+
+    def __repr__(self) -> str:
+        meta_str = f", field_meta={self.field_meta!r}" if self.field_meta else ""
+        if self.table_meta:
+            meta_str += f", table_meta={self.table_meta!r}"
+        return f"FITSPolarsFrame(frame={self.frame!r}{meta_str})"
+
+
+def read_polars(
+    path: str,
+    *,
+    rechunk: bool = False,
+    **kwargs,
+) -> FITSPolarsFrame:
+    """Read a FITS table directly as a Polars DataFrame with FITS metadata.
+
+    This is a convenience wrapper that calls :func:`read` with
+    ``include_fits_metadata=True``, extracts the FITS field and table metadata
+    from the Arrow schema, converts the table to Polars via
+    ``pl.from_arrow(rechunk=rechunk)``, and returns an
+    :class:`FITSPolarsFrame` containing both the DataFrame and the metadata.
+
+    Unlike :func:`to_polars`, this preserves FITS metadata (TFORM, TUNIT,
+    TDIM, TNULL, TSCAL, TZERO, HDU identity) that would otherwise be lost
+    when Polars consumes the Arrow table.
+
+    Args:
+        path: FITS file path.
+        rechunk: When True (default False), force Polars to concatenate chunks.
+        **kwargs: Additional I/O keyword arguments passed to :func:`read`
+            (e.g. ``hdu``, ``columns``, ``where``, ``mmap``, ``decode_bytes``,
+            ``encoding``, ``strip``, ``apply_fits_nulls``, ``backend``).
+
+    Returns:
+        FITSPolarsFrame: A wrapper around a ``polars.DataFrame`` with
+        ``.field_meta`` and ``.table_meta`` attributes.  The wrapper delegates
+        attribute access to the DataFrame, so it can be used like a regular
+        Polars DataFrame in most contexts.
+    """
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise ImportError("polars is required for read_polars conversion") from exc
+
+    # Force metadata inclusion so we can extract it before Polars conversion.
+    kwargs.setdefault("include_fits_metadata", True)
+    arrow_table = read(path, **kwargs)
+
+    # Extract FITS metadata from the Arrow schema before conversion.
+    field_meta: dict[str, dict[str, str]] = {}
+    table_meta: dict[str, str] = {}
+    schema = arrow_table.schema
+
+    if schema.metadata:
+        for key, value in schema.metadata.items():
+            if isinstance(key, bytes):
+                key = key.decode("utf-8")
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            table_meta[key] = value
+
+    for i in range(len(schema)):
+        pa_field = schema.field(i)
+        md = pa_field.metadata
+        if not md:
+            continue
+        entry: dict[str, str] = {}
+        for k, v in md.items():
+            ks = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+            vs = v.decode("utf-8") if isinstance(v, bytes) else str(v)
+            entry[ks] = vs
+        if entry:
+            field_meta[pa_field.name] = entry
+
+    df = pl.from_arrow(arrow_table, rechunk=rechunk)
+    return FITSPolarsFrame(frame=df, field_meta=field_meta, table_meta=table_meta)
 
 
 def to_duckdb(

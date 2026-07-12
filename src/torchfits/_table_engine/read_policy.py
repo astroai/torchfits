@@ -31,10 +31,6 @@ def should_skip_cpp_for_where(backend: str, where: str | None) -> bool:
     return backend == "auto" and where is not None
 
 
-# ponytail: internal alias; remove when no callers remain
-should_skip_cpp_numpy_for_where = should_skip_cpp_for_where
-
-
 def choose_where_read_plan(
     *,
     header: Mapping[str, Any],

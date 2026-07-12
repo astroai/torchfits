@@ -8,6 +8,8 @@ bulk C++ read_header_to_string() function, avoiding Python/C++ round trips.
 import re
 from typing import Any, Dict
 
+# Used for mypy: header values can be str, int, float, bool, complex, or None
+
 
 class FastHeaderParser:
     """
@@ -120,7 +122,7 @@ class FastHeaderParser:
                         value_str = value_comment
                         comment = None
 
-                value = None
+                value: Any = None
                 if value_str:
                     first_char = value_str[0]
                     if first_char == "'":
@@ -185,7 +187,7 @@ class FastHeaderParser:
         # Handle comment-only cards (COMMENT, HISTORY, etc.)
         if card.startswith(("COMMENT ", "HISTORY ", "CONTINUE")):
             keyword = card[:8].strip()
-            value = card[8:].strip()
+            value: Any = card[8:].strip()
             return keyword, value, None
 
         # Look for equals sign at position 8

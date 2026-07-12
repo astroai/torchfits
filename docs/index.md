@@ -26,7 +26,7 @@ print(tensor.shape, tensor.dtype)
 | Train a model (images) | `FitsImageDataset` + `make_loader` | [API → Data module](api.md#data-module), [`example_image_dataset.py`](../examples/example_image_dataset.py) |
 | Train on table rows (large file) | `FitsTableIterableDataset` | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) |
 | Train on patches / cutouts | `FitsCutoutDataset` | [Examples → PyTorch training](examples.md#pytorch-training) |
-| SQL / Polars / DuckDB on FITS | `table.to_polars_lazy`, `to_duckdb` | [`example_table_recipes.py`](../examples/example_table_recipes.py) |
+| SQL / Polars / DuckDB on FITS | `table.read_polars`, `scan_polars`, `to_polars_lazy`, `to_duckdb` | [`example_polars.py`](../examples/example_polars.py), [`example_table_recipes.py`](../examples/example_table_recipes.py) |
 | Switch from Astropy or fitsio | Side-by-side tables | [migration_astropy.md](migration_astropy.md), [migration_fitsio.md](migration_fitsio.md) |
 | Upgrading from pre-0.7 `FITSDataset` | Replacement classes | [migration_datasets.md](migration_datasets.md) |
 | See if a feature exists | Supported / partial / out of scope | [Parity matrix](parity.md) |

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable, Tuple
+from typing import Any, Callable, Tuple
 from torch import Tensor
 
 
 def read_subset(
-    get_cached_handle: Callable[[str, int], tuple[object, bool]],
+    get_cached_handle: Callable[[str, int], tuple[Any, bool]],
     path: str,
     hdu: int,
     x1: int,

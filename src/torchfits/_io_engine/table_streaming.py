@@ -173,7 +173,7 @@ def read_large_table(
                     mmap=False,
                 )
 
-            accum = {}
+            accum: dict[str, Any] = {}
             start = 1
             if hasattr(cpp, "read_fits_table_rows_from_handle"):
                 file_handle = cpp.open_fits_file(file_path, "r")
@@ -199,13 +199,13 @@ def read_large_table(
                                     accum[key] = torch.empty(
                                         out_shape, dtype=value.dtype
                                     )
-                                accum[key][start - 1 : start - 1 + value.shape[0]] = (
+                                accum[key][start - 1 : start - 1 + value.shape[0]] = (  # type: ignore[index]
                                     value
                                 )
                             elif isinstance(value, list):
-                                accum.setdefault(key, []).extend(value)
+                                accum.setdefault(key, []).extend(value)  # type: ignore[attr-defined]
                             else:
-                                accum.setdefault(key, []).append(value)
+                                accum.setdefault(key, []).append(value)  # type: ignore[attr-defined]
 
                         start += num
                 finally:
@@ -224,11 +224,11 @@ def read_large_table(
                             if key not in accum:
                                 out_shape = (total_rows,) + tuple(value.shape[1:])
                                 accum[key] = torch.empty(out_shape, dtype=value.dtype)
-                            accum[key][start - 1 : start - 1 + value.shape[0]] = value
+                            accum[key][start - 1 : start - 1 + value.shape[0]] = value  # type: ignore[index]
                         elif isinstance(value, list):
-                            accum.setdefault(key, []).extend(value)
+                            accum.setdefault(key, []).extend(value)  # type: ignore[attr-defined]
                         else:
-                            accum.setdefault(key, []).append(value)
+                            accum.setdefault(key, []).append(value)  # type: ignore[attr-defined]
 
                     start += num
 

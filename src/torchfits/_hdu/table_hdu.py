@@ -69,7 +69,7 @@ class TableHDU(TensorFrame):
     def __init__(
         self,
         tensor_dict: dict,
-        col_stats: dict = None,
+        col_stats: Optional[dict] = None,
         header: Optional[Header] = None,
         source_path: Optional[str] = None,
         source_hdu: Optional[int] = None,
@@ -248,8 +248,6 @@ class TableHDU(TensorFrame):
     def get_string_column(
         self, name: str, encoding: str = "ascii", strip: bool = True
     ) -> List[str]:
-        import numpy as np
-
         value = self._raw_data.get(name)
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -258,16 +256,10 @@ class TableHDU(TensorFrame):
         if value.dim() != 2:
             raise ValueError(f"Column '{name}' must be 2D (rows, width)")
 
-        # Vectorized fixed-width byte decode using numpy
-        arr = value.cpu().numpy()
-        width = arr.shape[1]
-        if width == 0:
-            return [""] * arr.shape[0]
-        byte_view = arr.view(f"S{width}").ravel()
-        decoded = np.char.decode(byte_view, encoding=encoding, errors="ignore")
-        if strip:
-            decoded = np.char.rstrip(decoded, " \x00")
-        return decoded.tolist()
+        # Numpy-free decode via shared helper.
+        from .._string_decode import decode_byte_tensor
+
+        return decode_byte_tensor(value, encoding=encoding, strip=strip)
 
     # ⚡ Bolt: Cache row count extraction to prevent scanning all column tensors
     # and re-evaluating shapes on every length check.
@@ -291,7 +283,7 @@ class TableHDU(TensorFrame):
                 pass
         if hasattr(self, "feat_dict") and self.feat_dict:
             first_tensor = next(iter(self.feat_dict.values()))
-            return first_tensor.shape[0] if hasattr(first_tensor, "shape") else 0
+            return int(first_tensor.shape[0]) if hasattr(first_tensor, "shape") else 0
         return 0
 
     @property
@@ -392,7 +384,7 @@ class TableHDU(TensorFrame):
         from .._table.read import _where_mask_for_table
 
         mask_chunked = _where_mask_for_table(pa_table, condition)
-        mask_arr = mask_chunked.to_numpy()
+        mask_arr = mask_chunked.to_numpy()  # type: ignore[union-attr,attr-defined]
         if mask_arr.ndim == 0:
             mask = np.full(num_rows, bool(mask_arr.item()), dtype=bool)
         else:
@@ -434,7 +426,7 @@ class TableHDU(TensorFrame):
 
     def head(self, n: int) -> "TableHDU":
         if hasattr(self, "_raw_data") and self._raw_data:
-            new_dict = {}
+            new_dict: Dict[str, Any] = {}
             for k, v in self._raw_data.items():
                 if isinstance(v, torch.Tensor) and v.dim() > 0:
                     new_dict[k] = v[:n]
@@ -666,7 +658,7 @@ class TableHDU(TensorFrame):
         if hasattr(self, "_raw_data") and self._raw_data:
             total_rows = self.num_rows
             for start in range(0, total_rows, batch_size):
-                batch = {}
+                batch: Dict[str, Any] = {}
                 for k, v in self._raw_data.items():
                     if isinstance(v, torch.Tensor):
                         batch[str(k)] = v[start : start + batch_size]
@@ -728,7 +720,6 @@ class TableHDU(TensorFrame):
 
     def to_fits(self, file_path: str, overwrite: bool = False):
         import torchfits
-        import numpy as np
 
         payload = (
             dict(self._raw_data)
@@ -742,18 +733,9 @@ class TableHDU(TensorFrame):
                 and value.dtype == torch.uint8
                 and value.dim() == 2
             ):
-                decoded: List[str] = []
-                arr = value.detach().cpu().numpy()
-                width = arr.shape[1]
-                if width == 0:
-                    decoded = [""] * arr.shape[0]
-                else:
-                    byte_view = arr.view(f"S{width}").ravel()
-                    decoded_arr = np.char.decode(
-                        byte_view, encoding="ascii", errors="ignore"
-                    )
-                    decoded = np.char.rstrip(decoded_arr, " \x00").tolist()
-                payload[name] = decoded
+                from .._string_decode import decode_byte_tensor
+
+                payload[name] = decode_byte_tensor(value, encoding="ascii", strip=True)
 
         torchfits.write(
             file_path,

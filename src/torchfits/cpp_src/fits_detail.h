@@ -224,6 +224,11 @@ inline int get_shared_raw_fd(const std::shared_ptr<SharedReadMeta>& meta, const 
 
 inline bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes) {
     if (fd == -1 || !dst_void || nbytes == 0) return false;
+    // Hint the kernel to start async page-in before the synchronous pread loop.
+    // This overlaps I/O with any preceding computation on the calling thread.
+#if defined(__linux__)
+    (void)::posix_fadvise(fd, offset, static_cast<off_t>(nbytes), POSIX_FADV_WILLNEED);
+#endif
     uint8_t* dst = static_cast<uint8_t*>(dst_void);
     size_t remaining = nbytes;
     off_t off = offset;
@@ -381,9 +386,14 @@ inline torch::Tensor read_tensor_canonical(
         size_t elem_size = 0;
         switch (bitpix) {
             case SHORT_IMG: elem_size = sizeof(uint16_t); break;
-            case LONG_IMG: elem_size = unsigned_long ? sizeof(uint32_t) : 0; break;
+            // LONG_IMG: enable for both plain int32 and unsigned_long.
+            // The unsigned offset (+2147483648u) is applied only when
+            // unsigned_long is true — see the bswap dispatch below.
+            case LONG_IMG: elem_size = sizeof(uint32_t); break;
             case LONGLONG_IMG: elem_size = sizeof(uint64_t); break;
-            case FLOAT_IMG: elem_size = 0; break;
+            // FLOAT_IMG: bswap_32 is identical to int32 — the raw bits are
+            // the same 4-byte big-endian pattern regardless of interpretation.
+            case FLOAT_IMG: elem_size = sizeof(uint32_t); break;
             case DOUBLE_IMG: elem_size = sizeof(uint64_t); break;
             default: break;
         }
@@ -424,10 +434,18 @@ inline torch::Tensor read_tensor_canonical(
                             } else if (elem_size == sizeof(uint32_t)) {
                                 const auto* src = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
                                 auto* dst = static_cast<uint32_t*>(tensor.data_ptr());
-                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                    for (int64_t i = begin; i < end; ++i)
-                                        dst[i] = internal::bswap_32(src[i]) + 2147483648u;
-                                });
+                                if (unsigned_long) {
+                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
+                                        for (int64_t i = begin; i < end; ++i)
+                                            dst[i] = internal::bswap_32(src[i]) + 2147483648u;
+                                    });
+                                } else {
+                                    // Plain int32 or float32: bswap only, no offset.
+                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
+                                        for (int64_t i = begin; i < end; ++i)
+                                            dst[i] = internal::bswap_32(src[i]);
+                                    });
+                                }
                             } else if (elem_size == sizeof(uint64_t)) {
                                 const auto* src = reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
                                 auto* dst = static_cast<uint64_t*>(tensor.data_ptr());
