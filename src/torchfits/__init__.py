@@ -149,6 +149,15 @@ def _ensure_runtime_init() -> None:
     if _RUNTIME_INITIALIZED:
         return
 
+    cache_mb = os.environ.get("TORCHFITS_CFITSIO_CACHE_MB")
+    cache_files = os.environ.get("TORCHFITS_CFITSIO_CACHE_FILES")
+    cache_limits = None
+    if cache_mb is not None or cache_files is not None:
+        cache_limits = (
+            _positive_env_int("TORCHFITS_CFITSIO_CACHE_FILES", 32),
+            _positive_env_int("TORCHFITS_CFITSIO_CACHE_MB", 256),
+        )
+
     cache = import_module("torchfits.cache")
     cache.configure_for_environment()
     # Pre-import torch so its dependency libraries (libcudart.so.12,
@@ -156,12 +165,8 @@ def _ensure_runtime_init() -> None:
     import torch  # noqa: F401
 
     cpp = import_module("torchfits._C")
-    cache_mb = os.environ.get("TORCHFITS_CFITSIO_CACHE_MB")
-    cache_files = os.environ.get("TORCHFITS_CFITSIO_CACHE_FILES")
-    if cache_mb is not None or cache_files is not None:
-        max_files = _positive_env_int("TORCHFITS_CFITSIO_CACHE_FILES", 32)
-        max_mb = _positive_env_int("TORCHFITS_CFITSIO_CACHE_MB", 256)
-        cpp.configure_cache(max_files, max_mb)
+    if cache_limits is not None:
+        cpp.configure_cache(*cache_limits)
 
     _RUNTIME_INITIALIZED = True
 
