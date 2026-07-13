@@ -89,6 +89,7 @@ the reviewed 0.8 source.
 | Focused API/HDU/release smoke | 46 passed. |
 | Multi-worker DataLoader matrix | 5 passed in 56.24 s; default macOS spawn path covered. |
 | Clean installed wheel smoke | 3 passed; imports from the wheel outside the source tree. |
+| Downstream torchsky FITS boundary | 17 passed, 1 skipped against the installed 0.8 wheel; legacy HDU `TensorFrame` alias removed downstream. |
 | `pixi run preflight-push` | Ruff, formatting, blocking mypy, and compileall pass. |
 | Version triplet | `pyproject.toml`, `pixi.toml`, and `torchfits.__version__` are 0.8.0. |
 | Full local release gate | 463 passed, 3 skipped in 78.44 s with PyTorch shared-memory process permission. |
