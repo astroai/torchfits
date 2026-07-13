@@ -69,9 +69,9 @@ from torchfits.transforms import (
 
 
 def _make_tensor(
-    shape=(4, 64, 64),
-    dtype=torch.float32,
-    kind="normal",
+    shape: tuple[int, ...] = (4, 64, 64),
+    dtype: "torch.dtype" = torch.float32,
+    kind: str = "normal",
 ) -> torch.Tensor:
     """Create a test tensor with a specific distribution."""
     if kind == "normal":
@@ -102,34 +102,34 @@ def _make_tensor(
 
 
 class TestNormalizeDims:
-    def test_positive_dims(self):
+    def test_positive_dims(self) -> None:
         assert _normalize_dims(4, (2, 3)) == (2, 3)
 
-    def test_negative_dims(self):
+    def test_negative_dims(self) -> None:
         assert _normalize_dims(4, (-2, -1)) == (2, 3)
 
-    def test_mixed_dims(self):
+    def test_mixed_dims(self) -> None:
         assert _normalize_dims(4, (0, -1)) == (0, 3)
 
-    def test_removes_duplicates(self):
+    def test_removes_duplicates(self) -> None:
         assert _normalize_dims(3, (0, 0, -1)) == (0, 2)
 
-    def test_sorted_output(self):
+    def test_sorted_output(self) -> None:
         assert _normalize_dims(5, (4, 1, 3)) == (1, 3, 4)
 
 
 class TestFlattenDims:
-    def test_contiguous_dims_at_end(self):
+    def test_contiguous_dims_at_end(self) -> None:
         x = torch.randn(2, 3, 64, 64)
         flat = _flatten_dims(x, (2, 3))
         assert flat.shape == (2, 3, 64 * 64)
 
-    def test_non_contiguous_dims(self):
+    def test_non_contiguous_dims(self) -> None:
         x = torch.randn(2, 3, 64, 64)
         flat = _flatten_dims(x, (1, 3))  # channels + width
         assert flat.shape == (2, 64, 3 * 64)
 
-    def test_single_dim(self):
+    def test_single_dim(self) -> None:
         x = torch.randn(2, 3, 64, 64)
         flat = _flatten_dims(x, (2,))
         # single dim: permute is a no-op, reshape(-1) collapses last dim
@@ -140,12 +140,12 @@ class TestFlattenDims:
         # But testing directly: it should work.
         assert flat.numel() == x.numel()
 
-    def test_all_dims(self):
+    def test_all_dims(self) -> None:
         x = torch.randn(2, 3, 4)
         flat = _flatten_dims(x, (0, 1, 2))
         assert flat.shape == (2 * 3 * 4,)
 
-    def test_preserves_values(self):
+    def test_preserves_values(self) -> None:
         x = torch.randn(2, 3, 4, 5)
         flat = _flatten_dims(x, (1, 3))
         expected = x.permute(0, 2, 1, 3).reshape(2, 4, 3 * 5)
@@ -153,7 +153,7 @@ class TestFlattenDims:
 
 
 class TestReduceKeepdim:
-    def test_single_dim_fast_path(self):
+    def test_single_dim_fast_path(self) -> None:
         x = torch.randn(4, 64, 64)
         result = _reduce_keepdim(
             x, (0,), lambda t, d, k: torch.mean(t, dim=d, keepdim=k)
@@ -161,7 +161,7 @@ class TestReduceKeepdim:
         assert result.shape == (1, 64, 64)
         assert torch.allclose(result[0], x.mean(dim=0))
 
-    def test_multi_dim_flatten_path(self):
+    def test_multi_dim_flatten_path(self) -> None:
         x = torch.randn(4, 64, 64)
         result = _reduce_keepdim(
             x, (-2, -1), lambda t, d, k: torch.mean(t, dim=d, keepdim=k)
@@ -170,41 +170,41 @@ class TestReduceKeepdim:
         for i in range(4):
             assert abs(result[i, 0, 0].item() - x[i].mean().item()) < 1e-5
 
-    def test_single_dim_keepdim(self):
+    def test_single_dim_keepdim(self) -> None:
         x = torch.randn(2, 3, 64, 64)
         result = _median(x, (0,))
         assert result.shape == (1, 3, 64, 64)
 
 
 class TestMedianAminAmaxQuantile:
-    def test_median_multi_dim(self):
+    def test_median_multi_dim(self) -> None:
         x = torch.randn(4, 64, 64)
         m = _median(x, (-2, -1))
         assert m.shape == (4, 1, 1)
 
-    def test_median_vs_torch(self):
+    def test_median_vs_torch(self) -> None:
         x = torch.tensor([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
         m = _median(x, (-2, -1))
         # torch.median returns the lower median for even element counts
         assert m[0, 0, 0].item() == 2.0  # lower median of [1,2,3,4]
         assert m[1, 0, 0].item() == 6.0  # lower median of [5,6,7,8]
 
-    def test_amin_multi_dim(self):
+    def test_amin_multi_dim(self) -> None:
         x = torch.randn(4, 64, 64)
         vmin = _amin(x, (-2, -1))
         assert vmin.shape == (4, 1, 1)
 
-    def test_amax_multi_dim(self):
+    def test_amax_multi_dim(self) -> None:
         x = torch.randn(4, 64, 64)
         vmax = _amax(x, (-2, -1))
         assert vmax.shape == (4, 1, 1)
 
-    def test_quantile_multi_dim(self):
+    def test_quantile_multi_dim(self) -> None:
         x = torch.randn(4, 64, 64)
         q = _quantile(x, 0.5, (-2, -1))
         assert q.shape == (4, 1, 1)
 
-    def test_amin_amax_non_contiguous(self):
+    def test_amin_amax_non_contiguous(self) -> None:
         x = torch.randn(2, 3, 64, 64)
         vmin = _amin(x, (1, -1))  # dims 1 and 3
         assert vmin.shape == (2, 1, 64, 1)
@@ -216,35 +216,35 @@ class TestMedianAminAmaxQuantile:
 
 
 class TestSafeMath:
-    def test_safe_arcsinh_positive(self):
+    def test_safe_arcsinh_positive(self) -> None:
         x = torch.tensor([0.1, 1.0, 10.0, 100.0])
         out = safe_arcsinh(x, scale=1.0)
         expected = torch.asinh(x)
         assert torch.allclose(out, expected, rtol=1e-6)
 
-    def test_safe_arcsinh_preserves_dtype(self):
+    def test_safe_arcsinh_preserves_dtype(self) -> None:
         x = torch.tensor([1.0, 2.0], dtype=torch.float32)
         out = safe_arcsinh(x)
         assert out.dtype == torch.float32
 
-    def test_safe_log_positive(self):
+    def test_safe_log_positive(self) -> None:
         x = torch.tensor([1.0, 10.0, 100.0])
         out = safe_log(x)
         expected = torch.log(x)
         assert torch.allclose(out, expected, rtol=1e-6)
 
-    def test_safe_log_zero_clamped(self):
+    def test_safe_log_zero_clamped(self) -> None:
         x = torch.tensor([0.0, 1.0])
         out = safe_log(x)
         assert not torch.isinf(out[0])
         assert out[0] > -50  # roughly log(1e-9) in float64
 
-    def test_safe_log_zero_finite(self):
+    def test_safe_log_zero_finite(self) -> None:
         x = torch.tensor([0.0])
         out = safe_log(x)
         assert torch.isfinite(out).all()
 
-    def test_safe_log_preserves_dtype(self):
+    def test_safe_log_preserves_dtype(self) -> None:
         x = torch.tensor([1.0, 2.0], dtype=torch.float32)
         out = safe_log(x)
         assert out.dtype == torch.float32
@@ -256,7 +256,7 @@ class TestSafeMath:
 
 
 class TestEstimateBackground:
-    def test_normal_distribution(self):
+    def test_normal_distribution(self) -> None:
         x = torch.randn(4, 64, 64) * 5 + 100
         med, std = estimate_background(x)
         assert med.shape == (4, 1, 1)
@@ -265,13 +265,13 @@ class TestEstimateBackground:
         assert abs(med.mean().item() - 100) < 3
         assert abs(std.mean().item() - 5 * 1.4826) < 3
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 64, 64) * 42.0
         med, std = estimate_background(x)
         assert torch.allclose(med, torch.tensor(42.0), atol=1e-5)
         assert torch.all(std < 1e-5)
 
-    def test_mask_excludes_pixels_from_median(self):
+    def test_mask_excludes_pixels_from_median(self) -> None:
         # 5x5 image: values 1..25, mask out the central 3x3 (values 7..19)
         x = torch.arange(1, 26, dtype=torch.float32).reshape(1, 5, 5)
         mask = torch.ones(1, 5, 5, dtype=torch.bool)
@@ -289,12 +289,12 @@ class TestEstimateBackground:
 
 
 class TestZScaleLimits:
-    def test_returns_valid_range(self):
+    def test_returns_valid_range(self) -> None:
         x = torch.randn(4, 64, 64) * 5 + 100
         z1, z2 = zscale_limits(x)
         assert torch.all(z1 < z2)
 
-    def test_constant_image_fallback(self):
+    def test_constant_image_fallback(self) -> None:
         x = torch.ones(4, 64, 64) * 42.0
         z1, z2 = zscale_limits(x)
         assert torch.all(z1 < z2)  # fallback adds 1e-6
@@ -306,19 +306,23 @@ class TestZScaleLimits:
 
 
 class TestFITSTransform:
-    def test_raises_not_implemented(self):
+    def test_raises_not_implemented(self) -> None:
         t = FITSTransform()
         with pytest.raises(NotImplementedError):
             t.forward(torch.zeros(3))
         with pytest.raises(NotImplementedError):
             t.inverse(torch.zeros(3))
 
-    def test_call_delegates(self):
+    def test_call_delegates(self) -> None:
         class Dummy(FITSTransform):
-            def forward(self, x, mask=None):
+            def forward(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x + 1
 
-            def inverse(self, x, mask=None):
+            def inverse(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x - 1
 
         d = Dummy()
@@ -327,23 +331,31 @@ class TestFITSTransform:
 
 
 class TestCompose:
-    def test_forward_chain(self):
+    def test_forward_chain(self) -> None:
         class AddOne(FITSTransform):
-            def forward(self, x, mask=None):
+            def forward(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x + 1
 
-            def inverse(self, x, mask=None):
+            def inverse(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x - 1
 
         c = Compose([AddOne(), AddOne(), AddOne()])
         assert c(torch.tensor(0.0)).item() == 3.0
 
-    def test_inverse_reverses_chain(self):
+    def test_inverse_reverses_chain(self) -> None:
         class MulTwo(FITSTransform):
-            def forward(self, x, mask=None):
+            def forward(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x * 2
 
-            def inverse(self, x, mask=None):
+            def inverse(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x / 2
 
         c = Compose([MulTwo(), MulTwo()])
@@ -353,19 +365,23 @@ class TestCompose:
         inv = c.inverse(fwd)
         assert torch.allclose(inv, x)
 
-    def test_len_and_getitem(self):
+    def test_len_and_getitem(self) -> None:
         class Id(FITSTransform):
-            def forward(self, x, mask=None):
+            def forward(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x
 
-            def inverse(self, x, mask=None):
+            def inverse(
+                self, x: "torch.Tensor", mask: "torch.Tensor | None" = None
+            ) -> "torch.Tensor":
                 return x
 
         c = Compose([Id(), Id(), Id()])
         assert len(c) == 3
         assert c[0] is c.transforms[0]
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         rep = repr(Compose([ArcsinhStretch(a=0.1)]))
         assert "Compose" in rep
         assert "ArcsinhStretch" in rep
@@ -377,7 +393,7 @@ class TestCompose:
 
 
 class TestArcsinhStretch:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = _make_tensor((3, 32, 32), kind="uniform") + 1.0
         t = ArcsinhStretch(a=1.0)
         restored = t.inverse(t.forward(x))
@@ -385,14 +401,14 @@ class TestArcsinhStretch:
         err = (x - restored).abs().max().item()
         assert err < 5e-5, f"roundtrip error {err} too large"
 
-    def test_output_in_range(self):
+    def test_output_in_range(self) -> None:
         x = torch.linspace(0, 100, 1000).reshape(10, 100)
         t = ArcsinhStretch(a=1.0)
         out = t.forward(x)
         assert out.min() >= 0
         assert torch.isfinite(out).all()
 
-    def test_different_a_values(self):
+    def test_different_a_values(self) -> None:
         x = _make_tensor((2, 16, 16), kind="uniform") + 1.0
         for a in [0.01, 0.1, 1.0, 10.0]:
             t = ArcsinhStretch(a=a)
@@ -400,7 +416,7 @@ class TestArcsinhStretch:
             err = (x - restored).abs().max().item()
             assert err < 1e-4, f"a={a}: roundtrip error {err}"
 
-    def test_preserves_dtype(self):
+    def test_preserves_dtype(self) -> None:
         x = torch.randn(4, 32, 32, dtype=torch.float32) * 10
         t = ArcsinhStretch()
         out = t.forward(x)
@@ -408,7 +424,7 @@ class TestArcsinhStretch:
         inv = t.inverse(out)
         assert inv.dtype == torch.float32
 
-    def test_negative_inputs(self):
+    def test_negative_inputs(self) -> None:
         x = torch.tensor([-10.0, -1.0, 0.0, 1.0, 10.0])
         t = ArcsinhStretch(a=1.0)
         out = t.forward(x)
@@ -417,7 +433,7 @@ class TestArcsinhStretch:
 
 
 class TestLogStretch:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = torch.linspace(1, 1000, 100)
         t = LogStretch(a=1000.0)
         restored = t.inverse(t.forward(x))
@@ -425,7 +441,7 @@ class TestLogStretch:
         err = (x - restored).abs().max().item()
         assert err < 2e-3, f"roundtrip error {err}"
 
-    def test_negative_clamped(self):
+    def test_negative_clamped(self) -> None:
         x = torch.tensor([-5.0, 0.0, 5.0])
         t = LogStretch(a=1000.0)
         out = t.forward(x)
@@ -434,7 +450,7 @@ class TestLogStretch:
         # Positive values produce a larger result
         assert out[2].item() > out[1].item()
 
-    def test_preserves_dtype(self):
+    def test_preserves_dtype(self) -> None:
         x = torch.rand(4, 32, 32, dtype=torch.float32) * 100
         t = LogStretch()
         out = t.forward(x)
@@ -442,13 +458,13 @@ class TestLogStretch:
 
 
 class TestSqrtStretch:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = torch.linspace(1, 100, 100)
         t = SqrtStretch()
         restored = t.inverse(t.forward(x))
         assert torch.allclose(restored, x, rtol=1e-5)
 
-    def test_negative_clamped(self):
+    def test_negative_clamped(self) -> None:
         x = torch.tensor([-5.0, 0.0, 5.0])
         t = SqrtStretch()
         out = t.forward(x)
@@ -463,14 +479,14 @@ class TestSqrtStretch:
 
 
 class TestZScaleNormalize:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = ZScaleNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_output_in_01_range(self):
+    def test_output_in_01_range(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = ZScaleNormalize()
         out = t.forward(x)
@@ -479,19 +495,19 @@ class TestZScaleNormalize:
         assert out.min() >= -0.5
         assert out.max() <= 1.5
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = ZScaleNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = ZScaleNormalize()
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_mask_no_mask_gives_same_result(self):
+    def test_mask_no_mask_gives_same_result(self) -> None:
         """Mask=None should produce identical result to no mask passed."""
         x = _make_tensor((4, 32, 32), kind="normal")
         t1 = ZScaleNormalize()
@@ -502,14 +518,14 @@ class TestZScaleNormalize:
 
 
 class TestRobustNormalize:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = RobustNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_near_zero_median(self):
+    def test_near_zero_median(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = RobustNormalize()
         out = t.forward(x)
@@ -517,12 +533,12 @@ class TestRobustNormalize:
         for i in range(4):
             assert abs(out[i].median().item()) < 0.1
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = RobustNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = RobustNormalize()
         out = t.forward(x)
@@ -531,14 +547,14 @@ class TestRobustNormalize:
 
 
 class TestBackgroundSubtract:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = BackgroundSubtract()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_subtracts_median(self):
+    def test_subtracts_median(self) -> None:
         x = torch.ones(4, 64, 64) * 5.0
         x[0, 0, 0] = 100.0  # outlier
         t = BackgroundSubtract()
@@ -547,14 +563,14 @@ class TestBackgroundSubtract:
         median_after = out.median().item()
         assert abs(median_after) < 0.5
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = BackgroundSubtract()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
 
 
 class TestPercentileClipNormalize:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         # PercentileClipNormalize is lossy when percentiles clip values.
         # Use 0/100 to avoid clipping (full range, exact roundtrip).
         x = _make_tensor((4, 32, 32), kind="uniform")
@@ -563,14 +579,14 @@ class TestPercentileClipNormalize:
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_output_range(self):
+    def test_output_range(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = PercentileClipNormalize(lower_pct=0, upper_pct=100)
         out = t.forward(x)
         assert out.min() >= -1e-6
         assert out.max() <= 1.0 + 1e-6
 
-    def test_clips_outliers(self):
+    def test_clips_outliers(self) -> None:
         x = torch.zeros(10, 10)
         x[0, 0] = 1e6  # extreme outlier
         t = PercentileClipNormalize(lower_pct=10, upper_pct=90)
@@ -578,19 +594,19 @@ class TestPercentileClipNormalize:
         # After clipping, the outlier should be clamped
         assert out[0, 0].item() <= 1.0
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = PercentileClipNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = PercentileClipNormalize(lower_pct=0, upper_pct=100)
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-4)
 
-    def test_per_channel(self):
+    def test_per_channel(self) -> None:
         x = torch.stack(
             [
                 torch.randn(64, 64) * 10 + 100,
@@ -607,28 +623,28 @@ class TestPercentileClipNormalize:
 
 
 class TestMinMaxNormalize:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = _make_tensor((4, 32, 32), kind="uniform")
         t = MinMaxNormalize()
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_output_range(self):
+    def test_output_range(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = MinMaxNormalize()
         out = t.forward(x)
         assert out.min() >= -1e-6
         assert out.max() <= 1.0 + 1e-6
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = MinMaxNormalize()
         out = t.forward(x)
         # Constant image normalizes to all zeros (vmin == 42, vmax ≈ 42 + 1e-6)
         assert out.abs().max() < 1e-5
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = MinMaxNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
@@ -637,7 +653,7 @@ class TestMinMaxNormalize:
 class TestMaskNanRoundtrip:
     """Verify transforms handle NaN-contaminated data correctly with masks."""
 
-    def test_nan_roundtrip_with_mask(self):
+    def test_nan_roundtrip_with_mask(self) -> None:
         """NaN pixels excluded from stats, remain NaN in output, roundtrip works."""
         x = _make_tensor((4, 32, 32), kind="normal")
         # Inject NaN at known positions
@@ -674,7 +690,7 @@ class TestMaskNanRoundtrip:
 
 
 class TestFITSHeaderScale:
-    def test_roundtrip_identity(self):
+    def test_roundtrip_identity(self) -> None:
         x = torch.tensor([1.0, 2.0, 3.0])
         t = FITSHeaderScale(bscale=2.0, bzero=10.0)
         physical = t.forward(x)
@@ -683,19 +699,19 @@ class TestFITSHeaderScale:
         restored = t.inverse(physical)
         assert torch.allclose(restored, x)
 
-    def test_from_header(self):
-        header: dict[str, float] = {"BSCALE": 0.5, "BZERO": 100.0}
+    def test_from_header(self) -> None:
+        header: dict[str, object] = {"BSCALE": 0.5, "BZERO": 100.0}
         t = FITSHeaderScale.from_header(header)
         assert t.bscale == 0.5
         assert t.bzero == 100.0
 
-    def test_from_header_defaults(self):
+    def test_from_header_defaults(self) -> None:
         header: dict[str, object] = {}
         t = FITSHeaderScale.from_header(header)
         assert t.bscale == 1.0
         assert t.bzero == 0.0
 
-    def test_identity_noop(self):
+    def test_identity_noop(self) -> None:
         x = torch.tensor([1.0, 2.0, 3.0])
         t = FITSHeaderScale(bscale=1.0, bzero=0.0)
         out = t.forward(x)
@@ -703,21 +719,21 @@ class TestFITSHeaderScale:
         inv = t.inverse(x)
         assert inv.data_ptr() == x.data_ptr()
 
-    def test_preserves_int_dtype(self):
+    def test_preserves_int_dtype(self) -> None:
         x = torch.tensor([1, 2, 3], dtype=torch.int32)
         t = FITSHeaderScale(bscale=1.0, bzero=0.0)
         out = t.forward(x)
         assert out.dtype == torch.int32
         assert out.data_ptr() == x.data_ptr()
 
-    def test_bscale_only(self):
+    def test_bscale_only(self) -> None:
         x = torch.tensor([1.0, 2.0])
         t = FITSHeaderScale(bscale=10.0, bzero=0.0)
         physical = t.forward(x)
         assert torch.allclose(physical, torch.tensor([10.0, 20.0]))
         assert torch.allclose(t.inverse(physical), x)
 
-    def test_bzero_only(self):
+    def test_bzero_only(self) -> None:
         x = torch.tensor([1.0, 2.0])
         t = FITSHeaderScale(bscale=1.0, bzero=100.0)
         physical = t.forward(x)
@@ -731,7 +747,7 @@ class TestFITSHeaderScale:
 
 
 class TestEdgeCases:
-    def test_single_pixel_image(self):
+    def test_single_pixel_image(self) -> None:
         x = torch.tensor([[42.0]])
         transforms = [
             ArcsinhStretch(),
@@ -747,14 +763,14 @@ class TestEdgeCases:
             restored = t.inverse(out)
             assert torch.allclose(restored, x, atol=1e-4), f"{t}: roundtrip failed"
 
-    def test_1d_vector(self):
+    def test_1d_vector(self) -> None:
         x = torch.linspace(0, 100, 50)
         t = RobustNormalize(dim=(-1,))
         restored = t.inverse(t.forward(x))
         err = (x - restored).abs().max().item()
         assert err < 2e-5
 
-    def test_3d_cube(self):
+    def test_3d_cube(self) -> None:
         x = _make_tensor((2, 32, 32), kind="uniform")
         t = ZScaleNormalize(dim=(-2, -1))
         out = t.forward(x)
@@ -762,7 +778,7 @@ class TestEdgeCases:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_batched_4d(self):
+    def test_batched_4d(self) -> None:
         x = _make_tensor((4, 3, 64, 64), kind="normal")
         t = Compose([BackgroundSubtract(dim=(-2, -1)), ArcsinhStretch(a=0.1)])
         out = t.forward(x)
@@ -772,14 +788,14 @@ class TestEdgeCases:
         err = (x - restored).abs().max().item()
         assert err < 5e-4, f"batch roundtrip error {err} too large"
 
-    def test_zero_std_image(self):
+    def test_zero_std_image(self) -> None:
         x = torch.ones(4, 32, 32) * 10.0
         t = ZScaleNormalize()
         out = t.forward(x)
         # Should not crash and should produce finite output
         assert torch.isfinite(out).all()
 
-    def test_extreme_dynamic_range(self):
+    def test_extreme_dynamic_range(self) -> None:
         x = torch.ones(64, 64) * 1e-10
         x[32, 32] = 1e10
         t = ArcsinhStretch(a=1.0)
@@ -790,7 +806,7 @@ class TestEdgeCases:
         rel_err = ((x - restored).abs() / (x.abs() + 1e-30)).max().item()
         assert rel_err < 1e-4  # float64 roundtrip preserves precision well
 
-    def test_int16_tensor(self):
+    def test_int16_tensor(self) -> None:
         x = torch.randint(-100, 100, (4, 32, 32), dtype=torch.int16)
         t = MinMaxNormalize(dim=(-2, -1))
         # Should convert to float internally and work
@@ -798,7 +814,7 @@ class TestEdgeCases:
         assert out.min() >= -1e-6
         assert out.max() <= 1.0 + 1e-6
 
-    def test_compose_with_stateful_transforms(self):
+    def test_compose_with_stateful_transforms(self) -> None:
         """Verify Compose chains stateful transforms correctly."""
         x = _make_tensor((4, 32, 32), kind="normal")
         c = Compose(
@@ -814,7 +830,7 @@ class TestEdgeCases:
         err = (x - inv).abs().max().item()
         assert err < 2e-5
 
-    def test_repr_methods(self):
+    def test_repr_methods(self) -> None:
         """Verify repr is informative and doesn't crash."""
         for cls, args in [
             (ArcsinhStretch, {"a": 0.1}),
@@ -836,7 +852,7 @@ class TestEdgeCases:
 
 
 class TestSigmaClip:
-    def test_removes_outliers(self):
+    def test_removes_outliers(self) -> None:
         x = torch.ones(10, 10) * 5.0
         x[0, 0] = 100.0  # extreme outlier
         t = SigmaClip(n_sigma=3.0, max_iter=5)
@@ -844,39 +860,39 @@ class TestSigmaClip:
         # The outlier should be replaced with the mean (~5)
         assert out[0, 0].item() < 10.0
 
-    def test_no_clipping_on_clean_data(self):
+    def test_no_clipping_on_clean_data(self) -> None:
         x = _make_tensor((4, 32, 32), kind="normal")
         t = SigmaClip(n_sigma=10.0, max_iter=3)
         out = t.forward(x)
         # With n_sigma=10, almost nothing should be clipped — values very close
         assert (out - x).abs().max().item() < 0.5
 
-    def test_inverse_raises(self):
+    def test_inverse_raises(self) -> None:
         t = SigmaClip()
         with pytest.raises(RuntimeError, match="irrecoverable"):
             t.inverse(torch.zeros(3))
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = SigmaClip()
         out = t.forward(x)
         assert torch.allclose(out, x, atol=1e-5)
 
-    def test_per_channel(self):
+    def test_per_channel(self) -> None:
         x = torch.randn(4, 32, 32) * 5 + 10
         t = SigmaClip(dim=(-2, -1))
         out = t.forward(x)
         assert out.shape == (4, 32, 32)
         assert torch.isfinite(out).all()
 
-    def test_median_fill(self):
+    def test_median_fill(self) -> None:
         x = torch.ones(10, 10) * 5.0
         x[0, 0] = 100.0
         t = SigmaClip(n_sigma=3.0, fill="median")
         out = t.forward(x)
         assert out[0, 0].item() < 10.0
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         t = SigmaClip(n_sigma=5.0, max_iter=3, fill="median")
         r = repr(t)
         assert "SigmaClip" in r
@@ -889,8 +905,8 @@ class TestSigmaClip:
 
 
 class TestFITSHeaderNormalize:
-    def test_int16_scales_to_01(self):
-        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 0.0}
+    def test_int16_scales_to_01(self) -> None:
+        header: dict[str, object] = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 0.0}
         x = torch.tensor([-32768, 0, 32767], dtype=torch.float32)
         t = FITSHeaderNormalize(header)
         out = t.forward(x)
@@ -898,8 +914,8 @@ class TestFITSHeaderNormalize:
         assert out.max() <= 1.0
         assert out[1].item() == pytest.approx(0.5, abs=0.01)
 
-    def test_int16_with_bzero(self):
-        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
+    def test_int16_with_bzero(self) -> None:
+        header: dict[str, object] = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
         x = torch.tensor([0.0, 32768.0, 65535.0])
         t = FITSHeaderNormalize(header)
         out = t.forward(x)
@@ -908,23 +924,23 @@ class TestFITSHeaderNormalize:
         # Physical range: [-32768, 32767] * 1.0 + 32768 = [0, 65535]
         assert out[1].item() == pytest.approx(0.5, abs=0.01)
 
-    def test_roundtrip_int16(self):
-        header = {"BITPIX": 16, "BSCALE": 2.0, "BZERO": 100.0}
+    def test_roundtrip_int16(self) -> None:
+        header: dict[str, object] = {"BITPIX": 16, "BSCALE": 2.0, "BZERO": 100.0}
         x = torch.tensor([0.0, 500.0, 65534.0])
         t = FITSHeaderNormalize(header)
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-4)
 
-    def test_float32_no_scale(self):
-        header = {"BITPIX": -32}
+    def test_float32_no_scale(self) -> None:
+        header: dict[str, object] = {"BITPIX": -32}
         x = torch.randn(4, 32, 32)
         t = FITSHeaderNormalize(header, scale_floats=False)
         out = t.forward(x)
         assert torch.equal(out, x)
 
-    def test_float32_with_scale(self):
-        header = {"BITPIX": -32}
+    def test_float32_with_scale(self) -> None:
+        header: dict[str, object] = {"BITPIX": -32}
         x = _make_tensor((4, 32, 32), kind="uniform")
         t = FITSHeaderNormalize(header, scale_floats=True)
         out = t.forward(x)
@@ -933,8 +949,8 @@ class TestFITSHeaderNormalize:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_uint8(self):
-        header = {"BITPIX": 8, "BSCALE": 1.0, "BZERO": 0.0}
+    def test_uint8(self) -> None:
+        header: dict[str, object] = {"BITPIX": 8, "BSCALE": 1.0, "BZERO": 0.0}
         x = torch.tensor([0.0, 128.0, 255.0])
         t = FITSHeaderNormalize(header)
         out = t.forward(x)
@@ -942,7 +958,7 @@ class TestFITSHeaderNormalize:
         assert out.max() <= 1.0
         assert out[1].item() == pytest.approx(0.5, abs=0.01)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         t = FITSHeaderNormalize({"BITPIX": -32}, scale_floats=True)
         r = repr(t)
         assert "FITSHeaderNormalize" in r
@@ -955,7 +971,7 @@ class TestFITSHeaderNormalize:
 
 
 class TestContinuumNormalize:
-    def test_normalizes_spectrum(self):
+    def test_normalizes_spectrum(self) -> None:
         # Simple spectrum: linear continuum + absorption line
         t_arr = torch.linspace(-1, 1, 100)
         continuum = 10.0 + 2.0 * t_arr
@@ -969,14 +985,14 @@ class TestContinuumNormalize:
         # The absorption line should still be visible
         assert out.min().item() < 0.9
 
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 50).unsqueeze(0)
         t = ContinuumNormalize(order=1)
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         x = torch.randn(4, 200) * 2 + 10
         t = ContinuumNormalize(order=2)
         out = t.forward(x)
@@ -984,12 +1000,12 @@ class TestContinuumNormalize:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = ContinuumNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(ContinuumNormalize(order=5, n_sigma=3.0))
         assert "ContinuumNormalize" in r
         assert "5" in r
@@ -1015,7 +1031,7 @@ class TestContinuumNormalizeVectorized:
         t.forward(x)
         return t._continuum  # type: ignore[return-value]
 
-    def test_linear_continuum(self):
+    def test_linear_continuum(self) -> None:
         """Linear continuum + absorption dip: both solvers agree on continuum."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 100)
@@ -1030,7 +1046,7 @@ class TestContinuumNormalizeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra with distinct baselines."""
         torch.manual_seed(42)
         x = torch.randn(4, 200) * 2 + 10
@@ -1042,7 +1058,7 @@ class TestContinuumNormalizeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_cubic_order(self):
+    def test_cubic_order(self) -> None:
         """Order-3 polynomial fit."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 150)
@@ -1057,7 +1073,7 @@ class TestContinuumNormalizeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_no_absorption(self):
+    def test_no_absorption(self) -> None:
         """Pure polynomial: continuum should match exactly."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 100)
@@ -1071,7 +1087,7 @@ class TestContinuumNormalizeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_many_iterations(self):
+    def test_many_iterations(self) -> None:
         """max_iter=10 with deep absorption — sigma-clipping converges."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 120)
@@ -1099,7 +1115,7 @@ class TestResample1d:
 
     # ---- area mode with spiky spectra ----
 
-    def test_area_mode_spiky_gaussian_flux_conservation(self):
+    def test_area_mode_spiky_gaussian_flux_conservation(self) -> None:
         """Area mode preserves per-cell average of a Gaussian feature."""
         t_arr = torch.linspace(-5, 5, 500)
         gauss = torch.exp(-(t_arr**2) / (2 * 0.5**2))  # σ = 0.5 px
@@ -1116,7 +1132,7 @@ class TestResample1d:
         assert torch.isfinite(out_area).all()
         assert torch.isfinite(out_linear).all()
 
-    def test_area_mode_emission_line_pair(self):
+    def test_area_mode_emission_line_pair(self) -> None:
         """Two close narrow lines: area mode avoids smearing between them."""
         t_arr = torch.linspace(-5, 5, 500)
         # Two Gaussians 2 pixels apart
@@ -1140,7 +1156,7 @@ class TestResample1d:
 
     # ---- cubic mode edges ----
 
-    def test_cubic_mode_reproduces_linear_at_boundaries(self):
+    def test_cubic_mode_reproduces_linear_at_boundaries(self) -> None:
         """Cubic falls back to linear at segment edges (idx <= 1 or >= L-1)."""
         x = torch.linspace(0, 100, 10).unsqueeze(0)
         x_old = torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
@@ -1151,7 +1167,7 @@ class TestResample1d:
         # At interior points cubic should match; at edges cubic falls to linear
         assert torch.allclose(out_linear, out_cubic, atol=1e-5)
 
-    def test_cubic_mode_smoother_than_nearest(self):
+    def test_cubic_mode_smoother_than_nearest(self) -> None:
         """Cubic interpolation produces smoother output than nearest."""
         x = torch.linspace(0, 100, 50).unsqueeze(0)
         x_old = torch.arange(50, dtype=torch.float32)
@@ -1166,7 +1182,7 @@ class TestResample1d:
 
     # ---- irregular wavelength grids ----
 
-    def test_irregular_grid_linear(self):
+    def test_irregular_grid_linear(self) -> None:
         """Linear interpolation on non-uniform wavelength grid."""
         x = torch.linspace(0, 100, 100).unsqueeze(0)
         # Log-spaced source grid (common in spectroscopy)
@@ -1177,7 +1193,7 @@ class TestResample1d:
         assert out.shape == (1, 50)
         assert torch.isfinite(out).all()
 
-    def test_irregular_grid_preserves_monotonicity(self):
+    def test_irregular_grid_preserves_monotonicity(self) -> None:
         """Linear interpolation of monotonic data stays monotonic."""
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         x_old = torch.logspace(-1, 2, 200, dtype=torch.float32)
@@ -1188,7 +1204,7 @@ class TestResample1d:
 
     # ---- area mode on irregular grids ----
 
-    def test_area_mode_on_irregular_grid(self):
+    def test_area_mode_on_irregular_grid(self) -> None:
         """Area mode works on irregular wavelength grids via searchsorted fallback."""
         x = torch.linspace(0, 100, 100).unsqueeze(0)
         x_old = torch.logspace(0, 2, 100, dtype=torch.float32)
@@ -1199,21 +1215,21 @@ class TestResample1d:
 
     # ---- mode validation ----
 
-    def test_invalid_mode_raises(self):
+    def test_invalid_mode_raises(self) -> None:
         x = torch.randn(2, 100)
         x_old = torch.arange(100, dtype=torch.float32)
         x_new = torch.arange(50, dtype=torch.float32)
         with pytest.raises(ValueError, match="mode must be"):
             _resample_1d(x, x_old, x_new, mode="spline")
 
-    def test_scale_invalid_mode_raises(self):
+    def test_scale_invalid_mode_raises(self) -> None:
         x = torch.randn(2, 100)
         with pytest.raises(ValueError, match="mode must be"):
             _resample_scale(x, 0.5, mode="bicubic")
 
     # ---- edge cases ----
 
-    def test_empty_input(self):
+    def test_empty_input(self) -> None:
         x = torch.randn(3, 0)
         x_old = torch.zeros(0)
         x_new = torch.arange(10, dtype=torch.float32)
@@ -1221,14 +1237,14 @@ class TestResample1d:
         # L_src == 0 returns last dim 0 regardless of L_dst
         assert out.shape == (3, 0)
 
-    def test_empty_output(self):
+    def test_empty_output(self) -> None:
         x = torch.randn(3, 50)
         x_old = torch.arange(50, dtype=torch.float32)
         x_new = torch.zeros(0)
         out = _resample_1d(x, x_old, x_new)
         assert out.shape == (3, 0)
 
-    def test_single_pixel_input(self):
+    def test_single_pixel_input(self) -> None:
         x = torch.tensor([[42.0]])
         x_old = torch.tensor([0.0])
         x_new = torch.linspace(0, 0, 5)
@@ -1237,7 +1253,7 @@ class TestResample1d:
         # All output positions should broadcast the single input value
         assert torch.allclose(out, torch.full((1, 5), 42.0))
 
-    def test_batched_spectra_all_modes(self):
+    def test_batched_spectra_all_modes(self) -> None:
         """All modes work on batched [N, L] tensors."""
         x = torch.randn(4, 200)
         x_old = torch.arange(200, dtype=torch.float32)
@@ -1247,7 +1263,7 @@ class TestResample1d:
             assert out.shape == (4, 128), f"{mode}: bad shape {out.shape}"
             assert torch.isfinite(out).all(), f"{mode}: non-finite values"
 
-    def test_scale_factor_resampling(self):
+    def test_scale_factor_resampling(self) -> None:
         """_resample_scale correctly changes length by scale factor."""
         x = torch.randn(3, 100)
         out = _resample_scale(x, 0.5)
@@ -1257,7 +1273,7 @@ class TestResample1d:
 
     # ---- offset-uniform grid (exercises F.grid_sample normalization) ----
 
-    def test_offset_uniform_grid(self):
+    def test_offset_uniform_grid(self) -> None:
         """Offset-uniform x_old (e.g. [100, 200, 300]) uses F.grid_sample with correct normalization."""
         # Create an offset-uniform source grid: spacing=100, start=100
         L_src = 50
@@ -1272,7 +1288,7 @@ class TestResample1d:
         assert out.shape == (1, L_src - 1)
         assert torch.allclose(out, expected, atol=1e-4)
 
-    def test_offset_uniform_grid_exact_query_points(self):
+    def test_offset_uniform_grid_exact_query_points(self) -> None:
         """Querying exact grid positions on offset-uniform grid reproduces input values."""
         L_src = 40
         x_old = 200.0 + torch.arange(L_src, dtype=torch.float32) * 50.0
@@ -1281,7 +1297,7 @@ class TestResample1d:
         out = _resample_1d(x, x_old, x_old, mode="linear")
         assert torch.allclose(out, x, atol=1e-5)
 
-    def test_offset_uniform_grid_grid_sample_modes(self):
+    def test_offset_uniform_grid_grid_sample_modes(self) -> None:
         """All grid_sample-compatible modes work on offset-uniform grids (non-zero origin)."""
         L_src = 60
         x_old = 500.0 + torch.arange(L_src, dtype=torch.float32) * 10.0
@@ -1296,7 +1312,7 @@ class TestResample1d:
 
     # ---- descending (negative-spacing) uniform grids ----
 
-    def test_descending_uniform_grid(self):
+    def test_descending_uniform_grid(self) -> None:
         """Negative-spacing uniform grid (e.g. [500, 400, 300, ...]) exercises sign-preserving normalization."""
         L_src = 50
         x_old = (
@@ -1310,7 +1326,7 @@ class TestResample1d:
         assert out.shape == (1, L_src - 1)
         assert torch.allclose(out, expected, atol=1e-4)
 
-    def test_descending_uniform_grid_all_modes(self):
+    def test_descending_uniform_grid_all_modes(self) -> None:
         """All non-area modes work on descending uniform grids."""
         L_src = 40
         x_old = (
@@ -1325,7 +1341,7 @@ class TestResample1d:
 
     # ---- zero-crossing uniform grid (negative to positive origin) ----
 
-    def test_zero_crossing_uniform_grid(self):
+    def test_zero_crossing_uniform_grid(self) -> None:
         """Grid crossing zero (e.g. [-500, -400, ..., 500]) exercises negative-origin normalization."""
         L_src = 50
         x_old = (
@@ -1339,7 +1355,7 @@ class TestResample1d:
         assert out.shape == (1, L_src - 1)
         assert torch.allclose(out, expected, atol=1e-4)
 
-    def test_zero_crossing_uniform_grid_exact_query(self):
+    def test_zero_crossing_uniform_grid_exact_query(self) -> None:
         """Exact query points on zero-crossing grid reproduce input values."""
         L_src = 40
         x_old = (
@@ -1351,13 +1367,13 @@ class TestResample1d:
 
 
 class TestDopplerShift:
-    def test_identity(self):
+    def test_identity(self) -> None:
         x = torch.linspace(0, 100, 50).unsqueeze(0)
         t = DopplerShift(z=0.0)
         out = t.forward(x)
         assert torch.equal(out, x)
 
-    def test_redshift_stretches(self):
+    def test_redshift_stretches(self) -> None:
         x = torch.zeros(1, 100)
         x[0, 49] = 1.0  # single line at center
         t = DopplerShift(z=0.1)  # redshift by 10%
@@ -1366,7 +1382,7 @@ class TestDopplerShift:
         peak_new = out.argmax().item()
         assert peak_new > 49  # redshifted
 
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         t = DopplerShift(z=0.05)
         out = t.forward(x)
@@ -1380,7 +1396,7 @@ class TestDopplerShift:
             f"max diff: {(restored - x).abs().max().item():.2e}"
         )
 
-    def test_flux_conservation(self):
+    def test_flux_conservation(self) -> None:
         # Smooth Gaussian profile — flux should be approximately conserved
         t_arr = torch.linspace(-5, 5, 200)
         gauss = torch.exp(-(t_arr**2) / 2.0)
@@ -1390,12 +1406,12 @@ class TestDopplerShift:
         # Resampling a smooth function preserves area closely
         assert abs(out.sum().item() - x.sum().item()) / abs(x.sum().item()) < 0.06
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(DopplerShift(z=0.5))
         assert "DopplerShift" in r
         assert "0.5" in r
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         import pytest
 
         t = DopplerShift(z=0.05)
@@ -1403,7 +1419,7 @@ class TestDopplerShift:
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(x)
 
-    def test_blueshift_roundtrip(self):
+    def test_blueshift_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         t = DopplerShift(z=-0.05)
         out = t.forward(x)
@@ -1426,7 +1442,7 @@ class TestDopplerShift:
 
 
 class TestPhaseFold:
-    def test_folds_periodic_signal(self):
+    def test_folds_periodic_signal(self) -> None:
         # Sine wave with period=20, 200 time steps
         t_arr = torch.arange(200, dtype=torch.float32)
         signal = torch.sin(2 * math.pi * t_arr / 20.0)
@@ -1437,24 +1453,24 @@ class TestPhaseFold:
         # Folded signal should show the periodic pattern
         assert out.abs().max().item() > 0.5
 
-    def test_batched(self):
+    def test_batched(self) -> None:
         x = torch.randn(4, 100)
         t = PhaseFold(period=10.0, n_bins=20)
         out = t.forward(x)
         assert out.shape == (4, 20)
 
-    def test_inverse_raises(self):
+    def test_inverse_raises(self) -> None:
         t = PhaseFold(period=1.0)
         with pytest.raises(RuntimeError, match="many-to-one"):
             t.inverse(torch.zeros(5))
 
-    def test_invalid_period_raises(self):
+    def test_invalid_period_raises(self) -> None:
         with pytest.raises(ValueError):
             PhaseFold(period=0)
         with pytest.raises(ValueError):
             PhaseFold(period=-1)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(PhaseFold(period=5.0, n_bins=10, t0=2.0))
         assert "PhaseFold" in r
         assert "5.0" in r
@@ -1466,7 +1482,7 @@ class TestPhaseFold:
 
 
 class TestSpectralBinning:
-    def test_bin_mean_preserves_flux(self):
+    def test_bin_mean_preserves_flux(self) -> None:
         x = torch.ones(1, 64)
         t = SpectralBinning(factor=4, mode="mean")
         out = t.forward(x)
@@ -1474,7 +1490,7 @@ class TestSpectralBinning:
         # Mean of ones is 1 — per-pixel value preserved
         assert torch.allclose(out, torch.ones(1, 16))
 
-    def test_bin_sum_doubles_flux(self):
+    def test_bin_sum_doubles_flux(self) -> None:
         x = torch.ones(1, 64)
         t = SpectralBinning(factor=4, mode="sum")
         out = t.forward(x)
@@ -1482,7 +1498,7 @@ class TestSpectralBinning:
         # Sum of 4 ones = 4
         assert torch.allclose(out, torch.full((1, 16), 4.0))
 
-    def test_roundtrip_mean(self):
+    def test_roundtrip_mean(self) -> None:
         x = torch.randn(2, 100)
         t = SpectralBinning(factor=5, mode="mean", dim=-1)
         out = t.forward(x)
@@ -1493,7 +1509,7 @@ class TestSpectralBinning:
         binned_check = restored.reshape(2, 20, 5).mean(dim=-1)
         assert torch.allclose(binned_check, out, atol=1e-6)
 
-    def test_roundtrip_sum(self):
+    def test_roundtrip_sum(self) -> None:
         x = torch.randn(3, 80)
         t = SpectralBinning(factor=4, mode="sum", dim=-1)
         out = t.forward(x)
@@ -1504,7 +1520,7 @@ class TestSpectralBinning:
         binned_check = restored.reshape(3, 20, 4).sum(dim=-1)
         assert torch.allclose(binned_check, out, atol=1e-6)
 
-    def test_non_unit_dim(self):
+    def test_non_unit_dim(self) -> None:
         # Bin along dim=0 for [C, H, W] tensor
         x = torch.randn(12, 32, 32)
         t = SpectralBinning(factor=3, mode="mean", dim=0)
@@ -1513,20 +1529,20 @@ class TestSpectralBinning:
         restored = t.inverse(out)
         assert restored.shape == (12, 32, 32)
 
-    def test_negative_dim(self):
+    def test_negative_dim(self) -> None:
         x = torch.randn(2, 16, 64)
         t = SpectralBinning(factor=4, mode="mean", dim=-2)
         out = t.forward(x)
         assert out.shape == (2, 4, 64)
 
-    def test_partial_bins_dropped(self):
+    def test_partial_bins_dropped(self) -> None:
         # 65 channels with factor=8 → 64 binned, 1 dropped
         x = torch.randn(1, 65)
         t = SpectralBinning(factor=8, mode="mean")
         out = t.forward(x)
         assert out.shape == (1, 8)  # 64/8 = 8, trailing 1 dropped
 
-    def test_factor_one_identity(self):
+    def test_factor_one_identity(self) -> None:
         x = torch.randn(4, 32)
         t = SpectralBinning(factor=1, mode="sum")
         out = t.forward(x)
@@ -1534,20 +1550,20 @@ class TestSpectralBinning:
         inv = t.inverse(out)
         assert torch.equal(inv, x)
 
-    def test_invalid_factor_raises(self):
+    def test_invalid_factor_raises(self) -> None:
         with pytest.raises(ValueError):
             SpectralBinning(factor=0)
 
-    def test_invalid_mode_raises(self):
+    def test_invalid_mode_raises(self) -> None:
         with pytest.raises(ValueError):
             SpectralBinning(mode="max")
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(SpectralBinning(factor=3, mode="sum", dim=-1))
         assert "SpectralBinning" in r
         assert "3" in r
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         x = torch.randn(8, 512)
         t = SpectralBinning(factor=16, mode="mean")
         out = t.forward(x)
@@ -1562,7 +1578,7 @@ class TestSpectralBinning:
 
 
 class TestContinuumRemoval:
-    def test_polynomial_subtracts_baseline(self):
+    def test_polynomial_subtracts_baseline(self) -> None:
         # Linear spectrum: continuum = 10 + 2*t + absorption dip
         t_arr = torch.linspace(-1, 1, 100)
         continuum = 10.0 + 2.0 * t_arr
@@ -1576,14 +1592,14 @@ class TestContinuumRemoval:
         # The absorption dip should still be visible (negative)
         assert out.min().item() < -1.0
 
-    def test_polynomial_roundtrip(self):
+    def test_polynomial_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 50).unsqueeze(0)
         t = ContinuumRemoval(method="polynomial", order=1)
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_spline_subtracts_baseline(self):
+    def test_spline_subtracts_baseline(self) -> None:
         # Non-linear continuum with absorption
         t_arr = torch.linspace(-1, 1, 200)
         continuum = 5.0 + 3.0 * t_arr + 2.0 * t_arr**2  # parabolic
@@ -1596,7 +1612,7 @@ class TestContinuumRemoval:
         assert out[0, :30].mean().abs().item() < 1.0
         assert out.min().item() < -1.0
 
-    def test_spline_roundtrip(self):
+    def test_spline_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 100).unsqueeze(0)
         t = ContinuumRemoval(method="spline", n_knots=6, n_sigma=5.0)
         out = t.forward(x)
@@ -1604,7 +1620,7 @@ class TestContinuumRemoval:
         # Spline fit is approximate; roundtrip should be close
         assert torch.allclose(restored, x, atol=1e-4)
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         x = torch.randn(4, 200) * 2 + 10
         t = ContinuumRemoval(method="polynomial", order=2)
         out = t.forward(x)
@@ -1612,21 +1628,21 @@ class TestContinuumRemoval:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = ContinuumRemoval()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_method_raises(self):
+    def test_invalid_method_raises(self) -> None:
         with pytest.raises(ValueError):
             ContinuumRemoval(method="invalid")
 
-    def test_repr_polynomial(self):
+    def test_repr_polynomial(self) -> None:
         r = repr(ContinuumRemoval(method="polynomial", order=5))
         assert "polynomial" in r
         assert "5" in r
 
-    def test_repr_spline(self):
+    def test_repr_spline(self) -> None:
         r = repr(ContinuumRemoval(method="spline", n_knots=12))
         assert "spline" in r
         assert "12" in r
@@ -1660,7 +1676,7 @@ class TestContinuumRemovalVectorized:
         t.forward(x)
         return t._baseline  # type: ignore[return-value]
 
-    def test_polynomial_linear(self):
+    def test_polynomial_linear(self) -> None:
         """Linear continuum + absorption dip: both solvers agree."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 100)
@@ -1679,7 +1695,7 @@ class TestContinuumRemovalVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_polynomial_batched(self):
+    def test_polynomial_batched(self) -> None:
         """Multiple spectra with polynomial method."""
         torch.manual_seed(42)
         x = torch.randn(4, 200) * 2 + 10
@@ -1695,7 +1711,7 @@ class TestContinuumRemovalVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_spline_parabolic(self):
+    def test_spline_parabolic(self) -> None:
         """Parabolic continuum fit with spline method."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -1714,7 +1730,7 @@ class TestContinuumRemovalVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_spline_batched(self):
+    def test_spline_batched(self) -> None:
         """Multiple spectra with spline method."""
         torch.manual_seed(42)
         x = torch.randn(4, 150) * 2 + 10
@@ -1730,7 +1746,7 @@ class TestContinuumRemovalVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_polynomial_cubic(self):
+    def test_polynomial_cubic(self) -> None:
         """Cubic polynomial baseline: order=3."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 150)
@@ -1749,7 +1765,7 @@ class TestContinuumRemovalVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_many_iterations(self):
+    def test_many_iterations(self) -> None:
         """max_iter=10 with deep absorption — sigma-clipping converges."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 120)
@@ -1775,7 +1791,7 @@ class TestContinuumRemovalVectorized:
 
 
 class TestBandMath:
-    def test_ndvi_computation(self):
+    def test_ndvi_computation(self) -> None:
         # Simulate 2-band image: Red (band 0), NIR (band 1)
         red = torch.full((32, 32), 0.1)  # low reflectance
         nir = torch.full((32, 32), 0.5)  # high reflectance
@@ -1785,37 +1801,37 @@ class TestBandMath:
         expected = (0.5 - 0.1) / (0.5 + 0.1)  # 0.4 / 0.6 ≈ 0.667
         assert torch.allclose(out, torch.full_like(out, expected), atol=1e-5)
 
-    def test_simple_ratio(self):
+    def test_simple_ratio(self) -> None:
         x = torch.tensor([[2.0], [4.0]])  # band 0 = 2, band 1 = 4
         t = BandMath(lambda b: b[1] / (b[0] + 1e-8))
         out = t.forward(x)
         assert out.item() == pytest.approx(2.0)
 
-    def test_works_on_last_dim(self):
+    def test_works_on_last_dim(self) -> None:
         # [H, W, C] layout — bands along dim=-1
         x = torch.randn(10, 10, 4)
         t = BandMath(lambda b: (b[1] - b[0]) / (b[1] + b[0] + 1e-8), band_dim=-1)
         out = t.forward(x)
         assert out.shape == (10, 10)
 
-    def test_inverse_raises(self):
+    def test_inverse_raises(self) -> None:
         t = BandMath(lambda b: b[0])
         with pytest.raises(RuntimeError, match="lossy"):
             t.inverse(torch.zeros(3))
 
-    def test_invalid_func_raises(self):
+    def test_invalid_func_raises(self) -> None:
         with pytest.raises(TypeError):
-            BandMath("not_callable")
+            BandMath("not_callable")  # type: ignore[arg-type]
 
-    def test_repr(self):
-        def _my_idx(b):
+    def test_repr(self) -> None:
+        def _my_idx(b: tuple[torch.Tensor, ...]) -> "torch.Tensor":
             return b[0] / (b[1] + 1e-8)
 
         t = BandMath(_my_idx)
         r = repr(t)
         assert "BandMath" in r
 
-    def test_multi_output_bands(self):
+    def test_multi_output_bands(self) -> None:
         # Return multiple output bands
         x = torch.randn(4, 32, 32)  # 4 bands
         t = BandMath(lambda b: torch.stack([b[0] - b[1], b[2] / (b[3] + 1e-8)], dim=0))
@@ -1829,14 +1845,14 @@ class TestBandMath:
 
 
 class TestGlobalScalarNorm:
-    def test_median_norm_roundtrip(self):
+    def test_median_norm_roundtrip(self) -> None:
         x = torch.randn(4, 64, 64) * 10 + 100
         t = GlobalScalarNorm(stat="median")
         out = t.forward(x)
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_max_norm(self):
+    def test_max_norm(self) -> None:
         x = torch.rand(8, 32) * 50
         t = GlobalScalarNorm(stat="max")
         out = t.forward(x)
@@ -1844,14 +1860,14 @@ class TestGlobalScalarNorm:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_mean_norm(self):
+    def test_mean_norm(self) -> None:
         x = torch.rand(2, 100) + 1.0  # positive values, mean ~1.5
         t = GlobalScalarNorm(stat="mean")
         out = t.forward(x)
         # After dividing by mean, the output mean should be ~1
         assert abs(out.mean().item() - 1.0) < 0.1
 
-    def test_rms_norm(self):
+    def test_rms_norm(self) -> None:
         x = torch.randn(2, 100)
         t = GlobalScalarNorm(stat="rms")
         out = t.forward(x)
@@ -1859,7 +1875,7 @@ class TestGlobalScalarNorm:
         rms = torch.sqrt((out**2).mean())
         assert abs(rms.item() - 1.0) < 0.1
 
-    def test_per_image_norm(self):
+    def test_per_image_norm(self) -> None:
         x = torch.randn(4, 32, 32) * 5 + 20
         t = GlobalScalarNorm(stat="median", dim=(-2, -1))
         out = t.forward(x)
@@ -1868,16 +1884,16 @@ class TestGlobalScalarNorm:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = GlobalScalarNorm()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
 
-    def test_invalid_stat_raises(self):
+    def test_invalid_stat_raises(self) -> None:
         with pytest.raises(ValueError):
             GlobalScalarNorm(stat="invalid")
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(GlobalScalarNorm(stat="rms", dim=(-1,)))
         assert "GlobalScalarNorm" in r
         assert "rms" in r
@@ -1889,7 +1905,7 @@ class TestGlobalScalarNorm:
 
 
 class TestSavitzkyGolayFilter:
-    def test_smoothing_roundtrip(self):
+    def test_smoothing_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         t = SavitzkyGolayFilter(window_length=7, polyorder=3)
         out = t.forward(x)
@@ -1898,7 +1914,7 @@ class TestSavitzkyGolayFilter:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_reduces_noise(self):
+    def test_reduces_noise(self) -> None:
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
         x = x + torch.randn_like(x) * 0.2  # add noise
         t = SavitzkyGolayFilter(window_length=11, polyorder=3)
@@ -1906,7 +1922,7 @@ class TestSavitzkyGolayFilter:
         # Smoothed should have lower std than original
         assert out.std().item() < x.std().item()
 
-    def test_preserves_polynomial(self):
+    def test_preserves_polynomial(self) -> None:
         # SG filter should exactly preserve a polynomial of order polyorder
         x = (torch.linspace(-1, 1, 100) ** 3).unsqueeze(0)
         t = SavitzkyGolayFilter(window_length=9, polyorder=3)
@@ -1914,20 +1930,20 @@ class TestSavitzkyGolayFilter:
         # Cubic polynomial should be exactly preserved (except at edges)
         assert torch.allclose(out[:, 5:-5], x[:, 5:-5], atol=1e-5)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = SavitzkyGolayFilter()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_window_raises(self):
+    def test_invalid_window_raises(self) -> None:
         with pytest.raises(ValueError):
             SavitzkyGolayFilter(window_length=4)  # even
 
-    def test_invalid_polyorder_raises(self):
+    def test_invalid_polyorder_raises(self) -> None:
         with pytest.raises(ValueError):
             SavitzkyGolayFilter(window_length=5, polyorder=5)  # >= window
 
-    def test_non_unit_dim(self):
+    def test_non_unit_dim(self) -> None:
         x = torch.randn(4, 3, 128)
         t = SavitzkyGolayFilter(window_length=7, polyorder=2, dim=0)
         out = t.forward(x)
@@ -1935,7 +1951,7 @@ class TestSavitzkyGolayFilter:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(SavitzkyGolayFilter(window_length=9, polyorder=2, dim=-1))
         assert "SavitzkyGolayFilter" in r
         assert "9" in r
@@ -1962,7 +1978,7 @@ class TestSavitzkyGolayFilterVectorized:
         )
         return t.forward(x)
 
-    def test_smoothing_sine_noisy(self):
+    def test_smoothing_sine_noisy(self) -> None:
         """Noisy sine wave: both paths produce the same smoothed output."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
@@ -1976,7 +1992,7 @@ class TestSavitzkyGolayFilterVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra smoothed independently."""
         torch.manual_seed(42)
         x = torch.randn(6, 150) * 2 + 10
@@ -1988,7 +2004,7 @@ class TestSavitzkyGolayFilterVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_preserves_polynomial(self):
+    def test_preserves_polynomial(self) -> None:
         """Cubic polynomial exactly preserved by cubic SG filter."""
         torch.manual_seed(42)
         x = (torch.linspace(-1, 1, 100) ** 3).unsqueeze(0)
@@ -2000,7 +2016,7 @@ class TestSavitzkyGolayFilterVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_linear_order(self):
+    def test_linear_order(self) -> None:
         """First-order polynomial: SG with polyorder=1."""
         torch.manual_seed(42)
         x = torch.linspace(0, 100, 128).unsqueeze(0)
@@ -2013,7 +2029,7 @@ class TestSavitzkyGolayFilterVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_small_window(self):
+    def test_small_window(self) -> None:
         """Minimum window_length=3."""
         torch.manual_seed(42)
         x = torch.randn(3, 64) * 2 + 10
@@ -2023,7 +2039,7 @@ class TestSavitzkyGolayFilterVectorized:
         ref = ref.reshape(vec.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0."""
         torch.manual_seed(42)
         x = torch.randn(120, 3)  # [L, B]
@@ -2044,7 +2060,7 @@ class TestSavitzkyGolayFilterVectorized:
 
 
 class TestRunningPercentile:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         x = x + 0.5 * torch.sin(torch.linspace(0, 10 * math.pi, 200)).unsqueeze(0)
         t = RunningPercentile(percentile=90, window_size=21)
@@ -2053,7 +2069,7 @@ class TestRunningPercentile:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_upper_envelope(self):
+    def test_upper_envelope(self) -> None:
         # Sine wave: running 95th percentile should hug the upper envelope
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
         t = RunningPercentile(percentile=95, window_size=31)
@@ -2061,22 +2077,22 @@ class TestRunningPercentile:
         # Upper envelope should be above most values
         assert (out >= x).float().mean().item() > 0.5
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = RunningPercentile()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_window_raises(self):
+    def test_invalid_window_raises(self) -> None:
         with pytest.raises(ValueError):
             RunningPercentile(window_size=4)  # even
 
-    def test_invalid_percentile_raises(self):
+    def test_invalid_percentile_raises(self) -> None:
         with pytest.raises(ValueError):
             RunningPercentile(percentile=150)
         with pytest.raises(ValueError):
             RunningPercentile(percentile=-10)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(RunningPercentile(percentile=75, window_size=15))
         assert "RunningPercentile" in r
         assert "75" in r
@@ -2101,7 +2117,7 @@ class TestRunningPercentileVectorized:
         t = RunningPercentile(percentile=percentile, window_size=window_size, dim=dim)
         return t.forward(x)
 
-    def test_sine_upper_envelope(self):
+    def test_sine_upper_envelope(self) -> None:
         """Sine wave: 95th percentile hugs the upper envelope."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
@@ -2114,7 +2130,7 @@ class TestRunningPercentileVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra, distinct percentiles."""
         torch.manual_seed(42)
         x = torch.randn(6, 150) * 2 + 10
@@ -2126,7 +2142,7 @@ class TestRunningPercentileVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_median_continuum(self):
+    def test_median_continuum(self) -> None:
         """50th percentile: running median."""
         torch.manual_seed(42)
         x = torch.linspace(0, 100, 150).unsqueeze(0)
@@ -2139,7 +2155,7 @@ class TestRunningPercentileVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_small_window(self):
+    def test_small_window(self) -> None:
         """Minimum window_size=3."""
         torch.manual_seed(42)
         x = torch.randn(3, 64) * 2 + 10
@@ -2149,7 +2165,7 @@ class TestRunningPercentileVectorized:
         ref = ref.reshape(vec.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
 
-    def test_large_window(self):
+    def test_large_window(self) -> None:
         """Window size 51 — heavily smoothed continuum."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
@@ -2161,7 +2177,7 @@ class TestRunningPercentileVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0."""
         torch.manual_seed(42)
         x = torch.randn(120, 3)  # [L, B]
@@ -2181,7 +2197,7 @@ class TestRunningPercentileVectorized:
 
 
 class TestUpperEnvelopeContinuum:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 100).unsqueeze(0)
         x = x + 2.0 * torch.sin(torch.linspace(0, 6 * math.pi, 100)).unsqueeze(0)
         t = UpperEnvelopeContinuum(window=7)
@@ -2190,7 +2206,7 @@ class TestUpperEnvelopeContinuum:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_sits_above_signal(self):
+    def test_sits_above_signal(self) -> None:
         # Upper envelope should be >= signal at local maxima
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
         t = UpperEnvelopeContinuum(window=15)
@@ -2199,7 +2215,7 @@ class TestUpperEnvelopeContinuum:
         # linear interpolation between local maxima can dip below)
         assert (out >= x).float().mean().item() > 0.50
 
-    def test_with_smoothing(self):
+    def test_with_smoothing(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         x = x + torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
         t = UpperEnvelopeContinuum(window=10, smooth=5.0)
@@ -2208,16 +2224,16 @@ class TestUpperEnvelopeContinuum:
         # Smoothed envelope should be smoother than raw signal
         assert out.diff().abs().mean().item() < x.diff().abs().mean().item()
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = UpperEnvelopeContinuum()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_window_raises(self):
+    def test_invalid_window_raises(self) -> None:
         with pytest.raises(ValueError):
             UpperEnvelopeContinuum(window=0)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(UpperEnvelopeContinuum(window=11, smooth=3.0))
         assert "UpperEnvelopeContinuum" in r
         assert "11" in r
@@ -2229,7 +2245,7 @@ class TestUpperEnvelopeContinuum:
 
 
 class TestWaveletDecompose:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 128).unsqueeze(0)  # power of 2
         t = WaveletDecompose(levels=3)
         out = t.forward(x)
@@ -2237,7 +2253,7 @@ class TestWaveletDecompose:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_approx_captures_low_freq(self):
+    def test_approx_captures_low_freq(self) -> None:
         # Low-frequency signal: approximation should preserve it well
         t_wave = torch.linspace(0, 4 * math.pi, 128)
         x = torch.sin(t_wave).unsqueeze(0)  # low freq
@@ -2249,7 +2265,7 @@ class TestWaveletDecompose:
         # Approx should have non-negligible energy
         assert approx.abs().max().item() > 0.1
 
-    def test_detail_captures_high_freq(self):
+    def test_detail_captures_high_freq(self) -> None:
         # High-frequency noise should go to detail coefficients
         x = torch.randn(1, 64) * 0.5  # white noise
         t = WaveletDecompose(levels=2)
@@ -2257,7 +2273,7 @@ class TestWaveletDecompose:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_non_power_of_two(self):
+    def test_non_power_of_two(self) -> None:
         # Non-power-of-2 length should be padded and work
         x = torch.linspace(0, 100, 100).unsqueeze(0)
         t = WaveletDecompose(levels=2)
@@ -2267,18 +2283,18 @@ class TestWaveletDecompose:
         # Roundtrip should be approximate due to padding
         assert torch.allclose(restored, x, atol=1e-4)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = WaveletDecompose()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(16))
 
-    def test_invalid_levels_raises(self):
+    def test_invalid_levels_raises(self) -> None:
         with pytest.raises(ValueError):
             WaveletDecompose(levels=0)
         with pytest.raises(ValueError):
             WaveletDecompose(levels=10)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(WaveletDecompose(levels=3, dim=-1))
         assert "WaveletDecompose" in r
         assert "3" in r
@@ -2302,7 +2318,7 @@ class TestWaveletDecomposeVectorized:
         t = WaveletDecompose(levels=levels, dim=dim)
         return t.forward(x)
 
-    def test_power_of_two(self):
+    def test_power_of_two(self) -> None:
         """Length 128 = 2^7, levels=3: both paths identical."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 128)).unsqueeze(0)
@@ -2314,7 +2330,7 @@ class TestWaveletDecomposeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra decomposed independently."""
         torch.manual_seed(42)
         x = torch.randn(4, 64) * 2 + 10  # 64 = 2^6
@@ -2326,7 +2342,7 @@ class TestWaveletDecomposeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_single_level(self):
+    def test_single_level(self) -> None:
         """Single-level decomposition (levels=1)."""
         torch.manual_seed(42)
         x = torch.randn(2, 32) * 2 + 10  # 32 = 2^5
@@ -2338,7 +2354,7 @@ class TestWaveletDecomposeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_many_levels(self):
+    def test_many_levels(self) -> None:
         """Deep decomposition (levels=4, length=256)."""
         torch.manual_seed(42)
         x = torch.randn(1, 256) * 2 + 10  # 256 = 2^8
@@ -2350,7 +2366,7 @@ class TestWaveletDecomposeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0."""
         torch.manual_seed(42)
         x = torch.randn(64, 3)  # [L, B], L=64 power of 2
@@ -2363,7 +2379,7 @@ class TestWaveletDecomposeVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_non_power_of_two(self):
+    def test_non_power_of_two(self) -> None:
         """Length 100 (not a power of 2): pad to match production, then compare."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 100)).unsqueeze(0)
@@ -2405,7 +2421,7 @@ class TestUpperEnvelopeContinuumVectorized:
         t = UpperEnvelopeContinuum(window=window, smooth=smooth, dim=dim)
         return t.forward(x)
 
-    def test_single_spectrum_window3(self):
+    def test_single_spectrum_window3(self) -> None:
         """Simple spectrum: window=3, verify exact allclose."""
         torch.manual_seed(42)
         x = (torch.sin(torch.linspace(0, 6 * math.pi, 100)) + 1.0).unsqueeze(0)
@@ -2419,7 +2435,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_single_spectrum_window11(self):
+    def test_single_spectrum_window11(self) -> None:
         """Larger window, more local maxima."""
         torch.manual_seed(42)
         x = (torch.sin(torch.linspace(0, 8 * math.pi, 200)) * 2 + 0.5).unsqueeze(0)
@@ -2433,7 +2449,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra processed simultaneously."""
         torch.manual_seed(42)
         x = torch.randn(8, 150) * 2 + 10
@@ -2446,7 +2462,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_with_smoothing(self):
+    def test_with_smoothing(self) -> None:
         """Gaussian smoothing enabled."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 100)).unsqueeze(0) + 0.5
@@ -2460,7 +2476,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_few_local_maxima(self):
+    def test_few_local_maxima(self) -> None:
         """Spectrum with < 2 local maxima uses global max fallback."""
         torch.manual_seed(42)
         # Monotonically increasing: at most 1 local max (at the end)
@@ -2474,7 +2490,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_constant_input(self):
+    def test_constant_input(self) -> None:
         """Constant signal: every point is a local max."""
         x = torch.ones(1, 64) * 5.0
         vec = self._run_vectorized(x, window=3)
@@ -2486,7 +2502,7 @@ class TestUpperEnvelopeContinuumVectorized:
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
         assert torch.allclose(vec, x, atol=1e-5)
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0 (batched over other dims)."""
         torch.manual_seed(42)
         x = torch.randn(128, 3)  # [L, B] — dim=0 is length
@@ -2501,7 +2517,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_3d_tensor(self):
+    def test_3d_tensor(self) -> None:
         """[C, H, W] tensor with spectral dim=-1."""
         torch.manual_seed(42)
         x = torch.randn(4, 16, 64) * 2 + 10
@@ -2514,7 +2530,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_mixed_batch_with_few_lm(self):
+    def test_mixed_batch_with_few_lm(self) -> None:
         """Batch where one spectrum has < 2 LM, others have many."""
         torch.manual_seed(42)
         x = torch.randn(4, 100) * 2 + 10
@@ -2528,7 +2544,7 @@ class TestUpperEnvelopeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_window1(self):
+    def test_window1(self) -> None:
         """Minimum window size: every point is a local max."""
         torch.manual_seed(42)
         x = torch.randn(1, 64) * 2 + 5
@@ -2577,7 +2593,7 @@ class TestPhaseFoldVectorized:
         t = PhaseFold(period=period, n_bins=n_bins, t0=t0)
         return t.forward(x)
 
-    def test_sine_period20(self):
+    def test_sine_period20(self) -> None:
         """Sine wave with period 20, 200 steps, 32 bins."""
         torch.manual_seed(42)
         length = 200
@@ -2594,7 +2610,7 @@ class TestPhaseFoldVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """8 spectra, distinct signals, 64 bins."""
         torch.manual_seed(42)
         x = torch.randn(8, 150) * 2 + 10
@@ -2608,7 +2624,7 @@ class TestPhaseFoldVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_few_bins(self):
+    def test_few_bins(self) -> None:
         """Minimum bin count (2)."""
         torch.manual_seed(42)
         x = torch.randn(3, 100) * 2 + 5
@@ -2620,7 +2636,7 @@ class TestPhaseFoldVectorized:
         ref = ref.reshape(vec.shape)
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
 
-    def test_period_longer_than_signal(self):
+    def test_period_longer_than_signal(self) -> None:
         """Period >> signal length: all points fall in first few bins."""
         torch.manual_seed(42)
         # 100 steps, period=1000 → phases tightly clustered near 0
@@ -2635,7 +2651,7 @@ class TestPhaseFoldVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_t0_offset(self):
+    def test_t0_offset(self) -> None:
         """Non-zero phase offset changes bin assignments."""
         torch.manual_seed(42)
         x = torch.randn(1, 100) * 2 + 10
@@ -2651,7 +2667,7 @@ class TestPhaseFoldVectorized:
         ref_3 = ref_3.reshape(vec_t0_3.shape)
         assert torch.allclose(vec_t0_3, ref_3, atol=1e-5, rtol=1e-5)
 
-    def test_many_bins(self):
+    def test_many_bins(self) -> None:
         """Large number of bins (256)."""
         torch.manual_seed(42)
         x = torch.randn(2, 512) * 2 + 10
@@ -2684,7 +2700,7 @@ class TestSigmaClipVectorized:
         t = SigmaClip(n_sigma=n_sigma, max_iter=max_iter, dim=dim, fill=fill)
         return t.forward(x)
 
-    def test_removes_single_outlier(self):
+    def test_removes_single_outlier(self) -> None:
         """Single extreme outlier in a uniform field."""
         torch.manual_seed(42)
         x = torch.ones(10, 10) * 5.0
@@ -2697,7 +2713,7 @@ class TestSigmaClipVectorized:
         # Outlier should be replaced with ~5
         assert vec[0, 0].item() < 10.0
 
-    def test_clean_data_no_clipping(self):
+    def test_clean_data_no_clipping(self) -> None:
         """Clean normal data with wide threshold — no clipping."""
         torch.manual_seed(42)
         x = torch.randn(4, 32, 32) * 5 + 100
@@ -2707,7 +2723,7 @@ class TestSigmaClipVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_per_channel(self):
+    def test_per_channel(self) -> None:
         """Clipping computed independently per image (dim=-2,-1)."""
         torch.manual_seed(42)
         x = torch.randn(4, 16, 16) * 3 + 10
@@ -2719,7 +2735,7 @@ class TestSigmaClipVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_median_fill(self):
+    def test_median_fill(self) -> None:
         """Fill clipped values with median instead of mean."""
         torch.manual_seed(42)
         x = torch.ones(8, 8) * 5.0
@@ -2731,7 +2747,7 @@ class TestSigmaClipVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_wide_threshold_noop(self):
+    def test_wide_threshold_noop(self) -> None:
         """Very wide sigma threshold: no pixels clipped → output == input."""
         torch.manual_seed(42)
         x = torch.randn(3, 32, 32) * 5 + 20
@@ -2740,7 +2756,7 @@ class TestSigmaClipVectorized:
         assert torch.allclose(vec, ref, atol=1e-5, rtol=1e-5)
         assert torch.allclose(vec, x, atol=1e-4)
 
-    def test_global_dim(self):
+    def test_global_dim(self) -> None:
         """Global sigma-clip (no dim specified → all pixels considered)."""
         torch.manual_seed(42)
         x = torch.randn(32, 32) * 5 + 10
@@ -2751,7 +2767,7 @@ class TestSigmaClipVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         """Constant image: std=0, no clipping."""
         x = torch.ones(4, 32, 32) * 42.0
         vec = self._run_vectorized(x, dim=(-2, -1))
@@ -2766,7 +2782,7 @@ class TestSigmaClipVectorized:
 
 
 class TestAsymmetricLeastSquares:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         # Quadratic continuum + Gaussian absorption dips
         t_arr = torch.linspace(-1, 1, 200)
         continuum = 10.0 + 2.0 * t_arr + 3.0 * t_arr**2
@@ -2780,7 +2796,7 @@ class TestAsymmetricLeastSquares:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_baseline_hugs_lower_envelope(self):
+    def test_baseline_hugs_lower_envelope(self) -> None:
         # Spectrum with strong absorption features
         t_arr = torch.linspace(-1, 1, 200)
         continuum = 10.0 + 2.0 * t_arr
@@ -2795,7 +2811,7 @@ class TestAsymmetricLeastSquares:
         dip_min_idx = int(dip.argmin().item())
         assert baseline[0, dip_min_idx].item() > spectrum[dip_min_idx].item()
 
-    def test_lam_controls_smoothness(self):
+    def test_lam_controls_smoothness(self) -> None:
         # Use a linear baseline (nullspace of D^T D) with positive Gaussian peaks.
         # A stiffer lam pushes toward a straight line, which should be closer
         # to the true linear baseline than a flexible (wiggly) fit.
@@ -2813,7 +2829,7 @@ class TestAsymmetricLeastSquares:
         flex_err = (flex - baseline_true.unsqueeze(0)).abs().mean().item()
         assert stiff_err < flex_err, f"stiff_err {stiff_err} >= flex_err {flex_err}"
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         x = torch.randn(4, 150) * 2 + 10
         t = AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=5)
         out = t.forward(x)
@@ -2821,30 +2837,30 @@ class TestAsymmetricLeastSquares:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = AsymmetricLeastSquares()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_lam_raises(self):
+    def test_invalid_lam_raises(self) -> None:
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(lam=0)
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(lam=-1)
 
-    def test_invalid_p_raises(self):
+    def test_invalid_p_raises(self) -> None:
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(p=0)
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(p=1)
 
-    def test_invalid_envelope_raises(self):
+    def test_invalid_envelope_raises(self) -> None:
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(envelope="invalid")
         with pytest.raises(ValueError):
             AsymmetricLeastSquares(envelope="upper_")  # close but wrong
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(AsymmetricLeastSquares(lam=1e6, p=0.05))
         assert "AsymmetricLeastSquares" in r
         assert "1000000.0" in r
@@ -2873,7 +2889,7 @@ class TestAsymmetricLeastSquaresVectorized:
         )
         return t.forward(x)
 
-    def test_quadratic_baseline(self):
+    def test_quadratic_baseline(self) -> None:
         """Quadratic continuum + absorption dips: both solvers agree."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -2889,7 +2905,7 @@ class TestAsymmetricLeastSquaresVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra with distinct baselines."""
         torch.manual_seed(42)
         x = torch.randn(4, 120) * 2 + 10
@@ -2901,7 +2917,7 @@ class TestAsymmetricLeastSquaresVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_aggressive_asymmetry(self):
+    def test_aggressive_asymmetry(self) -> None:
         """Very small p=0.001: baseline hugs the lower envelope tightly."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -2917,7 +2933,7 @@ class TestAsymmetricLeastSquaresVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_stiff_baseline(self):
+    def test_stiff_baseline(self) -> None:
         """Large lam=1e7: baseline is nearly linear."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -2933,7 +2949,7 @@ class TestAsymmetricLeastSquaresVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_short_signal(self):
+    def test_short_signal(self) -> None:
         """Signal length < 4: D² penalty vanishes, baseline == signal."""
         torch.manual_seed(42)
         x = torch.randn(2, 3) * 2 + 10  # L=3 < 4
@@ -2945,7 +2961,7 @@ class TestAsymmetricLeastSquaresVectorized:
         # Short signal: baseline should equal signal (no penalty)
         assert torch.allclose(vec, x, atol=1e-5)
 
-    def test_convergence_early_exit(self):
+    def test_convergence_early_exit(self) -> None:
         """Many max_iter but converges early — both solvers agree."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 150)
@@ -2959,7 +2975,7 @@ class TestAsymmetricLeastSquaresVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0."""
         torch.manual_seed(42)
         x = torch.randn(120, 3)  # [L, B] — dim=0 is length
@@ -2977,7 +2993,7 @@ class TestAsymmetricLeastSquaresVectorized:
 
     # ---------------------------------------------------------------------------
 
-    def test_upper_envelope_emission(self):
+    def test_upper_envelope_emission(self) -> None:
         """envelope='upper': baseline hugs emission peaks (absorption spectroscopy)."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -3006,7 +3022,7 @@ class TestAsymmetricLeastSquaresVectorized:
         )
         assert vec[0, peak_idx].item() > vec_lower[0, peak_idx].item()
 
-    def test_upper_envelope_batched(self):
+    def test_upper_envelope_batched(self) -> None:
         """Multiple spectra with envelope='upper'."""
         torch.manual_seed(42)
         x = torch.randn(4, 120) * 2 + 10
@@ -3024,7 +3040,7 @@ class TestAsymmetricLeastSquaresVectorized:
 
 
 class TestAlphaShapeContinuum:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         x = x + 2.0 * torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
         t = AlphaShapeContinuum(half_window=15)
@@ -3033,7 +3049,7 @@ class TestAlphaShapeContinuum:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_always_above_signal(self):
+    def test_always_above_signal(self) -> None:
         # Morphological closing (dilation→erosion) is guaranteed to be
         # >= original signal everywhere
         x = torch.sin(torch.linspace(0, 6 * math.pi, 200)).unsqueeze(0)
@@ -3041,7 +3057,7 @@ class TestAlphaShapeContinuum:
         out = t.forward(x)
         assert torch.all(out >= x - 1e-6)
 
-    def test_bridges_absorption_features(self):
+    def test_bridges_absorption_features(self) -> None:
         # Spectrum with narrow absorption dips
         t_arr = torch.linspace(-1, 1, 200)
         continuum = 10.0 + 2.0 * t_arr
@@ -3053,7 +3069,7 @@ class TestAlphaShapeContinuum:
         dip_min_idx = int(dip.argmin().item())
         assert out[0, dip_min_idx].item() > x[0, dip_min_idx].item() + 2.0
 
-    def test_window_size_controls_scale(self):
+    def test_window_size_controls_scale(self) -> None:
         x = torch.sin(torch.linspace(0, 4 * math.pi, 200)).unsqueeze(0)
         t_small = AlphaShapeContinuum(half_window=2)
         t_large = AlphaShapeContinuum(half_window=30)
@@ -3064,7 +3080,7 @@ class TestAlphaShapeContinuum:
         large_std = out_large.std().item()
         assert large_std < small_std, f"large {large_std} >= small {small_std}"
 
-    def test_multiple_iterations(self):
+    def test_multiple_iterations(self) -> None:
         x = torch.linspace(0, 100, 200).unsqueeze(0)
         x = x + torch.sin(torch.linspace(0, 8 * math.pi, 200)).unsqueeze(0)
         t = AlphaShapeContinuum(half_window=8, iterations=3)
@@ -3073,7 +3089,7 @@ class TestAlphaShapeContinuum:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         x = torch.randn(4, 200) * 2 + 10
         t = AlphaShapeContinuum(half_window=15)
         out = t.forward(x)
@@ -3081,20 +3097,20 @@ class TestAlphaShapeContinuum:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-6)
 
-    def test_inverse_without_forward_raises(self):
+    def test_inverse_without_forward_raises(self) -> None:
         t = AlphaShapeContinuum()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(10))
 
-    def test_invalid_window_raises(self):
+    def test_invalid_window_raises(self) -> None:
         with pytest.raises(ValueError):
             AlphaShapeContinuum(half_window=0)
 
-    def test_invalid_iterations_raises(self):
+    def test_invalid_iterations_raises(self) -> None:
         with pytest.raises(ValueError):
             AlphaShapeContinuum(iterations=0)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(AlphaShapeContinuum(half_window=20, iterations=2))
         assert "AlphaShapeContinuum" in r
         assert "20" in r
@@ -3119,7 +3135,7 @@ class TestAlphaShapeContinuumVectorized:
         t = AlphaShapeContinuum(half_window=half_window, iterations=iterations, dim=dim)
         return t.forward(x)
 
-    def test_single_spectrum_upper_envelope(self):
+    def test_single_spectrum_upper_envelope(self) -> None:
         """Sine wave: closing should produce an upper envelope >= signal."""
         torch.manual_seed(42)
         x = torch.sin(torch.linspace(0, 4 * math.pi, 100)).unsqueeze(0)
@@ -3134,7 +3150,7 @@ class TestAlphaShapeContinuumVectorized:
         # Morphological closing is guaranteed >= signal
         assert torch.all(vec >= x - 1e-6)
 
-    def test_batched_spectra(self):
+    def test_batched_spectra(self) -> None:
         """Multiple spectra with distinct baselines."""
         torch.manual_seed(42)
         x = torch.randn(6, 150) * 2 + 10
@@ -3146,7 +3162,7 @@ class TestAlphaShapeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_bridges_absorption_dip(self):
+    def test_bridges_absorption_dip(self) -> None:
         """Narrow absorption dip in continuum should be bridged."""
         torch.manual_seed(42)
         t_arr = torch.linspace(-1, 1, 200)
@@ -3163,7 +3179,7 @@ class TestAlphaShapeContinuumVectorized:
         dip_min_idx = int(dip.argmin().item())
         assert vec[0, dip_min_idx].item() > x[0, dip_min_idx].item() + 2.0
 
-    def test_multiple_iterations(self):
+    def test_multiple_iterations(self) -> None:
         """Multiple closing iterations progressively smooth the continuum."""
         torch.manual_seed(42)
         x = torch.linspace(0, 100, 150).unsqueeze(0)
@@ -3176,7 +3192,7 @@ class TestAlphaShapeContinuumVectorized:
             f"max diff: {(vec - ref).abs().max().item():.2e}"
         )
 
-    def test_small_window(self):
+    def test_small_window(self) -> None:
         """Minimum half_window=1: closing over +/-1 neighbours."""
         torch.manual_seed(42)
         x = torch.randn(4, 64) * 2 + 10
@@ -3188,7 +3204,7 @@ class TestAlphaShapeContinuumVectorized:
         # With hw=1, continuum should still be >= signal
         assert torch.all(vec >= x - 1e-6)
 
-    def test_constant_input(self):
+    def test_constant_input(self) -> None:
         """Constant signal: closing is identity."""
         x = torch.ones(2, 64) * 7.0
         vec = self._run_vectorized(x, half_window=5)
@@ -3198,7 +3214,7 @@ class TestAlphaShapeContinuumVectorized:
         assert torch.allclose(vec, ref, atol=1e-5)
         assert torch.allclose(vec, x, atol=1e-5)
 
-    def test_non_default_dim(self):
+    def test_non_default_dim(self) -> None:
         """Operate along dim=0."""
         torch.manual_seed(42)
         x = torch.randn(128, 3)  # [L, B] — dim=0 is length
@@ -3218,7 +3234,7 @@ class TestAlphaShapeContinuumVectorized:
 
 
 class TestAsymmetricSigmaClip:
-    def test_clips_positive_outliers(self):
+    def test_clips_positive_outliers(self) -> None:
         x = torch.randn(10, 10) * 2 + 5.0
         x[0, 0] = 100.0  # extreme positive outlier
         t = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)
@@ -3226,7 +3242,7 @@ class TestAsymmetricSigmaClip:
         # Outlier should be replaced with median (~5)
         assert out[0, 0].item() < 10.0
 
-    def test_clips_negative_outliers(self):
+    def test_clips_negative_outliers(self) -> None:
         x = torch.randn(10, 10) * 2 + 5.0
         x[0, 0] = -50.0  # extreme negative outlier
         t = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)
@@ -3234,7 +3250,7 @@ class TestAsymmetricSigmaClip:
         # Outlier should be replaced with median (~5)
         assert out[0, 0].item() > 0.0
 
-    def test_asymmetric_thresholds(self):
+    def test_asymmetric_thresholds(self) -> None:
         # Data with real variance so MAD > 0
         x = torch.randn(10, 10) * 2 + 5.0
         x[0, 0] = -8.0  # mild negative outlier
@@ -3247,44 +3263,44 @@ class TestAsymmetricSigmaClip:
         # Positive outlier should be clipped (n_high=1 is very strict)
         assert abs(out[1, 1].item() - 5.0) < 3.0
 
-    def test_no_clipping_on_clean_data(self):
+    def test_no_clipping_on_clean_data(self) -> None:
         x = torch.randn(4, 32, 32) * 5 + 100
         t = AsymmetricSigmaClip(n_low=10.0, n_high=10.0)
         out = t.forward(x)
         # With n_sigma=10, almost nothing should be clipped
         assert (out - x).abs().max().item() < 0.5
 
-    def test_inverse_raises(self):
+    def test_inverse_raises(self) -> None:
         t = AsymmetricSigmaClip()
         with pytest.raises(RuntimeError, match="irrecoverable"):
             t.inverse(torch.zeros(3))
 
-    def test_constant_image(self):
+    def test_constant_image(self) -> None:
         x = torch.ones(4, 32, 32) * 42.0
         t = AsymmetricSigmaClip()
         out = t.forward(x)
         assert torch.allclose(out, x, atol=1e-5)
 
-    def test_per_channel(self):
+    def test_per_channel(self) -> None:
         x = torch.randn(4, 32, 32) * 5 + 10
         t = AsymmetricSigmaClip(dim=(-2, -1))
         out = t.forward(x)
         assert out.shape == (4, 32, 32)
         assert torch.isfinite(out).all()
 
-    def test_invalid_n_raises(self):
+    def test_invalid_n_raises(self) -> None:
         with pytest.raises(ValueError):
             AsymmetricSigmaClip(n_low=0)
         with pytest.raises(ValueError):
             AsymmetricSigmaClip(n_high=-1)
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         r = repr(AsymmetricSigmaClip(n_low=5.0, n_high=2.0))
         assert "AsymmetricSigmaClip" in r
         assert "5.0" in r
         assert "2.0" in r
 
-    def test_mask_excludes_pixels_from_background(self):
+    def test_mask_excludes_pixels_from_background(self) -> None:
         """Mask forwarded to estimate_background changes the background estimate."""
         # 5x5 grid: 13 pixels at 100.0 (majority), 12 pixels at 0.0.
         # Without mask, median = 100.0 because >50% of pixels are 100.0.
@@ -3312,7 +3328,7 @@ class TestAsymmetricSigmaClip:
 
 
 class TestFITSScaleColumns:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         header: dict[str, object] = {
             "TFIELDS": 2,
             "TTYPE1": "FLUX",
@@ -3337,14 +3353,14 @@ class TestFITSScaleColumns:
         assert torch.allclose(restored["FLUX"], flux)
         assert torch.allclose(restored["MAG"], mag)
 
-    def test_empty_header(self):
+    def test_empty_header(self) -> None:
         header: dict[str, object] = {}
         x = {"A": torch.randn(10)}
         t = FITSScaleColumns.from_header(header)
         out = t.forward(x)
         assert torch.equal(out["A"], x["A"])  # no-op
 
-    def test_identity_scales_noop(self):
+    def test_identity_scales_noop(self) -> None:
         header = {
             "TFIELDS": 1,
             "TTYPE1": "DATA",
@@ -3357,7 +3373,7 @@ class TestFITSScaleColumns:
         out = t.forward(x)
         assert torch.equal(out["DATA"], x["DATA"])  # identity scales skipped
 
-    def test_preserves_unrelated_columns(self):
+    def test_preserves_unrelated_columns(self) -> None:
         header = {
             "TFIELDS": 1,
             "TTYPE1": "FLUX",
@@ -3372,7 +3388,7 @@ class TestFITSScaleColumns:
         assert torch.equal(out["EXTRA"], extra)  # unrelated column untouched
         assert "EXTRA" in out
 
-    def test_preserves_int_dtype(self):
+    def test_preserves_int_dtype(self) -> None:
         header = {
             "TFIELDS": 1,
             "TTYPE1": "N",
@@ -3385,7 +3401,7 @@ class TestFITSScaleColumns:
         out = t.forward(x)
         assert out["N"].dtype == torch.int32
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         header = {
             "TFIELDS": 1,
             "TTYPE1": "F",
@@ -3405,7 +3421,7 @@ class TestFITSScaleColumns:
 
 
 class TestTNullToNan:
-    def test_replaces_sentinel_with_nan(self):
+    def test_replaces_sentinel_with_nan(self) -> None:
         header = {"TFIELDS": 1, "TTYPE1": "FLUX", "TFORM1": "J", "TNULL1": -999}
         x = {"FLUX": torch.tensor([1, -999, 3], dtype=torch.int32)}
         t = TNullToNan.from_header(header)
@@ -3415,7 +3431,7 @@ class TestTNullToNan:
         assert out["FLUX"][0].item() == 1.0
         assert out["FLUX"][2].item() == 3.0
 
-    def test_float_column_no_promotion(self):
+    def test_float_column_no_promotion(self) -> None:
         header = {"TFIELDS": 1, "TTYPE1": "VAL", "TFORM1": "E", "TNULL1": 0.0}
         x = {"VAL": torch.tensor([0.0, 1.0, 2.0], dtype=torch.float32)}
         t = TNullToNan.from_header(header)
@@ -3423,14 +3439,14 @@ class TestTNullToNan:
         assert out["VAL"].dtype == torch.float32  # already float, no promotion
         assert torch.isnan(out["VAL"][0])
 
-    def test_empty_header(self):
+    def test_empty_header(self) -> None:
         header: dict[str, object] = {}
         x = {"A": torch.randn(10)}
         t = TNullToNan.from_header(header)
         out = t.forward(x)
         assert torch.equal(out["A"], x["A"])  # no-op
 
-    def test_nulls_only_on_specified_columns(self):
+    def test_nulls_only_on_specified_columns(self) -> None:
         header = {
             "TFIELDS": 2,
             "TTYPE1": "GOOD",
@@ -3451,19 +3467,19 @@ class TestTNullToNan:
         # BAD has TNULL=-99, should be converted to NaN
         assert torch.isnan(out["BAD"][1])
 
-    def test_inverse_raises(self):
+    def test_inverse_raises(self) -> None:
         t = TNullToNan.from_header({})
         with pytest.raises(RuntimeError, match="lossy"):
             t.inverse({})
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         header = {"TFIELDS": 1, "TTYPE1": "X", "TFORM1": "J", "TNULL1": -1}
         t = TNullToNan.from_header(header)
         r = repr(t)
         assert "TNullToNan" in r
         assert "X" in r
 
-    def test_forward_with_mask_none(self):
+    def test_forward_with_mask_none(self) -> None:
         """TNullToNan.forward accepts mask=None without parameter shadowing."""
         t = TNullToNan({"FLUX": -999.0})
         data = {"FLUX": torch.tensor([1.0, -999.0, 3.0])}
@@ -3472,7 +3488,7 @@ class TestTNullToNan:
         assert out["FLUX"][0].item() == 1.0
         assert out["FLUX"][2].item() == 3.0
 
-    def test_forward_with_mask_tensor(self):
+    def test_forward_with_mask_tensor(self) -> None:
         """TNullToNan.forward accepts a mask tensor (ignored for pointwise logic)."""
         t = TNullToNan({"FLUX": -999.0})
         data = {"FLUX": torch.tensor([1.0, -999.0, 3.0])}
@@ -3480,7 +3496,7 @@ class TestTNullToNan:
         out = t.forward(data, mask=extra_mask)
         assert torch.isnan(out["FLUX"][1])
 
-    def test_multiple_columns_with_mask(self):
+    def test_multiple_columns_with_mask(self) -> None:
         """TNullToNan handles multiple columns with different TNULL values and mask=None."""
         t = TNullToNan({"FLUX": -999.0, "QUAL": 0.0})
         data = {
@@ -3501,7 +3517,7 @@ class TestTNullToNan:
 
 
 class TestFITSHeaderScaleRoundtrip:
-    def test_scaled_image_roundtrip(self):
+    def test_scaled_image_roundtrip(self) -> None:
         """Simulate a typical int16 image with BSCALE/BZERO."""
         raw = torch.randint(-100, 100, (64, 64), dtype=torch.int16)
         header: dict[str, object] = {"BITPIX": 16, "BSCALE": 0.5, "BZERO": 2000.0}
@@ -3513,10 +3529,10 @@ class TestFITSHeaderScaleRoundtrip:
         # 0.5 is exactly representable in float32, roundtrip is exact
         assert torch.allclose(restored, raw.float())
 
-    def test_unsigned_uint16_convention(self):
+    def test_unsigned_uint16_convention(self) -> None:
         """BZERO=32768 is the standard FITS unsigned int16 convention."""
         raw = torch.randint(0, 65535, (32, 32), dtype=torch.int32)
-        header = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
+        header: dict[str, object] = {"BITPIX": 16, "BSCALE": 1.0, "BZERO": 32768.0}
         t = FITSHeaderScale.from_header(header)
         physical = t.forward(raw.float())
         expected = raw.float() * 1.0 + 32768.0
@@ -3524,9 +3540,9 @@ class TestFITSHeaderScaleRoundtrip:
         restored = t.inverse(physical)
         assert torch.allclose(restored, raw.float())
 
-    def test_bscale_only_convention(self):
+    def test_bscale_only_convention(self) -> None:
         """BSCALE != 1, BZERO = 0."""
-        header = {"BITPIX": -32, "BSCALE": 2.0, "BZERO": 0.0}
+        header: dict[str, object] = {"BITPIX": -32, "BSCALE": 2.0, "BZERO": 0.0}
         orig = torch.rand(16, 16) * 100
         raw = orig.clone()
         t = FITSHeaderScale.from_header(header)
@@ -3535,7 +3551,7 @@ class TestFITSHeaderScaleRoundtrip:
         assert torch.allclose(out, orig.mul(2.0))
         assert torch.allclose(t.inverse(out), orig)
 
-    def test_inverse_applied_to_identity(self):
+    def test_inverse_applied_to_identity(self) -> None:
         """After applying scale, inverse should get back the original."""
         x = torch.tensor([100.0, 200.0, 300.0])
         t = FITSHeaderScale(bscale=0.5, bzero=50.0)
