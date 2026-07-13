@@ -1224,9 +1224,9 @@ class TNullToNan(FITSTransform):
             # Promote integer columns to float32 so NaN is representable
             if val.dtype not in (torch.float32, torch.float64):
                 val = val.to(torch.float32)
-            mask = val.eq(tnull)
+            null_mask = val.eq(tnull)
             out[name] = torch.where(
-                mask,
+                null_mask,
                 torch.tensor(float("nan"), dtype=val.dtype, device=val.device),
                 val,
             )
