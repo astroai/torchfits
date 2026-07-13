@@ -3097,8 +3097,8 @@ class FITSHeaderNormalize(FITSTransform):
                 return torch.zeros_like(x)
             return (x - vmin) / (vmax - vmin)
         if self.scale_floats:
-            vmin = x.min()
-            vmax = x.max()
+            vmin = _amin(x, tuple(range(x.ndim)), mask=mask)
+            vmax = _amax(x, tuple(range(x.ndim)), mask=mask)
             self._in_range = (float(vmin.item()), float(vmax.item()))
             if vmax == vmin:
                 return torch.zeros_like(x)
