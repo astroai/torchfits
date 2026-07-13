@@ -100,9 +100,10 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 
 ## Performance
 
-Median wall-clock from the lab exhaustive benchmark suite (run `exhaustive_cuda_0.7.0_20260711_055635`,
-CANFAR staging GPU + CPU rows; see [docs/benchmarks.md](docs/benchmarks.md) for methodology,
-deficit transparency, and reproducible commands.
+Median wall-clock from the lab exhaustive benchmark suite (run
+`exhaustive_cuda_0.7.0_20260711_055635`, CANFAR staging GPU + CPU rows); see
+[docs/benchmarks.md](docs/benchmarks.md) for methodology, deficit transparency,
+and reproducible commands.
 
 | Case | torchfits | astropy | fitsio | Speedup vs astropy |
 |---|---:|---:|---:|---:|
@@ -130,7 +131,10 @@ all backends; GPU rows measure host decode + H2D copy, not disk→GPU bypass.
 pip install torchfits
 ```
 
-Pre-built wheels are available for Linux and macOS (x86_64, arm64). No system CFITSIO needed&mdash;it's vendored and compiled automatically.
+Pre-built wheels are available for Linux x86_64 and macOS arm64. No system
+CFITSIO is needed&mdash;it is vendored and compiled automatically. Other
+architectures install from source when a compatible compiler and PyTorch are
+available.
 
 From source:
 

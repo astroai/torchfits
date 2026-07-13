@@ -50,3 +50,21 @@ def test_tablehdu_from_fits(fits_file):
     assert "flux" in table_hdu.col_names
     assert "id" in table_hdu.col_names
     assert "flag" in table_hdu.col_names
+
+
+def test_tablehdu_from_fits_uses_public_read_pipeline(fits_file, monkeypatch):
+    import torchfits
+
+    original = torchfits.read_table
+    calls = []
+
+    def traced_read_table(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(torchfits, "read_table", traced_read_table)
+    table_hdu = TableHDU.from_fits(fits_file, hdu_index=1)
+
+    assert table_hdu.num_rows == 3
+    assert len(calls) == 1
+    assert calls[0][1] == {"hdu": 1, "return_header": True}

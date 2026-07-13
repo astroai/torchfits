@@ -30,7 +30,7 @@ jobs:
       - name: Ruff format
         run: ruff format --check .
       - name: Mypy type check
-        run: mypy src/ --ignore-missing-imports
+        run: mypy src/torchfits --ignore-missing-imports
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})

@@ -6,7 +6,9 @@
 pip install torchfits
 ```
 
-Pre-built wheels are available for Linux (x86_64, aarch64) and macOS (x86_64, arm64). The wheels bundle [CFITSIO](https://heasarc.gsfc.nasa.gov/fitsio/) — no system library needed.
+Pre-built wheels are available for Linux x86_64 and macOS arm64. The wheels
+bundle [CFITSIO](https://heasarc.gsfc.nasa.gov/fitsio/) — no system library is
+needed. Other architectures build from source.
 
 Requires Python **3.10+** (development uses **3.13** via pixi) and [PyTorch](https://pytorch.org/) 2.0+.
 

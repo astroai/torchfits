@@ -403,7 +403,9 @@ else()
         # Force position-independent code for static library to be linked into shared library
         set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-        add_subdirectory("${CFITSIO_SOURCE_DIR}" cfitsio_build)
+        # Build and link CFITSIO, but do not install its headers, static archive,
+        # pkg-config file, or CMake metadata into the Python wheel.
+        add_subdirectory("${CFITSIO_SOURCE_DIR}" cfitsio_build EXCLUDE_FROM_ALL)
 
         # CFITSIO target is named 'cfitsio'
         set(CFITSIO_LIBRARY cfitsio)

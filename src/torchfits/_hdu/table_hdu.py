@@ -692,11 +692,11 @@ class TableHDU(TensorFrame):
             raise FileNotFoundError(f"FITS file not found: {file_path}")
 
         try:
-            import torchfits._C as cpp
-            from .header import Header as Hdr
+            import torchfits
 
-            tensor_dict = cpp.read_fits_table(file_path, hdu_index)
-            header = Hdr(cpp.read_header_dict(file_path, hdu_index))
+            tensor_dict, header = torchfits.read_table(
+                file_path, hdu=hdu_index, return_header=True
+            )
 
             return cls(
                 tensor_dict, {}, header, source_path=file_path, source_hdu=hdu_index

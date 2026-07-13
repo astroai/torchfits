@@ -150,6 +150,7 @@ with torchfits.open("mef.fits") as hdul:
 - `DataView`, `TableDataAccessor`, and `TensorFrame`: stable table/HDU
   interchange helpers for downstream packages.
 - `Header`: dict-like FITS header preserving FITS card semantics.
+- `Card`: one FITS header card with keyword, value, and comment semantics.
 
 ## Table Module
 
@@ -184,7 +185,14 @@ torchfits.table.duckdb_query(path, sql, hdu=1)
 torchfits.table.scanner(path, hdu=1, columns=None, where=None)
 torchfits.to_arrow(table_dict, decode_bytes=True, vla_policy="list")
 torchfits.to_pandas(table_dict, decode_bytes=True, vla_policy="object")
+torchfits.to_polars(table_dict, decode_bytes=True)
 ```
+
+The supported package namespaces are `torchfits.table`, `torchfits.cache`,
+`torchfits.cpp`, `torchfits.data`, `torchfits.transforms`, and
+`torchfits.where`. `torchfits.cpp` is the low-level native compatibility
+surface used by performance-sensitive downstream packages; prefer the root I/O
+functions and `torchfits.table` unless a native-only operation is required.
 
 **Polars ergonomics:**
 
@@ -298,9 +306,18 @@ Still supported; prefer the canonical paths above:
 
 ## Transforms
 
+The transform classes are available from `torchfits.transforms` and are also
+re-exported at the package root for compatibility: `SpectralBinning`,
+`ContinuumRemoval`, `BandMath`, `ContinuumNormalize`, `DopplerShift`,
+`PhaseFold`, `GlobalScalarNorm`, `SavitzkyGolayFilter`, `RunningPercentile`,
+`UpperEnvelopeContinuum`, `WaveletDecompose`, `AsymmetricLeastSquares`,
+`AlphaShapeContinuum`, `AsymmetricSigmaClip`, `FITSScaleColumns`, and
+`TNullToNan`.
+
 All transforms are compatible with `torch.utils.data.Dataset` and `DataLoader`.
-Every transform provides a matching `.inverse()` for decoding model outputs
-back to physical units.  Image and spectral transforms are in `torchfits.transforms`;
+Reversible transforms provide `.inverse()` for decoding model outputs back to
+physical units; lossy or many-to-one transforms document that no inverse is
+available. Image and spectral transforms are in `torchfits.transforms`;
 continuum/baseline estimators are accessible from `torchfits` directly:
 
 ```python

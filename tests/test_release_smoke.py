@@ -6,7 +6,6 @@ import tempfile
 
 import numpy as np
 import torch
-from astropy.table import Table
 
 import torchfits
 
@@ -54,24 +53,25 @@ def test_release_smoke_image_read_write_roundtrip() -> None:
 
 
 def test_release_smoke_table_read() -> None:
-    table = Table(
-        {
-            "RA": np.array([10.1, 10.2, 10.3], dtype=np.float64),
-            "ID": np.array([1, 2, 3], dtype=np.int64),
-        }
-    )
+    table = {
+        "RA": np.array([10.1, 10.2, 10.3], dtype=np.float64),
+        "ID": np.array([1, 2, 3], dtype=np.int64),
+    }
 
     with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as fh:
         path = fh.name
 
     try:
-        table.write(path, format="fits", overwrite=True)
+        torchfits.write(path, table, overwrite=True)
         data = torchfits.read_table(path, hdu=1, columns=["RA", "ID"])
+        hdu = torchfits.TableHDU.from_fits(path, hdu_index=1)
 
         assert set(data.keys()) == {"RA", "ID"}
         assert torch.allclose(
             data["RA"].cpu(), torch.tensor([10.1, 10.2, 10.3], dtype=torch.float64)
         )
         assert torch.equal(data["ID"].cpu(), torch.tensor([1, 2, 3], dtype=torch.int64))
+        assert hdu.num_rows == 3
+        assert set(hdu.col_names) == {"RA", "ID"}
     finally:
         Path(path).unlink(missing_ok=True)

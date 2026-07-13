@@ -235,6 +235,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `TableHDU.from_fits()` now uses the public `read_table()` pipeline instead of
+  opening a separate native table/header path, keeping cache, validation, and
+  runtime initialization behavior consistent with the rest of the package.
+- Removed the duplicate `where` entry from the package root `__all__` contract.
+- Scoped mypy's missing-import exceptions to the optional pandas/torch-frame
+  integrations and the compiled extension, allowing real Python type errors to
+  surface. Mypy now checks untyped function bodies and is a blocking local
+  preflight and CI check; the resulting `TableHDURef` column-sequence mismatch
+  was fixed at the Arrow boundary.
+- Release wheels now run image and table round-trip tests against the installed
+  artifact, and macOS arm64 wheels use the platform's real minimum deployment
+  target (11.0). Platform documentation now matches the wheel matrix. Vendored
+  CFITSIO remains statically linked but its development headers, archive, and
+  CMake/pkg-config metadata are no longer copied into wheels.
+- Multi-worker DataLoader tests now use a real `__main__` guard, matching the
+  macOS `spawn` contract instead of recursively creating workers from
+  `python -c`; timeout failures preserve worker stderr for diagnosis.
 - **Vectorized NULL evaluation:** `_where.py` replaced Python-loop `np.array([v is None for v in val])`
   with vectorized `(val == None)` for element-wise null checks.
 - Fixed unused imports in `tests/test_cache_config.py`.

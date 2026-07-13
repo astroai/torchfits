@@ -12,6 +12,10 @@ import torch
 import torchfits
 
 
+def test_root_all_has_unique_names():
+    assert len(torchfits.__all__) == len(set(torchfits.__all__))
+
+
 class TestMainAPI:
     """Test main API functions."""
 

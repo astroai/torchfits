@@ -483,10 +483,9 @@ class TestMakeLoader:
 # Test: multi-worker DataLoader integration (subprocess)
 # ---------------------------------------------------------------------------
 #
-# These tests fork a subprocess so the real DataLoader worker machinery runs
-# (forking inside pytest hangs the test runner on libomp / libcfitsio
-# threadpool handles).  Each subprocess writes a JSON report to a temp file
-# that pytest re-reads after the subprocess exits.
+# These tests launch a subprocess so the real DataLoader worker machinery runs
+# without mixing pytest's process state with libomp / libcfitsio thread pools.
+# Each subprocess writes a JSON report that pytest reads after it exits.
 
 
 class TestMultiWorkerDataLoader:
@@ -505,14 +504,20 @@ class TestMultiWorkerDataLoader:
         report_path = _tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ).name
-        # Wrap the entire script as a top-level expression: the f-string
-        # carries both the caller's source (already at column 0 in this
-        # implementation) and the trailing report-save block at column 0.
-        script = (
+        # macOS uses multiprocessing "spawn". Keep DataLoader construction
+        # behind the standard __main__ guard so workers can import this script
+        # without recursively creating more workers.
+        body = (
             _textwrap.dedent(source)
-            + "\n"
-            + "import json as _json_local\n"
-            + f"_json_local.dump(report, open({report_path!r}, 'w'))\n"
+            + "\nimport json as _json_local\n"
+            + f"with open({report_path!r}, 'w') as _report_file:\n"
+            + "    _json_local.dump(report, _report_file)\n"
+        )
+        script = (
+            "def _run():\n"
+            + _textwrap.indent(body, "    ")
+            + "\nif __name__ == '__main__':\n"
+            + "    _run()\n"
         )
         env = {**_os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
         try:
@@ -528,6 +533,13 @@ class TestMultiWorkerDataLoader:
                 "multi-worker subprocess failed:\n"
                 f"--- stdout ---\n{exc.stdout.decode(errors='replace')}\n"
                 f"--- stderr ---\n{exc.stderr.decode(errors='replace')}\n"
+                f"--- script ---\n{script}\n"
+            ) from exc
+        except _subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "multi-worker subprocess timed out:\n"
+                f"--- stdout ---\n{(exc.stdout or b'').decode(errors='replace')}\n"
+                f"--- stderr ---\n{(exc.stderr or b'').decode(errors='replace')}\n"
                 f"--- script ---\n{script}\n"
             ) from exc
         with open(report_path) as fh:

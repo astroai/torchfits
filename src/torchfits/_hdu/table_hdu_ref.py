@@ -283,7 +283,11 @@ class TableHDURef:
 
         path, hdu = self._require_source()
         return torchfits.table.read(
-            path, hdu=hdu, columns=self._columns, row_slice=self._row_slice, **kwargs
+            path,
+            hdu=hdu,
+            columns=list(self._columns) if self._columns is not None else None,
+            row_slice=self._row_slice,
+            **kwargs,
         )
 
     def scan_arrow(self, **kwargs):
@@ -291,7 +295,11 @@ class TableHDURef:
 
         path, hdu = self._require_source()
         return torchfits.table.scan(
-            path, hdu=hdu, columns=self._columns, row_slice=self._row_slice, **kwargs
+            path,
+            hdu=hdu,
+            columns=list(self._columns) if self._columns is not None else None,
+            row_slice=self._row_slice,
+            **kwargs,
         )
 
     def reader_arrow(self, **kwargs):
@@ -299,7 +307,11 @@ class TableHDURef:
 
         path, hdu = self._require_source()
         return torchfits.table.reader(
-            path, hdu=hdu, columns=self._columns, row_slice=self._row_slice, **kwargs
+            path,
+            hdu=hdu,
+            columns=list(self._columns) if self._columns is not None else None,
+            row_slice=self._row_slice,
+            **kwargs,
         )
 
     def _refresh_file_view(self) -> "TableHDURef":

@@ -38,7 +38,7 @@ def main() -> int:
     namespaces = {"table", "cache", "cpp"}
     doc_api = {s for s in doc_syms if s not in namespaces}
 
-    missing_from_docs = sorted(exports - doc_api - {"__version__"})
+    missing_from_docs = sorted(exports - doc_api - namespaces - {"__version__"})
     extra_in_docs = sorted(
         s
         for s in doc_api

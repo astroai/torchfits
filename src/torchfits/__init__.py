@@ -107,7 +107,6 @@ __all__ = tuple(
         "to_pandas",
         "to_arrow",
         "to_polars",
-        "where",
         "SpectralBinning",
         "ContinuumRemoval",
         "BandMath",

@@ -49,7 +49,7 @@ jobs:
       CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
       # ponytail: macOS x86_64 hits nanobind LTO + libtorch link failures on GHA; arm64 is primary.
       CIBW_ARCHS_MACOS: arm64
-      CIBW_TEST_REQUIRES: numpy
+      CIBW_TEST_REQUIRES: numpy pyarrow pytest
       CIBW_TEST_COMMAND: |
         pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         TORCH_LIB="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
@@ -58,10 +58,10 @@ jobs:
         else
           export LD_LIBRARY_PATH="$TORCH_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         fi
-        python -c "import torchfits, torchfits._C; print(torchfits.__version__)"
+        pytest {project}/tests/test_release_smoke.py -q
       CIBW_BEFORE_ALL_LINUX: bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       CIBW_BEFORE_ALL_MACOS: bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
-      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=10.13 CMAKE_OSX_DEPLOYMENT_TARGET=10.13
+      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0 CMAKE_OSX_DEPLOYMENT_TARGET=11.0
       CIBW_ENVIRONMENT_LINUX: PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
       CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --exclude libtorch_python.so --exclude libtorch_cpu.so --exclude libtorch.so --exclude libc10.so -w {dest_dir} {wheel}"
       # ponytail: PyTorch extensions resolve torch at runtime; delocate breaks @rpath linkage.
