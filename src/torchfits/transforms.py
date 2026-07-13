@@ -923,7 +923,10 @@ def _resample_1d(
         if mode in ("linear", "nearest"):
             y_3d = y_2d.unsqueeze(1)  # [N, 1, L_src]
             out = F.interpolate(
-                y_3d, size=L_dst, mode=mode, align_corners=True
+                y_3d,
+                size=L_dst,
+                mode=mode,
+                **({"align_corners": True} if mode == "linear" else {}),
             )  # [N, 1, L_dst]
         else:
             # cubic or area: reshape to 2-D for PyTorch's 2D interpolate.
@@ -1041,7 +1044,10 @@ def _resample_scale(
     if mode in ("linear", "nearest"):
         y_3d = x_2d.unsqueeze(1)  # [N, 1, L_src]
         out = F.interpolate(
-            y_3d, size=L_dst, mode=mode, align_corners=True
+            y_3d,
+            size=L_dst,
+            mode=mode,
+            **({"align_corners": True} if mode == "linear" else {}),
         )  # [N, 1, L_dst]
     else:
         # cubic → bicubic, area → area — both need 2-D reshape.
