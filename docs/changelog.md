@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 0.8.0
 
+### Fixed
+
+- Writing one FITS file no longer invalidates borrowed native handles for
+  unrelated files. Native cache clearing now defers closing in-use handles,
+  preventing a subsequent read from dereferencing a closed CFITSIO handle.
+
 ### Added
 
 - **`read_polars()`** — one-call FITS-to-Polars convenience function. Calls `read()`

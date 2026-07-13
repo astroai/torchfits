@@ -15,6 +15,7 @@ namespace torchfits {
 // Cache initialization/configuration
 void configure_cache(size_t max_files, size_t max_memory_mb);
 void clear_file_cache();
+void invalidate_file_cache(const std::string& filepath);
 size_t get_cache_size();
 fitsfile* get_or_open_cached(const std::string& filepath);
 void release_cached(const std::string& filepath);

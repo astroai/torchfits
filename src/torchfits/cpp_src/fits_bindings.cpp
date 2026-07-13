@@ -1953,6 +1953,7 @@ void bind_fits(nb::module_& m) {
 
     m.def("configure_cache", &configure_cache, nb::arg("max_files"), nb::arg("max_memory_mb"));
     m.def("clear_file_cache", &clear_file_cache);
+    m.def("invalidate_file_cache", &invalidate_file_cache, nb::arg("path"));
     m.def("clear_shared_read_meta_cache", &clear_shared_read_meta_cache);
     m.def("get_cache_size", &get_cache_size);
 

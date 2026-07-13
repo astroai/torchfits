@@ -207,14 +207,22 @@ public:
 
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (auto& [path, entry] : cache_) {
+        for (auto it = cache_.begin(); it != cache_.end();) {
+            auto& entry = it->second;
+            if (entry.refcount != 0) {
+                // ponytail: retain borrowed handles until their owners release them;
+                // a generation-based cache is only needed if clear-heavy profiling warrants it.
+                entry.stale = true;
+                ++it;
+                continue;
+            }
             if (entry.fptr) {
                 int status = 0;
                 fits_close_file(entry.fptr, &status);
             }
+            lru_list_.erase(entry.lru_iter);
+            it = cache_.erase(it);
         }
-        cache_.clear();
-        lru_list_.clear();
     }
 
     size_t size() const {
@@ -264,6 +272,10 @@ void configure_cache(size_t max_files, size_t max_memory_mb) {
 
 void clear_file_cache() {
     global_cache.clear();
+}
+
+void invalidate_file_cache(const std::string& filepath) {
+    global_cache.invalidate(filepath);
 }
 
 size_t get_cache_size() {

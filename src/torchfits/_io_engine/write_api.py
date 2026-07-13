@@ -22,9 +22,7 @@ def _invalidate_path_caches(path: str) -> None:
     _invalidate_io_path_caches(path)
     import torchfits._C as cpp
 
-    # ponytail: native invalidation is global; add a bound per-path operation
-    # only if write-heavy profiling shows this small-cache clear is material.
-    cpp.clear_file_cache()
+    cpp.invalidate_file_cache(path)
     clear_meta = getattr(cpp, "clear_shared_read_meta_cache", None)
     if clear_meta is not None:
         clear_meta()

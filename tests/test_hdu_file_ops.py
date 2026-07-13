@@ -67,6 +67,27 @@ def test_external_overwrite_invalidates_cached_handle(tmp_path):
     assert torch.equal(second, updated)
 
 
+def test_writing_another_file_keeps_open_read_handle_valid(tmp_path):
+    source = tmp_path / "source.fits"
+    torchfits.write(
+        str(source),
+        torch.arange(12, dtype=torch.float32).reshape(3, 4),
+        overwrite=True,
+    )
+
+    first, first_header = torchfits.read(str(source), return_header=True)
+    for index in range(2):
+        torchfits.write(
+            str(tmp_path / f"mask_{index}.fits"),
+            torch.zeros_like(first),
+            overwrite=True,
+        )
+
+    reread, reread_header = torchfits.read(str(source), return_header=True)
+    assert torch.equal(reread, first)
+    assert reread_header["NAXIS1"] == first_header["NAXIS1"]
+
+
 def test_tablehduref_file_mutators_roundtrip(tmp_path):
     path = tmp_path / "table_mutators.fits"
     torchfits.write(
