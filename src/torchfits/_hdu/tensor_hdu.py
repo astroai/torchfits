@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 from torch import Tensor
 
@@ -54,11 +54,6 @@ class TensorHDU:
         import torchfits._C as cpp
 
         return cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size)
-
-    def stats(self) -> Dict[str, float]:
-        import torchfits._C as cpp
-
-        return cpp.compute_stats(self._file_handle, self._hdu_index)
 
     def _get_shape_str(self) -> str:
         if self._data is not None:

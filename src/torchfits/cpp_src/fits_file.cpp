@@ -501,10 +501,6 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
     return tensor;
 }
 
-std::unordered_map<std::string, double> FITSFile::compute_stats(int /*hdu_num*/) {
-    return {};
-}
-
 int FITSFile::get_num_hdus() {
     int status = 0, nhdus = 0;
     fits_get_num_hdus(fptr_, &nhdus, &status);

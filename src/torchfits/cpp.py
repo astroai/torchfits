@@ -21,7 +21,6 @@ __all__ = (
     "append_fits_table_rows",
     "clear_file_cache",
     "clear_shared_read_meta_cache",
-    "compute_stats",
     "configure_cache",
     "delete_fits_table_rows",
     "drop_fits_table_columns",

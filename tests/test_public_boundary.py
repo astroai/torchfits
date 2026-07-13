@@ -32,6 +32,7 @@ def test_cpp_public_surface_is_explicit_and_resolves():
     assert all(hasattr(cpp, name) for name in cpp.__all__)
     assert "read_header_dict" in cpp.__all__
     assert "resolve_hdu_name_cached" in cpp.__all__
+    assert "compute_stats" not in cpp.__all__
 
 
 def test_where_public_surface_matches_table_predicate_semantics():

@@ -50,7 +50,6 @@ public:
     std::vector<long> get_shape(int hdu_num);
     int get_dtype(int hdu_num);
     torch::Tensor read_subset(int hdu_num, long x1, long y1, long x2, long y2);
-    std::unordered_map<std::string, double> compute_stats(int hdu_num);
     int get_num_hdus();
     std::string get_hdu_type(int hdu_num);
     bool write_hdus(nb::list hdus, bool overwrite);

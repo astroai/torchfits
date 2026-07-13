@@ -1290,7 +1290,6 @@ void bind_fits(nb::module_& m) {
             return self.write_image(tensor, hdu_num, bscale, bzero);
         }, nb::arg("tensor"), nb::arg("hdu_num") = 0, nb::arg("bscale") = 1.0, nb::arg("bzero") = 0.0)
         .def("write_hdus", &FITSFile::write_hdus)
-        .def("compute_stats", &FITSFile::compute_stats)
         .def("get_shape", &FITSFile::get_shape)
         .def("get_dtype", &FITSFile::get_dtype)
         .def("read_subset", [](FITSFile& self, int hdu_num, long x1, long y1, long x2, long y2) {
@@ -1631,10 +1630,6 @@ void bind_fits(nb::module_& m) {
         }
         return tensor_to_python(tensor);
     }, nb::arg("file"), nb::arg("hdu_num"), nb::arg("use_mmap") = true);
-
-    m.def("compute_stats", [](FITSFile& file, int hdu_num) {
-        return file.compute_stats(hdu_num);
-    });
 
     m.def("write_fits_file", [](const std::string& path, nb::list hdus, bool overwrite) {
         std::string final_path = path;

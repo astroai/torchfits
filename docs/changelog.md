@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Removed the never-implemented `TensorHDU.stats()` and its empty native result
+  from the supported `torchfits.cpp` inventory instead of inventing statistics
+  semantics during the 0.8 API freeze.
 - Removed the environment-dependent optional `torch_frame` inheritance from
   `TableHDU` and the `torchfits.hdu.TensorFrame` alias. FITS table columns stay
   as tensor/list mappings, Arrow is the interchange boundary, and Polars is the
