@@ -1294,6 +1294,35 @@ class TestResample1d:
             assert out.shape == (3, 40), f"{mode}: bad shape {out.shape}"
             assert torch.isfinite(out).all(), f"{mode}: non-finite values"
 
+    # ---- descending (negative-spacing) uniform grids ----
+
+    def test_descending_uniform_grid(self):
+        """Negative-spacing uniform grid (e.g. [500, 400, 300, ...]) exercises sign-preserving normalization."""
+        L_src = 50
+        x_old = (
+            500.0 - torch.arange(L_src, dtype=torch.float32) * 10.0
+        )  # [500, 490, ..., 10]
+        x = x_old.unsqueeze(0)  # values match positions
+        # Midpoint queries
+        x_new = x_old[:-1] - 5.0  # [495, 485, ..., 15] — halfway between each pair
+        out = _resample_1d(x, x_old, x_new, mode="linear")
+        expected = x[:, :-1] - 5.0  # midpoint of [v_i, v_{i+1}] = v_i + dx/2 = v_i - 5
+        assert out.shape == (1, L_src - 1)
+        assert torch.allclose(out, expected, atol=1e-4)
+
+    def test_descending_uniform_grid_all_modes(self):
+        """All non-area modes work on descending uniform grids."""
+        L_src = 40
+        x_old = (
+            1000.0 - torch.arange(L_src, dtype=torch.float32) * 25.0
+        )  # [1000, 975, ..., 25]
+        x = torch.randn(2, L_src)
+        x_new = torch.linspace(1000.0, 25.0, 30, dtype=torch.float32)
+        for mode in ["linear", "nearest", "cubic"]:
+            out = _resample_1d(x, x_old, x_new, mode=mode)
+            assert out.shape == (2, 30), f"{mode}: bad shape {out.shape}"
+            assert torch.isfinite(out).all(), f"{mode}: non-finite values"
+
 
 class TestDopplerShift:
     def test_identity(self):

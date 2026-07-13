@@ -877,7 +877,11 @@ def _resample_1d(
 
         # Normalize x_new to [-1, 1] (PyTorch's grid_sample convention).
         x0, x1 = x_old[0], x_old[-1]
-        denom = (x1 - x0).clamp_min(1e-30)
+        denom = x1 - x0
+        # Guard against near-zero span while preserving sign for
+        # descending grids (e.g. wavelength in air → vacuum).
+        if abs(denom.item()) < 1e-30:
+            denom = torch.tensor(1e-30, device=denom.device, dtype=denom.dtype)
         x_norm = 2.0 * (x_new - x0) / denom - 1.0
 
         # Build grid: [N, 1, L_dst, 2] — x is the spectral coordinate, y=0.
