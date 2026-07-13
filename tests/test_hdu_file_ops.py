@@ -4,6 +4,19 @@ import time
 import os
 
 import torchfits
+import torchfits._io_engine.write_api as write_api
+
+
+def test_opened_hdul_repr_handles_string_header_numbers(tmp_path):
+    path = tmp_path / "repr.fits"
+    torchfits.write(str(path), torch.ones((2, 3), dtype=torch.float32))
+
+    with torchfits.open(str(path)) as hdul:
+        assert isinstance(hdul[0].header["NAXIS"], str)
+        summary = repr(hdul)
+
+    assert "(2, 3)" in summary
+    assert "float32" in summary
 
 
 def test_hdu_file_ops_insert_replace_delete(tmp_path):
@@ -298,3 +311,24 @@ def test_replace_hdu_compressed_mixed_hdus_roundtrip(tmp_path):
         assert hdul[2].header.get("EXTNAME") == "CAT_REPLACED"
     table_out = torchfits.read(str(path), hdu=2)
     assert table_out["ID"].squeeze(-1).tolist() == [10, 20, 30]
+
+
+def test_failed_hdu_mutation_preserves_original(monkeypatch, tmp_path):
+    path = tmp_path / "mutation_preserved.fits"
+    original = torch.arange(9, dtype=torch.float32).reshape(3, 3)
+    torchfits.write(str(path), original)
+    before = path.read_bytes()
+
+    def partial_then_fail(temp_path, _hdus, compress=False):
+        with open(temp_path, "wb") as stream:
+            stream.write(b"partial")
+        raise RuntimeError("mutation failed")
+
+    monkeypatch.setattr(
+        write_api, "_write_hdus_with_optional_compression", partial_then_fail
+    )
+    with pytest.raises(RuntimeError, match="mutation failed"):
+        torchfits.insert_hdu(str(path), torch.ones((3, 3)), index=1)
+
+    assert path.read_bytes() == before
+    assert torch.equal(torchfits.read(str(path)), original)

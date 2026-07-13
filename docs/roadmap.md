@@ -42,8 +42,8 @@ choices, not work items to be closed:
 - **GPU writes** — The CFITSIO C API requires host `void*` pointers. Bypassing
   it requires CUDA kernels or GPUDirect Storage, massive engineering for
   marginal gain. Host-copy is intentional.
-- **Arrow/Pandas/Polars/DuckDB interop as optional** — Keeping these as optional
-  dependencies preserves PyTorch's lightweight package boundaries.
+- **Pandas/Polars/DuckDB interop as optional** — PyArrow is the table runtime;
+  the higher-level dataframe and SQL integrations remain optional.
 
 ## Longer-term candidates
 
@@ -221,7 +221,7 @@ flowchart LR
 - Full CFITSIO C API exposure
 - GPU FITS writes or true disk→GPU bypass (GPUDirect/cuFile)
 - WCS, HEALPix, sphere geometry, simulation/training orchestration frameworks
-- Mandatory PyArrow/Polars/Pandas dependencies on the core package
+- Mandatory Polars/Pandas/DuckDB dependencies on the core package
 - Replacing Astropy/fitsio for metadata editing workflows unrelated to tensor I/O
 
 ### 0.6.0 release gate *(extends 0.5.0)*

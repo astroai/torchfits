@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 
 import torchfits
@@ -7,10 +9,29 @@ from torchfits import hdu, table, where
 def test_hdu_and_table_public_surfaces_are_importable():
     assert hdu.DataView is not None
     assert hdu.TableDataAccessor is not None
-    assert hdu.TensorFrame is not None
     assert callable(table.read)
     assert callable(table.write)
     assert callable(table.clear_cache)
+
+
+def test_torch_frame_is_not_part_of_the_fits_hdu_surface():
+    assert not hasattr(hdu, "TensorFrame")
+
+
+def test_root_functions_preserve_real_signatures():
+    import torchfits.io
+
+    assert inspect.signature(torchfits.read) == inspect.signature(torchfits.io.read)
+    assert torchfits.read is torchfits.io.read
+
+
+def test_cpp_public_surface_is_explicit_and_resolves():
+    import torchfits.cpp as cpp
+
+    assert len(cpp.__all__) == len(set(cpp.__all__))
+    assert all(hasattr(cpp, name) for name in cpp.__all__)
+    assert "read_header_dict" in cpp.__all__
+    assert "resolve_hdu_name_cached" in cpp.__all__
 
 
 def test_where_public_surface_matches_table_predicate_semantics():

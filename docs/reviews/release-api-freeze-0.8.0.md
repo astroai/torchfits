@@ -9,7 +9,8 @@ The 0.8.0 source and a clean macOS arm64 wheel pass image and table
 round-trips, including the `TableHDU.from_fits` path implicated in the
 published 0.7 downstream crash. The review removed duplicate native read
 plumbing, made type checking blocking, corrected the wheel platform contract,
-and stopped shipping CFITSIO development artifacts inside the wheel.
+stopped shipping CFITSIO development artifacts inside the wheel, and made
+existing-file rewrites transactional.
 
 No known local correctness blocker remains for ordinary CPU FITS I/O. Do not
 publish 0.8.0 until the GitHub wheel matrix and CANFAR Linux/CUDA gates pass.
@@ -27,12 +28,6 @@ the reviewed 0.8 source.
 
 ## Should-fix
 
-- Preserve inspectable signatures on lazy root wrappers before the 1.0 API
-  freeze; runtime `inspect.signature(torchfits.read)` currently reports
-  `(*args, **kwargs)` even though static typing exposes the real function.
-- Define the supported function-level subset of `torchfits.cpp`. The namespace
-  is required by current downstream consumers, but a wildcard re-export of the
-  complete native module is too broad for a 1.0 stability promise.
 - Continue decomposing `transforms.py` and `_table/read.py` only along existing
   feature boundaries; their size is a maintenance risk but not a reason for a
   speculative rewrite.
@@ -60,8 +55,22 @@ the reviewed 0.8 source.
   reuses its header result instead of issuing separate native table and header
   reads.
 - Root `__all__` is unique and the public API inventory is fully documented.
+- Lazy root functions retain their real signatures, identities, and tracebacks;
+  bare `import torchfits` remains light.
+- `torchfits.cpp` exposes an explicit function-level compatibility inventory
+  instead of wildcard-exporting the complete extension module.
+- `TableHDU` no longer changes type when the optional `torch_frame` package is
+  installed. Tensor/list mappings are internal, Arrow is the interchange
+  boundary, and Polars is the supported dataframe surface.
 - Mypy checks untyped bodies, runs in preflight, and exposed/fixed the
   `TableHDURef` tuple/list boundary mismatch.
+- Existing-file overwrite and HDU mutation complete in a sibling temporary
+  file and use atomic replacement; failed writes preserve the original bytes.
+- Native image materialization and header-write errors now propagate instead
+  of silently producing empty HDUs, and table metadata buffers use standard
+  RAII containers.
+- Opened `HDUList` summaries correctly parse numeric string header values and
+  no longer fail in `repr`.
 - Multi-worker tests use the required macOS spawn guard and retain subprocess
   stderr on timeout.
 - Release-wheel tests now execute actual image and table round-trips, including
@@ -82,7 +91,8 @@ the reviewed 0.8 source.
 | Clean installed wheel smoke | 3 passed; imports from the wheel outside the source tree. |
 | `pixi run preflight-push` | Ruff, formatting, blocking mypy, and compileall pass. |
 | Version triplet | `pyproject.toml`, `pixi.toml`, and `torchfits.__version__` are 0.8.0. |
-| Full local release gate | 459 passed, 3 skipped in 76.20 s with PyTorch shared-memory process permission. |
+| Full local release gate | 463 passed, 3 skipped in 78.44 s with PyTorch shared-memory process permission. |
+| Native/table/write regression set | 112 passed, 1 skipped after native error-propagation and RAII changes. |
 
 ## High-impact defaults
 

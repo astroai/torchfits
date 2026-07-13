@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Removed the environment-dependent optional `torch_frame` inheritance from
+  `TableHDU` and the `torchfits.hdu.TensorFrame` alias. FITS table columns stay
+  as tensor/list mappings, Arrow is the interchange boundary, and Polars is the
+  dataframe surface. Any legacy dataframe bridge remains outside torchfits.
+
 - **`rechunk=False` default** on `to_polars()`, `to_polars_lazy()`, `scan_polars()`,
   `read_polars()`, and top-level `to_polars()`. Avoids Polars' unnecessary chunk
   concatenation when Arrow data is already single-chunk (the common case from
@@ -235,6 +240,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Root I/O attributes now resolve to the actual public functions, preserving
+  inspectable signatures, tracebacks, and identity while keeping bare
+  `import torchfits` free of PyTorch, NumPy, Arrow, and the native extension.
+- `torchfits.cpp` now has an explicit FITS-native `__all__`; future compiled
+  symbols no longer become public accidentally. Direct attribute delegation is
+  retained for pre-1.0 compatibility.
+- Every lazy root export now has a matching `TYPE_CHECKING` declaration, so the
+  shipped `py.typed` marker covers the complete documented root API.
+- Removed the empty, misleading `cache` extra: adaptive cache sizing uses the
+  standard library. Documentation now states that PyArrow is the core table
+  runtime while Pandas, Polars, and DuckDB are optional.
+- Runtime initialization no longer swallows native-load or invalid cache
+  configuration errors and then marks the failed initialization as complete.
+- Header-card write failures and HDU header-preservation failures are no longer
+  silently ignored; callers now receive the native error instead of a
+  successful return with lost metadata. A dead duplicate header helper was
+  removed.
+- Overwriting an existing FITS file is now transactional: the complete
+  replacement is written beside the target and atomically installed only after
+  success. Validation or native-write failures preserve the original bytes and
+  file mode instead of deleting the user's file.
+- HDU insert, replace, and delete operations use the same transactional rewrite
+  rule, so a partial multi-HDU rewrite cannot replace the original file.
+- Iterable HDU writes reject empty sequences, unsupported objects, header-only
+  dictionaries, and non-tensor image payloads instead of silently emitting
+  empty HDUs.
+- Image datasets now route through the unified image reader, so their documented
+  `mmap="auto"` policy works instead of reaching the bool-only `read_tensor`
+  boundary. Remaining immutable column tuples are normalized at public list
+  boundaries.
+- `TableHDU` validates its trust boundary: non-mapping inputs and columns with
+  inconsistent row counts fail immediately instead of creating an internally
+  inconsistent table.
 - `TableHDU.from_fits()` now uses the public `read_table()` pipeline instead of
   opening a separate native table/header path, keeping cache, validation, and
   runtime initialization behavior consistent with the rest of the package.

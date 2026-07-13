@@ -49,8 +49,6 @@ Repository = "https://github.com/astroai/torchfits"
 # For pixi environments, these are managed separately via features
 [project.optional-dependencies]
 
-cache = []
-
 dev = [
     "pytest>=6.0",
     "pytest-cov>=2.0",
@@ -133,5 +131,5 @@ module = "pyarrow.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pandas", "torch_frame", "torchfits._C"]
+module = ["pandas", "torchfits._C"]
 ignore_missing_imports = true

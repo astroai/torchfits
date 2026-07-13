@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import stat
+import tempfile
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,6 +20,14 @@ from .hdu_api import open_hdulist
 def _invalidate_path_caches(path: str) -> None:
     """Invalidate Python-side caches/handles for a path that is being modified."""
     _invalidate_io_path_caches(path)
+    import torchfits._C as cpp
+
+    # ponytail: native invalidation is global; add a bound per-path operation
+    # only if write-heavy profiling shows this small-cache clear is material.
+    cpp.clear_file_cache()
+    clear_meta = getattr(cpp, "clear_shared_read_meta_cache", None)
+    if clear_meta is not None:
+        clear_meta()
 
 
 def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
@@ -77,16 +87,13 @@ def _write_header_cards_if_supported(
     header_obj = header if isinstance(header, Header) else Header(header)
     if not header_obj.cards:
         return
-    try:
-        import torchfits._C as cpp
+    import torchfits._C as cpp
 
-        writer = getattr(cpp, "write_hdu_header_cards", None)
-        if writer is None:
-            return
-        writer(path, int(hdu), list(header_obj.cards))
-        _invalidate_path_caches(path)
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    writer = getattr(cpp, "write_hdu_header_cards", None)
+    if writer is None:
         return
+    writer(path, int(hdu), list(header_obj.cards))
+    _invalidate_path_caches(path)
 
 
 def write(
@@ -100,7 +107,7 @@ def write(
 
     Args:
         path: Output file path
-        data: Data to write (Tensor, TensorFrame, or HDUList)
+        data: Data to write (Tensor, table mapping, or HDUList)
         header: Optional FITS header dictionary
         overwrite: Whether to overwrite existing files
         compress: Whether to use tile compression (Rice algorithm)
@@ -108,10 +115,40 @@ def write(
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
     """
-    if not overwrite and os.path.exists(path):
+    path_exists = os.path.exists(path)
+    if not overwrite and path_exists:
         raise FileExistsError(
             f"File '{path}' already exists. Use overwrite=True to overwrite."
         )
+
+    if overwrite and path_exists:
+        if os.path.isdir(path):
+            raise IsADirectoryError(path)
+        target = os.path.realpath(path)
+        target_dir = os.path.dirname(target) or "."
+        original_mode = stat.S_IMODE(os.stat(target).st_mode)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
+        )
+        os.close(fd)
+        os.unlink(temp_path)
+        try:
+            write(
+                temp_path,
+                data,
+                header=header,
+                overwrite=False,
+                compress=compress,
+            )
+            os.chmod(temp_path, original_mode)
+            os.replace(temp_path, target)
+            _invalidate_path_caches(path)
+            if target != path:
+                _invalidate_path_caches(target)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        return
 
     # The unified C++ cache and the Python-side handle cache can otherwise return
     # stale views of an overwritten file (mtime/size can be unchanged).
@@ -211,7 +248,13 @@ def write(
                                 item_merged["header"] = hdu_dict["header"]
                             hdus_to_write.append(item_merged)
                         else:
-                            hdus_to_write.append(item)
+                            raise TypeError(
+                                "HDU dictionary 'data' must be a torch.Tensor"
+                            )
+                    else:
+                        raise ValueError(
+                            "HDU dictionaries must contain a 'data' tensor"
+                        )
                 elif isinstance(item, Tensor):
                     hdus_to_write.append(_image_hdu_dict_for_fits_write(item))
                 elif hasattr(item, "data") and isinstance(item.data, Tensor):
@@ -220,20 +263,21 @@ def write(
                             item.data, getattr(item, "header", None)
                         )
                     )
+                else:
+                    raise TypeError(f"Unsupported HDU item type: {type(item).__name__}")
         else:
             raise ValueError(f"Unsupported data type for FITS writing: {type(data)}")
 
+        if not hdus_to_write:
+            raise ValueError("At least one writable HDU is required")
         cpp.write_fits_file(path, hdus_to_write, overwrite)
         for idx, item in enumerate(hdus_to_write):
             item_header = item.get("header") if isinstance(item, dict) else None
             _write_header_cards_if_supported(path, idx, item_header)
 
     except Exception as e:
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+        if not path_exists and os.path.exists(path):
+            os.remove(path)
         raise RuntimeError(f"Failed to write FITS file '{path}': {e}") from e
 
 
@@ -559,7 +603,7 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
 
 
 class _TableHDUWriteProxy:
-    """Small table-HDU proxy for writer paths that should not build TensorFrame."""
+    """Small table-HDU proxy for internal writer paths."""
 
     def __init__(self, raw_data: Dict[str, Any], header: Header):
         prepared, schema, _ = _prepare_unsigned_table_data_for_write(dict(raw_data))
@@ -821,6 +865,30 @@ def _write_hdus_with_optional_compression(
     cpp.write_fits_file_compressed_images(path, payload, True, algorithm)
 
 
+def _atomic_rewrite_hdus(
+    path: str, hdus: List[Any], compress: Union[bool, str] = False
+) -> None:
+    """Rewrite an existing HDU sequence without exposing a partial file."""
+    target = os.path.realpath(path)
+    target_dir = os.path.dirname(target) or "."
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
+    )
+    os.close(fd)
+    os.unlink(temp_path)
+    try:
+        _write_hdus_with_optional_compression(temp_path, hdus, compress=compress)
+        os.chmod(temp_path, original_mode)
+        os.replace(temp_path, target)
+        _invalidate_path_caches(path)
+        if target != path:
+            _invalidate_path_caches(target)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
 def insert_hdu(
     path: str,
     data: Any,
@@ -851,7 +919,7 @@ def insert_hdu(
     if index < 0 or index > len(hdus):
         raise IndexError(f"index {index} out of range for {len(hdus)} HDUs")
     hdus.insert(index, new_hdu)
-    _write_hdus_with_optional_compression(path, hdus, compress=compress)
+    _atomic_rewrite_hdus(path, hdus, compress=compress)
 
 
 def replace_hdu(
@@ -902,13 +970,10 @@ def replace_hdu(
             if isinstance(new_hdu, TensorHDU):
                 new_hdu._header = old_header
             else:
-                try:
-                    new_hdu.header = old_header
-                except Exception:
-                    pass
+                new_hdu.header = old_header
 
     hdus[target] = new_hdu
-    _write_hdus_with_optional_compression(path, hdus, compress=compress)
+    _atomic_rewrite_hdus(path, hdus, compress=compress)
 
 
 def delete_hdu(
@@ -935,4 +1000,4 @@ def delete_hdu(
         raise TypeError("hdu must be an int index or EXTNAME string")
 
     del hdus[target]
-    _write_hdus_with_optional_compression(path, hdus, compress=compress)
+    _atomic_rewrite_hdus(path, hdus, compress=compress)

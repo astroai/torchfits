@@ -110,9 +110,7 @@ class TestRealDataIntegration:
                 assert hasattr(table_hdu, "materialize")
 
                 # Test column access
-                # TableHDU.data returns a TableDataAccessor which wraps the table
-                # The table columns are in table_hdu.feat_dict
-                # Ensure we access correctly
+                # Table columns stay in the FITS-native tensor mapping.
                 ra_col = table_hdu["RA"]  # Direct access via __getitem__
                 assert len(ra_col) == nrows
 

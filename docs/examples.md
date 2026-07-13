@@ -72,5 +72,5 @@ Polars, DuckDB, and some interop paths need extra packages. Examples print a
 skip message and exit 0 when a dependency is missing:
 
 ```bash
-pip install polars duckdb pyarrow
+pip install polars duckdb
 ```

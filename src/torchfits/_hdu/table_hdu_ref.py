@@ -218,7 +218,7 @@ class TableHDURef:
         for chunk in torchfits.stream_table(
             path,
             hdu=hdu,
-            columns=self._columns,
+            columns=list(self._columns) if self._columns is not None else None,
             start_row=start_row,
             num_rows=num_rows,
             chunk_rows=batch_size,

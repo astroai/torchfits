@@ -68,3 +68,18 @@ def test_tablehdu_from_fits_uses_public_read_pipeline(fits_file, monkeypatch):
     assert table_hdu.num_rows == 3
     assert len(calls) == 1
     assert calls[0][1] == {"hdu": 1, "return_header": True}
+
+
+def test_tablehdu_rejects_mismatched_column_lengths():
+    with pytest.raises(ValueError, match="ra=2, dec=1"):
+        TableHDU(
+            {
+                "ra": np.array([1.0, 2.0]),
+                "dec": np.array([3.0]),
+            }
+        )
+
+
+def test_tablehdu_rejects_non_mapping_input():
+    with pytest.raises(TypeError, match="tensor_dict must be a dictionary"):
+        TableHDU([1, 2, 3])  # type: ignore[arg-type]

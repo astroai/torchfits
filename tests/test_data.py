@@ -165,6 +165,11 @@ class TestFitsImageDataset:
         image, _label = ds[0]
         assert image.ndim == 2
 
+    def test_auto_mmap_policy(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        image, _label = FitsImageDataset(files, mmap="auto")[0]
+        assert image.shape == (1, 32, 32)
+
     def test_3d_cube_no_channel_added(self, temp_image_dir):
         from astropy.io import fits
 
@@ -213,6 +218,11 @@ class TestFitsImageIterableDataset:
         ds = FitsImageIterableDataset(files)
         count = sum(1 for _ in ds)
         assert count == 8
+
+    def test_auto_mmap_policy(self, temp_image_dir):
+        _tmpdir, files = temp_image_dir
+        image = next(iter(FitsImageIterableDataset(files, mmap="auto")))
+        assert image.shape == (1, 32, 32)
 
     def test_output_is_tensor(self, temp_image_dir):
         _tmpdir, files = temp_image_dir

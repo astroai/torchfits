@@ -100,10 +100,14 @@ class FitsImageDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        from torchfits import read_tensor
+        from torchfits import read
 
-        image = read_tensor(
-            self.files[idx], hdu=self.hdu, device=self.device, mmap=self.mmap
+        image = read(
+            self.files[idx],
+            hdu=self.hdu,
+            mode="image",
+            device=self.device,
+            mmap=self.mmap,
         )
         if self.add_channel_dim and image.ndim == 2:
             image = image.unsqueeze(0)
@@ -173,7 +177,7 @@ class FitsImageIterableDataset(IterableDataset):
         self.add_channel_dim = add_channel_dim
 
     def __iter__(self) -> Iterator[torch.Tensor]:
-        from torchfits import read_tensor
+        from torchfits import read
 
         worker_info = torch.utils.data.get_worker_info()
 
@@ -196,8 +200,12 @@ class FitsImageIterableDataset(IterableDataset):
             indices = [indices[i] for i in perm]
 
         for idx in indices:
-            image = read_tensor(
-                self.files[idx], hdu=self.hdu, device=self.device, mmap=self.mmap
+            image = read(
+                self.files[idx],
+                hdu=self.hdu,
+                mode="image",
+                device=self.device,
+                mmap=self.mmap,
             )
             if self.add_channel_dim and image.ndim == 2:
                 image = image.unsqueeze(0)

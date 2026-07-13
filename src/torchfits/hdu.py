@@ -4,7 +4,7 @@ Core HDU classes for torchfits.
 This module re-exports from ``_hdu/`` sub-modules:
 - HDUList: Container for multiple HDUs
 - TensorHDU: Image/cube data with lazy loading
-- TableHDU: Tabular data with torch-frame integration
+- TableHDU: Tensor-backed tabular FITS data
 - TableHDURef: Lazy file-backed table handle
 - Header: FITS header management
 - Card: FITS header card
@@ -28,7 +28,6 @@ from ._hdu.tensor_hdu import TensorHDU as TensorHDU
 
 from ._hdu.table_hdu import TableHDU as TableHDU
 from ._hdu.table_hdu import TableDataAccessor as TableDataAccessor
-from ._hdu.table_hdu import TensorFrame as TensorFrame
 
 from ._hdu.table_hdu_ref import TableHDURef as TableHDURef
 
@@ -44,6 +43,5 @@ __all__ = [
     "TableHDU",
     "TableDataAccessor",
     "TableHDURef",
-    "TensorFrame",
     "TensorHDU",
 ]

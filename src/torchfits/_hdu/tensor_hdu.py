@@ -64,8 +64,11 @@ class TensorHDU:
         if self._data is not None:
             return str(tuple(self._data.shape))
         elif self._file_handle:
-            naxis = self.header.get("NAXIS", 0)
-            if naxis == 0:
+            try:
+                naxis = int(self.header.get("NAXIS", 0))
+            except (TypeError, ValueError):
+                return "unknown"
+            if naxis <= 0:
                 return "()"
             dims = [str(self.header.get(f"NAXIS{i + 1}", 0)) for i in range(naxis)]
             return f"({', '.join(reversed(dims))})"
@@ -75,7 +78,10 @@ class TensorHDU:
         if self._data is not None:
             return str(self._data.dtype).replace("torch.", "")
         elif self._file_handle:
-            bitpix = self.header.get("BITPIX", 0)
+            try:
+                bitpix = int(self.header.get("BITPIX", 0))
+            except (TypeError, ValueError):
+                return "unknown"
             dtype = _BITPIX_TO_DTYPE.get(bitpix)
             if dtype is not None:
                 return str(dtype).replace("torch.", "")

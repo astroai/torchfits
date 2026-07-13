@@ -540,24 +540,11 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
             hdu_count++;
             continue;
         }
-        if (nb::hasattr(hdu_obj, "feat_dict")) {
-            nb::dict data_dict = nb::cast<nb::dict>(hdu_obj.attr("feat_dict"));
-            nb::dict header_dict;
-            if (nb::hasattr(hdu_obj, "header"))
-                header_dict = nb::cast<nb::dict>(hdu_obj.attr("header"));
-            nb::object schema_obj = nb::none();
-            if (nb::hasattr(hdu_obj, "_schema")) {
-                schema_obj = hdu_obj.attr("_schema");
-                if (schema_obj.is_none()) schema_obj = nb::none();
-            }
-            write_table_hdu(fptr_, data_dict, header_dict, schema_obj, false);
-            hdu_count++;
-            continue;
-        }
         nb::object data_obj;
         bool has_data = false;
         if (nb::hasattr(hdu_obj, "to_tensor")) {
-            try { data_obj = hdu_obj.attr("to_tensor")(); has_data = true; } catch (...) {}
+            data_obj = hdu_obj.attr("to_tensor")();
+            has_data = true;
         }
         if (!has_data && nb::hasattr(hdu_obj, "data")) {
             data_obj = hdu_obj.attr("data"); has_data = true;
@@ -566,18 +553,13 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
             if (d.contains("data")) { data_obj = d["data"]; has_data = true; }
         }
         if (has_data) {
-            try {
-                nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(data_obj);
-                write_image(tensor, hdu_count, 1.0, 0.0);
-            } catch (...) {
-                int status = 0;
-                long naxes[1] = {0};
-                fits_create_img(fptr_, BYTE_IMG, 0, naxes, &status);
-            }
+            nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(data_obj);
+            write_image(tensor, hdu_count, 1.0, 0.0);
         } else {
             int status = 0;
             long naxes[1] = {0};
             fits_create_img(fptr_, BYTE_IMG, 0, naxes, &status);
+            if (status != 0) throw std::runtime_error("Failed to create empty image HDU");
         }
         nb::object header_obj;
         if (nb::hasattr(hdu_obj, "header"))
@@ -587,36 +569,35 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
             if (d.contains("header")) header_obj = d["header"];
         }
         if (header_obj.is_valid()) {
-            try {
-                nb::dict header = nb::cast<nb::dict>(header_obj);
-                for (auto item : header) {
-                    std::string key = nb::cast<std::string>(item.first);
-                    key = detail::sanitize_fits_key(key);
-                    std::string key_upper = key;
-                    std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
-                                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-                    if (key_upper == "END" || key_upper == "SIMPLE" || key_upper == "XTENSION" ||
-                        key_upper == "BITPIX" || key_upper == "NAXIS" || key_upper == "EXTEND" ||
-                        key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
-                        key_upper == "THEAP" || key_upper.rfind("NAXIS", 0) == 0) continue;
-                    int key_status = 0;
-                    try {
-                        if (nb::isinstance<nb::str>(item.second)) {
-                            std::string val = detail::sanitize_fits_string(nb::cast<std::string>(item.second));
-                            fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                        } else if (nb::isinstance<int>(item.second)) {
-                            long long val = nb::cast<long long>(item.second);
-                            fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-                        } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
-                            double val = nb::cast<double>(item.second);
-                            fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
-                        } else if (nb::isinstance<bool>(item.second)) {
-                            int val = nb::cast<bool>(item.second) ? 1 : 0;
-                            fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-                        }
-                    } catch (...) {}
+            nb::dict header = nb::cast<nb::dict>(header_obj);
+            for (auto item : header) {
+                std::string key = nb::cast<std::string>(item.first);
+                key = detail::sanitize_fits_key(key);
+                std::string key_upper = key;
+                std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                if (key_upper == "END" || key_upper == "SIMPLE" || key_upper == "XTENSION" ||
+                    key_upper == "BITPIX" || key_upper == "NAXIS" || key_upper == "EXTEND" ||
+                    key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
+                    key_upper == "THEAP" || key_upper.rfind("NAXIS", 0) == 0) continue;
+                int key_status = 0;
+                if (nb::isinstance<bool>(item.second)) {
+                    int val = nb::cast<bool>(item.second) ? 1 : 0;
+                    fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
+                } else if (nb::isinstance<nb::str>(item.second)) {
+                    std::string val = detail::sanitize_fits_string(nb::cast<std::string>(item.second));
+                    fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
+                } else if (nb::isinstance<int>(item.second)) {
+                    long long val = nb::cast<long long>(item.second);
+                    fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
+                } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
+                    double val = nb::cast<double>(item.second);
+                    fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
                 }
-            } catch (...) {}
+                if (key_status != 0) {
+                    throw std::runtime_error("Failed to write FITS header keyword: " + key);
+                }
+            }
         }
         hdu_count++;
     }
@@ -655,21 +636,22 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             if (key_upper.rfind("ZNAXIS", 0) == 0 || key_upper.rfind("ZTILE", 0) == 0 ||
                 key_upper.rfind("ZNAME", 0) == 0 || key_upper.rfind("ZVAL", 0) == 0) continue;
             int key_status = 0;
-            try {
-                if (nb::isinstance<nb::str>(item.second)) {
+            if (nb::isinstance<bool>(item.second)) {
+                int val = nb::cast<bool>(item.second) ? 1 : 0;
+                fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
+            } else if (nb::isinstance<nb::str>(item.second)) {
                     std::string val = detail::sanitize_fits_string(nb::cast<std::string>(item.second));
                     fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                } else if (nb::isinstance<int>(item.second)) {
+            } else if (nb::isinstance<int>(item.second)) {
                     long long val = nb::cast<long long>(item.second);
                     fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-                } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
+            } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
                     double val = nb::cast<double>(item.second);
                     fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
-                } else if (nb::isinstance<bool>(item.second)) {
-                    int val = nb::cast<bool>(item.second) ? 1 : 0;
-                    fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-                }
-            } catch (...) {}
+            }
+            if (key_status != 0) {
+                throw std::runtime_error("Failed to write FITS header keyword: " + key);
+            }
         }
     };
     for (auto handle : hdus) {
@@ -682,18 +664,11 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             write_table_hdu(fptr_, data_dict, header_dict, nb::none(), false);
             continue;
         }
-        if (nb::hasattr(hdu_obj, "feat_dict")) {
-            nb::dict data_dict = nb::cast<nb::dict>(hdu_obj.attr("feat_dict"));
-            nb::dict header_dict;
-            if (nb::hasattr(hdu_obj, "header"))
-                header_dict = nb::cast<nb::dict>(hdu_obj.attr("header"));
-            write_table_hdu(fptr_, data_dict, header_dict, nb::none(), false);
-            continue;
-        }
         nb::object data_obj;
         bool has_data = false;
         if (nb::hasattr(hdu_obj, "to_tensor")) {
-            try { data_obj = hdu_obj.attr("to_tensor")(); has_data = true; } catch (...) {}
+            data_obj = hdu_obj.attr("to_tensor")();
+            has_data = true;
         }
         if (!has_data && nb::hasattr(hdu_obj, "data")) {
             data_obj = hdu_obj.attr("data"); has_data = true;

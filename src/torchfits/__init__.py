@@ -130,6 +130,19 @@ __all__ = tuple(
 _RUNTIME_INITIALIZED = False
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}")
+    return value
+
+
 def _ensure_runtime_init() -> None:
     """Initialize optional runtime caches when an I/O entry point is used."""
     global _RUNTIME_INITIALIZED
@@ -138,49 +151,35 @@ def _ensure_runtime_init() -> None:
 
     cache = import_module("torchfits.cache")
     cache.configure_for_environment()
-    try:
-        # Pre-import torch so its dependency libraries (libcudart.so.12,
-        # libtorch_cuda.so, libtorch_python.so) are loaded before torchfits._C
-        # dlopens them. Otherwise `import torchfits._C` first fails at import
-        # time with `libcudart.so.12: cannot open shared object file` even
-        # though `import torch; torch.cuda.is_available()` succeeds.
-        import torch  # noqa: F401
+    # Pre-import torch so its dependency libraries (libcudart.so.12,
+    # libtorch_cuda.so, libtorch_python.so) are loaded before torchfits._C.
+    import torch  # noqa: F401
 
-        cpp = import_module("torchfits._C")
-        cache_mb = os.environ.get("TORCHFITS_CFITSIO_CACHE_MB")
-        cache_files = os.environ.get("TORCHFITS_CFITSIO_CACHE_FILES")
-        if cache_mb is not None or cache_files is not None:
-            max_files = int(cache_files) if cache_files is not None else 32
-            max_mb = int(cache_mb) if cache_mb is not None else 256
-            cpp.configure_cache(max_files, max_mb)
-    except Exception:
-        pass
+    cpp = import_module("torchfits._C")
+    cache_mb = os.environ.get("TORCHFITS_CFITSIO_CACHE_MB")
+    cache_files = os.environ.get("TORCHFITS_CFITSIO_CACHE_FILES")
+    if cache_mb is not None or cache_files is not None:
+        max_files = _positive_env_int("TORCHFITS_CFITSIO_CACHE_FILES", 32)
+        max_mb = _positive_env_int("TORCHFITS_CFITSIO_CACHE_MB", 256)
+        cpp.configure_cache(max_files, max_mb)
 
     _RUNTIME_INITIALIZED = True
 
 
-def _runtime_function(name: str) -> Any:
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        _ensure_runtime_init()
-        module_name, attr_name = _ROOT_FUNCTIONS[name]
-        return getattr(import_module(module_name), attr_name)(*args, **kwargs)
-
-    wrapper.__name__ = name
-    wrapper.__qualname__ = name
-    wrapper.__module__ = __name__
-    return wrapper
-
-
 def __getattr__(name: str) -> Any:
     if name in _NAMESPACES:
+        if name == "cpp":
+            _ensure_runtime_init()
         module = import_module(_NAMESPACES[name])
         globals()[name] = module
         return module
 
     if name in _ROOT_FUNCTIONS:
-        function = _runtime_function(name)
-        globals()[name] = function
-        return function
+        _ensure_runtime_init()
+        module_name, attr_name = _ROOT_FUNCTIONS[name]
+        value = getattr(import_module(module_name), attr_name)
+        globals()[name] = value
+        return value
 
     if name in _ROOT_OBJECTS:
         module_name, attr_name = _ROOT_OBJECTS[name]
@@ -199,6 +198,7 @@ if TYPE_CHECKING:
     from . import (
         table as table,
         cache as cache,
+        cpp as cpp,
         transforms as transforms,
         data as data,
         where as where,
@@ -210,9 +210,30 @@ if TYPE_CHECKING:
     from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
     from .io import get_header as get_header
+    from .io import get_batch_info as get_batch_info
+    from .io import get_cache_performance as get_cache_performance
+    from .io import clear_file_cache as clear_file_cache
+    from .io import delete_hdu as delete_hdu
+    from .io import insert_hdu as insert_hdu
     from .io import open as open
+    from .io import open_subset_reader as open_subset_reader
     from .io import read as read
+    from .io import read_batch as read_batch
+    from .io import read_fast as read_fast
+    from .io import read_hdus as read_hdus
+    from .io import read_subset as read_subset
+    from .io import read_table as read_table
+    from .io import read_table_rows as read_table_rows
+    from .io import read_tensor as read_tensor
+    from .io import replace_hdu as replace_hdu
+    from .io import stream_table as stream_table
+    from .io import verify_checksums as verify_checksums
     from .io import write as write
+    from .io import write_checksums as write_checksums
+    from .io import write_tensor as write_tensor
+    from .interop import to_arrow as to_arrow
+    from .interop import to_pandas as to_pandas
+    from .interop import to_polars as to_polars
     from .transforms import SpectralBinning as SpectralBinning
     from .transforms import ContinuumRemoval as ContinuumRemoval
     from .transforms import BandMath as BandMath

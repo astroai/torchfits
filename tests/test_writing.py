@@ -6,6 +6,7 @@ import torch
 from astropy.io import fits
 
 import torchfits
+from torchfits._io_engine.write_api import _write_header_cards_if_supported
 
 
 def test_writing():
@@ -59,6 +60,77 @@ def test_writing():
         for path in filenames:
             if os.path.exists(path):
                 os.remove(path)
+
+
+def test_header_card_write_failure_is_not_silent(monkeypatch, tmp_path):
+    path = tmp_path / "header_failure.fits"
+    torchfits.write(str(path), torch.zeros((2, 2)), overwrite=True)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("header write failed")
+
+    monkeypatch.setattr(torchfits._C, "write_hdu_header_cards", fail)
+    with pytest.raises(RuntimeError, match="header write failed"):
+        _write_header_cards_if_supported(str(path), 0, {"OBJECT": "M31"})
+
+
+def test_native_hdu_tensor_failure_is_not_replaced_by_empty_image(tmp_path):
+    class BrokenHDU:
+        def to_tensor(self):
+            raise RuntimeError("cannot materialize image")
+
+    with pytest.raises(RuntimeError, match="cannot materialize image"):
+        torchfits.cpp.write_fits_file(
+            str(tmp_path / "broken.fits"), [BrokenHDU()], True
+        )
+
+
+def test_failed_overwrite_preserves_existing_file(tmp_path):
+    path = tmp_path / "preserved.fits"
+    original = torch.arange(9, dtype=torch.float32).reshape(3, 3)
+    torchfits.write(str(path), original)
+    before = path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="Unsupported object/structure"):
+        torchfits.write(
+            str(path),
+            {"bad": [{"nested": "object"}]},
+            overwrite=True,
+        )
+
+    assert path.read_bytes() == before
+    assert torch.equal(torchfits.read(str(path)), original)
+
+
+def test_successful_overwrite_is_atomic_and_preserves_mode(tmp_path):
+    path = tmp_path / "replaced.fits"
+    torchfits.write(str(path), torch.zeros((2, 2)))
+    path.chmod(0o640)
+    assert torch.equal(torchfits.read(str(path)), torch.zeros((2, 2)))
+
+    replacement = torch.ones((2, 2))
+    torchfits.write(str(path), replacement, overwrite=True)
+
+    assert torch.equal(torchfits.read(str(path)), replacement)
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ([], "At least one writable HDU"),
+        ([object()], "Unsupported HDU item type"),
+        ([{"data": "not a tensor"}], "must be a torch.Tensor"),
+        ([{"header": {"OBJECT": "M31"}}], "must contain a 'data' tensor"),
+    ],
+)
+def test_invalid_hdu_sequences_fail_instead_of_writing_empty_hdus(
+    tmp_path, payload, message
+):
+    path = tmp_path / "invalid_sequence.fits"
+    with pytest.raises(RuntimeError, match=message):
+        torchfits.write(str(path), payload)
+    assert not path.exists()
 
 
 def test_table_write_bool_preserved():

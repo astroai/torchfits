@@ -99,11 +99,13 @@ pixi run bench-all      # exhaustive benchmarks
 
 | Extra | Installs | Use |
 |---|---|---|
-| `pip install torchfits[cache]` | psutil | Adaptive cache sizing |
 | `pip install torchfits[dev]` | pytest, ruff, mypy, ipykernel | Development |
 | `pip install torchfits[bench]` | astropy, fitsio, pandas, matplotlib | Benchmarking |
 | `pip install torchfits[test]` | pytest, pytest-cov | Testing |
 | `pip install torchfits[examples]` | matplotlib | Running examples |
+
+PyArrow is a core dependency because `torchfits.table` is Arrow-native.
+Pandas, Polars, and DuckDB remain optional integrations.
 
 ## Troubleshooting
 
@@ -113,4 +115,7 @@ pixi run bench-all      # exhaustive benchmarks
 
 **`ImportError: ... symbol not found`** — Version mismatch between the compiled extension and the installed PyTorch. Rebuild: `pip install -e . --no-build-isolation --force-reinstall`.
 
-**Slow first read** — The first call compiles internal caches. Subsequent reads are faster. Call `torchfits.cache.configure_for_environment()` at startup for auto-tuning before the first read.
+**Slow first read** — The first call initializes file and metadata caches.
+Subsequent reads may be faster. Call
+`torchfits.cache.configure_for_environment()` at startup for auto-tuning before
+the first read.

@@ -147,8 +147,8 @@ with torchfits.open("mef.fits") as hdul:
 - `TensorHDU`: image HDU with lazy `.data` and `.header`.
 - `TableHDU`: in-memory table HDU.
 - `TableHDURef`: lazy file-backed table handle.
-- `DataView`, `TableDataAccessor`, and `TensorFrame`: stable table/HDU
-  interchange helpers for downstream packages.
+- `DataView` and `TableDataAccessor`: stable table/HDU access helpers for
+  downstream packages.
 - `Header`: dict-like FITS header preserving FITS card semantics.
 - `Card`: one FITS header card with keyword, value, and comment semantics.
 
@@ -193,6 +193,8 @@ The supported package namespaces are `torchfits.table`, `torchfits.cache`,
 `torchfits.where`. `torchfits.cpp` is the low-level native compatibility
 surface used by performance-sensitive downstream packages; prefer the root I/O
 functions and `torchfits.table` unless a native-only operation is required.
+Its explicit `__all__` is the function-level compatibility contract; new
+compiled-extension symbols are private until deliberately promoted there.
 
 **Polars ergonomics:**
 
@@ -207,6 +209,10 @@ functions and `torchfits.table` unless a native-only operation is required.
   Pass `rechunk=True` explicitly to restore the old behavior.
 - `to_polars_lazy()` **materializes eagerly** then wraps as `LazyFrame`.  For true
   streaming, use `scan_polars()` instead.
+
+`TableHDU` is not a `torch_frame.TensorFrame`. Tensor dictionaries remain the
+native FITS representation, Arrow is the interchange boundary, and Polars is
+the dataframe-oriented user surface.
 
 Advanced table utilities (optional dependencies may apply):
 

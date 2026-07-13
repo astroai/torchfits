@@ -4,48 +4,10 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 from ..io import _normalize_cpp_table_data, _write_header_cards_if_supported
-
-
-def _apply_hdu_header_cards(hdu_header, header_map: dict[str, Any]) -> None:
-    skip_keys = {
-        "SIMPLE",
-        "XTENSION",
-        "BITPIX",
-        "NAXIS",
-        "NAXIS1",
-        "NAXIS2",
-        "PCOUNT",
-        "GCOUNT",
-        "TFIELDS",
-        "EXTEND",
-    }
-    for key, value in (header_map or {}).items():
-        key_upper = str(key).upper()
-        if key_upper in skip_keys:
-            continue
-        if key_upper.startswith("TTYPE") or key_upper.startswith("TFORM"):
-            continue
-        if key_upper == "HISTORY":
-            values = value if isinstance(value, (list, tuple)) else [value]
-            for item in values:
-                hdu_header.add_history(str(item))
-            continue
-        if key_upper == "COMMENT":
-            values = value if isinstance(value, (list, tuple)) else [value]
-            for item in values:
-                hdu_header.add_comment(str(item))
-            continue
-        try:
-            hdu_header[str(key)] = value
-        except Exception:
-            continue
 
 
 def write(

@@ -37,7 +37,7 @@ Status values:
 | `torchfits.data` datasets | Supported | PyTorch `Dataset` / `IterableDataset` | `tests/test_data.py`, `examples/example_image_dataset.py`, `examples/example_data_catalogs.py` |
 | `torchfits.transforms` | Supported | header-aware preprocessing | `tests/test_transforms.py`, `tests/test_transforms_e2e.py` |
 | `read_batch` / multi-file image reads | Supported | ML training throughput | `tests/test_api.py`, `examples/example_image_dataset.py` |
-| Arrow/Pandas/Polars/DuckDB interop | Partial | optional ecosystem libraries | `tests/test_interop.py`, `tests/test_arrow_table_api.py`; optional dependencies control availability |
+| Arrow/Pandas/Polars/DuckDB interop | Partial | PyArrow core; other ecosystem libraries optional | `tests/test_interop.py`, `tests/test_arrow_table_api.py`; optional dependencies control Pandas, Polars, and DuckDB availability |
 | Full Astropy API parity | Out of scope | Astropy package surface | torchfits targets common FITS I/O workflows only |
 | Full fitsio API parity | Out of scope | fitsio package surface | torchfits targets common FITS I/O workflows only |
 | Full CFITSIO API parity | Out of scope | CFITSIO C API | torchfits exposes selected PyTorch-native behavior only |
