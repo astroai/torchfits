@@ -55,7 +55,11 @@ jobs:
       - name: Build and install
         run: pip install -e . --no-build-isolation
       - name: Pytest
-        run: pytest tests/ -q
+        # ponytail: separate processes cap 7-GB runner RSS; CANFAR keeps the
+        # unsharded full-suite gate that can detect cross-file state leaks.
+        run: |
+          pytest tests/ -q --ignore-glob='tests/test_[n-z]*'
+          pytest tests/ -q --ignore-glob='tests/test_[a-m]*'
 
   bench-smoke:
     name: Benchmark smoke (py3.13)
