@@ -1255,6 +1255,45 @@ class TestResample1d:
         out = _resample_scale(x, 2.0)
         assert out.shape == (3, 200)
 
+    # ---- offset-uniform grid (exercises F.grid_sample normalization) ----
+
+    def test_offset_uniform_grid(self):
+        """Offset-uniform x_old (e.g. [100, 200, 300]) uses F.grid_sample with correct normalization."""
+        # Create an offset-uniform source grid: spacing=100, start=100
+        L_src = 50
+        x_old = 100.0 + torch.arange(L_src, dtype=torch.float32) * 100.0
+        # Values are a simple linear ramp matching the grid positions
+        x = x_old.unsqueeze(0)  # [1, 50]
+        # Query at positions that are exact midpoint interpolations
+        x_new = 100.0 + torch.arange(L_src - 1, dtype=torch.float32) * 100.0 + 50.0
+        out = _resample_1d(x, x_old, x_new, mode="linear")
+        # Midpoint of [v_i, v_{i+1}] should be (v_i + v_{i+1})/2 = v_i + 50
+        expected = x[:, :-1] + 50.0
+        assert out.shape == (1, L_src - 1)
+        assert torch.allclose(out, expected, atol=1e-4)
+
+    def test_offset_uniform_grid_exact_query_points(self):
+        """Querying exact grid positions on offset-uniform grid reproduces input values."""
+        L_src = 40
+        x_old = 200.0 + torch.arange(L_src, dtype=torch.float32) * 50.0
+        x = torch.sin(torch.linspace(0, 3 * math.pi, L_src)).unsqueeze(0)
+        # Query exactly at source positions
+        out = _resample_1d(x, x_old, x_old, mode="linear")
+        assert torch.allclose(out, x, atol=1e-5)
+
+    def test_offset_uniform_grid_grid_sample_modes(self):
+        """All grid_sample-compatible modes work on offset-uniform grids (non-zero origin)."""
+        L_src = 60
+        x_old = 500.0 + torch.arange(L_src, dtype=torch.float32) * 10.0
+        x = torch.randn(3, L_src)
+        x_new = torch.linspace(
+            500.0, 500.0 + (L_src - 1) * 10.0, 40, dtype=torch.float32
+        )
+        for mode in ["linear", "nearest", "cubic"]:
+            out = _resample_1d(x, x_old, x_new, mode=mode)
+            assert out.shape == (3, 40), f"{mode}: bad shape {out.shape}"
+            assert torch.isfinite(out).all(), f"{mode}: non-finite values"
+
 
 class TestDopplerShift:
     def test_identity(self):
