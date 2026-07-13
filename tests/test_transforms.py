@@ -3442,6 +3442,37 @@ class TestTNullToNan:
         assert "TNullToNan" in r
         assert "X" in r
 
+    def test_forward_with_mask_none(self):
+        """TNullToNan.forward accepts mask=None without parameter shadowing."""
+        t = TNullToNan({"FLUX": -999.0})
+        data = {"FLUX": torch.tensor([1.0, -999.0, 3.0])}
+        out = t.forward(data, mask=None)
+        assert torch.isnan(out["FLUX"][1])
+        assert out["FLUX"][0].item() == 1.0
+        assert out["FLUX"][2].item() == 3.0
+
+    def test_forward_with_mask_tensor(self):
+        """TNullToNan.forward accepts a mask tensor (ignored for pointwise logic)."""
+        t = TNullToNan({"FLUX": -999.0})
+        data = {"FLUX": torch.tensor([1.0, -999.0, 3.0])}
+        extra_mask = torch.ones(3, dtype=torch.bool)
+        out = t.forward(data, mask=extra_mask)
+        assert torch.isnan(out["FLUX"][1])
+
+    def test_multiple_columns_with_mask(self):
+        """TNullToNan handles multiple columns with different TNULL values and mask=None."""
+        t = TNullToNan({"FLUX": -999.0, "QUAL": 0.0})
+        data = {
+            "FLUX": torch.tensor([1.0, -999.0, 3.0]),
+            "QUAL": torch.tensor([4.0, 0.0, 6.0], dtype=torch.int32),
+            "EXTRA": torch.tensor([7.0, 8.0, 9.0]),
+        }
+        out = t.forward(data, mask=None)
+        assert torch.isnan(out["FLUX"][1])
+        assert torch.isnan(out["QUAL"][1])
+        assert torch.equal(out["EXTRA"], torch.tensor([7.0, 8.0, 9.0]))
+        assert out["QUAL"].dtype == torch.float32
+
 
 # ---------------------------------------------------------------------------
 # FITSHeaderScale extended roundtrip tests
