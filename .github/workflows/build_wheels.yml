@@ -18,8 +18,8 @@ jobs:
       matrix:
         python-version: ["3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Vendor CFITSIO
@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-15]
     env:
       CIBW_BUILD: cp310-* cp311-* cp312-* cp313-*
       CIBW_SKIP: pp* *-musllinux_* *-manylinux_i686 *-win32
@@ -68,7 +68,7 @@ jobs:
       CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21.3
       - uses: actions/upload-artifact@v4
@@ -81,7 +81,7 @@ jobs:
     needs: tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build sdist
         run: pipx run build --sdist
       - uses: actions/upload-artifact@v4

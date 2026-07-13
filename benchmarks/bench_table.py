@@ -1,7 +1,7 @@
 """
 Table-specific benchmarks for torchfits TableHDU operations.
 
-Benchmarks table reading, filtering, and pytorch-frame integration
+Benchmarks table reading, filtering, and Arrow interchange
 across different table sizes and column types.
 """
 

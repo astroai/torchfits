@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborted Linux ASCII-table writes.
 - Raw, unmapped image reads now support FITS `BITPIX=64` images as
   `torch.int64`, matching the mapped and scaled readers.
+- GitHub workflows use the Node 24-based `actions/checkout@v5` and
+  `actions/setup-python@v6`, and pin Apple Silicon testing to `macos-15`
+  instead of following the rolling `macos-latest` migration.
 - Removed the environment-dependent optional `torch_frame` inheritance from
   `TableHDU` and the `torchfits.hdu.TensorFrame` alias. FITS table columns stay
   as tensor/list mappings, Arrow is the interchange boundary, and Polars is the
@@ -289,8 +292,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opening a separate native table/header path, keeping cache, validation, and
   runtime initialization behavior consistent with the rest of the package.
 - Removed the duplicate `where` entry from the package root `__all__` contract.
-- Scoped mypy's missing-import exceptions to the optional pandas/torch-frame
-  integrations and the compiled extension, allowing real Python type errors to
+- Scoped mypy's missing-import exceptions to optional dataframe integrations
+  and the compiled extension, allowing real Python type errors to
   surface. Mypy now checks untyped function bodies and is a blocking local
   preflight and CI check; the resulting `TableHDURef` column-sequence mismatch
   was fixed at the Arrow boundary.

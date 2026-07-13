@@ -1,7 +1,7 @@
 # Release API freeze review — 0.8.0
 
 **Date:** 2026-07-12  
-**Verdict:** **Usable locally; hold publication for remote promotion gates**
+**Verdict:** **Technical promotion gates pass; publication awaits independent review**
 
 ## Summary
 
@@ -12,18 +12,17 @@ plumbing, made type checking blocking, corrected the wheel platform contract,
 stopped shipping CFITSIO development artifacts inside the wheel, and made
 existing-file rewrites transactional.
 
-No known local correctness blocker remains for ordinary CPU FITS I/O. Do not
-publish 0.8.0 until the GitHub wheel matrix and CANFAR Linux/CUDA gates pass.
+No known correctness blocker remains for ordinary CPU or CUDA FITS I/O. The
+GitHub Linux/macOS matrix and exact-commit CANFAR CPU/CUDA gates pass. Publishing
+0.8.0 remains a separate release decision and requires independent review.
 
 ## Blocking
 
 | Promotion gate | Required evidence |
 |---|---|
-| GitHub wheel matrix | Installed-wheel smoke passes for CPython 3.10–3.13 on Linux x86_64 and macOS arm64. |
-| CANFAR staging | Linux clean-wheel table/image matrix, bounded-memory streaming, deterministic cache cleanup, and GPU E1–E3 on `/scratch`. |
 | Independent review | Sol-high or human review of the native table changes, wheel workflow, and public compatibility boundary. |
 
-These block publication, not continued local/downstream development against
+This blocks publication, not continued local/downstream development against
 the reviewed 0.8 source.
 
 ## Should-fix
@@ -36,7 +35,7 @@ the reviewed 0.8 source.
 
 - Python 3.14 support and classifiers until CI and wheel builds cover it.
 - Linux aarch64 and macOS x86_64 wheel claims until those artifacts are built.
-- Exhaustive performance, large-file, CUDA, and network-storage runs to CANFAR
+- Exhaustive performance, large-file, and network-storage runs to CANFAR
   staging; do not run them on the workstation.
 - Learned I/O or domain-specific sky functionality; those remain downstream.
 
@@ -45,9 +44,8 @@ the reviewed 0.8 source.
 | Area | Gap |
 |---|---|
 | Published artifact | PyPI still serves 0.7.0; the reviewed MIT 0.8.0 artifact is not published. |
-| Linux native lifecycle | Local evidence is macOS arm64; CANFAR must cover Linux process, cache, and table-reader lifecycle. |
-| CUDA | No local CUDA device; CANFAR E1–E3 remains required. |
-| Performance | Existing 0.7 CANFAR snapshot remains the latest accepted benchmark evidence; this review makes no new speed claim. |
+| Independent review | The implementation agent cannot independently approve its own native/API promotion gate. |
+| Performance | The 0.8 CANFAR run is a functional smoke, not an exhaustive speed comparison; this review makes no new speed claim. |
 
 ## Repairs made
 
@@ -67,8 +65,9 @@ the reviewed 0.8 source.
 - Existing-file overwrite and HDU mutation complete in a sibling temporary
   file and use atomic replacement; failed writes preserve the original bytes.
 - Native image materialization and header-write errors now propagate instead
-  of silently producing empty HDUs, and table metadata buffers use standard
-  RAII containers.
+  of silently producing empty HDUs.
+- Raw, unmapped FITS `BITPIX=64` images read as `torch.int64` across CPU and
+  CUDA paths.
 - Opened `HDUList` summaries correctly parse numeric string header values and
   no longer fail in `repr`.
 - Multi-worker tests use the required macOS spawn guard and retain subprocess
@@ -93,7 +92,10 @@ the reviewed 0.8 source.
 | `pixi run preflight-push` | Ruff, formatting, blocking mypy, and compileall pass. |
 | Version triplet | `pyproject.toml`, `pixi.toml`, and `torchfits.__version__` are 0.8.0. |
 | Full local release gate | 463 passed, 3 skipped in 78.44 s with PyTorch shared-memory process permission. |
-| Native/table/write regression set | 112 passed, 1 skipped after native error-propagation and RAII changes. |
+| Native/table/write regression set | 112 passed, 1 skipped after native error-propagation changes. |
+| GitHub exact-commit matrix | Commit `e4a7d30`: Linux x86_64 and macOS arm64, CPython 3.10–3.13, lint, docs, release, and benchmark-smoke jobs pass. |
+| CANFAR exact-commit CPU | Commit `e4a7d30`: `ci-local` 463 passed/4 skipped; full unsharded suite 678 passed/7 skipped. Logs persisted under `/arc/home/sfabbro/`. |
+| CANFAR exact-commit CUDA | H100 NVL MIG, CUDA 12.8: 6 device-scaling tests passed; 447 transport rows including every int64 size, persisted as `smoke_cuda_0_8_0_e4a7d30`. |
 
 ## High-impact defaults
 
