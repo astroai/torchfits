@@ -836,12 +836,13 @@ def _resample_1d(
         )
 
     shape_in = y.shape
-    y_2d = y.reshape(-1, shape_in[-1])  # [N, L_src]
-    L_src = y_2d.shape[1]
+    L_src = shape_in[-1]
     L_dst = x_new.shape[0]
 
     if L_src == 0:
         return y[..., :0]
+
+    y_2d = y.reshape(-1, L_src)  # [N, L_src]
     if L_src == 1:
         # Single-point source: broadcast to all output positions.
         return y_2d[:, :1].expand(-1, L_dst).reshape(*shape_in[:-1], L_dst)

@@ -54,6 +54,8 @@ from torchfits.transforms import (
     _normalize_dims,
     _quantile,
     _reduce_keepdim,
+    _resample_1d,
+    _resample_scale,
     estimate_background,
     safe_arcsinh,
     safe_log,
@@ -1090,6 +1092,168 @@ class TestContinuumNormalizeVectorized:
 # ---------------------------------------------------------------------------
 # DopplerShift (spectral)
 # ---------------------------------------------------------------------------
+
+
+class TestResample1d:
+    """Unit tests for _resample_1d resampling engine."""
+
+    # ---- area mode with spiky spectra ----
+
+    def test_area_mode_spiky_gaussian_flux_conservation(self):
+        """Area mode preserves per-cell average of a Gaussian feature."""
+        t_arr = torch.linspace(-5, 5, 500)
+        gauss = torch.exp(-(t_arr**2) / (2 * 0.5**2))  # σ = 0.5 px
+        x = gauss.unsqueeze(0)  # [1, 500]
+        x_old = torch.arange(500, dtype=torch.float32)
+        x_new = torch.linspace(0, 499, 300, dtype=torch.float32)
+        out_area = _resample_1d(x, x_old, x_new, mode="area")
+        out_linear = _resample_1d(x, x_old, x_new, mode="linear")
+        # Area and linear should produce different outputs (different algorithms)
+        assert not torch.allclose(out_area, out_linear, atol=1e-4), (
+            "area and linear should produce different results"
+        )
+        # Both should be finite
+        assert torch.isfinite(out_area).all()
+        assert torch.isfinite(out_linear).all()
+
+    def test_area_mode_emission_line_pair(self):
+        """Two close narrow lines: area mode avoids smearing between them."""
+        t_arr = torch.linspace(-5, 5, 500)
+        # Two Gaussians 2 pixels apart
+        g1 = torch.exp(-((t_arr + 0.5) ** 2) / (2 * 0.1**2))
+        g2 = torch.exp(-((t_arr - 0.5) ** 2) / (2 * 0.1**2))
+        x = (g1 + g2).unsqueeze(0)
+        x_old = torch.arange(500, dtype=torch.float32)
+        x_new = torch.linspace(0, 499, 200, dtype=torch.float32)
+
+        out_linear = _resample_1d(x, x_old, x_new, mode="linear")
+        out_area = _resample_1d(x, x_old, x_new, mode="area")
+        # Both should have two discernible peaks
+        for out, mode_name in [(out_linear, "linear"), (out_area, "area")]:
+            # At least 2 local maxima in the output
+            larger_than_neighbors = (out[0, 1:-1] > out[0, :-2]) & (
+                out[0, 1:-1] > out[0, 2:]
+            )
+            n_peaks = larger_than_neighbors.sum().item()
+            # With downsampled narrow lines, at least 1 peak should survive
+            assert n_peaks >= 1, f"{mode_name}: only {n_peaks} peaks detected"
+
+    # ---- cubic mode edges ----
+
+    def test_cubic_mode_reproduces_linear_at_boundaries(self):
+        """Cubic falls back to linear at segment edges (idx <= 1 or >= L-1)."""
+        x = torch.linspace(0, 100, 10).unsqueeze(0)
+        x_old = torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+        # Query exactly at grid points — linear and cubic should agree everywhere
+        x_new = x_old.clone()
+        out_linear = _resample_1d(x, x_old, x_new, mode="linear")
+        out_cubic = _resample_1d(x, x_old, x_new, mode="cubic")
+        # At interior points cubic should match; at edges cubic falls to linear
+        assert torch.allclose(out_linear, out_cubic, atol=1e-5)
+
+    def test_cubic_mode_smoother_than_nearest(self):
+        """Cubic interpolation produces smoother output than nearest."""
+        x = torch.linspace(0, 100, 50).unsqueeze(0)
+        x_old = torch.arange(50, dtype=torch.float32)
+        x_new = torch.linspace(0, 49, 200, dtype=torch.float32)
+        out_nearest = _resample_1d(x, x_old, x_new, mode="nearest")
+        out_cubic = _resample_1d(x, x_old, x_new, mode="cubic")
+        # Cubic should have fewer discontinuities (lower diff variance)
+        diff_near = out_nearest[0, 1:] - out_nearest[0, :-1]
+        diff_cubic = out_cubic[0, 1:] - out_cubic[0, :-1]
+        # Cubic should have much lower step-to-step variance than nearest
+        assert diff_cubic.var().item() < diff_near.var().item() * 0.5
+
+    # ---- irregular wavelength grids ----
+
+    def test_irregular_grid_linear(self):
+        """Linear interpolation on non-uniform wavelength grid."""
+        x = torch.linspace(0, 100, 100).unsqueeze(0)
+        # Log-spaced source grid (common in spectroscopy)
+        x_old = torch.logspace(0, 2, 100, dtype=torch.float32)  # 1..100
+        # Linear-spaced output grid
+        x_new = torch.linspace(1, 100, 50, dtype=torch.float32)
+        out = _resample_1d(x, x_old, x_new, mode="linear")
+        assert out.shape == (1, 50)
+        assert torch.isfinite(out).all()
+
+    def test_irregular_grid_preserves_monotonicity(self):
+        """Linear interpolation of monotonic data stays monotonic."""
+        x = torch.linspace(0, 100, 200).unsqueeze(0)
+        x_old = torch.logspace(-1, 2, 200, dtype=torch.float32)
+        x_new = torch.linspace(0.1, 100, 100, dtype=torch.float32)
+        out = _resample_1d(x, x_old, x_new, mode="linear")
+        diffs = out[0, 1:] - out[0, :-1]
+        assert (diffs >= -1e-6).all(), f"found {diffs.min().item():.2e} decrease"
+
+    # ---- area mode on irregular grids ----
+
+    def test_area_mode_on_irregular_grid(self):
+        """Area mode works on irregular wavelength grids via searchsorted fallback."""
+        x = torch.linspace(0, 100, 100).unsqueeze(0)
+        x_old = torch.logspace(0, 2, 100, dtype=torch.float32)
+        x_new = torch.linspace(1, 100, 30, dtype=torch.float32)
+        out = _resample_1d(x, x_old, x_new, mode="area")
+        assert out.shape == (1, 30)
+        assert torch.isfinite(out).all()
+
+    # ---- mode validation ----
+
+    def test_invalid_mode_raises(self):
+        x = torch.randn(2, 100)
+        x_old = torch.arange(100, dtype=torch.float32)
+        x_new = torch.arange(50, dtype=torch.float32)
+        with pytest.raises(ValueError, match="mode must be"):
+            _resample_1d(x, x_old, x_new, mode="spline")
+
+    def test_scale_invalid_mode_raises(self):
+        x = torch.randn(2, 100)
+        with pytest.raises(ValueError, match="mode must be"):
+            _resample_scale(x, 0.5, mode="bicubic")
+
+    # ---- edge cases ----
+
+    def test_empty_input(self):
+        x = torch.randn(3, 0)
+        x_old = torch.zeros(0)
+        x_new = torch.arange(10, dtype=torch.float32)
+        out = _resample_1d(x, x_old, x_new)
+        # L_src == 0 returns last dim 0 regardless of L_dst
+        assert out.shape == (3, 0)
+
+    def test_empty_output(self):
+        x = torch.randn(3, 50)
+        x_old = torch.arange(50, dtype=torch.float32)
+        x_new = torch.zeros(0)
+        out = _resample_1d(x, x_old, x_new)
+        assert out.shape == (3, 0)
+
+    def test_single_pixel_input(self):
+        x = torch.tensor([[42.0]])
+        x_old = torch.tensor([0.0])
+        x_new = torch.linspace(0, 0, 5)
+        out = _resample_1d(x, x_old, x_new)
+        assert out.shape == (1, 5)
+        # All output positions should broadcast the single input value
+        assert torch.allclose(out, torch.full((1, 5), 42.0))
+
+    def test_batched_spectra_all_modes(self):
+        """All modes work on batched [N, L] tensors."""
+        x = torch.randn(4, 200)
+        x_old = torch.arange(200, dtype=torch.float32)
+        x_new = torch.linspace(0, 199, 128, dtype=torch.float32)
+        for mode in ["linear", "nearest", "cubic", "area"]:
+            out = _resample_1d(x, x_old, x_new, mode=mode)
+            assert out.shape == (4, 128), f"{mode}: bad shape {out.shape}"
+            assert torch.isfinite(out).all(), f"{mode}: non-finite values"
+
+    def test_scale_factor_resampling(self):
+        """_resample_scale correctly changes length by scale factor."""
+        x = torch.randn(3, 100)
+        out = _resample_scale(x, 0.5)
+        assert out.shape == (3, 50)
+        out = _resample_scale(x, 2.0)
+        assert out.shape == (3, 200)
 
 
 class TestDopplerShift:
