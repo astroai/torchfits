@@ -13,16 +13,6 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # Using only -O3 (avoid -funroll-loops as it may conflict with manual SIMD unrolling)
     add_compile_options(-O3)
-    # Disable semantic interposition so the compiler can inline internal calls
-    # and skip PLT lookups — standard optimization for Python C extensions.
-    # (PyTorch itself uses this flag.)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        add_compile_options(-fno-semantic-interposition)
-        # Hide all symbols by default — reduces symbol table size, enables
-        # more aggressive inlining, and avoids accidental symbol clashes
-        # with other extensions in the same process.
-        add_compile_options(-fvisibility=hidden)
-    endif()
 endif()
 
 # Enable IPO/LTO when available (portable opt-in)
@@ -448,6 +438,12 @@ set(SOURCES
 
 # Create python binding module
 nanobind_add_module(_C ${SOURCES})
+
+# These optimize and isolate the Python extension. They must not propagate to
+# vendored CFITSIO, whose C ABI relies on its own visibility/interposition rules.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(_C PRIVATE -fno-semantic-interposition -fvisibility=hidden)
+endif()
 
 # Link libraries
 target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES})

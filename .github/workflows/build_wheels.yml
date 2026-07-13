@@ -32,11 +32,7 @@ jobs:
       - name: Install torchfits
         run: pip install -e . --no-build-isolation
       - name: Run tests
-        # ponytail: separate processes cap 7-GB runner RSS; CANFAR keeps the
-        # unsharded full-suite gate that can detect cross-file state leaks.
-        run: |
-          pytest tests/ -q --maxfail=1 --ignore-glob='tests/test_[n-z]*'
-          pytest tests/ -q --maxfail=1 --ignore-glob='tests/test_[a-m]*'
+        run: pytest tests/ -q --maxfail=1
 
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
