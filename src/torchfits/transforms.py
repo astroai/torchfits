@@ -35,7 +35,7 @@ See ``examples/example_transforms.py`` for a full walkthrough.
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple, Callable
 
 import torch
 import torch.linalg
@@ -87,7 +87,7 @@ def _unflatten_result(
 def _reduce_keepdim(
     x: torch.Tensor,
     dim: Tuple[int, ...],
-    func,
+    func: Callable[[torch.Tensor, int, bool], torch.Tensor],
 ) -> torch.Tensor:
     """Reduce *x* over *dim* using *func* (single-dim reducer), keepdim."""
     ndim = x.ndim
@@ -664,10 +664,10 @@ class FITSHeaderScale(FITSTransform):
         self.bzero = float(bzero)
 
     @classmethod
-    def from_header(cls, header: dict) -> FITSHeaderScale:
+    def from_header(cls, header: dict[str, object]) -> FITSHeaderScale:
         """Construct from a FITS header dict-like object."""
-        bscale = float(header.get("BSCALE", 1.0))
-        bzero = float(header.get("BZERO", 0.0))
+        bscale = float(header.get("BSCALE", 1.0))  # type: ignore[arg-type]
+        bzero = float(header.get("BZERO", 0.0))  # type: ignore[arg-type]
         return cls(bscale=bscale, bzero=bzero)
 
     def forward(
@@ -742,7 +742,7 @@ def _fit_poly_continuum(
                 except RuntimeError:
                     pass  # Leave zeros
 
-        continuum = (A @ coeffs.T).T  # [n, length]
+        continuum: torch.Tensor = (A @ coeffs.T).T  # [n, length]
         residuals = x - continuum
         # Compute std only on currently-unmasked pixels (masked outliers
         # would inflate the std and prevent convergence).
@@ -764,10 +764,15 @@ def _fit_poly_continuum(
 
 def _to_pt_mode(mode: str) -> str:
     """Map user-facing mode names to PyTorch-native function modes."""
-    return {"linear": "bilinear", "nearest": "nearest", "cubic": "bicubic"}[mode]
+    _map: dict[str, str] = {
+        "linear": "bilinear",
+        "nearest": "nearest",
+        "cubic": "bicubic",
+    }
+    return _map[mode]
 
 
-def _to_interpolate_2d_mode(mode: str) -> tuple[str, dict]:
+def _to_interpolate_2d_mode(mode: str) -> tuple[str, dict[str, bool]]:
     """Map user mode to 2-D ``F.interpolate`` mode and kwargs."""
     if mode == "cubic":
         return "bicubic", {"align_corners": True}
@@ -1118,7 +1123,7 @@ class FITSScaleColumns(FITSTransform):
         }
 
     @classmethod
-    def from_header(cls, header: dict) -> FITSScaleColumns:
+    def from_header(cls, header: dict[str, object]) -> FITSScaleColumns:
         """Construct from a FITS table header dict-like object."""
         from .fits_schema import iter_table_columns  # noqa: PLC0415
 
@@ -1208,7 +1213,7 @@ class TNullToNan(FITSTransform):
         self.nulls: dict[str, float] = {name: float(v) for name, v in nulls.items()}
 
     @classmethod
-    def from_header(cls, header: dict) -> TNullToNan:
+    def from_header(cls, header: dict[str, object]) -> TNullToNan:
         """Construct from a FITS table header dict-like object."""
         from .fits_schema import column_tnull_map  # noqa: PLC0415
 
@@ -1792,7 +1797,7 @@ class BandMath(FITSTransform):
     >>> wbi = BandMath(lambda b: b[0] / (b[1] + 1e-8), band_dim=-3)
     """
 
-    def __init__(self, func, band_dim: int = 0) -> None:
+    def __init__(self, func: Callable[..., torch.Tensor], band_dim: int = 0) -> None:
         if not callable(func):
             raise TypeError("func must be callable")
         self.func = func
@@ -1932,8 +1937,8 @@ def _sg_coeffs(window_length: int, polyorder: int, deriv: int = 0) -> torch.Tens
     y[half] = 1.0
     # Solve A @ c ≈ y to get polynomial coefficients, then evaluate at all
     # window positions to produce the full convolution kernel of length W.
-    c = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)  # [P+1]
-    coeffs = A @ c  # [W]
+    c: torch.Tensor = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)  # [P+1]
+    coeffs: torch.Tensor = A @ c  # [W]
     return coeffs.float()
 
 
@@ -2308,7 +2313,7 @@ class WaveletDecompose(FITSTransform):
             raise ValueError("levels must be in [1, 8]")
         self.levels = int(levels)
         self.dim = int(dim)
-        self._orig_shape: tuple[int, ...] | None = None
+        self._orig_shape: Optional[tuple[int, ...]] = None
         self._padded: bool = False
 
     def forward(
@@ -2383,9 +2388,11 @@ class WaveletDecompose(FITSTransform):
             [positions[0]]
             + [positions[i + 1] - positions[i] for i in range(len(positions) - 1)],
             dim=-1,
-        )  # type: ignore[arg-type]
+        )
         approx = splits[0]  # final approx
-        details = list(splits[1:])  # [detail_L, ..., detail_1] — deepest first
+        details: list[torch.Tensor] = list(
+            splits[1:]
+        )  # [detail_L, ..., detail_1] — deepest first
 
         # Reconstruct from coarsest to finest
         current = approx
@@ -2563,7 +2570,9 @@ def _banded_chol_solve_batched_impl(
 # Profiling shows this eliminates ~94% of the runtime for large L.
 # Falls back to pure Python if `torch.jit.script` is unavailable.
 try:
-    _banded_chol_solve_batched = torch.jit.script(_banded_chol_solve_batched_impl)  # type: ignore[assignment]
+    _banded_chol_solve_batched: Callable[..., torch.Tensor] = torch.jit.script(
+        _banded_chol_solve_batched_impl
+    )
 except (RuntimeError, TypeError, AttributeError):
     import warnings
 
@@ -2572,7 +2581,7 @@ except (RuntimeError, TypeError, AttributeError):
         "will use pure Python (slower for large spectra).",
         stacklevel=2,
     )
-    _banded_chol_solve_batched = _banded_chol_solve_batched_impl  # type: ignore[assignment]
+    _banded_chol_solve_batched = _banded_chol_solve_batched_impl
 
 
 class AsymmetricLeastSquares(FITSTransform):
@@ -3075,10 +3084,10 @@ class FITSHeaderNormalize(FITSTransform):
         -64: (torch.float64, False, 64),
     }
 
-    def __init__(self, header: dict, scale_floats: bool = False) -> None:
-        self.bitpix = int(header.get("BITPIX", -32))
-        self.bscale = float(header.get("BSCALE", 1.0))
-        self.bzero = float(header.get("BZERO", 0.0))
+    def __init__(self, header: dict[str, object], scale_floats: bool = False) -> None:
+        self.bitpix = int(header.get("BITPIX", -32))  # type: ignore[call-overload]
+        self.bscale = float(header.get("BSCALE", 1.0))  # type: ignore[arg-type]
+        self.bzero = float(header.get("BZERO", 0.0))  # type: ignore[arg-type]
         self.scale_floats = bool(scale_floats)
 
         info = self._BITPIX_MAP.get(self.bitpix)
