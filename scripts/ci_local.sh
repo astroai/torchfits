@@ -13,7 +13,7 @@ pixi run ruff format --check .
 python3 scripts/check_duplicate_cpp.py
 
 echo "=== ci_local: docs contract ==="
-pixi run pytest tests/test_docs_integrity.py tests/test_package_isolation.py -q
+PYTHONPATH=src pixi run pytest tests/test_docs_integrity.py tests/test_package_isolation.py -q
 pixi run docs-build
 
 if [[ "${FAST}" == "1" ]]; then
