@@ -1323,6 +1323,32 @@ class TestResample1d:
             assert out.shape == (2, 30), f"{mode}: bad shape {out.shape}"
             assert torch.isfinite(out).all(), f"{mode}: non-finite values"
 
+    # ---- zero-crossing uniform grid (negative to positive origin) ----
+
+    def test_zero_crossing_uniform_grid(self):
+        """Grid crossing zero (e.g. [-500, -400, ..., 500]) exercises negative-origin normalization."""
+        L_src = 50
+        x_old = (
+            -500.0 + torch.arange(L_src, dtype=torch.float32) * 20.0
+        )  # [-500, -480, ..., 480]
+        x = x_old.unsqueeze(0)  # values match positions
+        # Midpoint queries spanning the zero-crossing
+        x_new = x_old[:-1] + 10.0  # [-490, -470, ..., 490] — halfway between each pair
+        out = _resample_1d(x, x_old, x_new, mode="linear")
+        expected = x[:, :-1] + 10.0  # midpoint of [v_i, v_{i+1}] = v_i + 10
+        assert out.shape == (1, L_src - 1)
+        assert torch.allclose(out, expected, atol=1e-4)
+
+    def test_zero_crossing_uniform_grid_exact_query(self):
+        """Exact query points on zero-crossing grid reproduce input values."""
+        L_src = 40
+        x_old = (
+            -300.0 + torch.arange(L_src, dtype=torch.float32) * 15.0
+        )  # [-300, -285, ..., 285]
+        x = torch.sin(torch.linspace(0, 2 * math.pi, L_src)).unsqueeze(0)
+        out = _resample_1d(x, x_old, x_old, mode="linear")
+        assert torch.allclose(out, x, atol=1e-5)
+
 
 class TestDopplerShift:
     def test_identity(self):
