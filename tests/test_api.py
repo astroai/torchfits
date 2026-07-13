@@ -389,6 +389,17 @@ class TestMainAPI:
         finally:
             os.unlink(filepath)
 
+    def test_cpp_unmapped_raw_reads_int64_image(self):
+        """The raw reader supports FITS BITPIX=64 images."""
+        filepath, expected_data = self.create_test_fits(shape=(7, 9), dtype=np.int64)
+
+        try:
+            result = torchfits.cpp.read_full_unmapped_raw(filepath, 0)
+            assert result.dtype == torch.int64
+            np.testing.assert_array_equal(result.numpy(), expected_data)
+        finally:
+            os.unlink(filepath)
+
 
 class TestTableAPI:
     """Test table-specific API functions."""

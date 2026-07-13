@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scoped extension-only visibility and semantic-interposition optimizations to
   `_C`; applying them directory-wide also changed vendored CFITSIO's C ABI and
   aborted Linux ASCII-table writes.
+- Raw, unmapped image reads now support FITS `BITPIX=64` images as
+  `torch.int64`, matching the mapped and scaled readers.
 - Removed the environment-dependent optional `torch_frame` inheritance from
   `TableHDU` and the `torchfits.hdu.TensorFrame` alias. FITS table columns stay
   as tensor/list mappings, Arrow is the interchange boundary, and Polars is the

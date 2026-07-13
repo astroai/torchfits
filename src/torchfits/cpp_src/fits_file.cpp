@@ -220,6 +220,7 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
             case BYTE_IMG:   dtype = torch::kUInt8; break;
             case SHORT_IMG:  dtype = torch::kInt16; break;
             case LONG_IMG:   dtype = torch::kInt32; break;
+            case LONGLONG_IMG: dtype = torch::kInt64; break;
             case FLOAT_IMG:  dtype = torch::kFloat32; break;
             case DOUBLE_IMG: dtype = torch::kFloat64; break;
             default:         dtype = torch::kUInt8; break;
@@ -261,6 +262,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
             case BYTE_IMG:   dtype = torch::kUInt8; break;
             case SHORT_IMG:  dtype = torch::kInt16; break;
             case LONG_IMG:   dtype = torch::kInt32; break;
+            case LONGLONG_IMG: dtype = torch::kInt64; break;
             case FLOAT_IMG:  dtype = torch::kFloat32; break;
             case DOUBLE_IMG: dtype = torch::kFloat64; break;
             default:         dtype = torch::kUInt8; break;
@@ -273,6 +275,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
         case BYTE_IMG:     dtype = torch::kUInt8;  datatype = TBYTE;      break;
         case SHORT_IMG:    dtype = torch::kInt16;  datatype = TSHORT;     break;
         case LONG_IMG:     dtype = torch::kInt32;  datatype = TINT;       break;
+        case LONGLONG_IMG: dtype = torch::kInt64;  datatype = TLONGLONG;  break;
         case FLOAT_IMG:    dtype = torch::kFloat32; datatype = TFLOAT;     break;
         case DOUBLE_IMG:   dtype = torch::kFloat64; datatype = TDOUBLE;    break;
         default: throw std::runtime_error("Unsupported BITPIX");
