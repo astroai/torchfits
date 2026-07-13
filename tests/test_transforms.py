@@ -269,6 +269,22 @@ class TestEstimateBackground:
         assert torch.allclose(med, torch.tensor(42.0), atol=1e-5)
         assert torch.all(std < 1e-5)
 
+    def test_mask_excludes_pixels_from_median(self):
+        # 5x5 image: values 1..25, mask out the central 3x3 (values 7..19)
+        x = torch.arange(1, 26, dtype=torch.float32).reshape(1, 5, 5)
+        mask = torch.ones(1, 5, 5, dtype=torch.bool)
+        mask[0, 1:4, 1:4] = False  # exclude central 3x3
+        med, _ = estimate_background(x, dim=(-2, -1), mask=mask)
+        # Only edge pixels (16 values: 1..6, 20..25, 11..15, 16..19... actually
+        # the 16 border values) should contribute to median.
+        # Border values: row0 (1-5), row4 (21-25), col0 from rows1-3 (6,11,16),
+        # col4 from rows1-3 (10,15,20). Sorted: 1,2,3,4,5,6,10,11,15,16,20,21,22,23,24,25,26?
+        # Wait, with 5x5 = 25 values, masking 3x3=9 leaves 16. Values 1-25.
+        # Border: [1,2,3,4,5, 6,10, 11,15, 16,20, 21,22,23,24,25]
+        # PyTorch's nanmedian returns the lower median for even counts
+        # (8th of 16 sorted values = 11).
+        assert abs(med.item() - 11.0) < 0.5
+
 
 class TestZScaleLimits:
     def test_returns_valid_range(self):
@@ -473,6 +489,15 @@ class TestZScaleNormalize:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
+    def test_mask_no_mask_gives_same_result(self):
+        """Mask=None should produce identical result to no mask passed."""
+        x = _make_tensor((4, 32, 32), kind="normal")
+        t1 = ZScaleNormalize()
+        t2 = ZScaleNormalize()
+        out1 = t1.forward(x, mask=None)
+        out2 = t2.forward(x)
+        assert torch.allclose(out1, out2, atol=1e-7)
+
 
 class TestRobustNormalize:
     def test_roundtrip_identity(self):
@@ -605,6 +630,40 @@ class TestMinMaxNormalize:
         t = MinMaxNormalize()
         with pytest.raises(RuntimeError, match="prior forward"):
             t.inverse(torch.zeros(3))
+
+
+class TestMaskNanRoundtrip:
+    """Verify transforms handle NaN-contaminated data correctly with masks."""
+
+    def test_nan_roundtrip_with_mask(self):
+        """NaN pixels excluded from stats, remain NaN in output, roundtrip works."""
+        x = _make_tensor((4, 32, 32), kind="normal")
+        # Inject NaN at known positions
+        x[0, 0, 0] = float("nan")
+        x[2, 15, 15] = float("nan")
+        # Build a valid mask that excludes the NaN positions
+        mask = torch.ones_like(x, dtype=torch.bool)
+        mask[0, 0, 0] = False
+        mask[2, 15, 15] = False
+
+        t = MinMaxNormalize()
+        out = t.forward(x, mask=mask)
+        # NaN pixels should stay NaN in the output
+        assert torch.isnan(out[0, 0, 0])
+        assert torch.isnan(out[2, 15, 15])
+        # Valid pixels should be normalized to [0, 1]
+        valid_out = out[~torch.isnan(out)]
+        assert valid_out.min() >= -1e-6
+        assert valid_out.max() <= 1.0 + 1e-6
+
+        # Roundtrip: NaN positions excluded from min/max so inversion works
+        restored = t.inverse(out)
+        assert torch.isnan(restored[0, 0, 0])
+        assert torch.isnan(restored[2, 15, 15])
+        # Non-NaN values should roundtrip
+        valid_x = x[mask]
+        valid_restored = restored[mask]
+        assert torch.allclose(valid_restored, valid_x, atol=1e-4)
 
 
 # ---------------------------------------------------------------------------
