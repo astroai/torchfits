@@ -3284,6 +3284,27 @@ class TestAsymmetricSigmaClip:
         assert "5.0" in r
         assert "2.0" in r
 
+    def test_mask_excludes_pixels_from_background(self):
+        """Mask forwarded to estimate_background changes the background estimate."""
+        # 5x5 grid: 13 pixels at 100.0 (majority), 12 pixels at 0.0.
+        # Without mask, median = 100.0 because >50% of pixels are 100.0.
+        # With mask excluding the 100.0 values, median falls back to 0.0.
+        x = torch.zeros(5, 5)
+        x[:3, :] = 100.0  # rows 0-2: 15 pixels at 100.0
+        x[3, 0] = 100.0  # 1 more = 16 out of 25 → majority
+
+        # Mask: only the 8 pixels at 0.0 (rows 3-4, cols 1-4) are valid
+        mask = torch.zeros(5, 5, dtype=torch.bool)
+        mask[3:, 1:] = True
+
+        t = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)
+        out = t.forward(x.clone(), mask=mask)
+
+        # With mask, median=0.0, so the 100.0 pixels get clipped to ~0.0
+        assert out[0, 0].item() < 10.0, (
+            f"100.0 pixel not clipped to background: {out[0, 0].item()}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # FITSScaleColumns (table column TSCAL/TZERO scaling, invertible)

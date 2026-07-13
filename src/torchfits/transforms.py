@@ -3026,7 +3026,7 @@ class AsymmetricSigmaClip(FITSTransform):
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         with torch.no_grad():
-            med, std = estimate_background(x, dim=self.dim)
+            med, std = estimate_background(x, dim=self.dim, mask=mask)
             lower = med - self.n_low * std
             upper = med + self.n_high * std
             clip_mask = (x >= lower) & (x <= upper)
