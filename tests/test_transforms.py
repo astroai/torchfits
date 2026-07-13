@@ -3414,6 +3414,31 @@ class TestFITSScaleColumns:
         assert "FITSScaleColumns" in r
         assert "0.5" in r
 
+    def test_forward_with_mask_none(self) -> None:
+        """FITSScaleColumns.forward accepts mask=None without error."""
+        t = FITSScaleColumns({"FLUX": (0.5, 100.0)})
+        data = {"FLUX": torch.tensor([1.0, 2.0, 3.0])}
+        out = t.forward(data, mask=None)
+        expected = torch.tensor([100.5, 101.0, 101.5])
+        assert torch.allclose(out["FLUX"], expected)
+
+    def test_forward_with_mask_tensor(self) -> None:
+        """FITSScaleColumns.forward accepts a mask tensor (ignored for pointwise ops)."""
+        t = FITSScaleColumns({"FLUX": (2.0, 0.0)})
+        data = {"FLUX": torch.tensor([1.0, 2.0, 3.0])}
+        mask = torch.ones(3, dtype=torch.bool)
+        out = t.forward(data, mask=mask)
+        expected = torch.tensor([2.0, 4.0, 6.0])
+        assert torch.allclose(out["FLUX"], expected)
+
+    def test_inverse_with_mask_none(self) -> None:
+        """FITSScaleColumns.inverse also accepts mask=None."""
+        t = FITSScaleColumns({"FLUX": (0.5, 100.0)})
+        physical = {"FLUX": torch.tensor([100.5, 101.0, 101.5])}
+        out = t.inverse(physical, mask=None)
+        expected = torch.tensor([1.0, 2.0, 3.0])
+        assert torch.allclose(out["FLUX"], expected)
+
 
 # ---------------------------------------------------------------------------
 # TNullToNan (table column TNULL sentinel → NaN, lossy)
