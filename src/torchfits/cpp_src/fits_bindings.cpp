@@ -1107,29 +1107,38 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     }
 
     int num_cols = static_cast<int>(columns.size());
-    std::vector<std::string> type_values, form_values, unit_values;
-    type_values.reserve(num_cols);
-    form_values.reserve(num_cols);
-    unit_values.reserve(num_cols);
-    for (const auto& col : columns) {
-        type_values.push_back(col.name);
-        form_values.push_back(col.tform);
-        unit_values.push_back(col.tunit);
-    }
-    std::vector<char*> ttype, tform, tunit;
-    ttype.reserve(num_cols);
-    tform.reserve(num_cols);
-    tunit.reserve(num_cols);
+    char** ttype = new char*[num_cols];
+    char** tform = new char*[num_cols];
+    char** tunit = new char*[num_cols];
+
     for (int i = 0; i < num_cols; ++i) {
-        ttype.push_back(type_values[i].data());
-        tform.push_back(form_values[i].data());
-        tunit.push_back(unit_values[i].data());
+        const auto& col = columns[i];
+        ttype[i] = new char[col.name.length() + 1];
+        strncpy(ttype[i], col.name.c_str(), col.name.length());
+        ttype[i][col.name.length()] = '\0';
+
+        tform[i] = new char[col.tform.length() + 1];
+        strncpy(tform[i], col.tform.c_str(), col.tform.length());
+        tform[i][col.tform.length()] = '\0';
+
+        const std::string unit = col.tunit;
+        tunit[i] = new char[unit.length() + 1];
+        strncpy(tunit[i], unit.c_str(), unit.length());
+        tunit[i][unit.length()] = '\0';
     }
 
     fits_create_tbl(fptr, is_ascii ? ASCII_TBL : BINARY_TBL, num_rows, num_cols,
-                    ttype.data(), tform.data(), tunit.data(), "Table", &status);
+                    ttype, tform, tunit, "Table", &status);
 
     if (status != 0) {
+        for (int j = 0; j < num_cols; j++) {
+            delete[] ttype[j];
+            delete[] tform[j];
+            delete[] tunit[j];
+        }
+        delete[] ttype;
+        delete[] tform;
+        delete[] tunit;
         throw std::runtime_error("Failed to create table");
     }
 
@@ -1251,6 +1260,15 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             fits_update_key(fptr, TSTRING, ("TDIM" + std::to_string(i + 1)).c_str(), (void*)tdim.c_str(), nullptr, &status);
         }
     }
+
+    for (int j = 0; j < num_cols; j++) {
+        delete[] ttype[j];
+        delete[] tform[j];
+        delete[] tunit[j];
+    }
+    delete[] ttype;
+    delete[] tform;
+    delete[] tunit;
 
     if (status != 0) {
         throw std::runtime_error("Failed to write table data");
