@@ -42,12 +42,12 @@ def choose_where_read_plan(
 ) -> WhereReadPlan:
     """Select Arrow filtering vs C++ pushdown for a where= table read.
 
-    Auto mode uses the native table read (honoring ``mmap``) plus a torch
-    mask / Arrow trim — on Mac this beats mmap pushdown for the smart-family
-    bench (single-column projection) and stays mmap-honest when mmap=False.
-    Explicit ``backend="cpp"`` remains the opt-in fused pushdown surface.
+    Auto mode uses native table read + torch/Arrow trim below 16 384 rows.
+    Larger safe tables use fused C++ pushdown (mmap scanner) regardless of the
+    ``mmap`` flag — buffered full-column reads lose to fitsio at those sizes.
+    Force ``backend="torch"`` for a strict buffered tensor filter. Explicit
+    ``backend="cpp"`` always opts into pushdown when safe.
     """
-    _ = mmap  # honored by readers under ARROW_FILTER; not a strategy switch.
     vla_in_projection = (
         fits_schema.selected_includes_vla(header, columns) if header_ok else True
     )
@@ -55,9 +55,12 @@ def choose_where_read_plan(
 
     if backend == "cpp" and cpp_pushdown_safe:
         strategy = WhereStrategy.CPP_PUSHDOWN
+    elif backend in {"auto", "torch"} and cpp_pushdown_safe and n_rows >= 16_384:
+        strategy = WhereStrategy.CPP_PUSHDOWN
     else:
         strategy = WhereStrategy.ARROW_FILTER
     unfiltered_backend = "cpp" if backend == "auto" else backend
+    _ = mmap  # unfiltered reads still honor mmap; large WHERE uses pushdown.
 
     return WhereReadPlan(
         strategy=strategy,

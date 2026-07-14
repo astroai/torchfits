@@ -22,6 +22,25 @@ if str(ROOT) not in sys.path:
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+
+def _configure_torch_threads() -> None:
+    """Honor TORCH_NUM_THREADS; otherwise leave PyTorch defaults alone."""
+    raw = os.environ.get("TORCH_NUM_THREADS", "").strip()
+    if not raw:
+        return
+    try:
+        n = int(raw)
+    except ValueError:
+        return
+    if n <= 0:
+        return
+    import torch
+
+    torch.set_num_threads(n)
+
+
+_configure_torch_threads()
+
 from benchmarks.bench_contract import (  # noqa: E402
     DEFICIT_COLUMNS,
     RESULT_COLUMNS,

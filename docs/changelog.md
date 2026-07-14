@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signed-byte (`BZERO=-128`) and unsigned smart device reads prefer one C++
   logical tensor + H2D (no post-H2D cast chain; generic BSCALE host-scales for
   ≤4M pixels).
-- Automatic table `where=` uses a tensor-mask path (honoring `mmap`) before
-  Arrow so numeric predicates avoid full-column Arrow conversion; explicit
-  ``backend="cpp"`` remains the opt-in fused mmap pushdown.
+- Automatic table `where=` uses a tensor-mask path below 16 384 rows; larger
+  safe tables use fused C++ pushdown (mmap scanner) even when ``mmap=False``
+  (force ``backend="torch"`` for a strict buffered filter). Explicit
+  ``backend="cpp"`` remains the always-on pushdown surface.
 - CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
   use direct tile I/O instead of the buffered path.
 - Large multi-byte mmap image reads fall through to CFITSIO on little-endian
