@@ -97,17 +97,17 @@ def _compile_where_to_simple_predicates(
 
 def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
     if op == "==":
-        return tensor == literal
+        return torch.eq(tensor, literal)
     if op == "!=":
-        return tensor != literal
+        return torch.ne(tensor, literal)
     if op == ">":
-        return tensor > literal
+        return torch.gt(tensor, literal)
     if op == ">=":
-        return tensor >= literal
+        return torch.ge(tensor, literal)
     if op == "<":
-        return tensor < literal
+        return torch.lt(tensor, literal)
     if op == "<=":
-        return tensor <= literal
+        return torch.le(tensor, literal)
     raise ValueError(f"Unsupported where operator '{op}'")
 
 
@@ -176,8 +176,8 @@ def _try_torch_tensor_where_filter(
 
     mask: torch.Tensor | None = None
     try:
-        for col, op, literal in predicates:
-            tensor = chunk.get(col)
+        for pred_col, op, literal in predicates:
+            tensor = chunk.get(pred_col)
             if not isinstance(tensor, torch.Tensor):
                 return None
             part = _torch_cmp_mask(tensor, op, literal)
