@@ -29,14 +29,18 @@ echo "git=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "scratch=${SCRATCH} run_dir=${RUN_DIR}"
 echo "TMP_SRC_DIR=${TMP_SRC_DIR:-unset}"
 
-# Multicore I/O benches need ATen/OpenMP threads. Notebook/headless images often
-# leave TORCH_NUM_THREADS=1; that creates false large-N mmap-off predicate deficits.
+# Prefer requested TORCH_NUM_THREADS; otherwise nproc (cgroup-aware). Floor at 4
+# when the container only sees 1 CPU (under-provisioned headless) so ATen parallel
+# paths still run for large-N table benches against fitsio.
 NPROC="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+if [[ "${NPROC}" -lt 4 ]]; then
+  NPROC=4
+fi
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${NPROC}}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${NPROC}}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-${NPROC}}"
 export TORCH_NUM_THREADS="${TORCH_NUM_THREADS:-${NPROC}}"
-echo "threads: OMP=${OMP_NUM_THREADS} TORCH=${TORCH_NUM_THREADS}"
+echo "threads: OMP=${OMP_NUM_THREADS} TORCH=${TORCH_NUM_THREADS} nproc=$(nproc 2>/dev/null || echo unknown)"
 
 if command -v nvidia-smi >/dev/null; then
   nvidia-smi -L || true

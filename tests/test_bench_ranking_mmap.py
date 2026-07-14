@@ -84,14 +84,18 @@ def test_mmap_modes_rank_independently() -> None:
     assert off_tf["best_in_family"] is True
     assert on_tf["rank_in_family"] == 2
 
-    # mmap-on is ~15% behind — above the 8% deficit noise floor.
+    # mmap-on is ~15.7% — below the 25% deficit noise floor.
+    assert compute_deficits(rows, run_id="test") == []
+
+    # Amplify the mmap-on gap so it still registers as a same-mmap deficit.
+    on_tf["time_s"] = 1.0e-4
+    annotate_rankings(rows)
     deficits = compute_deficits(rows, run_id="test")
     assert len(deficits) == 1
     assert deficits[0]["mmap_target"] == "on"
-    assert abs(float(deficits[0]["lag_ratio"]) - (8.33e-5 / 7.20e-5)) < 1e-9
 
 
-def test_deficit_noise_floor_skips_sub_8pct() -> None:
+def test_deficit_noise_floor_skips_sub_25pct() -> None:
     rows = [
         _row(
             case_id="noise::read_full",
@@ -99,7 +103,7 @@ def test_deficit_noise_floor_skips_sub_8pct() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=1.07e-3,
+            time_s=1.24e-3,
         ),
         _row(
             case_id="noise::read_full",

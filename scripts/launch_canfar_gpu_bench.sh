@@ -11,6 +11,8 @@ RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.9.0_$(date -u +%Y%m%d_%H%M%S
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
 GPU="${TORCHFITS_CANFAR_GPU:-1}"
+CPU="${TORCHFITS_CANFAR_CPU:-8}"
+MEMORY="${TORCHFITS_CANFAR_MEMORY:-32}"
 # ponytail: CANFAR session names allow [A-Za-z0-9-] only (no dots/underscores)
 SAFE_TAG="$(printf '%s' "${RUN_ID}" | tr '_.' '--' | tr -cd '[:alnum:]-')"
 NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
@@ -30,7 +32,7 @@ fi
 
 echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "image=${IMAGE} gpu=${GPU} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "vos_dest=${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
@@ -42,6 +44,8 @@ set +o pipefail
 canfar create headless "${IMAGE}" \
   --name "${NAME}" \
   --gpu "${GPU}" \
+  --cpu "${CPU}" \
+  --memory "${MEMORY}" \
   --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}" \
   --env "TORCHFITS_BENCH_MODE=${MODE}" \
   --env "TORCHFITS_GIT_REF=${GIT_REF}" \
@@ -49,6 +53,8 @@ canfar create headless "${IMAGE}" \
   --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
   --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
   --env "TORCHFITS_VOS_DEST=${VOS_DEST}" \
+  --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}" \
+  --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}" \
   -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
