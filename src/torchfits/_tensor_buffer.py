@@ -55,15 +55,5 @@ def tensor_to_arrow_array(tensor: torch.Tensor, pa: Any) -> Any:
         return pa.array(tensor.tolist())
 
     arrow_type = getattr(pa, arrow_name)()
-    np_arr = tensor.numpy()
-    # Validate buffer size before using from_buffers — pyarrow 23.x can
-    # report mismatched buffer lengths through the numpy buffer protocol.
-    expected_bytes = tensor.numel() * tensor.element_size()
-    try:
-        buf = pa.py_buffer(np_arr)
-        if buf.nbytes == expected_bytes:
-            return pa.Array.from_buffers(arrow_type, tensor.numel(), [None, buf])
-    except Exception:
-        pass
-    # Fallback: standard numpy → Arrow conversion (always correct).
-    return pa.array(np_arr, type=arrow_type)
+    buf = pa.py_buffer(tensor.numpy())
+    return pa.Array.from_buffers(arrow_type, tensor.numel(), [None, buf])
