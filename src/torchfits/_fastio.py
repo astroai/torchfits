@@ -1,6 +1,6 @@
 """Minimal I/O helpers for fast image reads."""
 
-from typing import Union
+from typing import Any, Union
 
 import torch
 
@@ -24,7 +24,7 @@ def read(
     use_cache: bool = True,
     raw_scale: bool = False,
     scale_on_device: bool = True,
-):
+) -> Any:
     """Fast image read with minimal overhead."""
     if not path:
         raise ValueError("Path must be a non-empty string")

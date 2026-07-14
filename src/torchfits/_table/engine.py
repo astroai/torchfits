@@ -42,9 +42,9 @@ def _read_ranges_as_chunk(
                 out_sorted[name] = buf
 
             if isinstance(value, torch.Tensor):
-                buf[cursor : cursor + length] = value  # type: ignore[index]
+                buf[cursor : cursor + length] = value
             elif isinstance(value, list):
-                buf[cursor : cursor + length] = value  # type: ignore[index]
+                buf[cursor : cursor + length] = value
             elif _is_vla_tuple(value):
                 fixed, offsets = value
                 fixed = np.asarray(fixed)

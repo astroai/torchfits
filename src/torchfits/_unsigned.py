@@ -19,7 +19,7 @@ TFORM code ``I`` (16-bit) or ``J`` (32-bit).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import torch
 
@@ -111,7 +111,7 @@ class UnsignedConvention:
         return None
 
     @staticmethod
-    def detect_from_header(header: dict) -> UnsignedConvention | None:
+    def detect_from_header(header: dict[str, Any]) -> UnsignedConvention | None:
         """Detect unsigned convention from an image-HDU header.
 
         Inspects ``BITPIX``, ``BSCALE``, ``BZERO``.

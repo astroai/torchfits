@@ -6,7 +6,7 @@ bulk C++ read_header_to_string() function, avoiding Python/C++ round trips.
 """
 
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Used for mypy: header values can be str, int, float, bool, complex, or None
 
@@ -170,7 +170,7 @@ class FastHeaderParser:
         return header
 
     @classmethod
-    def _parse_card(cls, card: str) -> tuple:
+    def _parse_card(cls, card: str) -> tuple[Optional[str], Any, Optional[str]]:
         """
         Parse a single 80-character FITS card.
 
@@ -312,7 +312,9 @@ class FastHeaderParser:
         return quoted_str[1 : end_idx + 1].replace("''", "'").rstrip()
 
     @classmethod
-    def parse_with_performance_tracking(cls, header_string: str) -> tuple:
+    def parse_with_performance_tracking(
+        cls, header_string: str
+    ) -> tuple[Dict[str, Any], dict[str, Any]]:
         """
         Parse header with performance metrics.
 

@@ -71,6 +71,7 @@ _HEADER: dict[str, object] = {"BITPIX": -32, "BSCALE": 1.0, "BZERO": 0.0}
 
 # ---- Base class & Compose ----
 
+
 def test_fitstransform_call_accepts_mask() -> None:
     t: FITSTransform = ArcsinhStretch()
     img = _img()
@@ -92,6 +93,7 @@ def test_compose_mask_threading() -> None:
 
 
 # ---- Stateless stretches ----
+
 
 def test_arcsinh_stretch_mask() -> None:
     t = ArcsinhStretch(a=1.0)
@@ -124,6 +126,7 @@ def test_sqrt_stretch_mask() -> None:
 
 
 # ---- Stateful normalizers ----
+
 
 def test_zscale_normalize_mask() -> None:
     t = ZScaleNormalize()
@@ -177,6 +180,7 @@ def test_minmax_normalize_mask() -> None:
 
 # ---- FITS metadata-aware transforms ----
 
+
 def test_fits_header_scale_mask() -> None:
     t = FITSHeaderScale(bscale=2.0, bzero=10.0)
     img = _img()
@@ -217,6 +221,7 @@ def test_tnull_to_nan_mask() -> None:
 
 # ---- Spectral transforms ----
 
+
 def test_continuum_normalize_mask() -> None:
     t = ContinuumNormalize(order=1)
     spec = _spec()
@@ -236,6 +241,7 @@ def test_doppler_shift_mask() -> None:
 
 
 # ---- Continuum / baseline estimators ----
+
 
 def test_continuum_removal_mask() -> None:
     t = ContinuumRemoval(method="polynomial", order=1)
@@ -328,6 +334,7 @@ def test_global_scalar_norm_mask() -> None:
 
 # ---- Irreversible transforms (SigmaClip, PhaseFold, SpectralBinning) ----
 
+
 def test_sigma_clip_mask() -> None:
     t = SigmaClip(n_sigma=3.0, max_iter=3)
     img = _img()
@@ -364,6 +371,7 @@ def test_spectral_binning_mask() -> None:
 
 # ---- Standalone helpers ----
 
+
 def test_estimate_background_mask() -> None:
     img = _img()
     med, std = estimate_background(img, mask=None)
@@ -379,6 +387,7 @@ def test_zscale_limits_mask() -> None:
 
 
 # ---- Base class return type preservation ----
+
 
 def test_base_class_returns_any() -> None:
     """FITSTransform.forward/inverse return Any, but subclasses refine it."""

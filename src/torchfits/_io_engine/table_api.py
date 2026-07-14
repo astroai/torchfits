@@ -20,7 +20,7 @@ def read_table(
     handle_cache_capacity: int = 16,
     fast_header: bool = True,
     return_header: bool = False,
-):
+) -> Any:
     """Read a table HDU as a dictionary of tensors/lists."""
     if not isinstance(hdu, int) or hdu < 0:
         raise ValueError("hdu must be a non-negative integer")

@@ -43,7 +43,9 @@ class TensorHDU:
         elif self._file_handle is not None:
             import torchfits._C as cpp
 
-            return cast(Tensor, cpp.read_full(self._file_handle, self._hdu_index).to(device))
+            return cast(
+                Tensor, cpp.read_full(self._file_handle, self._hdu_index).to(device)
+            )
         else:
             raise ValueError(
                 "TensorHDU has no data available. "
@@ -53,7 +55,10 @@ class TensorHDU:
     def chunks(self, chunk_size: Tuple[int, ...]) -> Iterator[Tensor]:
         import torchfits._C as cpp
 
-        return cast(Iterator[Tensor], cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size))
+        return cast(
+            Iterator[Tensor],
+            cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size),
+        )
 
     def _get_shape_str(self) -> str:
         if self._data is not None:

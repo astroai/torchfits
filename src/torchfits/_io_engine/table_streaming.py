@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, Iterator, Optional, Union
+from typing import Any, Callable, Dict, Iterator, Optional, Union, cast
 
 import torch
 
@@ -30,7 +30,7 @@ def stream_table(
     chunk_rows: int = 65536,
     mmap: bool = False,
     max_chunks: Optional[int] = None,
-):
+) -> Iterator[Dict[str, Any]]:
     """Yield FITS table data in row chunks."""
     import torchfits._C as cpp
 
@@ -57,7 +57,10 @@ def stream_table(
         while row <= total_rows:
             remaining = total_rows - row + 1
             size = min(chunk_rows, remaining)
-            yield cpp.read_fits_table_rows(file_path, hdu, col_list, row, size, mmap)
+            yield cast(
+                Dict[str, Any],
+                cpp.read_fits_table_rows(file_path, hdu, col_list, row, size, mmap),
+            )
             row += size
             emitted += 1
             if max_chunks is not None and emitted >= max_chunks:
@@ -72,10 +75,13 @@ def stream_table(
                 remaining = total_rows - row + 1
                 size = min(chunk_rows, remaining)
                 if reader is not None:
-                    yield reader.read_rows(col_list, row, size)
+                    yield cast(Dict[str, Any], reader.read_rows(col_list, row, size))
                 else:
-                    yield cpp.read_fits_table_rows_from_handle(
-                        file_handle, hdu, col_list, row, size
+                    yield cast(
+                        Dict[str, Any],
+                        cpp.read_fits_table_rows_from_handle(
+                            file_handle, hdu, col_list, row, size
+                        ),
                     )
                 row += size
                 emitted += 1
@@ -88,7 +94,10 @@ def stream_table(
         while row <= total_rows:
             remaining = total_rows - row + 1
             size = min(chunk_rows, remaining)
-            yield cpp.read_fits_table_rows(file_path, hdu, col_list, row, size, mmap)
+            yield cast(
+                Dict[str, Any],
+                cpp.read_fits_table_rows(file_path, hdu, col_list, row, size, mmap),
+            )
             row += size
             emitted += 1
             if max_chunks is not None and emitted >= max_chunks:
@@ -112,16 +121,19 @@ def read_large_table(
 
         if not streaming:
             if return_iterator:
-                return iter([cpp.read_fits_table(file_path, hdu)])
-            return cpp.read_fits_table(file_path, hdu)
+                return cast(
+                    Iterator[Dict[str, Any]],
+                    iter([cpp.read_fits_table(file_path, hdu)]),
+                )
+            return cast(Dict[str, Any], cpp.read_fits_table(file_path, hdu))
 
         if not hasattr(cpp, "read_fits_table_rows"):
-            return cpp.read_fits_table(file_path, hdu)
+            return cast(Dict[str, Any], cpp.read_fits_table(file_path, hdu))
 
         try:
             total_rows = _total_rows_from_header(get_header_func(file_path, hdu))
             if total_rows == 0:
-                return cpp.read_fits_table(file_path, hdu)
+                return cast(Dict[str, Any], cpp.read_fits_table(file_path, hdu))
 
             sample_rows = min(256, total_rows)
             if hasattr(cpp, "read_fits_table_rows_from_handle"):
@@ -199,13 +211,13 @@ def read_large_table(
                                     accum[key] = torch.empty(
                                         out_shape, dtype=value.dtype
                                     )
-                                accum[key][start - 1 : start - 1 + value.shape[0]] = (  # type: ignore[index]
+                                accum[key][start - 1 : start - 1 + value.shape[0]] = (
                                     value
                                 )
                             elif isinstance(value, list):
-                                accum.setdefault(key, []).extend(value)  # type: ignore[attr-defined]
+                                accum.setdefault(key, []).extend(value)
                             else:
-                                accum.setdefault(key, []).append(value)  # type: ignore[attr-defined]
+                                accum.setdefault(key, []).append(value)
 
                         start += num
                 finally:
@@ -224,17 +236,17 @@ def read_large_table(
                             if key not in accum:
                                 out_shape = (total_rows,) + tuple(value.shape[1:])
                                 accum[key] = torch.empty(out_shape, dtype=value.dtype)
-                            accum[key][start - 1 : start - 1 + value.shape[0]] = value  # type: ignore[index]
+                            accum[key][start - 1 : start - 1 + value.shape[0]] = value
                         elif isinstance(value, list):
-                            accum.setdefault(key, []).extend(value)  # type: ignore[attr-defined]
+                            accum.setdefault(key, []).extend(value)
                         else:
-                            accum.setdefault(key, []).append(value)  # type: ignore[attr-defined]
+                            accum.setdefault(key, []).append(value)
 
                     start += num
 
             return accum
         except Exception:
-            return cpp.read_fits_table(file_path, hdu)
+            return cast(Dict[str, Any], cpp.read_fits_table(file_path, hdu))
 
     except Exception:
         return {}

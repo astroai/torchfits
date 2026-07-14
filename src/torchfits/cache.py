@@ -147,7 +147,7 @@ class CacheManager:
             "disk_usage_gb": 0,
         }
 
-    def configure_cpp_cache(self):
+    def configure_cpp_cache(self) -> None:
         """Configure the C++ cache backend."""
         try:
             import torchfits._C as cpp
@@ -195,7 +195,7 @@ class CacheManager:
             "hit_rate": merged_hits / max(1, merged_total),
         }
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear all caches."""
         try:
             import torchfits._C as cpp
@@ -207,7 +207,9 @@ class CacheManager:
 
         self._stats = {key: 0 for key in self._stats}
 
-    def optimize_for_dataset(self, file_paths: list, avg_file_size_mb: float):
+    def optimize_for_dataset(
+        self, file_paths: list[str], avg_file_size_mb: float
+    ) -> None:
         """Optimize cache settings for a specific dataset."""
         total_size_gb = len(file_paths) * avg_file_size_mb / 1024
 
@@ -237,7 +239,7 @@ def get_cache_manager() -> CacheManager:
     return _cache_manager
 
 
-def configure_for_environment():
+def configure_for_environment() -> None:
     """Auto-configure cache for different environments."""
     manager = get_cache_manager()
     manager.configure_cpp_cache()
@@ -248,7 +250,7 @@ def get_cache_stats() -> Dict[str, Any]:
     return get_cache_manager().get_stats()
 
 
-def clear_cache():
+def clear_cache() -> None:
     """Clear Python, C++ I/O, and table-handle caches."""
     get_cache_manager().clear()
     try:
@@ -282,7 +284,9 @@ def stats() -> Dict[str, Any]:
     return result
 
 
-def configure_cache(max_files: int, max_memory_mb: int, disk_cache_gb: int = 10):
+def configure_cache(
+    max_files: int, max_memory_mb: int, disk_cache_gb: int = 10
+) -> None:
     """Manually configure cache settings."""
     global _cache_manager
     config = CacheConfig(max_files, max_memory_mb, disk_cache_gb)
@@ -290,7 +294,7 @@ def configure_cache(max_files: int, max_memory_mb: int, disk_cache_gb: int = 10)
     _cache_manager.configure_cpp_cache()
 
 
-def optimize_for_dataset(file_paths: list, avg_file_size_mb: float = 10.0):
+def optimize_for_dataset(file_paths: list[str], avg_file_size_mb: float = 10.0) -> None:
     """Optimize cache for a specific dataset."""
     get_cache_manager().optimize_for_dataset(file_paths, avg_file_size_mb)
 

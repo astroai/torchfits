@@ -138,7 +138,9 @@ class TableHDURef:
     def filter(self, condition: str) -> "TableHDU":
         return self.materialize().filter(condition)
 
-    def _normalize_row_slice(self, row_slice: Optional[slice | tuple[int, int]]) -> tuple[int, int]:
+    def _normalize_row_slice(
+        self, row_slice: Optional[slice | tuple[int, int]]
+    ) -> tuple[int, int]:
         if row_slice is None:
             return 1, -1
         if isinstance(row_slice, tuple):
@@ -206,7 +208,9 @@ class TableHDURef:
             source_hdu=self._source_hdu,
         )
 
-    def iter_rows(self, batch_size: int = 65536, *, mmap: bool = True) -> Iterator[dict[str, Any]]:
+    def iter_rows(
+        self, batch_size: int = 65536, *, mmap: bool = True
+    ) -> Iterator[dict[str, Any]]:
         import torchfits
 
         path, hdu = self._require_source()

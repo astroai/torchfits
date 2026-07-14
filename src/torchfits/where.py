@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 if TYPE_CHECKING:
     import numpy as np
@@ -17,7 +17,7 @@ from ._where import (
 )
 
 
-def evaluate_where(ast: tuple, data: Mapping[str, Any]) -> np.ndarray:
+def evaluate_where(ast: tuple[Any, ...], data: Mapping[str, Any]) -> np.ndarray:
     """Evaluate a parsed predicate against mapping values as NumPy arrays.
 
     The ``numpy`` import is lazy to avoid a mandatory dependency at
@@ -27,9 +27,13 @@ def evaluate_where(ast: tuple, data: Mapping[str, Any]) -> np.ndarray:
 
     kind = ast[0]
     if kind == "and":
-        return evaluate_where(ast[1], data) & evaluate_where(ast[2], data)
+        return cast(
+            np.ndarray, evaluate_where(ast[1], data) & evaluate_where(ast[2], data)
+        )
     if kind == "or":
-        return evaluate_where(ast[1], data) | evaluate_where(ast[2], data)
+        return cast(
+            np.ndarray, evaluate_where(ast[1], data) | evaluate_where(ast[2], data)
+        )
     if kind == "not":
         return ~evaluate_where(ast[1], data)
 
@@ -54,16 +58,16 @@ def evaluate_where(ast: tuple, data: Mapping[str, Any]) -> np.ndarray:
             "<=": np.less_equal,
         }
         try:
-            return np.asarray(operators[operator](values, literal), dtype=bool)
+            return cast(np.ndarray, operators[operator](values, literal))
         except KeyError as exc:
             raise ValueError(f"Unsupported operator: {operator}") from exc
     if kind == "in":
         _, _, literals, negate = ast
-        mask = np.isin(values, literals)
+        mask = cast(np.ndarray, np.isin(values, literals))
         return ~mask if negate else mask
     if kind == "between":
         _, _, low, high, negate = ast
-        mask = (values >= low) & (values <= high)
+        mask = cast(np.ndarray, (values >= low) & (values <= high))
         return ~mask if negate else mask
     if kind == "isnull":
         _, _, negate = ast

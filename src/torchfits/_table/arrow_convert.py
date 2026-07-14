@@ -101,7 +101,9 @@ def _uint8_matrix_to_fixed_bool_list(pa: Any, value: "np.ndarray") -> Any:
     return pa.FixedSizeListArray.from_arrays(values, width)
 
 
-def _decode_uint8_matrix_to_arrow(pa: Any, value: "np.ndarray", encoding: str, strip: bool) -> Any:
+def _decode_uint8_matrix_to_arrow(
+    pa: Any, value: "np.ndarray", encoding: str, strip: bool
+) -> Any:
     import numpy as np
 
     arr = np.ascontiguousarray(value)
@@ -287,7 +289,9 @@ def _is_vla_tuple(value: Any) -> bool:
     return isinstance(value[0], np.ndarray) and isinstance(value[1], np.ndarray)
 
 
-def _vla_tuple_to_arrow_array(pa: Any, value: tuple[Any, Any], null_sentinel: Any = None) -> Any:
+def _vla_tuple_to_arrow_array(
+    pa: Any, value: tuple[Any, Any], null_sentinel: Any = None
+) -> Any:
     import numpy as np
 
     flat = np.ascontiguousarray(value[0]).reshape(-1)

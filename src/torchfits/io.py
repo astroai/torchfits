@@ -86,7 +86,7 @@ def read_fast(
     use_cache: bool = True,
     raw_scale: bool = False,
     scale_on_device: bool = True,
-):
+) -> Any:
     """Fast-path image read with optional half-precision and CUDA direct.
 
     Uses the C++ fast I/O path. Returns a torch.Tensor.
@@ -110,11 +110,11 @@ def _invalidate_path_caches(path: str) -> None:
     _invalidate_path_caches_impl(path)
 
 
-def _cpp_module():
+def _cpp_module() -> Any:
     return cpp
 
 
-def _read_check_cache(*args: Any, **kwargs: Any):
+def _read_check_cache(*args: Any, **kwargs: Any) -> Any:
     return _check_read_cache_impl(
         path=args[0],
         hdu=args[1],
@@ -130,7 +130,7 @@ def _read_check_cache(*args: Any, **kwargs: Any):
     )
 
 
-def _get_image_meta(path: str, hdu: int):
+def _get_image_meta(path: str, hdu: int) -> Any:
     return _get_image_meta_impl(path, hdu, cpp_module=_cpp_module())
 
 
@@ -147,7 +147,9 @@ def _should_use_cold_nommap(
     )
 
 
-def _resolve_image_mmap(path: str, hdu: int, mmap: bool | str, cache_capacity: int):
+def _resolve_image_mmap(
+    path: str, hdu: int, mmap: bool | str, cache_capacity: int
+) -> Any:
     return _resolve_image_mmap_impl(
         path,
         hdu,
@@ -167,7 +169,7 @@ def read(
     options: Any = None,
     return_header: bool = False,
     **kwargs: Any,
-):
+) -> Any:
     """Read a FITS image or table from the given path and HDU.
 
     Returns the data as a torch.Tensor (images) or pyarrow Table (tables),
@@ -238,7 +240,7 @@ def read_table(
     handle_cache_capacity: int = 16,
     fast_header: bool = True,
     return_header: bool = False,
-):
+) -> Any:
     """Read a FITS table HDU as a pyarrow Table."""
     return _read_table_impl(
         read,
@@ -263,7 +265,7 @@ def read_hdus(
     device: str = "cpu",
     mmap: bool = True,
     return_header: bool = False,
-):
+) -> Any:
     """Read multiple HDUs from a single FITS file. Returns a list of tensors."""
     return _read_hdus_impl(
         path, hdus, device=device, mmap=mmap, return_header=return_header
@@ -278,7 +280,7 @@ def read_subset(
     x2: int,
     y2: int,
     handle_cache_capacity: int = 16,
-):
+) -> Any:
     """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU."""
     return _read_subset_impl(
         get_cached_handle=_get_cached_handle_impl,
@@ -292,7 +294,7 @@ def read_subset(
     )
 
 
-def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu"):
+def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu") -> Any:
     """Open a reusable subset reader for repeated cutout access on an image HDU."""
     return _open_subset_reader_impl(path, hdu=hdu, device=device)
 
@@ -312,7 +314,7 @@ def write(
     """Write a tensor or numpy array to a FITS file (primary or image extension)."""
     return _write_impl(
         path, data, header=header, overwrite=overwrite, compress=compress
-    )  # type: ignore[arg-type]
+    )
 
 
 def write_tensor(
@@ -361,12 +363,12 @@ def delete_hdu(
     return _delete_hdu_impl(path, hdu, compress=compress)
 
 
-def get_header(path: str, hdu: Any = None):
+def get_header(path: str, hdu: Any = None) -> Any:
     """Read the FITS header for the given HDU as a Header dict-like object."""
     return _get_header_impl(path, hdu, autodetect_hdu=_autodetect_hdu_impl)
 
 
-def _write_header_cards_if_supported(*args: Any, **kwargs: Any):
+def _write_header_cards_if_supported(*args: Any, **kwargs: Any) -> None:
     return _write_header_cards_if_supported_impl(*args, **kwargs)
 
 
@@ -379,7 +381,7 @@ def stream_table(
     chunk_rows: int = 65536,
     mmap: bool = False,
     max_chunks: int | None = None,
-):
+) -> Any:
     """Stream a FITS table in row chunks, yielding pyarrow Tables."""
     return _stream_table_impl(
         get_header,
@@ -400,7 +402,7 @@ def read_batch(
     device: str = "cpu",
     *,
     strict: bool = False,
-):
+) -> Any:
     """Read the same HDU from multiple FITS files as a batched tensor."""
     return _read_batch_impl(
         read_func=read,
@@ -413,12 +415,12 @@ def read_batch(
     )
 
 
-def get_batch_info(file_paths: list[str]):
+def get_batch_info(file_paths: list[str]) -> Any:
     """Inspect shape and dtype consistency across files for batched reading."""
     return _get_batch_info_impl(file_paths)
 
 
-def get_cache_performance():
+def get_cache_performance() -> Any:
     """Return cache hit/miss statistics for the handle and metadata caches."""
     return _get_cache_performance_impl()
 
@@ -485,7 +487,7 @@ def read_table_rows(
     handle_cache_capacity: int = 16,
     fast_header: bool = True,
     return_header: bool = False,
-):
+) -> Any:
     """Read a contiguous range of rows from a FITS table HDU."""
     if not isinstance(hdu, int) or hdu < 0:
         raise ValueError("hdu must be a non-negative integer")

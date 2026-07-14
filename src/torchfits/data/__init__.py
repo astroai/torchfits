@@ -657,7 +657,8 @@ def make_loader(
     *,
     optimize_cache: bool = True,
     avg_file_size_mb: float = 10.0,
-    **loader_kwargs: Any,    ) -> DataLoader[Any]:
+    **loader_kwargs: Any,
+) -> DataLoader[Any]:
     """Create a DataLoader with sensible defaults and optional cache warm-up.
 
     When *optimize_cache* is True and the dataset exposes a ``files``

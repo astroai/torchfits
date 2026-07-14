@@ -69,7 +69,7 @@ def _compile_where_to_simple_predicates(
 
     predicates: list[tuple[str, str, Any]] = []
 
-    def _visit(node) -> bool:
+    def _visit(node: Any) -> bool:
         kind = node[0]
         if kind == "cmp":
             _, col, op, literal = node
@@ -95,7 +95,9 @@ def _compile_where_to_simple_predicates(
     return tuple(predicates)
 
 
-def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
+def _where_mask_for_table(
+    table: Any, where: str, parsed_ast: Any = None
+) -> "np.ndarray":
     pa = _require_pyarrow()
     import pyarrow.compute as _pc
 
@@ -103,7 +105,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
 
     ast = parsed_ast if parsed_ast is not None else parse_where_expression(where)
 
-    def _get_predicate_column(column_name: str):
+    def _get_predicate_column(column_name: str) -> Any:
         if column_name not in table.column_names:
             raise ValueError(f"where references unknown column '{column_name}'")
 
@@ -116,7 +118,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             )
         return column
 
-    def _cmp_mask(column_name: str, op: str, literal: Any):
+    def _cmp_mask(column_name: str, op: str, literal: Any) -> Any:
         column = _get_predicate_column(column_name)
 
         if literal is None:
@@ -141,7 +143,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             return pc.less_equal(column, scalar)
         raise ValueError(f"Unsupported where operator '{op}'")
 
-    def _in_mask(column_name: str, literals: list[Any], negate: bool):
+    def _in_mask(column_name: str, literals: list[Any], negate: bool) -> Any:
         column = _get_predicate_column(column_name)
         non_null = [v for v in literals if v is not None]
         has_null = any(v is None for v in literals)
@@ -160,7 +162,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             return pc.invert(mask)
         return mask
 
-    def _between_mask(column_name: str, low: Any, high: Any, negate: bool):
+    def _between_mask(column_name: str, low: Any, high: Any, negate: bool) -> Any:
         column = _get_predicate_column(column_name)
         if low is None or high is None:
             raise ValueError("where BETWEEN does not support NULL bounds")
@@ -174,7 +176,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             return pc.invert(mask)
         return mask
 
-    def _isnull_mask(column_name: str, negate: bool):
+    def _isnull_mask(column_name: str, negate: bool) -> Any:
         column = _get_predicate_column(column_name)
         mask = pc.is_null(column)
         mask = pc.fill_null(mask, False)
@@ -182,7 +184,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             return pc.invert(mask)
         return mask
 
-    def _eval(node):
+    def _eval(node: Any) -> Any:
         kind = node[0]
         if kind == "cmp":
             return pc.fill_null(_cmp_mask(node[1], node[2], node[3]), False)
@@ -207,7 +209,7 @@ def _where_mask_for_table(table, where: str, parsed_ast=None) -> "np.ndarray":
             return pc.invert(child)
         raise ValueError("Invalid where AST")
 
-    return pc.fill_null(_eval(ast), False)
+    return pc.fill_null(_eval(ast), False)  # type: ignore[no-any-return]
 
 
 def _build_fits_metadata(
@@ -413,7 +415,7 @@ def _iter_chunks_cpp_table(
     num_rows: int,
     batch_size: int,
     mmap: bool,
-):
+) -> Any:
     import torchfits
     import torchfits._C as cpp
 
@@ -436,7 +438,7 @@ def _iter_chunks_cpp_table(
     )
     col_list = columns if columns else []
 
-    def _generator():
+    def _generator() -> Any:
         can_mmap_rows = mmap and hasattr(cpp, "read_fits_table_rows")
         if can_mmap_rows:
             can_mmap_rows = _can_use_mmap_row_path_for_full_read(
@@ -470,9 +472,9 @@ def _iter_chunks_cpp_table(
     return _generator()
 
 
-def _filter_table_with_where(pa, table: Any, where: str) -> Any:
+def _filter_table_with_where(pa: Any, table: Any, where: str) -> Any:
     mask = _where_mask_for_table(table, where)
-    if len(mask) == 0 or pa.compute.sum(mask).as_py() == 0:  # type: ignore[union-attr,attr-defined]
+    if len(mask) == 0 or pa.compute.sum(mask).as_py() == 0:
         return table.slice(0, 0)
     return table.filter(mask)
 
@@ -565,7 +567,7 @@ def _read_table_unfiltered(
 
 def _try_cpp_where_pushdown(
     *,
-    pa,
+    pa: Any,
     path: str,
     hdu: int,
     columns: Optional[list[str]],
@@ -636,7 +638,7 @@ def _try_cpp_where_pushdown(
 
 def _read_table_with_where(
     *,
-    pa,
+    pa: Any,
     path: str,
     hdu: int,
     columns: Optional[list[str]],
@@ -754,7 +756,7 @@ def _resolve_rows_from_where_cpp(
     selected = pc.indices_nonzero(mask).to_numpy()
     if selected.size == 0:
         return []
-    return (selected + base_row0).tolist()
+    return (selected + base_row0).tolist()  # type: ignore[no-any-return]
 
 
 def scan(
@@ -882,7 +884,7 @@ def read(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = True,
     backend: str = "auto",
-):
+) -> Any:
     backend = validate_table_backend(backend)
     pa = _require_pyarrow()
     if isinstance(hdu, str):
@@ -942,7 +944,7 @@ def read(
 
 
 def _arrow_type_from_tform(
-    code: str, repeat: int, *, decode_bytes: bool, pa
+    code: str, repeat: int, *, decode_bytes: bool, pa: Any
 ) -> Any | None:
     """Map a scalar FITS TFORM code + repeat to a pyarrow type, or None if unhandled.
 
@@ -1042,7 +1044,7 @@ def schema(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = False,
     backend: str = "auto",
-):
+) -> Any:
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
     if isinstance(hdu, str):
@@ -1089,7 +1091,7 @@ def _read_cpp_table_chunk(
     strip: bool,
     include_fits_metadata: bool,
     apply_fits_nulls: bool,
-):
+) -> Any:
     """Read a table chunk via C++ TableReader (torch tensors) and convert to Arrow."""
     import numpy as np
     import torchfits._C as cpp
@@ -1344,7 +1346,7 @@ def reader(
     include_fits_metadata: bool = True,
     apply_fits_nulls: bool = True,
     backend: str = "auto",
-):
+) -> Any:
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
     scan_backend = backend
@@ -1372,8 +1374,8 @@ def reader(
 
 def dataset(
     data: str | Any,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     try:
         import pyarrow.dataset as ds
     except ImportError as exc:
@@ -1382,8 +1384,8 @@ def dataset(
     if isinstance(data, str):
         # In older pyarrow versions, ds.dataset() does not accept RecordBatchReader directly.
         # We read all batches into a Table first.
-        return ds.dataset(reader(data, **kwargs).read_all())
-    return ds.dataset(data)
+        return ds.dataset(reader(data, **kwargs).read_all())  # type: ignore[no-untyped-call]
+    return ds.dataset(data)  # type: ignore[no-untyped-call]
 
 
 def scanner(
@@ -1394,8 +1396,8 @@ def scanner(
     filter: Any = None,
     batch_size: int = 65536,
     use_threads: bool = True,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     try:
         import pyarrow.dataset as ds
     except ImportError as exc:
@@ -1407,7 +1409,7 @@ def scanner(
 
     if isinstance(data, str):
         rdr = reader(data, **kwargs)
-        return ds.Scanner.from_batches(
+        return ds.Scanner.from_batches(  # type: ignore[attr-defined]
             rdr,
             columns=columns,
             filter=filter,
@@ -1417,7 +1419,7 @@ def scanner(
     elif hasattr(data, "scanner"):
         dset = data
     else:
-        dset = ds.dataset(data)
+        dset = ds.dataset(data)  # type: ignore[no-untyped-call]
     return dset.scanner(
         columns=columns, filter=filter, batch_size=batch_size, use_threads=use_threads
     )
