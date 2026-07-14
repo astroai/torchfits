@@ -105,6 +105,7 @@ cmake.args = [
 # This ensures the compiled `cpp.so` or `cpp.pyd` file is placed inside the `torchfits` package.
 install.strip = false
 wheel.packages = ["src/torchfits"]
+wheel.exclude = ["torchfits/cpp_src/**"]
 
 # This setting enables CMake's incremental build feature. When you re-run the build,
 # CMake and Ninja will automatically detect which C++ files have changed and only

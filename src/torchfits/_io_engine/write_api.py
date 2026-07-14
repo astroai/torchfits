@@ -98,7 +98,7 @@ def _write_header_cards_if_supported(
 
 
 def write(
-    path: str,
+    path: str | os.PathLike[str],
     data: Any,
     header: Optional[Header] = None,
     overwrite: bool = False,
@@ -116,6 +116,7 @@ def write(
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
     """
+    path = os.fspath(path)
     path_exists = os.path.exists(path)
     if not overwrite and path_exists:
         raise FileExistsError(

@@ -34,18 +34,18 @@ def test_release_smoke_image_read_write_roundtrip() -> None:
     header = {"OBJECT": "SMOKE"}
 
     with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as fh:
-        path = fh.name
+        path = Path(fh.name)
 
     try:
         torchfits.write(path, image, header=header, overwrite=True)
-        out, hdr = torchfits.read(path, return_header=True)
+        out, hdr = torchfits.read(str(path), return_header=True)
 
         assert isinstance(out, torch.Tensor)
         assert out.shape == (4, 4)
         assert torch.allclose(out.cpu(), image)
         assert str(hdr["OBJECT"]).strip() == "SMOKE"
 
-        with torchfits.open(path) as hdul:
+        with torchfits.open(str(path)) as hdul:
             reopened = hdul[0].to_tensor()
             assert torch.allclose(reopened.cpu(), image)
     finally:

@@ -305,7 +305,7 @@ def open(path: str, mode: str = "r") -> HDUList:
 
 
 def write(
-    path: str,
+    path: str | os.PathLike[str],
     data: Any,
     header: Header | None = None,
     overwrite: bool = False,

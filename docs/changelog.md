@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Atomic table-column rewrites now close every managed `HDUList` borrower for
   the target path, so nested open contexts cannot retain an old inode and erase
   an earlier mutation.
+- `write()` normalizes `os.PathLike` targets before native cache invalidation.
+- Wheels no longer include the C++ build-source directory.
 
 ### Added
 
