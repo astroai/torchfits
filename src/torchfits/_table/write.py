@@ -253,7 +253,7 @@ def _rewrite_table_hdu_with_schema(
             table_type=table_type,
         )
         with torchfits.open(tmp_path) as hdul:
-            replacement = hdul[1].materialize(device="cpu")
+            replacement = hdul[1].materialize(device="cpu")  # type: ignore[union-attr,call-arg]
         torchfits.replace_hdu(path, target_hdu, replacement)
     finally:
         try:

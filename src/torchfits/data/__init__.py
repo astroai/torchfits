@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 # ---------------------------------------------------------------------------
 
 
-class FitsImageDataset(Dataset):
+class FitsImageDataset(Dataset[Any]):
     """Map-style dataset that reads FITS images via ``read_tensor``.
 
     Each ``__getitem__`` returns ``(image, label)`` where *image* is a
@@ -67,7 +67,7 @@ class FitsImageDataset(Dataset):
         hdu: int = 0,
         label_key: str | None = None,
         labels: list[int] | None = None,
-        transform: Callable | None = None,
+        transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = True,
         add_channel_dim: bool = True,
@@ -128,7 +128,7 @@ class FitsImageDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
-class FitsImageIterableDataset(IterableDataset):
+class FitsImageIterableDataset(IterableDataset[Any]):
     """Iterable dataset for sharded multi-worker image loading.
 
     Each worker processes a deterministic subset of the file list so every
@@ -158,7 +158,7 @@ class FitsImageIterableDataset(IterableDataset):
         self,
         paths: str | list[str],
         hdu: int = 0,
-        transform: Callable | None = None,
+        transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = True,
         shuffle: bool = False,
@@ -225,7 +225,7 @@ class FitsImageIterableDataset(IterableDataset):
 # ---------------------------------------------------------------------------
 
 
-class FitsTableDataset(Dataset):
+class FitsTableDataset(Dataset[Any]):
     """Map-style dataset for row-indexable FITS binary tables.
 
     Each ``__getitem__`` returns a ``dict[str, Tensor]`` for one row.
@@ -257,7 +257,7 @@ class FitsTableDataset(Dataset):
         hdu: int = 1,
         columns: list[str] | None = None,
         where: str | None = None,
-        transform: Callable | None = None,
+        transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = "auto",
     ) -> None:
@@ -438,7 +438,7 @@ def _arrow_batch_row_dict(batch: Any, row_idx: int, device: str) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 
-class FitsTableIterableDataset(IterableDataset):
+class FitsTableIterableDataset(IterableDataset[Any]):
     """Iterable dataset streaming FITS table rows via ``table.scan``.
 
     Yields one ``dict[str, Tensor]`` per row. ponytail: workers shard by scan
@@ -453,7 +453,7 @@ class FitsTableIterableDataset(IterableDataset):
         columns: list[str] | None = None,
         where: str | None = None,
         batch_size: int = 65536,
-        transform: Callable | None = None,
+        transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = "auto",
     ) -> None:
@@ -508,7 +508,7 @@ class FitsTableIterableDataset(IterableDataset):
                 columns=self.columns,
                 where=self.where,
                 batch_size=self.batch_size,
-                mmap=bool(self.mmap),  # type: ignore[arg-type]
+                mmap=bool(self.mmap),
             )
         ):
             if batch_idx % num_workers != worker_id:
@@ -535,7 +535,7 @@ CutoutSpec = tuple[str, int, int, int, int, int]
 """(path, hdu, x1, y1, x2, y2) inclusive pixel bounds."""
 
 
-class FitsCutoutDataset(Dataset):
+class FitsCutoutDataset(Dataset[Any]):
     """Map-style dataset for fixed cutouts from one or more FITS images.
 
     Each ``__getitem__`` calls ``read_subset`` for one window. ponytail:
@@ -546,7 +546,7 @@ class FitsCutoutDataset(Dataset):
     def __init__(
         self,
         cutouts: Sequence[CutoutSpec | tuple[str, int, int, int, int]],
-        transform: Callable | None = None,
+        transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         add_channel_dim: bool = True,
     ) -> None:
@@ -582,7 +582,7 @@ class FitsCutoutDataset(Dataset):
             image = image.unsqueeze(0)
         if self.transform is not None:
             image = self.transform(image)
-        return image
+        return image  # type: ignore[no-any-return]
 
     def __repr__(self) -> str:
         return f"FitsCutoutDataset(n={len(self.cutouts)}, device={self.device!r})"
@@ -647,7 +647,7 @@ def fits_collate_fn(
 
 
 def make_loader(
-    dataset: Dataset | IterableDataset,
+    dataset: Dataset[Any] | IterableDataset[Any],
     batch_size: int = 32,
     shuffle: bool | None = None,
     num_workers: int = 0,
@@ -657,8 +657,7 @@ def make_loader(
     *,
     optimize_cache: bool = True,
     avg_file_size_mb: float = 10.0,
-    **loader_kwargs: Any,
-) -> DataLoader:
+    **loader_kwargs: Any,    ) -> DataLoader[Any]:
     """Create a DataLoader with sensible defaults and optional cache warm-up.
 
     When *optimize_cache* is True and the dataset exposes a ``files``

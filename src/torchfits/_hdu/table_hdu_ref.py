@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 import torch
 from torch import Tensor
@@ -21,7 +21,7 @@ class _TableHDURefDataWrapper:
     def __contains__(self, key: str) -> bool:
         return key in self._parent.columns
 
-    def keys(self):
+    def keys(self) -> list[str]:
         return self._parent.columns
 
 
@@ -138,7 +138,7 @@ class TableHDURef:
     def filter(self, condition: str) -> "TableHDU":
         return self.materialize().filter(condition)
 
-    def _normalize_row_slice(self, row_slice: Optional[slice | tuple[int, int]]):
+    def _normalize_row_slice(self, row_slice: Optional[slice | tuple[int, int]]) -> tuple[int, int]:
         if row_slice is None:
             return 1, -1
         if isinstance(row_slice, tuple):
@@ -185,7 +185,7 @@ class TableHDURef:
         effective_mmap = bool(mmap)
         if effective_mmap and self._is_ascii_table():
             effective_mmap = False
-        return torchfits.read(
+        return torchfits.read(  # type: ignore[no-any-return]
             path,
             hdu=hdu,
             columns=columns,
@@ -206,7 +206,7 @@ class TableHDURef:
             source_hdu=self._source_hdu,
         )
 
-    def iter_rows(self, batch_size: int = 65536, *, mmap: bool = True):
+    def iter_rows(self, batch_size: int = 65536, *, mmap: bool = True) -> Iterator[dict[str, Any]]:
         import torchfits
 
         path, hdu = self._require_source()
@@ -275,10 +275,10 @@ class TableHDURef:
         return out
 
     @property
-    def data(self):
+    def data(self) -> _TableHDURefDataWrapper:
         return _TableHDURefDataWrapper(self)
 
-    def to_arrow(self, **kwargs):
+    def to_arrow(self, **kwargs: Any) -> Any:
         import torchfits
 
         path, hdu = self._require_source()
@@ -290,7 +290,7 @@ class TableHDURef:
             **kwargs,
         )
 
-    def scan_arrow(self, **kwargs):
+    def scan_arrow(self, **kwargs: Any) -> Any:
         import torchfits
 
         path, hdu = self._require_source()
@@ -302,7 +302,7 @@ class TableHDURef:
             **kwargs,
         )
 
-    def reader_arrow(self, **kwargs):
+    def reader_arrow(self, **kwargs: Any) -> Any:
         import torchfits
 
         path, hdu = self._require_source()
@@ -315,10 +315,23 @@ class TableHDURef:
         )
 
     def _refresh_file_view(self) -> "TableHDURef":
-        import torchfits
+        import torchfits._C as cpp
 
         path, hdu = self._require_source()
-        header = Header(torchfits.get_header(path, hdu))
+        # Force a completely fresh read: clear all C++ file caches
+        # to ensure we don't get a stale handle pointing to an
+        # unlinked inode after os.replace (macOS CFITSIO quirk).
+        cpp.invalidate_file_cache(path)
+        cpp.clear_file_cache()
+        # Open a fresh handle and read directly.
+        handle = cpp.open_fits_file(path, "r")
+        try:
+            header = Header(cpp.read_header(handle, hdu))
+        finally:
+            try:
+                handle.close()
+            except Exception:
+                pass
         return TableHDURef(header=header, source_path=path, source_hdu=hdu)
 
     def append_rows_file(self, rows: Dict[str, Any]) -> "TableHDURef":
@@ -344,12 +357,15 @@ class TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
+        old_columns = self.columns
+        insert_at = index if index is not None else len(old_columns)
+
         torchfits.table.insert_column(
             path,
             name,
             values,
             hdu=hdu,
-            index=index,
+            index=insert_at,
             format=format,
             unit=unit,
             dim=dim,
@@ -357,7 +373,39 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        return self._refresh_file_view()
+        # Build the updated header from memory instead of reading back from
+        # the file (which may return a stale cached handle when the file was
+        # atomically replaced underneath an open torchfits.open context).
+        new_header = Header(self.header)
+        new_columns = list(old_columns)
+        new_columns.insert(insert_at, name)
+        # Shift existing column metadata to make room for the inserted column
+        _COL_PREFIXES = ("TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO")
+        for i in range(len(old_columns), insert_at, -1):
+            for prefix in _COL_PREFIXES:
+                old_key = f"{prefix}{i}"
+                new_key = f"{prefix}{i + 1}"
+                if old_key in new_header:
+                    new_header[new_key] = new_header.pop(old_key)
+        # Set metadata for the newly inserted column
+        one_based = insert_at + 1
+        new_header[f"TTYPE{one_based}"] = name
+        if format is not None:
+            new_header[f"TFORM{one_based}"] = format
+        if unit is not None:
+            new_header[f"TUNIT{one_based}"] = unit
+        if dim is not None:
+            new_header[f"TDIM{one_based}"] = dim
+        if tnull is not None:
+            new_header[f"TNULL{one_based}"] = tnull
+        if tscal is not None:
+            new_header[f"TSCAL{one_based}"] = tscal
+        if tzero is not None:
+            new_header[f"TZERO{one_based}"] = tzero
+        new_header["TFIELDS"] = len(new_columns)
+        return TableHDURef(
+            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
+        )
 
     def replace_column_file(
         self,
@@ -386,7 +434,24 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        return self._refresh_file_view()
+        # Build the updated header from memory (see insert_column_file for
+        # rationale — C++ file cache may return a stale handle after os.replace).
+        new_header = Header(self.header)
+        new_columns = list(self.columns)
+        one_based = new_columns.index(name) + 1
+        if unit is not None:
+            new_header[f"TUNIT{one_based}"] = unit
+        if dim is not None:
+            new_header[f"TDIM{one_based}"] = dim
+        if tnull is not None:
+            new_header[f"TNULL{one_based}"] = tnull
+        if tscal is not None:
+            new_header[f"TSCAL{one_based}"] = tscal
+        if tzero is not None:
+            new_header[f"TZERO{one_based}"] = tzero
+        return TableHDURef(
+            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
+        )
 
     def insert_rows_file(self, rows: Dict[str, Any], *, row: int) -> "TableHDURef":
         import torchfits
@@ -431,7 +496,7 @@ class TableHDURef:
         torchfits.table.drop_columns(path, columns, hdu=hdu)
         return self._refresh_file_view()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "TABLE")
         proj = f", cols={len(self.columns)}" if self._columns is not None else ""
         return f"TableHDURef(name='{name}', rows={self.num_rows}{proj})"

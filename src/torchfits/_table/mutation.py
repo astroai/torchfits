@@ -111,7 +111,7 @@ def _default_table_column_values(
     tform: str,
     num_rows: int,
     tnull: Any = None,
-):
+) -> Any:
     import numpy as np
 
     global _VLA_DTYPE_MAP, _COMPLEX_DTYPE_MAP
@@ -302,7 +302,7 @@ def _read_table_for_rewrite(path: str, hdu: int, columns: list[str]) -> dict[str
         out: dict[str, Any] = {}
         for name in columns:
             if name in vla_cols:
-                values = table_hdu.get_vla_column(name)
+                values = table_hdu.get_vla_column(name)  # type: ignore[union-attr]
                 converted = []
                 for item in values:
                     if isinstance(item, torch.Tensor):
@@ -314,9 +314,9 @@ def _read_table_for_rewrite(path: str, hdu: int, columns: list[str]) -> dict[str
                         converted.append(np.ascontiguousarray(np.asarray(item)))
                 out[name] = converted
             elif name in string_cols:
-                out[name] = table_hdu.get_string_column(name)  # type: ignore[assignment]
+                out[name] = table_hdu.get_string_column(name)  # type: ignore[union-attr]
             else:
-                value = table_hdu[name]
+                value = table_hdu[name]  # type: ignore[index]
                 if isinstance(value, torch.Tensor):
                     t = value.detach()
                     if t.device.type != "cpu":
