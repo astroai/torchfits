@@ -58,7 +58,7 @@ jobs:
         else
           export LD_LIBRARY_PATH="$TORCH_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         fi
-        pytest {project}/tests/test_release_smoke.py -q
+        pytest -c /dev/null {project}/tests/test_release_smoke.py -q
       CIBW_BEFORE_ALL_LINUX: bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       CIBW_BEFORE_ALL_MACOS: bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0 CMAKE_OSX_DEPLOYMENT_TARGET=11.0
