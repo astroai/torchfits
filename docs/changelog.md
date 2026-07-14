@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transform masks now thread through FITS-aware normalization and clipping;
   spectral resampling uses torch-native interpolation with parity references for
   vectorized continuum, phase-folding, wavelet, and sigma-clipping paths.
+- **CANFAR CUDA exhaustive (`exhaustive_cuda_0.9.0_20260714_065950`)** — 3,648
+  normalized rows across the mmap on/off and CUDA matrix; 7 deficits, all at or
+  below 1.439×, with no large-N deficit.
 
 ### Changed
 
