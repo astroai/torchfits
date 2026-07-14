@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 from dataclasses import fields
-from typing import Any
+from typing import Any, cast
 import unittest.mock as _unittest_mock
 
 import torch
@@ -472,7 +472,7 @@ def _read_batch_paths(
             data_list = cpp_module.read_images_batch(list(path), hdu)
             if device != "cpu":
                 data_list = batch_to_device(data_list, device)
-            return data_list
+            return cast(list[Any], data_list)
         except Exception:
             pass
 
@@ -621,7 +621,7 @@ def read_scaled_cpu_fast(
             data.mul_(bscale)
         if bzero != 0.0:
             data.add_(bzero)
-    return data
+    return cast(Tensor, data)
 
 
 def _read_cpu_fast_path(
@@ -762,7 +762,7 @@ def _read_generic_fast_path(
         if device != "cpu" and data.device.type == "cpu":
             data = data.to(device)
 
-        return data
+        return cast(Tensor, data)
     except ValueError:
         raise
     except read_exc_types as exc:

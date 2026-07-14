@@ -60,7 +60,7 @@ def get_image_meta(
         return cast(ImageMeta, cached)
 
     try:
-        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))  # type: ignore[no-untyped-call]
+        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))
     except Exception:
         meta = None
 

@@ -17,7 +17,7 @@ from .caches import (
 )
 
 
-def read_header_fast(file_handle: Any, hdu_index: int, fast_header: bool = True):
+def read_header_fast(file_handle: Any, hdu_index: int, fast_header: bool = True) -> Any:
     """Read header using fast bulk parsing or fallback to slow method."""
     import torchfits._C as cpp
 

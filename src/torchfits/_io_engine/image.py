@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Sequence, Tuple, Union
+from typing import Any, Callable, Sequence, Tuple, Union, cast
 
 import torch
 from torch import Tensor
@@ -47,25 +47,25 @@ def validate_read_image_args(
 
 
 def dispatch_read_image_cpp(
-    cpp, path: str, hdu: int, mmap: bool, handle_cache: bool, raw_scale: bool
+    cpp: Any, path: str, hdu: int, mmap: bool, handle_cache: bool, raw_scale: bool
 ) -> Tensor:
     """Dispatch the correct C++ function for low-level image reading."""
     if raw_scale:
         if not mmap and hasattr(cpp, "read_full_unmapped_raw"):
-            return cpp.read_full_unmapped_raw(path, hdu)
+            return cast(Tensor, cpp.read_full_unmapped_raw(path, hdu))
         elif hasattr(cpp, "read_full_raw"):
-            return cpp.read_full_raw(path, hdu, mmap)
+            return cast(Tensor, cpp.read_full_raw(path, hdu, mmap))
         else:
-            return cpp.read_full(path, hdu, mmap)
+            return cast(Tensor, cpp.read_full(path, hdu, mmap))
     else:
         if handle_cache and hasattr(cpp, "read_full_cached"):
-            return cpp.read_full_cached(path, hdu, mmap)
+            return cast(Tensor, cpp.read_full_cached(path, hdu, mmap))
         elif not mmap and hasattr(cpp, "read_full_unmapped"):
-            return cpp.read_full_unmapped(path, hdu)
+            return cast(Tensor, cpp.read_full_unmapped(path, hdu))
         elif hasattr(cpp, "read_full_nocache"):
-            return cpp.read_full_nocache(path, hdu, mmap)
+            return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
         else:
-            return cpp.read_full(path, hdu, mmap)
+            return cast(Tensor, cpp.read_full(path, hdu, mmap))
 
 
 def read_image(
@@ -126,7 +126,7 @@ def read_hdus(
     device: str = "cpu",
     mmap: bool = True,
     return_header: bool = False,
-):
+) -> Any:
     """Read multiple image HDUs from one file using a direct one-handle path."""
     import torchfits._C as cpp
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Type, Union
 
 from .header import Header
 from .tensor_hdu import TensorHDU
@@ -61,6 +61,13 @@ class HDUList:
 
             hdul._file_handle = handle
 
+            from .._io_engine.caches import _register_open_hdulist
+
+            try:
+                _register_open_hdulist(path, handle, hdul)
+            except Exception:
+                pass
+
             for info in hdu_infos:
                 try:
                     header_cards = cpp.read_header(handle, info.index)
@@ -114,20 +121,37 @@ class HDUList:
 
         raise KeyError(f"HDU '{key}' not found")
 
-    def __enter__(self):
+    def __enter__(self) -> HDUList:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
         self.close()
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             self.close()
         except Exception:
             pass
 
-    def close(self):
+    def close(self) -> None:
         if self._file_handle:
+            # Unregister before closing so the registry doesn't hold a stale entry.
+            try:
+                from .._io_engine.caches import _open_hdulist_registry
+
+                for real_path, (reg_handle, _reg_hdul) in list(
+                    _open_hdulist_registry.items()
+                ):
+                    if reg_handle is self._file_handle:
+                        _open_hdulist_registry.pop(real_path, None)
+                        break
+            except Exception:
+                pass
             self._file_handle.close()
             self._file_handle = None
         for hdu in self._hdus:
@@ -135,12 +159,12 @@ class HDUList:
                 hdu._file_handle = None
                 hdu._data_view = None
 
-    def write(self, path: str, overwrite: bool = False):
+    def write(self, path: str, overwrite: bool = False) -> None:
         from .._io_engine.write_api import _write_hdus_uncompressed
 
         _write_hdus_uncompressed(path, list(self._hdus), overwrite)
 
-    def append(self, hdu: Union[TensorHDU, TableHDU]):
+    def append(self, hdu: Union[TensorHDU, TableHDU]) -> None:
         self._hdus.append(hdu)
         self._extname_idx = None
 
@@ -162,7 +186,7 @@ class HDUList:
         except Exception:
             return False
 
-    def info(self, output=None):
+    def info(self, output: Any = None) -> None:
         summary = self._get_summary()
         if output is None:
             print(summary)
@@ -211,7 +235,7 @@ class HDUList:
 
         return "\n".join(lines)
 
-    def _repr_html_(self):
+    def _repr_html_(self) -> str:
         html = [
             '<div tabindex="0" aria-label="FITS HDU List" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
             "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
@@ -270,5 +294,5 @@ class HDUList:
         html.append("</tbody></table></div>")
         return "".join(html)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self._get_summary()

@@ -20,7 +20,7 @@ class TensorHDU:
         source_path: Optional[str] = None,
     ):
         self._data = data
-        self._header = header or Header()  # type: ignore[no-untyped-call]
+        self._header = header or Header()
         self._file_handle = file_handle
         self._hdu_index = hdu_index
         self._source_path = source_path

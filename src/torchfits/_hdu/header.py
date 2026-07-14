@@ -7,8 +7,8 @@ from typing import Any
 from .card import Card
 
 
-class Header(dict):
-    def __init__(self, cards=None):
+class Header(dict[str, Any]):
+    def __init__(self, cards: Any = None) -> None:
         super().__init__()
         self._version = 0
         self._cards: list[Card] = []
@@ -45,7 +45,7 @@ class Header(dict):
                             continue
                         self._append_card(parsed, update_mapping=True, bump=False)
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: str, value: Any) -> None:
         if (
             not isinstance(value, (str, bytes))
             and isinstance(value, tuple)
@@ -58,7 +58,7 @@ class Header(dict):
         self._set_card(str(key), card_value, str(comment), bump=False)
         self._version += 1
 
-    def __delitem__(self, key):
+    def __delitem__(self, key: str) -> None:
         key_s = str(key)
         super().__delitem__(key)
         for idx, card in enumerate(self._cards):
@@ -67,7 +67,7 @@ class Header(dict):
                 break
         self._version += 1
 
-    def update(self, *args, **kwargs):
+    def update(self, *args: Any, **kwargs: Any) -> None:
         other = dict(*args, **kwargs)
         for key, value in other.items():
             if (
@@ -83,12 +83,12 @@ class Header(dict):
         if other:
             self._version += 1
 
-    def clear(self):
+    def clear(self) -> None:
         super().clear()
         self._cards.clear()
         self._version += 1
 
-    def pop(self, *args):
+    def pop(self, *args: Any) -> Any:
         if not args:
             raise TypeError("pop expected at least 1 argument")
         key = str(args[0])
@@ -100,7 +100,7 @@ class Header(dict):
         self._version += 1
         return res
 
-    def popitem(self):
+    def popitem(self) -> tuple[str, Any]:
         res = super().popitem()
         key = str(res[0])
         for idx, card in enumerate(self._cards):
@@ -110,7 +110,7 @@ class Header(dict):
         self._version += 1
         return res
 
-    def setdefault(self, key, default=None):
+    def setdefault(self, key: str, default: Any = None) -> Any:
         key_s = str(key)
         if key_s in self:
             res = self[key_s]
@@ -120,16 +120,16 @@ class Header(dict):
         self._version += 1
         return res
 
-    def add_history(self, value):
+    def add_history(self, value: Any) -> None:
         self._append_card(Card("HISTORY", str(value), ""), update_mapping=True)
 
-    def add_comment(self, value):
+    def add_comment(self, value: Any) -> None:
         self._append_card(Card("COMMENT", str(value), ""), update_mapping=True)
 
-    def get_history(self):
+    def get_history(self) -> list[Any]:
         return [c[1] for c in self._cards if c[0] == "HISTORY"]
 
-    def get_comment(self):
+    def get_comment(self) -> list[Any]:
         return [c[1] for c in self._cards if c[0] == "COMMENT"]
 
     @property
@@ -229,7 +229,7 @@ class Header(dict):
         elif key in self:
             super().__delitem__(key)
 
-    def _repr_html_(self):
+    def _repr_html_(self) -> str:
         import html as pyhtml
 
         html_parts = [
