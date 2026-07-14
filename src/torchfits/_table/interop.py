@@ -21,7 +21,7 @@ def _split_io_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, 
     return io_kwargs, other_kwargs
 
 
-def _materialize_arrow_table(data: str | Any | Iterable[Any], **kwargs):
+def _materialize_arrow_table(data: str | Any | Iterable[Any], **kwargs: Any) -> Any:
     """Normalize path/reader/batches into a single pyarrow.Table."""
     pa = _require_pyarrow()
 
@@ -51,7 +51,7 @@ def write_parquet(
     stream: bool = False,
     compression: str = "zstd",
     row_group_size: Optional[int] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> None:
     """
     Write Arrow-native table data to parquet.
@@ -84,7 +84,7 @@ def write_parquet(
             table = data_iter
         else:
             table = pa.Table.from_batches(list(data_iter))
-        pq.write_table(
+        pq.write_table(  # type: ignore[no-untyped-call]
             table, where, compression=compression, row_group_size=row_group_size
         )
         return
@@ -98,27 +98,27 @@ def write_parquet(
                 except StopIteration:
                     break
                 if writer is None:
-                    writer = pq.ParquetWriter(
+                    writer = pq.ParquetWriter(  # type: ignore[no-untyped-call]
                         where, batch.schema, compression=compression
                     )
-                writer.write_batch(batch, row_group_size=row_group_size)
+                writer.write_batch(batch, row_group_size=row_group_size)  # type: ignore[no-untyped-call]
         else:
             for batch in data_iter:
                 if writer is None:
-                    writer = pq.ParquetWriter(
+                    writer = pq.ParquetWriter(  # type: ignore[no-untyped-call]
                         where, batch.schema, compression=compression
                     )
-                writer.write_batch(batch, row_group_size=row_group_size)
+                writer.write_batch(batch, row_group_size=row_group_size)  # type: ignore[no-untyped-call]
     finally:
         if writer is not None:
-            writer.close()
+            writer.close()  # type: ignore[no-untyped-call]
 
 
 def to_pandas(
     data: str | Any | Iterable[Any],
     stream: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Convert Arrow table data to pandas.
 
@@ -159,8 +159,8 @@ def to_polars(
     stream: bool = False,
     *,
     rechunk: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Convert Arrow table data to polars DataFrame(s).
 
@@ -188,15 +188,15 @@ def to_polars(
     if stream:
         return (pl.from_arrow(batch, rechunk=rechunk) for batch in data)
 
-    return pl.from_arrow(data, rechunk=rechunk)  # type: ignore[union-attr]
+    return pl.from_arrow(data, rechunk=rechunk)
 
 
 def to_polars_lazy(
     data: str | Any | Iterable[Any],
     *,
     rechunk: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Convert table data into a Polars LazyFrame for complex expressions.
 
@@ -224,7 +224,7 @@ def scan_polars(
     *,
     batch_size: int = 65536,
     rechunk: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> Iterator[Any]:
     """Stream FITS table data as Polars DataFrames, one batch at a time.
 
@@ -292,7 +292,7 @@ def read_polars(
     path: str,
     *,
     rechunk: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> FITSPolarsFrame:
     """Read a FITS table directly as a Polars DataFrame with FITS metadata.
 
@@ -362,8 +362,8 @@ def to_duckdb(
     data: str | Any | Iterable[Any],
     relation_name: str = "fits_table",
     connection: Any = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Register table data in DuckDB and return a relation.
 
@@ -390,8 +390,8 @@ def duckdb_query(
     relation_name: str = "fits_table",
     connection: Any = None,
     return_arrow: bool = True,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Execute a DuckDB SQL query over table data.
     """

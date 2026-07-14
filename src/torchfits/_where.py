@@ -119,7 +119,7 @@ def _normalize_where_syntax(where: str) -> str:
 
 
 def normalize_logical_operators(where: str) -> str:
-    parts = re.split(r"('[^']*'|\"[^\"]*\")", where)
+    parts: list[str] = re.split(r"('[^']*'|\"[^\"]*\")", where)
     for i in range(0, len(parts), 2):
         s = parts[i]
         s = re.sub(r"\bAND\b", "and", s, flags=re.IGNORECASE)
@@ -157,7 +157,7 @@ def normalize_nulls(where: str) -> str:
     return where
 
 
-def _get_constant_val(node):
+def _get_constant_val(node: Any) -> Any:
     if isinstance(node, ast.Constant):
         if isinstance(node.value, str) and node.value.upper() in {"NULL", "NONE"}:
             return None
@@ -175,13 +175,13 @@ def _get_constant_val(node):
     raise ValueError("Expected a constant value")
 
 
-def _extract_literals(node):
+def _extract_literals(node: Any) -> list[Any]:
     if isinstance(node, (ast.Tuple, ast.List)):
         return [_get_constant_val(el) for el in node.elts]
     return [_get_constant_val(node)]
 
 
-def _to_custom_ast(node):
+def _to_custom_ast(node: Any) -> tuple[Any, ...]:
     if isinstance(node, ast.Expression):
         return _to_custom_ast(node.body)
 
@@ -256,7 +256,7 @@ def _to_custom_ast(node):
 
 
 @lru_cache(maxsize=1024)
-def _parse_where_expression(where: str):
+def _parse_where_expression(where: str) -> tuple[Any, ...]:
     if not isinstance(where, str) or not where.strip():
         raise ValueError("where must be a non-empty string expression")
     try:
@@ -275,11 +275,11 @@ def _parse_where_expression(where: str):
         raise ValueError("Unexpected trailing tokens in where expression")
 
 
-def _where_columns_from_ast(ast) -> List[str]:
+def _where_columns_from_ast(ast: tuple[Any, ...]) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
 
-    def _visit(node) -> None:
+    def _visit(node: tuple[Any, ...]) -> None:
         kind = node[0]
         if kind in {"cmp", "in", "between", "isnull"}:
             name = node[1]

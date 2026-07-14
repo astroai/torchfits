@@ -32,7 +32,7 @@ _BUFFER_SUPPORTED_DTYPES = frozenset(
 # -- low-level Arrow array constructors --------------------------------------------
 
 
-def _pa_array(pa, value, *, mask=None, type=None):
+def _pa_array(pa: Any, value: Any, *, mask: Any = None, type: Any = None) -> Any:
     kwargs: dict[str, Any] = {"from_pandas": False}
     if mask is not None:
         kwargs["mask"] = mask
@@ -63,7 +63,7 @@ def _coerce_null_sentinel(value: "np.ndarray", sentinel: Any) -> Any:
 
 def _column_tnull_from_meta(
     null_meta: Optional[dict[str, dict[str, str]]], name: str
-) -> Any:
+) -> Optional[str]:
     if not null_meta:
         return None
     field = null_meta.get(name)
@@ -75,7 +75,7 @@ def _column_tnull_from_meta(
 # -- uint8-matrix decode helpers ---------------------------------------------------
 
 
-def _uint8_matrix_to_fixed_binary(pa, value: "np.ndarray"):
+def _uint8_matrix_to_fixed_binary(pa: Any, value: "np.ndarray") -> Any:
     import numpy as np
 
     arr = np.ascontiguousarray(value)
@@ -88,7 +88,7 @@ def _uint8_matrix_to_fixed_binary(pa, value: "np.ndarray"):
     return _pa_array(pa, byte_view, type=pa.binary(width))
 
 
-def _uint8_matrix_to_fixed_bool_list(pa, value: "np.ndarray"):
+def _uint8_matrix_to_fixed_bool_list(pa: Any, value: "np.ndarray") -> Any:
     import numpy as np
 
     arr = np.ascontiguousarray(value)
@@ -101,7 +101,7 @@ def _uint8_matrix_to_fixed_bool_list(pa, value: "np.ndarray"):
     return pa.FixedSizeListArray.from_arrays(values, width)
 
 
-def _decode_uint8_matrix_to_arrow(pa, value: "np.ndarray", encoding: str, strip: bool):
+def _decode_uint8_matrix_to_arrow(pa: Any, value: "np.ndarray", encoding: str, strip: bool) -> Any:
     import numpy as np
 
     arr = np.ascontiguousarray(value)
@@ -122,7 +122,7 @@ def _decode_uint8_matrix_to_arrow(pa, value: "np.ndarray", encoding: str, strip:
         try:
             import pyarrow.compute as pc
 
-            return pc.cast(_pa_array(pa, byte_view), pa.string())
+            return pc.cast(_pa_array(pa, byte_view), pa.string())  # type: ignore[no-untyped-call]
         except Exception:
             pass
     if strip:
@@ -136,7 +136,7 @@ def _decode_uint8_matrix_to_arrow(pa, value: "np.ndarray", encoding: str, strip:
 
 
 def _numpy_to_arrow_array(
-    pa,
+    pa: Any,
     value: "np.ndarray",
     decode_bytes: bool,
     encoding: str,
@@ -145,7 +145,7 @@ def _numpy_to_arrow_array(
     *,
     fits_tform: str | None = None,
     unsigned_dtype: str | None = None,
-):
+) -> Any:
     import numpy as np
 
     arr = np.ascontiguousarray(value)
@@ -182,7 +182,7 @@ def _numpy_to_arrow_array(
 
 
 def _tensor_to_arrow_array(
-    pa,
+    pa: Any,
     tensor: torch.Tensor,
     decode_bytes: bool,
     encoding: str,
@@ -191,7 +191,7 @@ def _tensor_to_arrow_array(
     *,
     fits_tform: str | None = None,
     unsigned_dtype: str | None = None,
-):
+) -> Any:
     # Numpy-free fast path: 1D contiguous CPU tensor with no null/unsigned/
     # multi-dim handling needed.  Uses the shared buffer-protocol helper.
     if (
@@ -223,7 +223,7 @@ def _tensor_to_arrow_array(
 
 
 def _column_value_to_arrow_array(
-    pa,
+    pa: Any,
     value: Any,
     decode_bytes: bool,
     encoding: str,
@@ -232,7 +232,7 @@ def _column_value_to_arrow_array(
     *,
     fits_tform: str | None = None,
     unsigned_dtype: str | None = None,
-):
+) -> Any:
     """Convert one C++ table column value to a PyArrow array."""
     import numpy as np
 
@@ -287,7 +287,7 @@ def _is_vla_tuple(value: Any) -> bool:
     return isinstance(value[0], np.ndarray) and isinstance(value[1], np.ndarray)
 
 
-def _vla_tuple_to_arrow_array(pa, value: tuple[Any, Any], null_sentinel: Any = None):
+def _vla_tuple_to_arrow_array(pa: Any, value: tuple[Any, Any], null_sentinel: Any = None) -> Any:
     import numpy as np
 
     flat = np.ascontiguousarray(value[0]).reshape(-1)
@@ -322,7 +322,7 @@ def _chunk_to_record_batch(
     apply_fits_nulls: bool = False,
     column_tforms: Optional[dict[str, str]] = None,
     unsigned_dtypes: Optional[dict[str, str]] = None,
-):
+) -> Any:
     import numpy as np
 
     pa = _require_pyarrow()

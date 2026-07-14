@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import torch
 from torch import Tensor
@@ -13,10 +13,10 @@ from .header import Header
 
 
 class TableDataAccessor:
-    def __init__(self, table_hdu):
+    def __init__(self, table_hdu: Any) -> None:
         self._table = table_hdu
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Any:
         if hasattr(self._table, "_raw_data") and key in self._table._raw_data:
             value = self._table._raw_data[key]
             if isinstance(value, torch.Tensor):
@@ -26,25 +26,25 @@ class TableDataAccessor:
             return value
         raise KeyError(f"Column '{key}' not found")
 
-    def __contains__(self, key):
+    def __contains__(self, key: str) -> bool:
         return key in self._table._raw_data
 
-    def keys(self):
+    def keys(self) -> Any:
         return self._table._raw_data.keys()
 
     @property
-    def columns(self):
+    def columns(self) -> list[str]:
         return list(self.keys())
 
-    def __len__(self):
-        return self._table.num_rows
+    def __len__(self) -> int:
+        return int(self._table.num_rows)
 
 
 class TableHDU:
     def __init__(
         self,
-        tensor_dict: dict,
-        col_stats: Optional[dict] = None,
+        tensor_dict: dict[str, Any],
+        col_stats: Optional[dict[str, Any]] = None,
         header: Optional[Header] = None,
         source_path: Optional[str] = None,
         source_hdu: Optional[int] = None,
@@ -73,7 +73,7 @@ class TableHDU:
         self._source_hdu = source_hdu
         self.header = header or Header()
 
-    def _get_string_columns(self, header: Optional[Header]) -> set:
+    def _get_string_columns(self, header: Optional[Header]) -> set[str]:
         if not header:
             return set()
         from ..fits_schema import string_column_names
@@ -164,7 +164,7 @@ class TableHDU:
         return 0
 
     @property
-    def data(self):
+    def data(self) -> TableDataAccessor:
         return TableDataAccessor(self)
 
     @property
@@ -249,7 +249,7 @@ class TableHDU:
         from .._table.read import _where_mask_for_table
 
         mask_chunked = _where_mask_for_table(pa_table, condition)
-        mask_arr = mask_chunked.to_numpy()  # type: ignore[union-attr,attr-defined]
+        mask_arr = mask_chunked.to_numpy()  # type: ignore[attr-defined]
         if mask_arr.ndim == 0:
             mask = np.full(num_rows, bool(mask_arr.item()), dtype=bool)
         else:
@@ -503,7 +503,7 @@ class TableHDU:
             str(k): v for k, v in self._raw_data.items() if isinstance(v, torch.Tensor)
         }
 
-    def iter_rows(self, batch_size: int = 1000):
+    def iter_rows(self, batch_size: int = 1000) -> Iterator[dict[str, Any]]:
         if self._raw_data:
             total_rows = self.num_rows
             for start in range(0, total_rows, batch_size):
@@ -557,7 +557,7 @@ class TableHDU:
             )
             raise
 
-    def to_fits(self, file_path: str, overwrite: bool = False):
+    def to_fits(self, file_path: str, overwrite: bool = False) -> None:
         import torchfits
 
         payload = (
@@ -583,7 +583,7 @@ class TableHDU:
             overwrite=overwrite,
         )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "TABLE")
         return (
             f"TableHDU(name='{name}', rows={self.num_rows}, cols={len(self.columns)})"
