@@ -22,15 +22,13 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install lint tools
-        run: python -m pip install "ruff>=0.15,<0.16" "mypy>=1.0"
+        run: python -m pip install "ruff>=0.15,<0.16"
       - name: Duplicate C++ check
         run: python3 scripts/check_duplicate_cpp.py
       - name: Ruff check
         run: ruff check .
       - name: Ruff format
         run: ruff format --check .
-      - name: Mypy type check
-        run: mypy src/torchfits --ignore-missing-imports
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
@@ -114,8 +112,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli
+          pip install numpy astropy fitsio pytest nanobind scikit-build-core psutil pyarrow tomli mypy
           pip install -e . --no-build-isolation
+      - name: Mypy type check
+        run: mypy src/torchfits
       - name: Release gate tests
         env:
           KMP_DUPLICATE_LIB_OK: "TRUE"
