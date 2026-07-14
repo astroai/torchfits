@@ -196,50 +196,10 @@ def _rewrite_table_hdu_with_schema(
     table_type: str,
 ) -> None:
     import torchfits
-    import torchfits._C as cpp
 
-    can_overwrite_table_only = False
-    handle = cpp.open_fits_file(path, "r")
-    try:
-        num_hdus = int(cpp.get_num_hdus(handle))
-        if num_hdus == 1 and target_hdu == 0:
-            hdu_type = str(cpp.get_hdu_type(handle, 0))
-            if hdu_type in {"BINARY_TABLE", "ASCII_TABLE"}:
-                can_overwrite_table_only = True
-        elif num_hdus == 2 and target_hdu == 1:
-            hdu0_type = str(cpp.get_hdu_type(handle, 0))
-            hdu1_type = str(cpp.get_hdu_type(handle, 1))
-            if hdu0_type == "IMAGE" and hdu1_type in {"BINARY_TABLE", "ASCII_TABLE"}:
-                h0_header = _header_cards_to_mapping(cpp.read_header(handle, 0))
-                try:
-                    naxis0 = int(h0_header.get("NAXIS", 0))
-                except Exception:
-                    naxis0 = 0
-                if naxis0 == 0:
-                    can_overwrite_table_only = True
-                elif naxis0 == 1:
-                    try:
-                        naxis1 = int(h0_header.get("NAXIS1", 0))
-                    except Exception:
-                        naxis1 = -1
-                    can_overwrite_table_only = naxis1 == 0
-    finally:
-        try:
-            handle.close()
-        except Exception:
-            pass
-
-    if can_overwrite_table_only:
-        write(
-            path,
-            data=data,
-            schema=schema,
-            header=header,
-            overwrite=True,
-            table_type=table_type,
-        )
-        return
-
+    # Always use a temp-file + os.replace() so the rewrite is atomic and
+    # never races with CFITSIO's internal file-locking when another handle
+    # (e.g. torchfits.open()) is open on the same path.
     tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
     tmp_path = tmp.name
     tmp.close()

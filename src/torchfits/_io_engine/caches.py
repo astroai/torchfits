@@ -26,6 +26,11 @@ cold_nommap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
 auto_mmap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
 auto_hdu_cache: OrderedDict[Any, Any] = OrderedDict()
 
+# Registry of open HDUList file handles, keyed by real path.
+# ponytail: a list is sufficient while concurrent opens per path stay small;
+# use weak references if long-lived high-fanout readers ever make this grow.
+_open_hdulist_registry: dict[str, list[tuple[Any, Any]]] = {}
+
 IO_CACHE_SUBSYSTEMS = MappingProxyType(
     {
         "fits_image_data": MappingProxyType(
@@ -291,12 +296,49 @@ def check_read_cache(
     return False, None, cache_key
 
 
+def _register_open_hdulist(path: str, handle: Any, hdulist: Any) -> None:
+    """Register an HDUList's open file handle so mutations can close it."""
+    try:
+        real = os.path.realpath(path)
+    except Exception:
+        real = os.path.abspath(path)
+    _open_hdulist_registry.setdefault(real, []).append((handle, hdulist))
+
+
+def _close_hdulist_for_path(path: str) -> None:
+    """Close and unregister any open HDUList file handle for *path*.
+
+    Called by :func:`invalidate_path_caches` before file mutations so that
+    the C++ CFITSIO backend can open the file for writing.
+    """
+    try:
+        real = os.path.realpath(path)
+    except Exception:
+        real = os.path.abspath(path)
+    entries = _open_hdulist_registry.pop(real, [])
+    if not entries:
+        return
+    for handle, hdulist in entries:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        # Prevent double-close when HDUList.__exit__ calls close() later.
+        try:
+            hdulist._file_handle = None
+        except Exception:
+            pass
+
+
 def invalidate_path_caches(path: str, table_module: ModuleType | None = None) -> None:
     """Invalidate Python-side caches and open handles for one path.
 
     ``table_module`` is deprecated; table handle caches are cleared via
     :mod:`torchfits._table.cache` directly.
     """
+    # Close any open HDUList file handle so mutations can open the file for writing.
+    _close_hdulist_for_path(path)
+
     stale_data_keys = [
         key
         for key in list(file_cache.keys())

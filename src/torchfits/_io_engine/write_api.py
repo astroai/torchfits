@@ -25,6 +25,8 @@ def _invalidate_path_caches(path: str) -> None:
     cpp.invalidate_file_cache(path)
     clear_meta = getattr(cpp, "clear_shared_read_meta_cache", None)
     if clear_meta is not None:
+        # ponytail: native shared metadata only exposes a global clear today;
+        # use per-path invalidation when the extension grows that operation.
         clear_meta()
 
 
@@ -90,6 +92,7 @@ def _write_header_cards_if_supported(
     writer = getattr(cpp, "write_hdu_header_cards", None)
     if writer is None:
         return
+    _invalidate_path_caches(path)
     writer(path, int(hdu), list(header_obj.cards))
     _invalidate_path_caches(path)
 
@@ -204,7 +207,7 @@ def write(
             return
 
         if isinstance(data, HDUList):
-            _write_hdus_uncompressed(path, list(getattr(data, "_hdus", [])), overwrite)  # type: ignore[arg-type]
+            _write_hdus_uncompressed(path, list(getattr(data, "_hdus", [])), overwrite)
             return
 
         if isinstance(data, dict) and "data" not in data:
@@ -904,7 +907,7 @@ def insert_hdu(
             if isinstance(new_hdu, TensorHDU):
                 new_hdu._header = Header(header)
             else:
-                new_hdu.header = Header(header)  # type: ignore[misc]
+                new_hdu.header = Header(header)
     elif isinstance(data, dict) and "data" not in data:
         new_hdu = TableHDU(data, header=Header(header or {}))
     elif isinstance(data, Tensor):
@@ -936,7 +939,7 @@ def replace_hdu(
             if isinstance(new_hdu, TensorHDU):
                 new_hdu._header = Header(header)
             else:
-                new_hdu.header = Header(header)  # type: ignore[misc]
+                new_hdu.header = Header(header)
     elif isinstance(data, dict) and "data" not in data:
         new_hdu = TableHDU(data, header=Header(header or {}))
     elif isinstance(data, Tensor):

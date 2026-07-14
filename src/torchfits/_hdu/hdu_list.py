@@ -144,12 +144,17 @@ class HDUList:
             try:
                 from .._io_engine.caches import _open_hdulist_registry
 
-                for real_path, (reg_handle, _reg_hdul) in list(
-                    _open_hdulist_registry.items()
-                ):
-                    if reg_handle is self._file_handle:
+                for real_path, entries in list(_open_hdulist_registry.items()):
+                    remaining = [
+                        entry for entry in entries if entry[0] is not self._file_handle
+                    ]
+                    if len(remaining) == len(entries):
+                        continue
+                    if remaining:
+                        _open_hdulist_registry[real_path] = remaining
+                    else:
                         _open_hdulist_registry.pop(real_path, None)
-                        break
+                    break
             except Exception:
                 pass
             self._file_handle.close()
