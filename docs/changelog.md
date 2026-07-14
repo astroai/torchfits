@@ -5,13 +5,16 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 0.8.0
+## [0.9.0] - 2026-07-14
 
 ### Fixed
 
 - Writing one FITS file no longer invalidates borrowed native handles for
   unrelated files. Native cache clearing now defers closing in-use handles,
   preventing a subsequent read from dereferencing a closed CFITSIO handle.
+- Atomic table-column rewrites now close every managed `HDUList` borrower for
+  the target path, so nested open contexts cannot retain an old inode and erase
+  an earlier mutation.
 
 ### Added
 
@@ -25,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the entire Arrow table. Unlike `to_polars_lazy()`, no full table is built.
 - **`FITSPolarsFrame`** — lightweight dataclass wrapper around `pl.DataFrame` with
   `field_meta` and `table_meta` dicts for FITS metadata preservation.
+- Transform masks now thread through FITS-aware normalization and clipping;
+  spectral resampling uses torch-native interpolation with parity references for
+  vectorized continuum, phase-folding, wavelet, and sigma-clipping paths.
 
 ### Changed
 
@@ -474,8 +480,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v0.7.0...HEAD
-[0.8.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.8.0
+[Unreleased]: https://github.com/astroai/torchfits/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.9.0
 [0.7.0]: https://github.com/astroai/torchfits/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/astroai/torchfits/releases/tag/v0.6.0
 [0.6.0b1]: https://github.com/astroai/torchfits/releases/tag/v0.6.0b1

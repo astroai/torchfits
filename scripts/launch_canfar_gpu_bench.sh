@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 GIT_REF="${TORCHFITS_GIT_REF:-main}"
-RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.7.0_$(date -u +%Y%m%d_%H%M%S)}"
+RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.9.0_$(date -u +%Y%m%d_%H%M%S)}"
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
 GPU="${TORCHFITS_CANFAR_GPU:-1}"

@@ -10,7 +10,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
