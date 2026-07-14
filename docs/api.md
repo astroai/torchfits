@@ -7,12 +7,18 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 ## How to use this page
 
 1. **Find your task** in [Quick paths](#quick-paths) below (grouped by I/O, tables, ML).
-2. **Skim [Core I/O](#core-io)** for read/write patterns and GPU notes.
-3. **Tables with filters** → [Table module](#table-module) and [Predicate pushdown](#predicate-pushdown).
+2. **Skim [Core I/O](#core-io-reference)** for read/write patterns and GPU notes.
+3. **Tables with filters** → [Table module](#table-module-reference) and [Predicate pushdown](#predicate-pushdown-syntax).
 4. **Training loops** → [Data module](#data-module) and [Transforms](#transforms).
 
-Root `torchfits.read()` is for images and simple table access. For `where=`
-predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
+Two table surfaces exist and return different types:
+
+- Root helpers (`read_table`, `read_table_rows`, `stream_table`, and `read`
+  on a table HDU) return **`dict[str, torch.Tensor]`** — tensor-first, no
+  PyArrow needed.
+- The `torchfits.table` module is **Arrow-native**: `table.read`/`table.scan`
+  return `pyarrow.Table` / `pyarrow.RecordBatch` and support `where=` predicate
+  pushdown, dataframe/SQL interop, and mutations.
 
 ## Quick paths
 
@@ -25,7 +31,8 @@ predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
 | Cutout | `torchfits.read_subset(path, hdu, x1, y1, x2, y2)` |
 | Multi-HDU arrays | `torchfits.read_hdus(path, hdus=[0, 1, 2])` |
 | Repeated cutouts | `torchfits.open_subset_reader(path, hdu)` |
-| Write tensor | `torchfits.write_tensor(path, tensor, header=None, overwrite=False)` |
+| Batch same HDU across files | `torchfits.read_batch(paths, hdu=0)` |
+| Write tensor | `torchfits.write_tensor(path, tensor, overwrite=True)` |
 | Header only | `torchfits.get_header(path, hdu=0)` |
 | Multi-HDU handle | `with torchfits.open(path) as hdul: ...` |
 
@@ -34,10 +41,12 @@ predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
 | Goal | Entry point |
 |---|---|
 | Read table (tensor dict) | `torchfits.read_table(path, hdu=1, columns=[...])` |
-| Row slice | `torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=N)` |
-| Stream chunks | `torchfits.stream_table(path, chunk_rows=10000)` |
+| Row slice (tensor dict) | `torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=N)` |
+| Stream chunks (tensor dicts) | `torchfits.stream_table(path, hdu=1, chunk_rows=10000)` |
+| Read table (Arrow) | `torchfits.table.read(path, hdu=1)` |
 | Filter + project (`where=`) | `torchfits.table.read(..., where=...)` or `torchfits.table.scan(...)` |
 | Arrow / Polars / DuckDB | `torchfits.table.read_polars(...)`, `scan_polars(...)`, `to_polars_lazy(...)`, `to_duckdb(...)` |
+| In-place mutations | `torchfits.table.append_rows()`, `update_rows()`, `insert_column()`, `rename_columns()`, `drop_columns()` |
 
 ### ML training
 
@@ -50,359 +59,803 @@ predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan`.
 | Patch / cutout training | `torchfits.data.FitsCutoutDataset(cutouts)` |
 | Sensible DataLoader factory | `torchfits.data.make_loader(ds)` |
 
-## Core I/O
+## Core I/O Reference
 
-### `read(...)`
+### `torchfits.read`
 
 ```python
-data, hdr = torchfits.read("image.fits", hdu="auto", return_header=True)
-table = torchfits.table.read("cat.fits", hdu=1, columns=["RA", "DEC"], where="MAG_G < 20")
+def read(
+    path,
+    hdu=None,
+    device="cpu",
+    mmap="auto",
+    mode="auto",
+    options=None,
+    return_header=False,
+    **kwargs,
+): ...
 ```
 
-Unified reader for images and simple table access. Auto-detects image or table HDUs when `mode="auto"`.
+Unified high-level reader for both images and tables.
 
-- `hdu`: integer index, EXTNAME string, `"auto"`, or `None`.
-- `mode`: `"auto"`, `"image"`, or `"table"`.
-- `mmap`: `True`, `False`, or `"auto"`.
-- `return_header=True`: returns `(data, Header)`.
-
-For table predicate pushdown, use `torchfits.table.read` or `torchfits.table.scan` — root `read()` does not accept `where=`.
-
-### Array and Tensor reads
+* `hdu`: HDU index (0-based int), extension name (str), or `None` (auto-detects
+  the first HDU with data).
+* `device`: target device for image tensors (`"cpu"`, `"cuda"`, `"mps"`).
+* `mmap`: `True`, `False`, or `"auto"`.
+* `mode`: `"auto"` (detect from header), `"image"`, or `"table"`.
+* `return_header`: if `True`, returns `(data, Header)`.
+* **Returns**: a `torch.Tensor` for image HDUs, or `dict[str, torch.Tensor]`
+  for table HDUs. (For an Arrow `Table` with `where=` pushdown, use
+  [`torchfits.table.read`](#torchfitstableread).)
 
 ```python
-# Read any N-dimensional array directly as a PyTorch Tensor
-data = torchfits.read_tensor("image.fits", hdu=0, device="cpu", mmap=True)
-# Apple Silicon: device="mps"; Linux NVIDIA: device="cuda"
-sci, wht, msk = torchfits.read_hdus("mef.fits", hdus=["SCI", "WHT", "MASK"])
-stamp = torchfits.read_subset("mosaic.fits", 0, 0, 0, 256, 256)
+import torchfits
+
+image = torchfits.read("frame.fits", hdu=0, device="cpu")
+data, header = torchfits.read("frame.fits", hdu=0, return_header=True)
+columns = torchfits.read("catalog.fits", hdu=1, mode="table")  # dict[str, Tensor]
+```
+
+### `torchfits.read_tensor`
+
+```python
+def read_tensor(
+    path,
+    hdu=0,
+    device="cpu",
+    mmap=True,
+    handle_cache=True,
+    fp16=False,
+    bf16=False,
+    raw_scale=False,
+    return_header=False,
+    fallback_get_header=None,
+): ...
+```
+
+Directly reads a FITS image HDU as a contiguous `torch.Tensor`.
+
+* `hdu`: explicit integer HDU index (0-based). String/`"auto"` is not supported here.
+* `fp16` / `bf16`: cast the result to half precision.
+* `raw_scale`: if `True`, return raw storage values (e.g. `int16`) without
+  applying `BSCALE`/`BZERO`. If `False` (default), values are scaled.
+* **Returns**: a `torch.Tensor` (or `(Tensor, Header)` when `return_header=True`).
+
+```python
+import torchfits
+
+x = torchfits.read_tensor("frame.fits", hdu=0, device="cuda")
+raw = torchfits.read_tensor("counts.fits", hdu=0, raw_scale=True)  # keeps int dtype
+```
+
+> **Scaling on device.** The low-level fast path (`torchfits.read_fast`) accepts
+> `scale_on_device=True` to apply `BSCALE`/`BZERO` in device registers. `read`
+> forwards scaling policy through `options`/`**kwargs` to the pipeline;
+> `read_tensor` itself has no `scale_on_device` parameter.
+
+### `torchfits.read_subset`
+
+```python
+def read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16): ...
+```
+
+Extracts a rectangular cutout from an image HDU, loading only the needed strides.
+
+* `x1, y1`: lower corner (0-based, inclusive).
+* `x2, y2`: upper corner (0-based, **exclusive** — half-open `[x1, x2) × [y1, y2)`).
+  A `(0, 0, 2, 2)` request returns a `2 × 2` tensor.
+* No `device` parameter — the cutout is returned on CPU; move it yourself.
+
+```python
+import torchfits
+
+stamp = torchfits.read_subset("mosaic.fits", 0, 100, 100, 164, 164)  # 64x64
+stamp = stamp.to("cuda")
+```
+
+### `torchfits.open_subset_reader`
+
+```python
+def open_subset_reader(path, hdu=0, device="cpu"): ...
+```
+
+Context manager returning a reusable callable `reader(x1, y1, x2, y2) -> Tensor`.
+Reuses the file handle across many cutouts — ideal for training loops over one
+large mosaic.
+
+```python
+import torchfits
 
 with torchfits.open_subset_reader("mosaic.fits", hdu=0) as reader:
-    stamp = reader(0, 0, 256, 256)
+    a = reader(0, 0, 64, 64)
+    b = reader(64, 64, 128, 128)
 ```
 
-`read_tensor` options: `device`, `mmap`, `handle_cache`, `fp16`, `bf16`,
-`raw_scale`, `return_header`. Requires an explicit integer `hdu` (not `"auto"`).
-
-**GPU integer dtypes:** `read(..., device="cuda", scale_on_device=True)` (default) applies
-BSCALE/BZERO on the device. FITS signed-byte and unsigned-integer conventions keep narrow
-storage dtypes (int8, uint16, uint32) on H2D; generic scaled pixels still become
-`float32` for ML. For fitsio-matching native storage dtypes, use
-`read_tensor(..., raw_scale=True)`.
-
-**Training loops:** call `torchfits.cache.optimize_for_dataset(file_paths, avg_file_size_mb=…)`
-before `DataLoader` epochs to warm handle caches (see `examples/example_image_dataset.py`).
-
-### Table reads
+### `torchfits.read_hdus`
 
 ```python
-rows = torchfits.read_table("cat.fits", hdu=1, columns=["RA", "DEC"])
-subset = torchfits.read_table_rows(
-    "cat.fits",
+def read_hdus(path, hdus, *, device="cpu", mmap=True, return_header=False): ...
+```
+
+Reads several image extensions in one pass. `hdus` is a list of indexes and/or
+EXTNAME strings. Returns a list of tensors.
+
+```python
+import torchfits
+
+sci, err, dq = torchfits.read_hdus("mef.fits", ["SCI", "ERR", "DQ"])
+```
+
+### `torchfits.read_table`
+
+```python
+def read_table(
+    path,
     hdu=1,
+    columns=None,
     start_row=1,
-    num_rows=1000,
-    columns=["RA", "DEC"],
-)
-
-for chunk in torchfits.stream_table("cat.fits", hdu=1, chunk_rows=100_000):
-    ...
+    num_rows=-1,
+    device="cpu",
+    mmap="auto",
+    cache_capacity=10,
+    handle_cache_capacity=16,
+    fast_header=True,
+    return_header=False,
+): ...
 ```
 
-### Writes and HDU mutation
+Reads a table HDU into a **`dict[str, torch.Tensor]`** (column name → tensor).
+`start_row` is 1-based; `num_rows=-1` reads to the end.
 
 ```python
-torchfits.write("out.fits", image, header={"OBJECT": "M31"}, overwrite=True)
-torchfits.write_tensor("out.fits", tensor, header={"OBJECT": "M31"}, overwrite=True)
-torchfits.write("cat.fits", {"RA": ra, "DEC": dec}, overwrite=True)
+import torchfits
 
-torchfits.insert_hdu(path, data, index=1, header=None, compress=False)
-torchfits.replace_hdu(path, hdu, data, header=None, compress=False)
-torchfits.delete_hdu(path, hdu)
+cols = torchfits.read_table("catalog.fits", hdu=1, columns=["RA", "DEC", "MAG"])
+print(cols["RA"].shape)
 ```
 
-`write_tensor` accepts a single `torch.Tensor` image payload and optional
-`compress=True` (or a compression type string). `write` also accepts tensors,
-dict tables, or an `HDUList`.
-
-### Checksums
+### `torchfits.read_table_rows`
 
 ```python
-torchfits.write_checksums(path, hdu=0)
-result = torchfits.verify_checksums(path, hdu=0)
+def read_table_rows(
+    path, hdu=1, start_row=1, num_rows=1000, columns=None,
+    device="cpu", mmap=True, cache_capacity=10,
+    handle_cache_capacity=16, fast_header=True, return_header=False,
+): ...
 ```
 
-`result` contains `datastatus`, `hdustatus`, and `ok`.
-
-## Handles, HDUs, And Headers
+Convenience wrapper for a contiguous row range. `num_rows` must be `> 0`.
+Returns a `dict[str, torch.Tensor]`.
 
 ```python
+import torchfits
+
+first_1k = torchfits.read_table_rows("catalog.fits", hdu=1, start_row=1, num_rows=1000)
+```
+
+### `torchfits.stream_table`
+
+```python
+def stream_table(
+    file_path,
+    hdu=1,
+    columns=None,
+    start_row=1,
+    num_rows=-1,
+    chunk_rows=65536,
+    mmap=False,
+    max_chunks=None,
+): ...
+```
+
+Generator that yields `dict[str, torch.Tensor]` chunks of `chunk_rows` rows,
+keeping memory bounded for large catalogs. Note the first argument is
+`file_path`.
+
+```python
+import torchfits
+
+for chunk in torchfits.stream_table("huge.fits", hdu=1, chunk_rows=100_000):
+    process(chunk["FLUX"])  # dict[str, Tensor]
+```
+
+### `torchfits.read_batch` / `torchfits.get_batch_info`
+
+```python
+def read_batch(file_paths, hdu=0, device="cpu", *, strict=False): ...
+def get_batch_info(file_paths): ...
+```
+
+`read_batch` reads the same HDU from many files and stacks them into one batched
+tensor (files must share shape/dtype). `get_batch_info` inspects shape/dtype
+consistency across files before batching.
+
+```python
+import glob, torchfits
+
+files = sorted(glob.glob("stamps/*.fits"))
+info = torchfits.get_batch_info(files)
+batch = torchfits.read_batch(files, hdu=0, device="cuda")  # [N, ...]
+```
+
+### Slicing N-dimensional data (3D & 4D)
+
+FITS arrays are arbitrary N-D (from `NAXIS`/`NAXISn`). Reads return standard
+tensors, so slice with normal indexing:
+
+```python
+import torchfits
+
+cube = torchfits.read_tensor("cube.fits", hdu=0)   # [wavelength, y, x]
+sub = cube[1:3, :, :]                               # sub-cube
+hyper = torchfits.read_tensor("stokes.fits", hdu=0) # [pol, vel, y, x]
+stokes_i = hyper[0]                                 # 3D cube
+```
+
+### `torchfits.write` / `torchfits.write_tensor`
+
+```python
+def write(path, data, header=None, overwrite=False, compress=False): ...
+def write_tensor(path, tensor, header=None, overwrite=False, compress=False): ...
+```
+
+`write` accepts an image `Tensor`, a table dict, or an `HDUList`.
+`write_tensor` is the image shortcut and requires a `torch.Tensor`.
+`compress=True` or a codec string (e.g. `"RICE"`) enables tile compression for
+tensor image payloads.
+
+```python
+import torch, torchfits
+
+torchfits.write_tensor("out.fits", torch.randn(256, 256), overwrite=True)
+torchfits.write("rice.fits", torch.randn(512, 512), overwrite=True, compress="RICE")
+```
+
+### MEF (Multi-Extension FITS) workflows
+
+`torchfits.open` returns an `HDUList` for low-level access. HDU mutation helpers
+edit files in place:
+
+```python
+def insert_hdu(path, data, index=1, header=None, compress=False): ...
+def replace_hdu(path, hdu, data, header=None, compress=False): ...
+def delete_hdu(path, hdu, compress=False): ...
+```
+
+```python
+import torch, torchfits
+
 with torchfits.open("mef.fits") as hdul:
-    primary = hdul[0]
-    sci = hdul["SCI"]
-    data = sci.data
-    header = sci.header
+    n = len(hdul)
+
+torchfits.insert_hdu("mef.fits", torch.zeros(64, 64), index=1, header={"EXTNAME": "MASK"})
+torchfits.replace_hdu("mef.fits", "SCI", torch.ones(64, 64))
+torchfits.delete_hdu("mef.fits", "MASK")
 ```
 
-- `TensorHDU`: image HDU with lazy `.data` and `.header`.
-- `TableHDU`: in-memory table HDU.
-- `TableHDURef`: lazy file-backed table handle.
-- `DataView` and `TableDataAccessor`: stable table/HDU access helpers for
-  downstream packages.
-- `Header`: dict-like FITS header preserving FITS card semantics.
-- `Card`: one FITS header card with keyword, value, and comment semantics.
-
-## Table Module
+### Checksums & integrity
 
 ```python
-torchfits.table.read(path, hdu=1, columns=None, where=None)
-torchfits.table.scan(path, hdu=1, chunk_rows=10000)
-torchfits.table.reader(path, hdu=1)
-torchfits.table.write(path, data, header=None, overwrite=False)
+def write_checksums(path, hdu=0): ...
+def verify_checksums(path, hdu=0): ...   # -> {"datastatus": int, "hdustatus": int, "ok": bool}
 ```
-
-In-place table mutation:
 
 ```python
-torchfits.table.append_rows(path, rows, hdu=1)
-torchfits.table.update_rows(path, rows, row_slice, hdu=1)
-torchfits.table.insert_rows(path, rows, *, row, hdu=1)
-torchfits.table.delete_rows(path, row_slice, hdu=1)
-torchfits.table.insert_column(path, name, values, hdu=1, index=None, **meta)
-torchfits.table.replace_column(path, name, values, hdu=1)
-torchfits.table.rename_columns(path, mapping, hdu=1)
-torchfits.table.drop_columns(path, columns, hdu=1)
+import torchfits
+
+torchfits.write_checksums("frame.fits", hdu=0)
+status = torchfits.verify_checksums("frame.fits", hdu=0)
+assert status["ok"]
 ```
 
-Interop:
+### HDU & header classes
 
-```python
-torchfits.table.read_polars(path, hdu=1)          # one-call FITS → Polars (metadata preserved)
-torchfits.table.scan_polars(path, hdu=1)          # streaming FITS → Polars (yields pl.DataFrame batches)
-torchfits.table.to_polars_lazy(path, hdu=1)       # materializes eagerly, wraps as LazyFrame
-torchfits.table.to_duckdb(path, hdu=1, relation_name="tbl", connection=con)
-torchfits.table.duckdb_query(path, sql, hdu=1)
-torchfits.table.scanner(path, hdu=1, columns=None, where=None)
-torchfits.to_arrow(table_dict, decode_bytes=True, vla_policy="list")
-torchfits.to_pandas(table_dict, decode_bytes=True, vla_policy="object")
-torchfits.to_polars(table_dict, decode_bytes=True)
-```
+Low-level object model, re-exported at the package root and from `torchfits.hdu`.
 
-The supported package namespaces are `torchfits.table`, `torchfits.cache`,
-`torchfits.cpp`, `torchfits.data`, `torchfits.transforms`, and
-`torchfits.where`. `torchfits.cpp` is the low-level native compatibility
-surface used by performance-sensitive downstream packages; prefer the root I/O
-functions and `torchfits.table` unless a native-only operation is required.
-Its explicit `__all__` is the function-level compatibility contract; new
-compiled-extension symbols are private until deliberately promoted there.
-
-**Polars ergonomics:**
-
-- `read_polars()` — one-call FITS-to-Polars convenience. Returns a `FITSPolarsFrame`
-  (a lightweight wrapper around `pl.DataFrame` that preserves FITS column metadata —
-  TFORM, TUNIT, TDIM, TNULL, TSCAL, TZERO — and delegates `__getattr__`, `__getitem__`,
-  `__len__` to the wrapped DataFrame).
-- `scan_polars()` — genuine streaming path: yields `pl.DataFrame` batches without
-  materializing the entire table.  Unlike `to_polars_lazy()`, no full Arrow table is built.
-- `to_polars()` and `to_polars_lazy()` accept `rechunk=False` (default) to skip
-  Polars' unnecessary chunk concatenation when the Arrow data is already single-chunk.
-  Pass `rechunk=True` explicitly to restore the old behavior.
-- `to_polars_lazy()` **materializes eagerly** then wraps as `LazyFrame`.  For true
-  streaming, use `scan_polars()` instead.
-
-`TableHDU` is not a `torch_frame.TensorFrame`. Tensor dictionaries remain the
-native FITS representation, Arrow is the interchange boundary, and Polars is
-the dataframe-oriented user surface.
-
-Advanced table utilities (optional dependencies may apply):
-
-```python
-torchfits.table.schema(path, hdu=1)
-torchfits.table.scan_torch(path, hdu=1, batch_size=10000, device="cpu")
-torchfits.table.dataset(path, hdu=1, decode_bytes=True)
-torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
-```
-
-Downstream workflow packages may use `torchfits.table.clear_cache()` for
-deterministic cleanup. The table path-selection helpers
-`can_use_mmap_row_path_for_full_read`, `can_use_torch_table_path_for_full_read`,
-and `column_name_index_map` are public, read-only decision helpers; cache
-storage objects themselves are intentionally not part of the contract.
-
-## Predicate Pushdown
-
-The `where=` parameter filters table rows before data reaches Python.
-Use it on `torchfits.table.read` / `torchfits.table.scan` — root `read()` does not accept `where=`.
-
-Supported operators include `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR`,
-`NOT`, `IN (...)`, `NOT IN (...)`, `BETWEEN ... AND ...`, `IS NULL`, and
-`IS NOT NULL`.
-
-```python
-torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20 AND DEC > 0")
-torchfits.table.read("cat.fits", hdu=1, where="MAG_G < 20", backend="auto")
-```
-
-### Predicate helpers
-
-Applications that need to inspect or evaluate a predicate outside a table
-read may use the stable `torchfits.where` module. The parser and evaluator
-share the same AST and operator semantics as `table.read`:
-
-```python
-from torchfits.where import evaluate_where, parse_where_expression
-
-ast = parse_where_expression("MAG_G < 20 AND DEC IS NOT NULL")
-mask = evaluate_where(ast, {"MAG_G": magnitudes, "DEC": declinations})
-```
-
-`parse_where_literal`, `tokenize_where_expression`, `normalize_where_syntax`,
-and `where_columns_from_ast` are also public for adapters that need to inspect
-the parsed expression. Internal `_where` implementation names are not part
-of the public contract.
-
-### Table read backends
-
-`torchfits.table.read` and `scan` accept `backend=`:
-
-| Backend | Behavior |
+| Class | Role |
 |---|---|
-| `"auto"` (default) | Prefer fast C++ torch path; for `where=`, choose Arrow filter vs C++ pushdown from table size and column layout |
-| `"cpp"` | C++ row/table reads as torch tensors, converted to Arrow at the boundary |
-| `"torch"` | `torchfits.stream_table` chunked path |
+| `Header` | Dict-like FITS header; `header["NAXIS1"]`, `.get(key, default)`, card iteration. |
+| `Card` | A single header card (keyword, value, comment). |
+| `HDUList` | Sequence of HDUs from `torchfits.open(path)`; index by position or EXTNAME. |
+| `TensorHDU` | Image/cube HDU with lazy tensor access. |
+| `TableHDU` | Tensor-backed table HDU (`hdu[name]`, `get_string_column`, `get_vla_column`). |
+| `TableHDURef` | Lazy, file-backed table handle for on-demand reads. |
 
-The legacy `"cpp_numpy"` alias was removed in 0.8.0 — use `"cpp"`.
+```python
+import torchfits
 
-Public constant: `torchfits.table.TABLE_BACKENDS`.
+with torchfits.open("mef.fits") as hdul:
+    sci = hdul["SCI"]
+    header = sci.header
+    print(header["NAXIS1"], header.get("BUNIT", "counts"))
+```
 
-Environment tuning:
+## Table Module Reference
+
+`torchfits.table` is the **Arrow-native** table surface: predicate pushdown,
+streaming, dataframe/SQL interop, and in-place mutations. Reads return
+`pyarrow.Table` / `pyarrow.RecordBatch`. PyArrow is a core dependency.
+
+### Readers & scanners
+
+#### `torchfits.table.read`
+
+```python
+def read(
+    path, hdu=1, columns=None, row_slice=None, rows=None, where=None,
+    batch_size=65536, mmap=True, decode_bytes=True, encoding="ascii",
+    strip=True, include_fits_metadata=False, apply_fits_nulls=True,
+    backend="auto",
+): ...
+```
+
+Reads a table HDU as a `pyarrow.Table` with optional projection, row selection,
+and `where=` filtering.
+
+```python
+import torchfits
+
+t = torchfits.table.read("catalog.fits", hdu=1, columns=["RA", "DEC", "MAG"])
+bright = torchfits.table.read("catalog.fits", hdu=1, where="MAG < 20 AND DEC > 0")
+some = torchfits.table.read("catalog.fits", hdu=1, rows=[0, 5, 42])
+```
+
+#### `torchfits.table.scan`
+
+```python
+def scan(
+    path, hdu=1, columns=None, row_slice=None, where=None,
+    batch_size=65536, mmap=True, decode_bytes=True, encoding="ascii",
+    strip=True, include_fits_metadata=False, apply_fits_nulls=True,
+    backend="auto",
+): ...
+```
+
+Generator of `pyarrow.RecordBatch` — constant-memory streaming over big tables.
+
+```python
+import torchfits
+
+for batch in torchfits.table.scan("huge.fits", hdu=1, where="Z > 1.0", batch_size=50_000):
+    process(batch)
+```
+
+#### `torchfits.table.scan_torch`
+
+```python
+def scan_torch(
+    path, hdu=1, columns=None, row_slice=None, batch_size=65536,
+    mmap=True, device="cpu", non_blocking=True, pin_memory=False,
+): ...
+```
+
+Streams `dict[str, torch.Tensor]` batches, optionally moved to `device`.
+No `where=` (use `scan` for filtering).
+
+```python
+import torchfits
+
+for chunk in torchfits.table.scan_torch("huge.fits", hdu=1, device="cuda"):
+    train_step(chunk["FLUX"])
+```
+
+#### `torchfits.table.schema`
+
+```python
+def schema(path, hdu=1, columns=None, where=None, ...): ...
+```
+
+Returns the `pyarrow.Schema`. With `where=None` it is inferred from header cards
+only (no row read).
+
+```python
+import torchfits
+
+sch = torchfits.table.schema("catalog.fits", hdu=1)
+print(sch.names)
+```
+
+#### `torchfits.table.reader` / `scanner` / `dataset`
+
+* `reader(path, hdu=1, ...)` → `pyarrow.RecordBatchReader` (streaming, includes
+  FITS metadata by default).
+* `dataset(data, **kwargs)` → `pyarrow.dataset.Dataset` from a path or Arrow object.
+* `scanner(data, *, columns=None, where=None, filter=None, batch_size=65536, use_threads=True, **kwargs)`
+  → a `pyarrow.dataset.Scanner`.
+
+```python
+import torchfits
+
+rdr = torchfits.table.reader("catalog.fits", hdu=1, columns=["RA", "DEC"])
+tbl = rdr.read_all()
+```
+
+### Backends
+
+Reads accept `backend=` from `torchfits.table.TABLE_BACKENDS`, which is
+`frozenset({"auto", "cpp", "torch"})`:
+
+* `"auto"` (default) — pick the fastest safe path.
+* `"cpp"` — force the native C++ reader.
+* `"torch"` — force the Python/torch streaming path.
+
+```python
+import torchfits
+
+assert torchfits.table.TABLE_BACKENDS == frozenset({"auto", "cpp", "torch"})
+t = torchfits.table.read("catalog.fits", hdu=1, backend="cpp")
+```
+
+### Writing
+
+```python
+def write(path, data, *, schema=None, header=None, overwrite=False,
+          extname=None, table_type="binary"): ...
+def write_parquet(where, data, *, stream=False, compression="zstd",
+                  row_group_size=None, **kwargs): ...
+```
+
+`table.write` writes a `dict` of columns (arrays/tensors/lists) to a FITS binary
+or ASCII table. `write_parquet` exports a FITS path or Arrow data to Parquet.
+
+```python
+import numpy as np, torchfits
+
+torchfits.table.write(
+    "out.fits",
+    {"RA": np.array([1.0, 2.0]), "MAG": np.array([20.0, 21.0])},
+    overwrite=True,
+)
+torchfits.table.write_parquet("out.parquet", "catalog.fits", compression="zstd")
+```
+
+### In-place mutations
+
+All mutations invalidate Python-side and C++ handle/metadata caches to prevent
+stale reads. `hdu` accepts an index or EXTNAME.
+
+| Function | Signature (trailing keyword-only args after `*`) |
+|---|---|
+| `append_rows` | `append_rows(path, rows, hdu=1)` |
+| `insert_rows` | `insert_rows(path, rows, *, row, hdu=1)` |
+| `delete_rows` | `delete_rows(path, row_slice, *, hdu=1)` |
+| `update_rows` | `update_rows(path, rows, row_slice, hdu=1, *, mmap="auto")` |
+| `insert_column` | `insert_column(path, name, values, *, hdu=1, index=None, format=None, unit=None, dim=None, tnull=None, tscal=None, tzero=None)` |
+| `replace_column` | `replace_column(path, name, values, *, hdu=1, format=None, unit=None, dim=None, tnull=None, tscal=None, tzero=None)` |
+| `rename_columns` | `rename_columns(path, mapping, hdu=1)` |
+| `drop_columns` | `drop_columns(path, columns, hdu=1)` |
+
+`rows` is a `dict[str, values]`; `row_slice` is a `slice` or `(start, num)`
+tuple (0-based start).
+
+```python
+import numpy as np, torchfits
+
+torchfits.table.append_rows("cat.fits", {"RA": np.array([9.0]), "MAG": np.array([18.0])})
+torchfits.table.insert_rows("cat.fits", {"RA": np.array([0.0]), "MAG": np.array([0.0])}, row=0)
+torchfits.table.delete_rows("cat.fits", slice(10, 20))
+torchfits.table.update_rows("cat.fits", {"MAG": np.array([15.0])}, row_slice=(0, 1))
+torchfits.table.insert_column("cat.fits", "FLAG", np.zeros(3, dtype=np.int16), unit="")
+torchfits.table.rename_columns("cat.fits", {"MAG": "MAG_G"})
+torchfits.table.drop_columns("cat.fits", ["FLAG"])
+```
+
+### Dataframe & SQL interop
+
+Convert whole FITS tables to dataframe engines (optional dependencies):
+
+```python
+def read_polars(path, *, rechunk=False, **kwargs): ...       # -> FITSPolarsFrame
+def scan_polars(path, *, batch_size=65536, rechunk=False, **kwargs): ...  # -> iterator[pl.DataFrame]
+def to_polars_lazy(data, *, rechunk=False, **kwargs): ...    # materializes then -> pl.LazyFrame
+def to_duckdb(data, relation_name="fits_table", connection=None, **kwargs): ...
+def duckdb_query(data, query, relation_name="fits_table", connection=None, return_arrow=True, **kwargs): ...
+```
+
+* `read_polars` returns a `FITSPolarsFrame` wrapping a `pl.DataFrame` and keeping
+  FITS metadata (TFORM, TUNIT, TDIM, TNULL, TSCAL, TZERO, HDU identity).
+* `scan_polars` is a genuine streaming path (one `pl.DataFrame` per batch).
+* `to_polars_lazy` materializes the whole table before wrapping it in a
+  `LazyFrame`; use `scan_polars` for real streaming.
+* `duckdb_query` accepts exactly one `SELECT`/`EXPLAIN` statement.
+
+```python
+import torchfits
+
+frame = torchfits.table.read_polars("catalog.fits", hdu=1)
+res = torchfits.table.duckdb_query("catalog.fits", "SELECT COUNT(*) FROM fits_table WHERE MAG < 20")
+```
+
+### Tensor-dict interop
+
+Convert a `dict[str, Tensor]` (from `read_table`/`stream_table`) to Arrow-backed
+frames. Available at the package root and in `torchfits.interop`. **`decode_bytes`
+defaults to `False`** (byte columns stay as `uint8` tensors unless you opt in).
+
+```python
+def to_arrow(data, decode_bytes=False, encoding="ascii", strip=True, vla_policy="list"): ...
+def to_pandas(data, decode_bytes=False, encoding="ascii", strip=True, vla_policy="object"): ...
+def to_polars(data, decode_bytes=False, encoding="ascii", strip=True, vla_policy="list", *, rechunk=False): ...
+```
+
+```python
+import torchfits
+
+cols = torchfits.read_table("catalog.fits", hdu=1)
+arrow_tbl = torchfits.to_arrow(cols, decode_bytes=True)
+df = torchfits.to_pandas(cols, decode_bytes=True)
+```
+
+### Predicate pushdown syntax
+
+The `where=` parameter accepts SQL-like predicates:
+
+- Comparison: `=`, `!=`, `<`, `>`, `<=`, `>=`
+- Logical: `AND`, `OR`, `NOT`
+- Lists: `IN (val1, val2)`, `NOT IN (...)`
+- Ranges: `BETWEEN min AND max`
+- Null checks: `IS NULL`, `IS NOT NULL`
+
+```python
+import torchfits
+
+t = torchfits.table.read(
+    "catalog.fits", hdu=1,
+    where="MAG_G < 20 AND DEC > 0 AND FLAGS IN (0, 1)",
+)
+```
+
+`torchfits` chooses C++ pushdown when the predicate reduces to simple
+comparisons/`BETWEEN` on supported column types; otherwise it reads the needed
+columns and filters with PyArrow compute. Predicates over VLA/vector columns are
+rejected.
+
+### Environment variables
+
+Verified in `src/torchfits/_table/cache.py` and `src/torchfits/__init__.py`:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TORCHFITS_TABLE_SCANNER_THRESHOLD` | `100000` (or `1000` for VLA tables) | Row count below which `where=` uses read-then-filter instead of C++ pushdown |
-| `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Set `0` to disable LRU cache of open FITS file handles |
-| `TORCHFITS_TABLE_READER_CACHE` | `1` | Set `0` to disable cached `TableReader` instances per `(path, hdu)` |
+| `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Enable the LRU cache of C++ file handles (`0`/`false`/`no`/`off` disables). |
+| `TORCHFITS_TABLE_HANDLE_CACHE_SIZE` | `8` | Max cached file handles. |
+| `TORCHFITS_TABLE_READER_CACHE` | `1` | Enable the LRU cache of C++ `TableReader`s. |
+| `TORCHFITS_TABLE_READER_CACHE_SIZE` | `8` | Max cached readers. |
+| `TORCHFITS_CFITSIO_CACHE_FILES` | `32` | CFITSIO cache file-count limit (applied when set). |
+| `TORCHFITS_CFITSIO_CACHE_MB` | `256` | CFITSIO cache size in MB (applied when set). |
 
-## Batch And Cache Utilities
+## Cache & performance
 
-```python
-torchfits.read_batch(file_paths, hdu=0, device="cpu")
-torchfits.get_batch_info(file_paths)
-
-# Root I/O cache helpers (file handles, metadata, C++ CFITSIO cache)
-torchfits.get_cache_performance()
-torchfits.clear_file_cache(data=True, handles=True, meta=True, cpp=True)
-
-# Higher-level cache manager (auto-tuning, aggregate stats)
-torchfits.cache.configure_for_environment()
-torchfits.cache.get_cache_stats()
-torchfits.cache.clear_cache()
-```
-
-The first I/O call also runs `torchfits.cache.configure_for_environment()` once
-at import time. Call it explicitly at startup if you want tuning before any
-reads.
-
-## Deprecated aliases (0.5.0b2)
-
-Still supported; prefer the canonical paths above:
-
-- `read_fast` → `read` / `read_tensor`
-- `read_image` → `read_tensor`
-
-## Transforms
-
-The transform classes are available from `torchfits.transforms` and are also
-re-exported at the package root for compatibility: `SpectralBinning`,
-`ContinuumRemoval`, `BandMath`, `ContinuumNormalize`, `DopplerShift`,
-`PhaseFold`, `GlobalScalarNorm`, `SavitzkyGolayFilter`, `RunningPercentile`,
-`UpperEnvelopeContinuum`, `WaveletDecompose`, `AsymmetricLeastSquares`,
-`AlphaShapeContinuum`, `AsymmetricSigmaClip`, `FITSScaleColumns`, and
-`TNullToNan`.
-
-All transforms are compatible with `torch.utils.data.Dataset` and `DataLoader`.
-Reversible transforms provide `.inverse()` for decoding model outputs back to
-physical units; lossy or many-to-one transforms document that no inverse is
-available. Image and spectral transforms are in `torchfits.transforms`;
-continuum/baseline estimators are accessible from `torchfits` directly:
+Root I/O cache helpers plus tuning under `torchfits.cache`:
 
 ```python
-from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
-pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
+def clear_file_cache(*, data=True, handles=True, meta=True,
+                     hdu_types=True, stats=True, cpp=True, cpp_module=None): ...
+def get_cache_performance(): ...  # hit/miss stats for handle & metadata caches
 ```
 
-### Stretches (stateless, exact roundtrip)
+`torchfits.cache` (auto-tuning and dataset warm-up):
 
-| Transform | Description |
-|---|---|
-| `ArcsinhStretch(a=1.0)` | Lupton+ (2004) arcsinh stretch — LSST/SDSS standard for high-DR images. Forward: `arcsinh(a*x)/arcsinh(a)`. Inverse: `sinh`. |
-| `LogStretch(a=1000.0, eps=1e-9)` | Logarithmic stretch for heavy-tailed flux. Negatives clamped to zero. |
-| `SqrtStretch()` | Square-root stretch — stabilises Poisson variance. |
+* `cache.configure_for_environment()` — size caches for the detected
+  environment (local / HPC / cloud / GPU workstation).
+* `cache.optimize_for_dataset(file_paths, avg_file_size_mb=10.0)` — pre-warm
+  caches for a training file list. Handle/reader caches are guarded by locks, so
+  warming them once up front reduces lock contention across DataLoader workers.
+* `cache.stats()` / `cache.clear()` — inspect and clear all torchfits caches.
 
-### Normalizers (data-dependent, invertible)
+```python
+import torchfits.cache
+from torchfits.data import FitsImageDataset, make_loader
 
-| Transform | Description |
-|---|---|
-| `ZScaleNormalize(contrast=0.25, dim=(-2,-1))` | IRAF zscale auto-contrast → [0, 1]. |
-| `RobustNormalize(dim=(-2,-1))` | Subtract median, divide by MAD-derived std. Universal ML prep (P1). |
-| `BackgroundSubtract(dim=(-2,-1))` | Subtract median background. Inverse adds it back. |
-| `PercentileClipNormalize(lower_pct=1, upper_pct=99, dim=(-2,-1))` | Clip to percentile range → [0, 1]. |
-| `MinMaxNormalize(dim=(-2,-1))` | Min-max → [0, 1] with ULP-safe epsilon for constant images. |
-| `GlobalScalarNorm(stat="median", dim=None)` | Divide by median/max/mean/rms scalar. Minimal linear prep used by AstroCLIP/SpecFormer. Network's first layer can un-learn this. (P5) |
+torchfits.cache.optimize_for_dataset(training_files)   # warm caches once
+ds = FitsImageDataset(training_files)
+loader = make_loader(ds, batch_size=64, num_workers=4, pin_memory=True)
+```
 
-### Spectral transforms (1D, astronomy-specific)
+> **DataLoader workers.** There is no `TORCHFITS_WORKER_HANDLE` feature — do not
+> rely on it. For multi-process loading, use `torchfits.data` datasets with
+> `make_loader` (it calls `cache.optimize_for_dataset` when the dataset exposes a
+> `files` attribute), and call `cache.optimize_for_dataset` /
+> `cache.configure_for_environment` yourself for custom datasets. Map-style
+> datasets are worker-safe; iterable datasets shard work per worker (see
+> [Worker sharding](#worker-sharding)).
 
-| Transform | Description | Inverse |
-|---|---|---|
-| `ContinuumNormalize(order=3, n_sigma=2.0, max_iter=3)` | Fit polynomial continuum with sigma-clipping, **divide** spectrum by it. | Multiply by cached continuum. |
-| `ContinuumRemoval(method="polynomial", order=3, n_knots=10)` | Fit polynomial or cubic B-spline continuum (sigma-clipped), **subtract** it. | Add baseline back. |
-| `DopplerShift(z=0.0)` | Redshift/blueshift spectrum via linear-interpolation resampling. | Opposite shift `1/(1+z)`. |
-| `SpectralBinning(factor=2, mode="mean", dim=-1)` | Bin adjacent channels along any dim. Trailing partial bins dropped. | Nearest-neighbour repeat upsample. |
-| `BandMath(func, band_dim=0)` | Dimension-agnostic band arithmetic via `torch.unbind`. Classic use: `lambda b: (b[1]-b[0])/(b[1]+b[0]+1e-8)` for NDVI. | ✗ (lossy). |
+## `torchfits.where`
 
-### Continuum / baseline estimators (additive decomposition, invertible)
-
-All use `Original = Estimate + Residuals` so `inverse()` re-adds stored
-residuals for perfect recovery.  Based on post-2021 astro-ML research
-(SUPPNet, RASSINE, AstroCLIP, Candebat+2024).
-
-| Transform | Description | Key param |
-|---|---|---|
-| `SavitzkyGolayFilter(window_length=7, polyorder=3, dim=-1)` | Polynomial smoothing via conv1d with pre-computed SG coefficients. Laboratory spectroscopy standard. (P4) | `window_length=7` |
-| `RunningPercentile(percentile=90, window_size=21, dim=-1)` | Sliding-window percentile via `unfold` + `torch.quantile`. Default 90th percentile hugs upper envelope. (P6) | `percentile=90` |
-| `UpperEnvelopeContinuum(window=11, smooth=0.0, dim=-1)` | Local-max detection + linear interpolation between maxima. Alpha-shape/convex-hull approximation (RASSINE). (P3) | `window=11` |
-| `AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=10, dim=-1)` | Eilers 2003 penalised baseline with asymmetric weights. Standard in Raman/NIR spectroscopy. Additive decomposition. | `lam=1e5`, `p=0.01` |
-| `AlphaShapeContinuum(half_window=15, iterations=1, dim=-1)` | Morphological closing (dilation→erosion) via `unfold`. Guaranteed upper envelope (always >= signal). Additive decomposition. | `half_window=15` |
-| `WaveletDecompose(levels=3, dim=-1)` | Multi-level Haar DWT. Fully invertible frequency split: approx = broadband continuum, details = narrow features. Handles non-power-of-2 lengths via reflect padding. (P2) | `levels=3` |
-
-### Time-domain
-
-| Transform | Description | Inverse |
-|---|---|---|
-| `PhaseFold(period=1.0, n_bins=64, t0=0.0)` | Fold periodic time series into phase bins. | ✗ (many-to-one). |
-
-### Meta / header-aware
-
-| Transform | Description |
-|---|---|
-| `FITSHeaderScale(bscale=1.0, bzero=0.0)` | Apply/remove BSCALE/BZERO. `from_header(header)` factory. |
-| `FITSScaleColumns(columns, bscale=1.0, bzero=0.0)` | Per-column BSCALE/BZERO for table tensors (root re-export). |
-| `TNullToNan(columns)` | Map FITS TNULL sentinels to NaN in table columns (root re-export). |
-| `FITSHeaderNormalize(header, scale_floats=False)` | Auto-normalize from BITPIX/BSCALE/BZERO. Integer types → [0,1]; floats are identity by default. |
-
-### Outlier rejection
-
-| Transform | Description | Inverse |
-|---|---|---|
-| `SigmaClip(n_sigma=3.0, max_iter=5, dim=(-2,-1), fill="mean")` | Iterative sigma-clipping with mean or median fill. | ✗ (lossy). |
-| `AsymmetricSigmaClip(n_low=3.0, n_high=3.0, dim=(-2,-1))` | Simple one-pass asymmetric sigma-clip via `estimate_background` (median + MAD). Different thresholds for lower and upper tails. Fills outliers with per-group median. | ✗ (lossy). |
-
-### Utility
+Helpers for parsing and evaluating table predicate strings (the same grammar
+used by `where=`). Useful for validating or introspecting predicates.
 
 | Symbol | Description |
 |---|---|
-| `Compose(transforms)` | Chain transforms; `inverse()` unwinds in reverse order. |
-| `FITSTransform` | Base class: override `forward` and `inverse`. `__call__` delegates to `forward`. |
+| `parse_where_expression(where)` | Parse a predicate string into an AST tuple. |
+| `where_columns_from_ast(ast)` | List column names referenced by an AST. |
+| `evaluate_where(ast, data)` | Evaluate an AST against a mapping of NumPy arrays → boolean mask. |
+| `tokenize_where_expression(where)` | Tokenize a predicate string. |
+| `parse_where_literal(text)` | Parse a single literal value. |
+| `normalize_where_syntax(where)` | Normalize predicate syntax. |
+| `where_identifier_re` | Compiled regex for valid column identifiers. |
+
+```python
+import numpy as np
+from torchfits.where import parse_where_expression, evaluate_where, where_columns_from_ast
+
+ast = parse_where_expression("MAG < 20 AND DEC > 0")
+print(where_columns_from_ast(ast))          # ['MAG', 'DEC']
+mask = evaluate_where(ast, {"MAG": np.array([19.0, 21.0]), "DEC": np.array([1.0, 1.0])})
+```
+
+## Transforms
+
+`torchfits.transforms` provides PyTorch-native, gradient-safe transforms for
+astronomical images, spectra, and time series. All classes inherit from
+`FITSTransform`, which defines `forward(x, mask=None)` (via `__call__`) and, where
+meaningful, an `inverse()` method for reversible operations. Transforms are
+`torch.nn.Module`s, so `.to(device)` works.
+
+### Full catalog
+
+| Transform | Group | Notes |
+|---|---|---|
+| `Compose(transforms)` | utility | Chain transforms; inverse runs in reverse order. |
+| `FITSTransform` | base | Base class; subclass to add custom transforms. |
+| `ArcsinhStretch(a=1.0)` | stretch | Invertible high-dynamic-range stretch. |
+| `LogStretch(a=1000.0, eps=1e-9)` | stretch | Log stretch for non-negative data. |
+| `SqrtStretch()` | stretch | Variance-stabilizing sqrt. |
+| `ZScaleNormalize(contrast=0.25, dim=(-2,-1))` | normalize | IRAF zscale contrast mapping. |
+| `RobustNormalize(dim=(-2,-1))` | normalize | Median/MAD standardization. |
+| `BackgroundSubtract(...)` | normalize | Subtract median background. |
+| `PercentileClipNormalize(lower_pct=1.0, upper_pct=99.0, dim=(-2,-1))` | normalize | Clip to percentiles, scale to [0,1]. |
+| `MinMaxNormalize(dim=(-2,-1))` | normalize | Linear min–max to [0,1]. |
+| `GlobalScalarNorm(...)` | normalize | Normalize by cached global scalar stats. |
+| `FITSHeaderScale(...)` | header-aware | Apply `BSCALE`/`BZERO` from a header. |
+| `FITSHeaderNormalize(...)` | header-aware | Header-driven normalization. |
+| `FITSScaleColumns(scales)` | table | Apply per-column `(scale, zero)` to table dicts. |
+| `TNullToNan(nulls)` | table | Map per-column TNULL sentinels to NaN. |
+| `ContinuumNormalize(...)` | spectral | Divide by fitted continuum. |
+| `ContinuumRemoval(...)` | spectral | Subtract fitted/spline baseline. |
+| `DopplerShift(z=0.0)` | spectral | Resample spectrum to redshift `z`. |
+| `SpectralBinning(...)` | spectral | Average adjacent channels. |
+| `BandMath(func, band_dim=0)` | spectral | Arbitrary per-band arithmetic. |
+| `SavitzkyGolayFilter(...)` | baseline | Local polynomial smoothing. |
+| `AsymmetricLeastSquares(...)` | baseline | ALS baseline (C++-accelerated). |
+| `RunningPercentile(...)` | baseline | Rolling-percentile baseline. |
+| `UpperEnvelopeContinuum(...)` | baseline | Upper-envelope continuum estimate. |
+| `AlphaShapeContinuum(...)` | baseline | Alpha-shape continuum estimate. |
+| `WaveletDecompose(...)` | baseline | Haar wavelet decomposition. |
+| `PhaseFold(period=1.0, n_bins=64, t0=0.0)` | time | Fold a light curve on a period. |
+| `SigmaClip(n_sigma=3.0, max_iter=5, dim=(-2,-1), fill="mean")` | outliers | Iterative sigma clipping. |
+| `AsymmetricSigmaClip(...)` | outliers | Separate low/high sigma thresholds. |
+
+Helper functions: `safe_arcsinh`, `safe_log`, `estimate_background`,
+`zscale_limits`.
+
+```python
+import torch
+from torchfits.transforms import Compose, RobustNormalize, ArcsinhStretch
+
+pipeline = Compose([RobustNormalize(), ArcsinhStretch(a=5.0)])
+x = torch.randn(1, 128, 128)
+y = pipeline(x)
+```
+
+### Detailed formulations
+
+#### Stretches (stateless, exact roundtrip)
+
+##### `ArcsinhStretch`
+* $$y = \frac{\operatorname{arcsinh}(a \cdot x)}{\operatorname{arcsinh}(a)}$$
+  where $a$ controls the soft threshold.
+* **Useful for**: high dynamic range images (galaxies beside bright stars);
+  preserves color ratios across bands.
+* **Avoid when**: noise is high — near-zero values are amplified.
+* Invertible via $\sinh(y \cdot \operatorname{arcsinh}(a)) / a$. CPU/GPU, any dim.
+
+##### `LogStretch`
+* $$y = \frac{\log(1 + a \cdot \max(0, x))}{\log(1 + a)}$$
+* **Useful for**: high dynamic range structure (radio maps, diffraction patterns).
+* **Avoid when**: negatives are physical (they clamp to zero).
+* Invertible via $(\exp(y \cdot \log(1 + a)) - 1)/a$ for non-negative values.
+
+##### `SqrtStretch`
+* $$y = \sqrt{x}$$
+* **Useful for**: variance stabilization of Poisson-dominated images.
+* **Avoid when**: inputs contain negatives.
+* Invertible via $y^2$.
+
+#### Normalizers (data-dependent, invertible)
+
+##### `ZScaleNormalize`
+* Fits the IRAF zscale linear mapping to the pixel dispersion to find
+  $[z_1, z_2]$ display thresholds. Defaults to spatial dims `dim=(-2, -1)`.
+* **Useful for**: contrast-stretching to $[0, 1]$ for NN inputs/display.
+* **Avoid when**: absolute photometry must be preserved.
+* Invertible only if scale/offset are cached.
+
+##### `RobustNormalize`
+* $$y = \frac{x - \operatorname{median}(x)}{1.4826 \cdot \operatorname{MAD}(x)}$$
+* **Useful for**: ML standardization; robust to cosmic rays / bright stars.
+* **Avoid when**: absolute zero flux must be preserved.
+* Invertible; stats computed along `dim`.
+
+##### `BackgroundSubtract`
+* $$y = x - \operatorname{median}(x)$$
+* **Useful for**: uniform sky/continuum removal.
+* **Avoid when**: background is highly structured. Fully invertible.
+
+##### `PercentileClipNormalize`
+* Clips to $[P_\text{low}, P_\text{high}]$ then scales linearly to $[0, 1]$.
+* **Useful for**: highly variable brightness (transient surveys).
+* Lossy outside the clipped range.
+
+#### Spectral transforms (1D)
+
+##### `ContinuumNormalize`
+* $$y = \frac{x}{C(x)}$$ with $C(x)$ a sigma-clipped polynomial continuum.
+* **Useful for**: isolating absorption lines in stellar/quasar spectra.
+* Invertible by multiplying the cached continuum; operates along `dim=-1`.
+
+##### `ContinuumRemoval`
+* $$y = x - C(x)$$ with $C(x)$ a polynomial or cubic-spline baseline.
+* **Useful for**: subtracting broad instrument response / extinction.
+* Fully invertible via addition.
+
+##### `DopplerShift`
+* Resamples a spectrum from coordinate $\nu$ to $\nu(1+z)$ by linear interpolation.
+* **Avoid when**: sharp features need high accuracy (minor smoothing).
+* Invertible via shift by $1/(1+z)$.
+
+##### `SpectralBinning`
+* Averages adjacent channels by an integer factor.
+* Lossy; inverse uses nearest-neighbor upsampling.
+
+#### Baseline / continuum estimators (additive, invertible)
+
+These split a 1D signal into a smooth baseline and residual: $x = B(x) + R(x)$.
+
+##### `SavitzkyGolayFilter`
+* Local low-degree polynomial smoothing via 1D convolution. Fully invertible via
+  residual addition; avoid on sharp step functions.
+
+##### `AsymmetricLeastSquares`
+* Baseline $y$ minimizing
+  $$\sum_i w_i (x_i - y_i)^2 + \lambda \sum_i (\Delta^2 y_i)^2,\quad
+    w_i = p \text{ if } x_i > y_i \text{ else } 1-p\ (p \ll 1).$$
+* **Useful for**: baselines under positive emission features. C++-accelerated,
+  fully invertible via residual addition.
+
+#### Time-domain
+
+##### `PhaseFold`
+* Maps time $t$ to phase $\phi = ((t - t_0)/P) \bmod 1$ and resamples onto $N$ bins.
+* **Useful for**: transits, pulsations, orbital phase. Lossy (no inverse).
+
+#### Outlier rejection
+
+##### `SigmaClip`
+* Iteratively clips pixels outside $[-n\sigma, n\sigma]$ and fills with group
+  mean/median. Lossy.
+
+##### `AsymmetricSigmaClip`
+* Separate low/high sigma thresholds (e.g. keep positive flares). Lossy.
+
+### Device placement
+
+Split transforms between CPU dataset prep and GPU batch processing:
+
+* **CPU (in `Dataset.__getitem__`)** — slow/iterative fits (`AsymmetricLeastSquares`,
+  spline fits, iterative `SigmaClip`). Runs in parallel across DataLoader workers.
+* **GPU (after batch transfer)** — fast vectorized ops (`ArcsinhStretch`,
+  `LogStretch`, `RobustNormalize`, `DopplerShift`):
+
+```python
+from torchfits.transforms import ArcsinhStretch
+
+device = "cuda"
+stretch = ArcsinhStretch(a=5.0).to(device)
+
+for batch in dataloader:
+    x = batch["image"].to(device)
+    output = model(stretch(x))
+```
 
 ## Data Module
 
@@ -411,11 +864,8 @@ Map-style and iterable `torch.utils.data.Dataset` implementations plus
 → `FitsTableIterableDataset`; fixed cutouts → `FitsCutoutDataset`. See
 [Examples → Which dataset class?](examples.md#which-dataset-class).
 
-The `torchfits.data` namespace provides map-style and iterable-style
-`torch.utils.data.Dataset` implementations, a default collate function,
-and a loader factory. Map-style datasets are worker-safe (each worker
-calls `__getitem__` independently). Iterable datasets use different
-sharding strategies (see below).
+Map-style datasets are worker-safe (each worker calls `__getitem__`
+independently). Iterable datasets shard across workers (see below).
 
 ```python
 from torchfits.data import FitsImageIterableDataset, make_loader
@@ -431,22 +881,30 @@ for batch in loader:        # torch.Tensor [B, 1, H, W] (with add_channel_dim=Tr
 
 | Class | Mode | Use case |
 |---|---|---|
-| `FitsImageDataset(paths, hdu=0, label_key=None, transform=None, device="cpu", mmap=True, add_channel_dim=True)` | map | Small-to-medium labelled image catalogs. Reads once per `__getitem__`. |
-| `FitsImageIterableDataset(paths, hdu=0, transform=None, shuffle=False, seed=0)` | iterable | Multi-worker sharded image loading. Partitions file indices by `worker_id`. |
-| `FitsTableDataset(path, hdu=1, columns=None, where=None, transform=None)` | map | Row-indexable FITS catalog. **Loads the full filtered table at init** — use only for small/medium catalogs. Supports `columns=` and `where=` pushdown. |
-| `FitsTableIterableDataset(path, hdu=1, columns=None, where=None, batch_size=65536, mmap="auto")` | iterable | Streams rows via `torchfits.table.scan`; constant memory. Workers take alternating scan batches. |
-| `FitsCutoutDataset(cutouts, transform=None, device="cpu")` | map | Fixed windows: `(path, hdu, x, y, size)` or `(path, hdu, x1, y1, x2, y2)`. |
+| `FitsImageDataset(paths, hdu=0, label_key=None, labels=None, transform=None, device="cpu", mmap=True, add_channel_dim=True)` | map | Small-to-medium labelled image catalogs. Reads once per `__getitem__`. Labels from `labels=` or a header `label_key`. |
+| `FitsImageIterableDataset(paths, hdu=0, transform=None, device="cpu", mmap=True, shuffle=False, seed=0, add_channel_dim=True)` | iterable | Multi-worker sharded image loading; partitions file indices by `worker_id`. |
+| `FitsTableDataset(path, hdu=1, columns=None, where=None, transform=None, device="cpu", mmap="auto")` | map | Row-indexable catalog. **Loads the full filtered table at init** — small/medium only. Supports `columns=` and `where=`. |
+| `FitsTableIterableDataset(path, hdu=1, columns=None, where=None, batch_size=65536, transform=None, device="cpu", mmap="auto")` | iterable | Streams rows via `torchfits.table.scan`; constant memory. Workers take alternating scan batches. |
+| `FitsCutoutDataset(cutouts, transform=None, device="cpu", add_channel_dim=True)` | map | Fixed windows: `(path, hdu, x, y, size)` or `(path, hdu, x1, y1, x2, y2)` with **half-open** `[x1,x2)×[y1,y2)` bounds. |
+
+```python
+from torchfits.data import FitsTableIterableDataset, make_loader
+
+ds = FitsTableIterableDataset("huge.fits", hdu=1, where="MAG < 22", batch_size=50_000)
+loader = make_loader(ds, batch_size=256, num_workers=4)
+```
 
 ### Helpers
 
 | Symbol | Description |
 |---|---|
-| `fits_collate_fn(batch)` | Stacks ``(image, label)`` tuples and ``dict[str, Tensor]`` rows. Raises `ValueError` on non-tensor columns (strings, VLA lists) — drop those columns or pass a custom `collate_fn`. |
-| `make_loader(ds, batch_size=32, num_workers=0, *, optimize_cache=True, ...)` | Wraps `DataLoader`. When `optimize_cache=True` and the dataset exposes a `files` attribute, calls `torchfits.cache.optimize_for_dataset(...)` once before iteration begins. Map-style datasets default to `shuffle=True`; iterable datasets default to `shuffle=False`. |
+| `fits_collate_fn(batch)` | Stacks `(image, label)` tuples and `dict[str, Tensor]` rows. Raises `ValueError` on non-tensor columns (strings, VLA lists) — drop those columns or pass a custom `collate_fn`. |
+| `make_loader(ds, batch_size=32, shuffle=None, num_workers=0, pin_memory=False, prefetch_factor=2, drop_last=False, *, optimize_cache=True, avg_file_size_mb=10.0, **loader_kwargs)` | Wraps `DataLoader`. When `optimize_cache=True` and the dataset exposes a `files` attribute, calls `cache.optimize_for_dataset(...)` once. Map-style datasets default to `shuffle=True`; iterable datasets to `shuffle=False`. |
 
 ### Worker sharding
 
-**Images** — `FitsImageIterableDataset.__iter__` partitions file indices by `worker_id`:
+**Images** — `FitsImageIterableDataset.__iter__` partitions file indices by
+`worker_id`:
 
 ```text
 per_worker = total // num_workers
@@ -459,9 +917,21 @@ Verified in `tests/test_data.py::TestMultiWorkerDataLoader` (subprocess,
 `num_workers=2`, 8 files).
 
 **Tables** — `FitsTableIterableDataset.__iter__` assigns scan batches to workers
-via `batch_idx % num_workers == worker_id`. Row order within a batch is preserved;
-workers do not interleave individual rows. Verified in
+via `batch_idx % num_workers == worker_id`. Row order within a batch is
+preserved; workers do not interleave individual rows. Verified in
 `tests/test_data.py::TestMultiWorkerDataLoader::test_multiprocess_table_iterable`.
+
+## Deprecated & removed
+
+| Symbol / feature | Status | Replacement |
+|---|---|---|
+| `read_image` | deprecated | `read_tensor` |
+| `read_fast` | low-level fast path | prefer `read` / `read_tensor` |
+| `read_large_table` | removed | `stream_table` or `read_table` |
+| `"cpp_numpy"` table backend | removed (now `ValueError`) | `backend="cpp"` |
+| `torchfits.FITSDataset`, `torchfits.IterableFITSDataset` | removed | `torchfits.data` typed datasets |
+| `TensorHDU.stats()` | removed (never implemented) | compute stats from the tensor directly |
+| `torchfits.hdu.TensorFrame` / `torch_frame` inheritance | removed | tensor/list column mappings + Arrow/Polars interop |
 
 ## Limitations
 

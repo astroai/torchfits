@@ -21,8 +21,10 @@ print(tensor.shape, tensor.dtype)
 
 | Goal | Start with | Then read |
 |---|---|---|
-| Read a single image or cutout | `read_tensor`, `read_subset` | [API → Core I/O](api.md#core-io), [`example_image.py`](../examples/example_image.py) |
-| Filter a catalog (`WHERE`, columns) | `torchfits.table.read(..., where=...)` | [API → Predicate pushdown](api.md#predicate-pushdown), [`example_table.py`](../examples/example_table.py) |
+| Read a single image or cutout | `read_tensor`, `read_subset` | [API → Core I/O](api.md#core-io-reference), [`example_image.py`](../examples/example_image.py) |
+| Load a table as tensors | `read_table` / `stream_table` → `dict[str, Tensor]` | [API → `read_table`](api.md#torchfitsread_table), [`example_table.py`](../examples/example_table.py) |
+| Filter a catalog (`WHERE`, columns) | `torchfits.table.read(..., where=...)` → Arrow | [API → Predicate pushdown](api.md#predicate-pushdown-syntax), [`example_table.py`](../examples/example_table.py) |
+| Process a light curve | `table.write` + `PhaseFold` / `AsymmetricSigmaClip` | [`example_time_series.py`](../examples/example_time_series.py) |
 | Train a model (images) | `FitsImageDataset` + `make_loader` | [API → Data module](api.md#data-module), [`example_image_dataset.py`](../examples/example_image_dataset.py) |
 | Train on table rows (large file) | `FitsTableIterableDataset` | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) |
 | Train on patches / cutouts | `FitsCutoutDataset` | [Examples → PyTorch training](examples.md#pytorch-training) |
@@ -31,6 +33,11 @@ print(tensor.shape, tensor.dtype)
 | Upgrading from pre-0.7 `FITSDataset` | Replacement classes | [migration_datasets.md](migration_datasets.md) |
 | See if a feature exists | Supported / partial / out of scope | [Parity matrix](parity.md) |
 | Compare speed vs astropy/fitsio | Highlights + deficit table | [Benchmarks → Performance highlights](benchmarks.md#performance-highlights) |
+
+> **Two table surfaces.** Root helpers (`read_table`, `stream_table`, and
+> `read(..., mode="table")`) return `dict[str, torch.Tensor]`. Use
+> `torchfits.table.read` / `scan` when you want Arrow/`where=` pushdown.
+
 
 ## How the docs are organized
 

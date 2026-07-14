@@ -172,8 +172,9 @@ def read(
 ) -> Any:
     """Read a FITS image or table from the given path and HDU.
 
-    Returns the data as a torch.Tensor (images) or pyarrow Table (tables),
-    optionally with the FITS header.
+    Returns the data as a torch.Tensor (images) or a dict[str, torch.Tensor]
+    (tables), optionally with the FITS header. For an Arrow ``pyarrow.Table``
+    with ``where=`` predicate pushdown, use :func:`torchfits.table.read`.
     """
     if "mode" in kwargs:
         raise TypeError("read() got multiple values for argument 'mode'")
@@ -241,7 +242,7 @@ def read_table(
     fast_header: bool = True,
     return_header: bool = False,
 ) -> Any:
-    """Read a FITS table HDU as a pyarrow Table."""
+    """Read a FITS table HDU as a dict[str, torch.Tensor] (column name -> tensor)."""
     return _read_table_impl(
         read,
         path,
@@ -382,7 +383,7 @@ def stream_table(
     mmap: bool = False,
     max_chunks: int | None = None,
 ) -> Any:
-    """Stream a FITS table in row chunks, yielding pyarrow Tables."""
+    """Stream a FITS table in row chunks, yielding dict[str, torch.Tensor] chunks."""
     return _stream_table_impl(
         get_header,
         file_path,

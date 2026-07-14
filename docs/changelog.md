@@ -80,14 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`should_skip_cpp_numpy_for_where`** — internal alias removed from
   `torchfits._table_engine`. Use `should_skip_cpp_for_where`.
 
-### Changed
-
-- **Blocking mypy in CI** — the `mypy src/` step in GitHub Actions is now a
-  hard gate (previously non-blocking via `|| echo`). All 103 type errors have
-  been resolved across 18+ source files. Added `[[tool.mypy.overrides]]` in
-  `pyproject.toml` for `pyarrow.compute` (`attr-defined`) and `pyarrow.*`
-  (`ignore_missing_imports`).
-
 ## [0.7.0] - 2026-07-10
 
 ### Added
@@ -133,6 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Unified C++ table chunk reads:** Refactored `_read_cpp_numpy_table` to clean up the 7-deep C++ dispatch fallback chain and `hasattr` checks, delegating directly to the modern C++ `TableReader` and `read_fits_table_rows_numpy` APIs. This successfully resolves Roadmap Track B1.
 - **Version synchronization:** Unified package version triplet to `0.6.0` across `pyproject.toml`, `pixi.toml`, and package source.
+- **Blocking mypy in CI** — the `mypy src/` step in GitHub Actions is now a hard gate (previously non-blocking via `|| echo`). All 103 type errors have been resolved across 18+ source files. Added `[[tool.mypy.overrides]]` in `pyproject.toml` for `pyarrow.compute` (`attr-defined`) and `pyarrow.*` (`ignore_missing_imports`).
 
 ## [0.6.0b2] - 2026-07-09
 

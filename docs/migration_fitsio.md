@@ -56,10 +56,25 @@ where fitsio still wins on narrow table predicates.
 
 | Metric | fitsio | torchfits |
 |--------|--------|-----------|
-| Large float32 image (16 MB, CPU) | 6.09 ms | 3.93 ms (**1.6× faster**) |
-| Compressed Rice image (CPU) | 9.36 ms | 8.99 ms (**1.04× faster**) |
-| Table read (100k rows, 8 cols) | 59.41 ms | 86.9 μs (**~680× faster**) |
-| Table predicate (1M narrow) | 13.07 ms | 14.10 ms (**1.08× slower — `predicate_filter` deficit**) |
-| 50× repeated 100×100 cutouts (CPU) | 4.76 ms | 4.63 ms (**1.03× faster**) |
+| Large float32 image (16 MB, CPU) | 5.89 ms | 3.85 ms (**1.53× faster**) |
+| Same read @ CUDA | 5.50 ms | 3.42 ms (**1.61× faster**) |
+| Compressed Rice image (CPU) | 9.43 ms | 9.06 ms (**1.04× faster**) |
+| 50× repeated 100×100 cutouts (CPU) | 4.94 ms | 4.68 ms (**1.09× faster**) |
+| Table read (100k rows, 8 cols) | 59.84 ms | 95.3 μs (**627.6× faster**) |
 
-*Benchmarks from `exhaustive_cuda_0.7.0_20260711_055635` (CANFAR staging, mmap on+off matrix). Narrow `predicate_filter` cases lag fitsio by up to ~1.17× on CPU — see [benchmarks.md](benchmarks.md) deficit table.*
+*Benchmarks from `exhaustive_cuda_0.9.0_20260714_065950` (CANFAR staging, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*
+
+## Key Behavioral Differences
+
+### 1. Multi-Processing Fork Safety
+* **fitsio**: While high-performance, using `memmap=True` is not fork-safe. When using multiple PyTorch `DataLoader` workers (`num_workers > 0`), forks inherit file descriptors and virtual memory areas, which can lead to page faults, deadlocks, and system thrashing.
+* **torchfits**: Use the `torchfits.data` datasets with `make_loader` for multi-worker loading. Map-style datasets are worker-safe (each worker reads independently); iterable datasets shard work per `worker_id`. To reduce lock contention on the shared handle/reader caches, call `torchfits.cache.optimize_for_dataset(paths)` (also invoked by `make_loader` when the dataset exposes a `files` attribute) or `torchfits.cache.configure_for_environment()` before training.
+
+### 2. Table Mutations
+* **fitsio**: In-place updates can corrupt FITS tables if not handled carefully, and do not invalidate read buffers automatically.
+* **torchfits**: Functions under `torchfits.table` (like `append_rows`, `update_rows`, `insert_column`, `rename_columns`, `drop_columns`) perform parallel columns reconstruction and automatically invalidate all Python-side and C++ handle/meta caches, preventing stale reads.
+
+### 3. Variable Length Arrays (VLAs)
+* **fitsio**: Reads VLA columns as NumPy arrays of object pointers (`object` dtype).
+* **torchfits**: Translates VLAs to standard PyArrow `ListArray` types, allowing high-performance, memory-contiguous vectorization on the CPU.
+

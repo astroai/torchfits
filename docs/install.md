@@ -109,7 +109,7 @@ Pandas, Polars, and DuckDB remain optional integrations.
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: No module named 'torchfits.cpp'`** — The native extension did not build. Check that CMake, a C++17 compiler, and Ninja are installed. Re-run `pip install -e . -v` for verbose build output.
+**`ModuleNotFoundError: No module named 'torchfits._C'`** — The compiled extension (`torchfits._C`) did not build. Check that CMake, a C++17 compiler, and Ninja are installed. Re-run `pip install -e . -v` for verbose build output. (`torchfits.cpp` is a pure-Python compatibility shim that re-exports `torchfits._C`, so import failures ultimately point at the missing `torchfits._C` extension.)
 
 **`./extern/vendor.sh` fails** — Ensure `curl` or `wget` is available. If behind a proxy, set `HTTPS_PROXY`.
 

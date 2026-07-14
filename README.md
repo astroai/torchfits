@@ -46,33 +46,35 @@ DuckDB, and PyArrow.
 `FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`,
 `FitsCutoutDataset`, and `make_loader` with automatic handle-cache warm-up.
 
-**Transforms** &mdash; 25+ `FITSTransform` classes for image stretches,
+**Transforms** &mdash; 28 `FITSTransform` classes for image stretches,
 header-aware scaling (`FITSHeaderScale`, `FITSScaleColumns`, `TNullToNan`),
-spectral/hyperspectral preprocessing, and continuum estimators. Most ship
-`.inverse()` for decoding model outputs back to physical units. See
-[docs/api.md](docs/api.md#transforms) and `examples/example_transforms.py`.
+spectral/hyperspectral preprocessing, continuum estimators, and outlier
+rejection. Most ship `.inverse()` for decoding model outputs back to physical
+units. See [docs/api.md](docs/api.md#transforms) and
+`examples/example_transforms.py`.
 
 **Compatibility Contract** &mdash; Parity is tracked by tier: truthful public docs,
 fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
 backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
 
-## What's New in 0.7.0
+## What's New in 0.9.0
 
-0.7.0 completes the ML data layer and removes legacy dataset aliases:
+0.9.0 adds Polars-native FITS table access and fixes handle-cache safety:
 
-- **`FitsTableIterableDataset`** — stream large catalogs via `table.scan` with
-  multi-worker batch sharding.
-- **`FitsCutoutDataset`** — patch training from a cutout index table.
-- **Legacy removal** — `FITSDataset` / `IterableFITSDataset` removed from the
-  root namespace; see [migration_datasets.md](docs/migration_datasets.md).
-- **Docs site** — Zensical + GitHub Pages at
-  [astroai.github.io/torchfits](https://astroai.github.io/torchfits/).
+- **`read_polars()`** — one-call FITS-to-Polars with preserved FITS column
+  metadata (`TFORM`, `TUNIT`, `TDIM`, `TNULL`, `TSCAL`, `TZERO`).
+- **`scan_polars()`** — genuine streaming Polars path; yields `pl.DataFrame`
+  batches without materializing the entire table.
+- **Handle-cache safety** — writing one FITS file no longer invalidates
+  borrowed native handles for unrelated files.
+- **Table predicate fast path** — automatic predicates use the fast native
+  full-read path followed by Arrow filtering.
 
+0.7.0 completed the ML data layer (`FitsTableIterableDataset`,
+`FitsCutoutDataset`) and removed legacy dataset aliases.
 0.6.0 shipped the core ML surface (`torchfits.data` image/table datasets,
-`torchfits.transforms`, C++ predicate pushdown, thread-safe caches). See
-[docs/changelog.md](docs/changelog.md#060---2026-07-09).
-
-Full history: [docs/changelog.md](docs/changelog.md). Roadmap for 1.0:
+`torchfits.transforms`, C++ predicate pushdown, thread-safe caches).
+See [docs/changelog.md](docs/changelog.md). Roadmap for 1.0:
 [docs/roadmap.md](docs/roadmap.md).
 
 ## Transforms
@@ -89,34 +91,64 @@ Representative classes (full catalog in [docs/api.md](docs/api.md#transforms)):
 
 | Category | Examples | Inverse |
 |---|---|---|
-| Image stretches | `ArcsinhStretch`, `LogStretch`, `ZScaleNormalize`, `RobustNormalize` | ✓ |
-| Header / table | `FITSHeaderScale`, `FITSHeaderNormalize`, `FITSScaleColumns`, `TNullToNan` | ✓ |
+| Image stretches | `ArcsinhStretch`, `LogStretch`, `SqrtStretch`, `ZScaleNormalize`, `RobustNormalize`, `MinMaxNormalize`, `PercentileClipNormalize` | ✓ |
+| Background / normalization | `BackgroundSubtract`, `GlobalScalarNorm`, `FITSHeaderNormalize` | ✓ |
+| Header / table | `FITSHeaderScale`, `FITSScaleColumns`, `TNullToNan` | ✓ |
 | Spectral | `ContinuumNormalize`, `ContinuumRemoval`, `DopplerShift`, `SpectralBinning` | ✓ (except `BandMath`) |
-| Continuum estimators | `AsymmetricLeastSquares`, `AlphaShapeContinuum`, `WaveletDecompose`, `SavitzkyGolayFilter` | ✓ |
+| Continuum estimators | `AsymmetricLeastSquares`, `AlphaShapeContinuum`, `WaveletDecompose`, `SavitzkyGolayFilter`, `RunningPercentile`, `UpperEnvelopeContinuum` | ✓ |
 | Outlier / time | `SigmaClip`, `AsymmetricSigmaClip`, `PhaseFold` | ✗ (lossy or many-to-one) |
 
 Runnable demos: `examples/example_transforms.py` (image pipeline),
-`examples/example_hyperspectral.py` (spectral cube).
+`examples/example_hyperspectral.py` (spectral cube),
+`examples/example_time_series.py` (light curves).
 
 ## Performance
 
-Median wall-clock from the lab exhaustive benchmark suite (run
-`exhaustive_cuda_0.7.0_20260711_055635`, CANFAR staging GPU + CPU rows); see
-[docs/benchmarks.md](docs/benchmarks.md) for methodology, deficit transparency,
-and reproducible commands.
+Lab exhaustive benchmark suite (`exhaustive_cuda_0.9.0_20260714_065950`,
+3,648 rows, CANFAR staging GPU + CPU); see
+[docs/benchmarks.md](docs/benchmarks.md) for methodology, full exhaustive
+table, category summaries, and deficit transparency.
+
+### Headline numbers
 
 | Case | torchfits | astropy | fitsio | Speedup vs astropy |
 |---|---:|---:|---:|---:|
-| Large float32 image read (16 MB, CPU) | 3.93 ms | 7.60 ms | 6.09 ms | **1.9×** |
-| Compressed Rice image (CPU) | 8.99 ms | 28.14 ms | 9.36 ms | **3.1×** |
-| 50× repeated 100×100 cutouts (CPU) | 4.63 ms | 76.04 ms | 4.76 ms | **16×** |
-| Table read (100k rows, 8 cols) | 86.9 μs | 6.32 ms | 59.41 ms | **73×** |
-| Varlen table read (100k rows, 3 cols) | 90.8 μs | 3.49 ms | 220 ms | **38×** |
+| Large float32 image read (16 MB, CPU) | 3.85 ms | 16.67 ms | 5.89 ms | **4.3×** |
+| Compressed Rice image (CPU) | 9.06 ms | 27.77 ms | 9.43 ms | **3.1×** |
+| 50× repeated 100×100 cutouts (CPU) | 4.68 ms | 75.36 ms | 4.94 ms | **16.7×** |
+| Table read (100k rows, 8 cols) | 95.3 μs | 6.74 ms | 59.84 ms | **70.6×** |
+| Varlen table read (100k rows, 3 cols) | 93.9 μs | 3.52 ms | 288.81 ms | **37.5×** |
 
-**ML DataLoader (local diagnostic, not in lab CSV):** 30×512² float32, CPU, 2
-epochs — torchfits **1.12×** vs fitsio on Rice-compressed files; uncompressed
-within ~4%. `make_loader(..., optimize_cache=True)` warms handle caches
-automatically when the dataset exposes a `files` attribute.
+### By benchmark category
+
+| Category | Best speedup vs astropy | Best speedup vs fitsio | Notes |
+|---|---:|---:|---|
+| **1D images** (float32/64, int8–int64) | **7.8×** | **2.3×** | All sizes, CPU |
+| **2D images** (float32/64, int8–int64, uint16/32) | **7.7×** | **2.4×** | All sizes, CPU |
+| **3D cubes** (float32/64, int8–int64) | **7.5×** | **2.1×** | Small–medium, CPU |
+| **Compressed** (gzip, rice, hcompress) | **4.3×** | **1.1×** | rice and gzip dominate; hcompress slightly behind fitsio |
+| **Scaled** (BSCALE/BZERO) | **6.1×** | **1.8×** | Automatic integer→float scaling |
+| **MEF** (multi-extension) | **9.9×** | **2.4×** | Small–medium files |
+| **Repeated cutouts** (50× 100×100) | **16.7×** | **1.1×** | Open-once, subset many times |
+| **Time series frames** | **5.1×** | **1.9×** | 5 sequential frames |
+| **Header reads** (all fixtures) | **9.5×** | **1.5×** | Sub-100 μs for all backends |
+| **Table: read_full** | **115×** | **628×** | 100k rows, 8 cols |
+| **Table: projection** | **147×** | **91×** | Column subset |
+| **Table: row_slice** | **147×** | **162×** | Row range |
+| **Table: predicate_filter** | **57×** | **25×** | WHERE clause |
+| **GPU (CUDA) images** | **78×** | **3.0×** | tiny–large, all dtypes |
+
+### Current deficits
+
+7 of 3,648 cases where torchfits is not first:
+
+- **hcompress read_full** (3 cases, 1.04× behind fitsio) — niche
+  compression; gzip and rice are always faster or equal.
+- **tiny int8 CUDA reads** (2 cases, 1.01–1.03× behind fitsio) — sub-100 μs
+  payloads dominated by Python launch overhead; within measurement noise.
+- **Narrow table predicate_filter** (2 cases, 1.29–1.44× behind fitsio at
+  1k–10k rows) — fixed Arrow filter overhead dominates tiny tables; at 100k+
+  rows torchfits is always first. Use `backend="cpp"` for native pushdown.
 
 **GPU integer reads:** Default `read(..., device="cuda")` applies BSCALE/BZERO on
 device and returns `float32` for generic scaled pixels — good for ML. For native
@@ -124,6 +156,11 @@ integer dtypes (int8, uint16) matching fitsio, use
 `read_tensor(..., raw_scale=True)` or rely on the automatic signed-byte /
 unsigned-integer fast paths (see benchmarks doc). Tables remain CPU-resident in
 all backends; GPU rows measure host decode + H2D copy, not disk→GPU bypass.
+
+**ML DataLoader (local diagnostic, not in lab CSV):** 30×512² float32, CPU, 2
+epochs — torchfits **1.12×** vs fitsio on Rice-compressed files; uncompressed
+within ~4%. `make_loader(..., optimize_cache=True)` warms handle caches
+automatically when the dataset exposes a `files` attribute.
 
 ## Install
 
@@ -207,11 +244,16 @@ torchfits.table.write("catalog_out.fits", table_dict, header=header, overwrite=T
 
 ## Benchmarks
 
-torchfits benchmark evidence is limited to FITS image I/O and FITS table I/O.
+torchfits is benchmarked across FITS image I/O (1D/2D/3D, all integer and
+float dtypes, compressed, scaled, MEF, cutouts, time series) and FITS table
+I/O (read, projection, row slicing, predicate filtering, streaming). GPU
+(CUDA) transport rows are included for image reads.
+
 Comparators are `astropy.io.fits` and `fitsio`; selected CFITSIO behavior is
 validated through the torchfits native backend and smoke tests.
 
-Methodology, reproducible commands, results, and known deficits: [`docs/benchmarks.md`](docs/benchmarks.md)
+Methodology, full exhaustive table, category summaries, and known deficits:
+[`docs/benchmarks.md`](docs/benchmarks.md)
 
 ## Documentation
 

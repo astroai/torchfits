@@ -58,10 +58,25 @@ workflows, start with [Examples](examples.md).
 
 | Metric | astropy | torchfits |
 |--------|---------|-----------|
-| Large float32 image (16 MB, CPU) | 7.60 ms | 3.93 ms (**1.9× faster**) |
-| Same read @ CUDA | 8.18 ms | 3.19 ms (**2.6× faster**) |
-| Compressed Rice image (CPU) | 28.14 ms | 8.99 ms (**3.1× faster**) |
-| 50× repeated 100×100 cutouts (CPU) | 76.04 ms | 4.63 ms (**16× faster**) |
-| Table read (100k rows, 8 cols) | 6.32 ms | 86.9 μs (**73× faster**) |
+| Large float32 image (16 MB, CPU) | 16.67 ms | 3.85 ms (**4.3× faster**) |
+| Same read @ CUDA | 17.67 ms | 3.42 ms (**5.2× faster**) |
+| Compressed Rice image (CPU) | 27.77 ms | 9.06 ms (**3.1× faster**) |
+| 50× repeated 100×100 cutouts (CPU) | 75.36 ms | 4.68 ms (**16.7× faster**) |
+| Table read (100k rows, 8 cols) | 6.74 ms | 95.3 μs (**70.6× faster**) |
 
-*Benchmarks from `exhaustive_cuda_0.7.0_20260711_055635` (CANFAR staging, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*
+*Benchmarks from `exhaustive_cuda_0.9.0_20260714_065950` (CANFAR staging, mmap on+off matrix). See [benchmarks.md](benchmarks.md) for methodology.*
+
+## Key Behavioral Differences
+
+### 1. Data Scaling & Type Promotion
+* **Astropy**: Scaling (applying `BSCALE` and `BZERO` keywords) is applied on the CPU when the HDU data is initialized. Integer types (like `uint16` or `int32`) are promoted to double-precision `float64` in memory if the scaling yields floating-point numbers.
+* **torchfits**: Defer scaling to the device with `torchfits.read(..., scale_on_device=True)` (forwarded via `**kwargs` into the read pipeline) or the low-level `torchfits.read_fast(..., scale_on_device=True)`. This transfers raw integers to GPU/MPS and applies `BSCALE`/`BZERO` in device registers, keeping host transfers small and returning `float32` instead of `float64`. (`read_tensor` does not take `scale_on_device`.)
+
+### 2. Table Representation
+* **Astropy**: Tables are represented as `astropy.table.Table` or `numpy.recarray`.
+* **torchfits**: Tables are represented either as a Python dictionary of PyTorch Tensors (for `read_table`) or a PyArrow `Table` (for `torchfits.table.read`). Column types like variable-length arrays (VLAs) are translated to native Arrow list columns.
+
+### 3. Thread-Safety & Multi-Processing
+* **Astropy**: HDU handles (`HDUList`) are not thread-safe. Opening the same file in multiple background threads can lead to file descriptor and read-pointer conflicts.
+* **torchfits**: C++ file handles and table readers are pooled in lock-guarded, global LRU caches, so concurrent reads are coordinated rather than racing on a shared descriptor. For PyTorch `DataLoader` workers, use the `torchfits.data` datasets with `make_loader`: map-style datasets read independently per worker, and iterable datasets shard work per `worker_id`. Pre-warm the caches with `torchfits.cache.optimize_for_dataset(paths)` to reduce lock contention.
+

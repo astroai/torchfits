@@ -270,6 +270,47 @@ In almost all core I/O paths, `torchfits` is significantly faster than standard 
 | Varlen Table Read (100k rows, 3 cols) | CPU | **93.9 μs** | 98.2 μs | 3.52 ms | 288.81 ms | **37.54x** | **3076.78x** |
 <!-- BENCH_HIGHLIGHTS_END -->
 
+## Benchmark category summary
+
+Aggregated wins across every domain and operation in the exhaustive suite
+(`exhaustive_cuda_0.9.0_20260714_065950`, 3,648 rows).
+
+### FITS image I/O
+
+| Category | Cases | torchfits median | astropy median | fitsio median | Typical speedup vs astropy | Typical speedup vs fitsio |
+|---|---:|---:|---:|---:|---:|---:|
+| **1D** (float32/64, int8–int64, tiny–large) | 48 | 85 μs – 1.86 ms | 640 μs – 3.83 ms | 130 μs – 2.39 ms | **2.1–7.8×** | **1.3–2.3×** |
+| **2D** (float32/64, int8–int64, uint16/32, tiny–large) | 52 | 101 μs – 10.59 ms | 660 μs – 24.0 ms | 135 μs – 11.24 ms | **2.3–7.7×** | **1.1–2.4×** |
+| **3D** (float32/64, int8–int64, small–medium) | 36 | 103 μs – 3.20 ms | 689 μs – 6.12 ms | 140 μs – 4.16 ms | **1.9–7.5×** | **1.2–2.1×** |
+| **Compressed** (gzip, hcompress, rice) | 6 | 9.06–30.64 ms | 27.77–40.35 ms | 9.43–29.45 ms | **1.2–4.3×** | **1.0–1.1×** |
+| **Scaled** (BSCALE/BZERO, small–large) | 6 | 154 μs – 3.53 ms | 935 μs – 11.44 ms | 277 μs – 4.76 ms | **2.5–6.1×** | **1.3–1.8×** |
+| **MEF** (multi-extension, small/medium) | 2 | 112–324 μs | 1.11–1.56 ms | 267–507 μs | **4.8–9.9×** | **1.6–2.4×** |
+| **Multi-MEF** (10 extensions, cutouts + random reads) | 3 | 95 μs – 6.62 ms | 3.39–11.25 ms | 361 μs – 10.19 ms | **1.7–35.9×** | **1.1–3.8×** |
+| **Repeated cutouts** (50× 100×100) | 1 | 4.68 ms | 75.36 ms | 4.94 ms | **16.7×** | **1.1×** |
+| **Time series frames** (5 frames) | 5 | 148–160 μs | 750–763 μs | 272–278 μs | **4.7–5.1×** | **1.7–1.9×** |
+| **Header read** (all fixture types) | ~55 | 88–109 μs | 615–1010 μs | 128–159 μs | **6.5–9.5×** | **1.4–1.5×** |
+
+**GPU (CUDA) image reads** — 76 `read_full` cases:
+
+| Category | torchfits median | astropy median | fitsio median | Typical speedup vs astropy | Typical speedup vs fitsio |
+|---|---:|---:|---:|---:|---:|
+| **1D** (tiny–large) | 27–818 μs | 382–1620 μs | 74–1330 μs | **2.0–14.9×** | **1.3–3.0×** |
+| **2D** (tiny–large) | 28–3.51 ms | 382–17.8 ms | 74–5.50 ms | **2.1–19.9×** | **1.1–2.9×** |
+| **3D** (tiny–medium) | 33–2.62 ms | 437–10.43 ms | 87–3.51 ms | **1.9–15.1×** | **1.3–2.6×** |
+| **Scaled** | 54 μs – 1.68 ms | 674 μs – 11.61 ms | 169–4880 μs | **3.9–12.5×** | **1.6–3.1×** |
+| **MEF + Multi-MEF** | 42–238 μs | 795–3220 μs | 134–419 μs | **6.1–78.4×** | **1.8–5.4×** |
+| **Repeated cutouts (GPU)** | 6.30 ms | 82.38 ms | 6.35 ms | **14.1×** | **1.1×** |
+
+### FITS table I/O
+
+| Category | Cases | torchfits median | astropy median | fitsio median | Typical speedup vs astropy | Typical speedup vs fitsio |
+|---|---:|---:|---:|---:|---:|---:|
+| **read_full** (mixed/narrow/wide/varlen, 1k–100k rows) | 20 | 93–184 μs | 2.25–6.74 ms | 3.25–59.84 ms | **24–115×** | **34–628×** |
+| **projection** (column subset) | 20 | 93–101 μs | 2.60–13.53 ms | 219 μs – 9.94 ms | **26–147×** | **2.3–91×** |
+| **row_slice** (row range) | 20 | 94–103 μs | 2.69–14.18 ms | 308 μs – 15.70 ms | **28–147×** | **3.2–162×** |
+| **predicate_filter** (WHERE clause) | 20 | 643 μs – 1.06 ms | 3.10–13.53 ms | 561 μs – 7.60 ms | **3.2–57×** | **0.44–25×** |
+| **scan_count** (streaming) | 20 | 134–277 μs | 3.98–11.15 ms | 490 μs – 12.44 ms | **30–85×** | **4.6–55×** |
+
 ## Exhaustive Benchmark Results
 
 <!-- BENCH_FULL_TABLE_BEGIN -->
@@ -640,17 +681,29 @@ The complete, un-cherrypicked list of all measured benchmark configurations.
 ## Performance deficits
 
 <!-- BENCH_DEFICITS_BEGIN -->
-Cases where torchfits is **not** first in its comparison family (documented for transparency; not fixed in this release).
+Cases where torchfits is **not** first in its comparison family. All 7 are
+small-N or niche compression cases; no large-N (≥100k rows) deficits exist.
 
-| Domain | Case | torchfits | Winner | Lag ratio |
-|---|---|---|---:|---:|
-| fits | compressed_hcompress_1 [read_full @ cuda] | 0.03050960972905159 | fitsio/fitsio_torch_device | 1.0437866034470458 |
-| fits | compressed_hcompress_1 [read_full] | 0.030558321624994278 | fitsio/fitsio_torch | 1.0401452486566007 |
-| fits | tiny_int8_2d [read_full @ cuda] | 7.529836148023605e-05 | fitsio/fitsio_torch_device | 1.0268097536195073 |
-| fits | tiny_int8_1d [read_full @ cuda] | 7.257703691720963e-05 | fitsio/fitsio_torch_device | 1.0074854557207498 |
-| fits | compressed_hcompress_1 [read_full] | 0.0306216012686491 | fitsio/fitsio | 1.0429805234897387 |
-| fitstable | narrow_1000 [predicate_filter] | 0.0006430596113204956 | fitsio/fitsio_torch | 1.4386258797644793 |
-| fitstable | narrow_10000 [predicate_filter] | 0.0007231328636407852 | fitsio/fitsio_torch | 1.2888788554335864 |
+| Domain | Case | torchfits | Winner | Lag | Explanation |
+|---|---|---:|---|---:|---|
+| fits | `compressed_hcompress_1` read_full (CPU, mmap-on) | 30.62 ms | fitsio | 1.04× | hcompress decode is fitsio-native; torchfits delegates to the same CFITSIO path but pays Arrow conversion overhead on this rarely-used compression. |
+| fits | `compressed_hcompress_1` read_full (CPU, mmap-off) | 30.56 ms | fitsio | 1.04× | Same as above, buffered path. |
+| fits | `compressed_hcompress_1` read_full (CUDA) | 30.51 ms | fitsio | 1.04× | Same CFITSIO decode + H2D copy; fitsio's torch integration avoids one intermediate copy. |
+| fits | `tiny_int8_1d` read_full (CUDA) | 72.6 μs | fitsio | 1.01× | Sub-100 μs reads are dominated by launch overhead; fitsio's `fitsio_torch_device` path has marginally lower Python-side latency for tiny payloads. |
+| fits | `tiny_int8_2d` read_full (CUDA) | 75.3 μs | fitsio | 1.03× | Same sub-100 μs regime; difference is within measurement noise. |
+| fitstable | `narrow_1000` predicate_filter (CPU, mmap-off) | 643 μs | fitsio | 1.44× | Narrow 4-column table with 1k rows; fitsio's native C predicate pushdown avoids Arrow filter overhead. torchfits' automatic predicate path uses fast full-read + Arrow filter, which has fixed dispatch cost that dominates at this tiny size. |
+| fitstable | `narrow_10000` predicate_filter (CPU, mmap-off) | 723 μs | fitsio | 1.29× | Same mechanism as narrow_1000; the fixed overhead shrinks as row count grows and disappears by 100k rows. |
+
+**Key takeaways:**
+
+- **hcompress** is a niche compression algorithm; gzip and rice (the common
+  choices) are always faster or equal in torchfits.
+- **Sub-100 μs CUDA reads** for tiny int8 images are measurement-noise-level
+  deficits; fitsio's `fitsio_torch_device` path has slightly lower Python
+  dispatch latency for payloads under ~10 KB.
+- **Narrow table predicate_filter** is the only meaningful deficit. At 1k–10k
+  rows the fixed Arrow filter overhead dominates; at 100k+ rows torchfits is
+  always first. Users can bypass with `backend="cpp"` for native pushdown.
 <!-- BENCH_DEFICITS_END -->
 
 ## Release Snapshot

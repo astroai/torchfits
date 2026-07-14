@@ -131,7 +131,7 @@ Goal: one canonical read API per domain; worker-safe batching; less Python featu
 | B2 | **`read_images_batch(paths, hdu, …)`** — vectorized multi-file image decode with shared handle pool | Powers DataLoader workers + `read_batch` without per-item Python overhead |
 | B3 | **Consolidated scaling in C++** — apply BSCALE/BZERO (images) and TSCAL/TZERO (tables) in one layer with `scale_on_device` policy | Same semantics across `read`, `read_tensor`, table paths, and future datasets |
 | B4 | **Table pushdown v2** — extend `read_fits_table_filtered` for VLA-safe projections, `IN` lists, and compound predicates where mmap-safe | Closes gap where Python falls back to read-then-filter on large catalogs |
-| B5 | **Worker-local handle affinity** — optional `TORCHFITS_WORKER_HANDLE=1` so forked DataLoader workers don't fight a global LRU | Documented pattern for `num_workers > 0` without stale-handle bugs |
+| B5 | **Worker-local handle affinity** — optional `TORCHFITS_WORKER_HANDLE=1` so forked DataLoader workers don't fight a global LRU | **Not shipped yet.** Until then: use `torchfits.data` + `make_loader` / `cache.optimize_for_dataset` (see `docs/api.md`) |
 | B6 | **Pinned host buffer pool** *(stretch)* — reuse pinned CPU staging for CUDA `read_tensor` | Cuts H2D alloc churn in tight training loops; benchmarked in `bench_ml_loader` |
 
 **Exit criteria:** one Python call site per table chunk read; `bench_ml_loader` rows merged
@@ -236,7 +236,7 @@ In addition to the standard release gate:
 - [x] `torchfits.data` documented with multi-worker test coverage (`tests/test_data.py::TestMultiWorkerDataLoader`)
 - [x] `torchfits.transforms` round-trip tests for scaled images and tables
       (`tests/test_transforms.py` + `tests/test_transforms_e2e.py`, roundtripped via real FITS files)
-- [ ] `bench_ml_loader` median throughput documented vs fitsio baseline *(lab snapshot pending)*
+- [x] `bench_ml_loader` median throughput documented vs fitsio baseline
 - [x] No parity regression on existing upstream smoke gates
 
 ## Path to 1.0
