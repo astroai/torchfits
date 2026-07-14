@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterator, Optional, Tuple
+from typing import Any, Iterator, Optional, Tuple, cast
 
 from torch import Tensor
 
@@ -15,12 +15,12 @@ class TensorHDU:
         self,
         data: Optional[Tensor] = None,
         header: Optional[Header] = None,
-        file_handle=None,
+        file_handle: Any = None,
         hdu_index: int = 0,
         source_path: Optional[str] = None,
     ):
         self._data = data
-        self._header = header or Header()
+        self._header = header or Header()  # type: ignore[no-untyped-call]
         self._file_handle = file_handle
         self._hdu_index = hdu_index
         self._source_path = source_path
@@ -43,7 +43,7 @@ class TensorHDU:
         elif self._file_handle is not None:
             import torchfits._C as cpp
 
-            return cpp.read_full(self._file_handle, self._hdu_index).to(device)
+            return cast(Tensor, cpp.read_full(self._file_handle, self._hdu_index).to(device))
         else:
             raise ValueError(
                 "TensorHDU has no data available. "
@@ -53,7 +53,7 @@ class TensorHDU:
     def chunks(self, chunk_size: Tuple[int, ...]) -> Iterator[Tensor]:
         import torchfits._C as cpp
 
-        return cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size)
+        return cast(Iterator[Tensor], cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size))
 
     def _get_shape_str(self) -> str:
         if self._data is not None:
@@ -83,6 +83,6 @@ class TensorHDU:
             return str(bitpix)
         return "unknown"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from .caches import auto_mmap_cache, cold_nommap_cache, image_meta_cache
 from ..hdu import Header
@@ -57,10 +57,10 @@ def get_image_meta(
     sig = (path, hdu)
     cached = image_meta_cache.get(sig)
     if cached is not None:
-        return cached
+        return cast(ImageMeta, cached)
 
     try:
-        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))  # type: ignore[union-attr]
+        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))  # type: ignore[no-untyped-call]
     except Exception:
         meta = None
 
@@ -81,7 +81,7 @@ def get_image_meta_from_handle(
     sig = (path, hdu)
     cached = image_meta_cache.get(sig)
     if cached is not None:
-        return cached
+        return cast(ImageMeta, cached)
 
     try:
         meta = _parse_image_meta(read_header(file_handle, hdu, True))

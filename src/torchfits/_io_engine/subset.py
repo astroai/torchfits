@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Tuple
+from typing import Any, Callable, Optional, Tuple, Type, cast
 from torch import Tensor
 
 
@@ -20,7 +20,7 @@ def read_subset(
     try:
         file_handle, cached = get_cached_handle(path, handle_cache_capacity)
         try:
-            return file_handle.read_subset(hdu, x1, y1, x2, y2)
+            return cast(Tensor, file_handle.read_subset(hdu, x1, y1, x2, y2))
         finally:
             if not cached:
                 try:
@@ -59,7 +59,7 @@ class SubsetReader:
         out = self._reader.read(int(x1), int(y1), int(x2), int(y2))
         if self._device != "cpu":
             out = out.to(self._device)
-        return out
+        return cast(Tensor, out)
 
     def close(self) -> None:
         self._reader.close()
@@ -67,12 +67,16 @@ class SubsetReader:
     def __call__(self, x1: int, y1: int, x2: int, y2: int) -> Tensor:
         return self.read_subset(x1, y1, x2, y2)
 
-    def __enter__(self):
+    def __enter__(self) -> SubsetReader:
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Any,
+    ) -> None:
         self.close()
-        return False
 
 
 def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu") -> SubsetReader:

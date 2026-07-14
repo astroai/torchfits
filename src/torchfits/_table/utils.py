@@ -24,13 +24,13 @@ _TABLE_IO_KEYS = {
 }
 
 
-def _normalize_cpp_table_data(data):
+def _normalize_cpp_table_data(data: Any) -> Any:
     from torchfits.io import _normalize_cpp_table_data as normalize
 
     return normalize(data)
 
 
-def _write_header_cards_if_supported(path: str, hdu: int, hdr) -> None:
+def _write_header_cards_if_supported(path: str, hdu: int, hdr: Any) -> None:
     from torchfits.io import _write_header_cards_if_supported as write_hdr
 
     write_hdr(path, hdu, hdr)
@@ -45,7 +45,7 @@ def _column_tnull_map(header_map: dict[str, Any]) -> dict[str, Any]:
     return fits_schema.column_tnull_map(header_map)
 
 
-def _require_pyarrow():
+def _require_pyarrow() -> Any:
     try:
         import pyarrow as pa
         import pyarrow.compute as pc  # noqa: F401
@@ -56,7 +56,7 @@ def _require_pyarrow():
     return pa
 
 
-def _arrow_column_to_python(pa, column, name: str) -> Any:
+def _arrow_column_to_python(pa: Any, column: Any, name: str) -> Any:
     import numpy as np
 
     if isinstance(column, pa.ChunkedArray):

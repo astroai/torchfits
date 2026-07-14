@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Any, Tuple, cast
 
 import torch
 from torch import Tensor
@@ -18,7 +18,7 @@ _BITPIX_TO_DTYPE: dict[int, torch.dtype] = {
 
 
 class DataView:
-    def __init__(self, file_handle, hdu_index: int):
+    def __init__(self, file_handle: Any, hdu_index: int):
         self._handle = file_handle
         self._index = hdu_index
 
@@ -34,7 +34,7 @@ class DataView:
             return dtype
         return torch.float32
 
-    def __getitem__(self, slice_spec) -> Tensor:
+    def __getitem__(self, slice_spec: Any) -> Tensor:
         shape = self.shape
         if len(shape) < 2:
             raise ValueError("Subset reading requires at least 2D data")
@@ -47,7 +47,7 @@ class DataView:
         if len(slice_spec) != 2:
             raise ValueError("Subset slicing supports exactly 2 dimensions (y, x)")
 
-        def _normalize_index(s, dim):
+        def _normalize_index(s: Any, dim: int) -> tuple[int, int]:
             if isinstance(s, int):
                 idx = s + dim if s < 0 else s
                 return max(0, min(dim, idx)), max(0, min(dim, idx + 1))
@@ -68,4 +68,4 @@ class DataView:
         y1, y2 = _normalize_index(slice_spec[0], shape[0])
         x1, x2 = _normalize_index(slice_spec[1], shape[1])
 
-        return self._handle.read_subset(self._index, x1, y1, x2, y2)
+        return cast(Tensor, self._handle.read_subset(self._index, x1, y1, x2, y2))
