@@ -1,8 +1,8 @@
-"""Numpy-free tensor-to-PyArrow conversion via the buffer protocol.
+"""Tensor-to-PyArrow conversion via the buffer protocol.
 
 Provides :func:`tensor_to_arrow_array`, which converts a 1-D PyTorch tensor
-to a ``pyarrow.Array`` using ``bytes(tensor.untyped_storage())`` +
-``pa.Array.from_buffers`` — no numpy dependency.
+to a ``pyarrow.Array`` using the tensor's NumPy buffer view and
+``pa.Array.from_buffers``.
 
 Supported dtypes: float32, float64, float16, int8, int16, int32, int64,
 uint8.  Unsupported dtypes (bool, complex, bfloat16, …) fall back to
@@ -29,12 +29,11 @@ _TORCH_DTYPE_ARROW: dict[torch.dtype, str] = {
 
 
 def tensor_to_arrow_array(tensor: torch.Tensor, pa: Any) -> Any:
-    """Convert a 1-D PyTorch tensor to a PyArrow Array without numpy.
+    """Convert a 1-D PyTorch tensor to a PyArrow Array without copying.
 
-    Uses ``bytes(tensor.untyped_storage())`` + ``pa.Array.from_buffers`` for
-    supported numeric dtypes, falling back to ``pa.array(tensor.tolist())``
-    for types that don't have a direct Arrow buffer representation (bool,
-    complex, bfloat16).
+    Uses the NumPy view's buffer for supported numeric dtypes, falling back to
+    ``pa.array(tensor.tolist())`` for types that don't have a direct Arrow
+    buffer representation (bool, complex, bfloat16).
 
     Args:
         tensor: 1-D PyTorch tensor (any device, any contiguity).
@@ -56,12 +55,5 @@ def tensor_to_arrow_array(tensor: torch.Tensor, pa: Any) -> Any:
         return pa.array(tensor.tolist())
 
     arrow_type = getattr(pa, arrow_name)()
-    storage = tensor.untyped_storage()
-    elem_size = tensor.element_size()
-    offset = tensor.storage_offset() * elem_size
-    size = tensor.numel() * elem_size
-
-    # bytes(storage) copies the entire underlying buffer; slice to our region.
-    raw = bytes(storage)[offset : offset + size]
-    buf = pa.py_buffer(raw)
+    buf = pa.py_buffer(tensor.numpy())
     return pa.Array.from_buffers(arrow_type, tensor.numel(), [None, buf])

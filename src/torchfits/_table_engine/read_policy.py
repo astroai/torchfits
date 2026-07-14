@@ -39,17 +39,17 @@ def choose_where_read_plan(
     backend: str,
     n_rows: int,
 ) -> WhereReadPlan:
-    """Select arrow-filter vs C++ pushdown for a where= table read.
+    """Select Arrow filtering vs C++ pushdown for a where= table read.
 
-    Prefers C++ pushdown (mmap-based filtered read) when safe. Falls back to
-    arrow-filter (read-all-then-filter) for VLA columns or explicit torch backend.
+    Auto mode reads through the fast native table path and filters with Arrow.
+    Explicit ``backend="cpp"`` remains the opt-in native pushdown surface.
     """
     vla_in_projection = (
         fits_schema.selected_includes_vla(header, columns) if header_ok else True
     )
     cpp_pushdown_safe = header_ok and not vla_in_projection
 
-    use_arrow_first = backend == "torch" or not cpp_pushdown_safe
+    use_arrow_first = backend in {"auto", "torch"} or not cpp_pushdown_safe
     strategy = (
         WhereStrategy.ARROW_FILTER if use_arrow_first else WhereStrategy.CPP_PUSHDOWN
     )

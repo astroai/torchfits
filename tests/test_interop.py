@@ -10,6 +10,17 @@ from astropy.table import Table
 import torchfits
 
 
+def test_to_arrow_numeric_tensor_shares_buffer():
+    pytest.importorskip("pyarrow")
+
+    source = torch.arange(8, dtype=torch.int64)
+    view = source[2:6]
+    arrow = torchfits.to_arrow({"value": view})
+
+    source[3] = 99
+    assert arrow["value"][1].as_py() == 99
+
+
 def test_to_pandas_decode_bytes():
     pytest.importorskip("pandas")
 

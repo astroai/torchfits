@@ -14,7 +14,7 @@ def test_should_skip_cpp_for_where():
     assert should_skip_cpp_for_where("cpp", "MAG < 20") is False
 
 
-def test_choose_where_read_plan_auto_uses_cpp_unfiltered():
+def test_choose_where_read_plan_auto_filters_cpp_read_with_arrow():
     plan = choose_where_read_plan(
         header={},
         header_ok=True,
@@ -22,7 +22,7 @@ def test_choose_where_read_plan_auto_uses_cpp_unfiltered():
         backend="auto",
         n_rows=10_000,
     )
-    assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
+    assert plan.strategy == WhereStrategy.ARROW_FILTER
     assert plan.unfiltered_backend == "cpp"
 
 

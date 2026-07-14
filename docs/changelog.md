@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an earlier mutation.
 - `write()` normalizes `os.PathLike` targets before native cache invalidation.
 - Wheels no longer include the C++ build-source directory.
+- Numeric tensor-to-Arrow conversion now shares the tensor's NumPy buffer
+  instead of iterating through PyTorch storage one byte at a time.
+- Automatic table predicates use the fast native full-read path followed by
+  Arrow filtering; native row-wise pushdown remains available through the
+  explicit `backend="cpp"` policy.
 
 ### Added
 
