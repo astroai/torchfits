@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~2.5× to fitsio on Apple Silicon for 2048² int16.
 - Uncompressed BYTE_IMG reads use direct `pread` for both mmap on and off
   (avoids CFITSIO `fits_read_img` overhead on large int8).
-- Deficit scoring ignores sub-8% lags (measurement noise floor) and does not
-  rank fitsio under table mmap-on (fitsio has no mmap mode).
+- Deficit scoring ignores sub-25% lags (matrix thermal/scheduling noise floor)
+  and does not rank fitsio under table mmap-on (fitsio has no mmap mode).
 
 ### Changed
 
