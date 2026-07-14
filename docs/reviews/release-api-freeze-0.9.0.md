@@ -63,9 +63,11 @@ None known for 0.9.0 after the benchmark repair.
 | Clean candidate wheel | Commit `8232ef7`, macOS arm64 CPython 3.13; 864,920 bytes, 58 entries, no C/C++ headers or sources; SHA256 `4e5c2f78d332d05c619334d3a5e47a1d03dda2714674089e63b6433edb8eeeb3`; isolated image, table, and predicate smoke pass. |
 | Initial exhaustive benchmark | `exhaustive_cuda_0.9.0_20260714_061550`, commit `b136bff`: 3,648 rows including 1,140 fitstable rows; rejected because 18 predicate deficits exceeded the 2× floor. |
 | Replacement exhaustive benchmark | `exhaustive_cuda_0.9.0_20260714_065950`, commit `8232ef7`: 3,648 normalized rows, 7 deficits, maximum 1.439×, no large-N deficit, 894 CUDA transport rows; archived at `vos:sfabbro/torchfits-gpu-bench/exhaustive_cuda_0.9.0_20260714_065950`. Results SHA256 `350451b56268866235306a604c29383757d9a4b5b6af98189b7ed10a2a457587`. |
+| Published release | Tag `v0.9.0` at `b424622`; [workflow 29315810495](https://github.com/astroai/torchfits/actions/runs/29315810495) built and published eight CPython 3.10–3.13 Linux/macOS wheels plus the sdist. GitHub and PyPI expose the same nine artifact digests. |
+| PyPI install smoke | A fresh CPython 3.13 environment resolved PyTorch 2.13.0, installed `torchfits==0.9.0` from PyPI, imported the installed wheel outside the source tree, and passed the three version/image/table release smokes. |
 
 ## Evidence gaps
 
-No technical gap remains. The tag, GitHub release, and PyPI artifact do not yet
-exist because this is the pre-tag audit; they must be verified after the tag
-workflow publishes them.
+None for the supported clean-install release path. Do not force a PyPI-built
+extension onto an unrelated Conda PyTorch binary stack; use a clean PyPI
+environment or rebuild torchfits against that environment's PyTorch libraries.
