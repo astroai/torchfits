@@ -14,42 +14,20 @@ def test_should_skip_cpp_for_where():
     assert should_skip_cpp_for_where("cpp", "MAG < 20") is False
 
 
-def test_choose_where_read_plan_auto_arrow_for_tiny_even_with_mmap():
-    plan = choose_where_read_plan(
-        header={},
-        header_ok=True,
-        columns=None,
-        backend="auto",
-        n_rows=1_000,
-        mmap=True,
-    )
-    assert plan.strategy == WhereStrategy.ARROW_FILTER
-    assert plan.unfiltered_backend == "cpp"
-    assert plan.cpp_pushdown_safe is True
-
-
-def test_choose_where_read_plan_auto_pushdown_for_large_mmap():
-    plan = choose_where_read_plan(
-        header={},
-        header_ok=True,
-        columns=None,
-        backend="auto",
-        n_rows=100_000,
-        mmap=True,
-    )
-    assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
-
-
-def test_choose_where_read_plan_auto_pushdown_for_large_even_mmap_off():
-    plan = choose_where_read_plan(
-        header={},
-        header_ok=True,
-        columns=None,
-        backend="auto",
-        n_rows=100_000,
-        mmap=False,
-    )
-    assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
+def test_choose_where_read_plan_auto_uses_arrow_filter():
+    for mmap in (True, False):
+        for n_rows in (1_000, 100_000):
+            plan = choose_where_read_plan(
+                header={},
+                header_ok=True,
+                columns=None,
+                backend="auto",
+                n_rows=n_rows,
+                mmap=mmap,
+            )
+            assert plan.strategy == WhereStrategy.ARROW_FILTER
+            assert plan.unfiltered_backend == "cpp"
+            assert plan.cpp_pushdown_safe is True
 
 
 def test_choose_where_read_plan_cpp_uses_pushdown():
@@ -62,19 +40,6 @@ def test_choose_where_read_plan_cpp_uses_pushdown():
         mmap=True,
     )
     assert plan.strategy == WhereStrategy.CPP_PUSHDOWN
-
-
-def test_choose_where_read_plan_auto_arrow_when_tiny_mmap_off():
-    plan = choose_where_read_plan(
-        header={},
-        header_ok=True,
-        columns=None,
-        backend="auto",
-        n_rows=10_000,
-        mmap=False,
-    )
-    assert plan.strategy == WhereStrategy.ARROW_FILTER
-    assert plan.unfiltered_backend == "cpp"
 
 
 def test_cpp_numpy_backend_rejected():

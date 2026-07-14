@@ -791,8 +791,7 @@ def run_fitstable_domain(
             cases = [
                 c
                 for c in cases
-                if rx.search(str(c.get("name", "")))
-                or rx.search(f"{c.get('name')}::")
+                if rx.search(str(c.get("name", ""))) or rx.search(f"{c.get('name')}::")
             ]
             print(
                 f"[fitstable] case filter {case_filter!r} -> {len(cases)} case(s)",

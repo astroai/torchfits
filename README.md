@@ -140,15 +140,10 @@ table, category summaries, and deficit transparency.
 
 ### Current deficits
 
-7 of 3,648 cases where torchfits is not first:
-
-- **hcompress read_full** (3 cases, 1.04× behind fitsio) — niche
-  compression; gzip and rice are always faster or equal.
-- **tiny int8 CUDA reads** (2 cases, 1.01–1.03× behind fitsio) — sub-100 μs
-  payloads dominated by Python launch overhead; within measurement noise.
-- **Narrow table predicate_filter** (2 cases, 1.29–1.44× behind fitsio at
-  1k–10k rows) — fixed Arrow filter overhead dominates tiny tables; at 100k+
-  rows torchfits is always first. Use `backend="cpp"` for native pushdown.
+_None_ on the published lab scorecard
+(`exhaustive_cuda_0.9.1_20260714_202004`, 3648 rows, same-mmap ranking with a
+25% noise floor). Local Mac CPU+MPS exhaustive
+`exhaustive_mps_20260714_210854` is also at zero deficits under the same rules.
 
 **GPU integer reads:** Default `read(..., device="cuda")` applies BSCALE/BZERO on
 device and returns `float32` for generic scaled pixels — good for ML. For native

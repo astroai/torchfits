@@ -60,13 +60,43 @@ inline nb::ndarray<nb::numpy, T, nb::c_contig> alloc_numpy_array(
 }
 
 
-// Helper function to convert torch::Tensor to Python object - FAST PATH
-inline nb::object tensor_to_python(const torch::Tensor& tensor) {
-    PyObject* tensor_obj = THPVariable_Wrap(tensor);
-    if (!tensor_obj) {
-        throw std::runtime_error("Failed to wrap tensor");
+// Deleter for DLPack capsule created by tensor_to_python_dlpack.
+// Only called if torch.from_dlpack() did NOT consume the capsule.
+static void _dlpack_capsule_deleter(PyObject* capsule) {
+    auto* dl = static_cast<DLManagedTensor*>(
+        PyCapsule_GetPointer(capsule, "dltensor")
+    );
+    if (dl && dl->deleter) {
+        dl->deleter(dl);
     }
-    return nb::steal(tensor_obj);
+}
+
+// Helper function to convert torch::Tensor to Python object.
+// Uses DLPack to avoid THPVariable_Wrap which can segfault on some
+// Python/torch build combinations (e.g. CPython 3.12 + macOS).
+inline nb::object tensor_to_python(const torch::Tensor& tensor) {
+    DLManagedTensor* dl_tensor = at::toDLPack(tensor);
+
+    PyObject* capsule = PyCapsule_New(dl_tensor, "dltensor", _dlpack_capsule_deleter);
+    if (!capsule) {
+        dl_tensor->deleter(dl_tensor);
+        throw std::runtime_error("Failed to create PyCapsule for DLPack");
+    }
+
+    PyObject* torch_mod = PyImport_ImportModule("torch");
+    if (!torch_mod) {
+        Py_DECREF(capsule);
+        dl_tensor->deleter(dl_tensor);
+        throw nb::python_error();
+    }
+
+    PyObject* result = PyObject_CallMethod(torch_mod, "from_dlpack", "O", capsule);
+    Py_DECREF(torch_mod);
+    Py_DECREF(capsule);
+    if (!result) {
+        throw nb::python_error();
+    }
+    return nb::steal(result);
 }
 
 // Helper function to convert Python object to torch::Tensor - FAST PATH

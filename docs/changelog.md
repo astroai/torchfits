@@ -10,13 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
-- Signed-byte (`BZERO=-128`) and unsigned smart device reads prefer one C++
-  logical tensor + H2D (no post-H2D cast chain; generic BSCALE host-scales for
-  ≤4M pixels).
-- Automatic table `where=` uses a tensor-mask path below 16 384 rows; larger
-  safe tables use fused C++ pushdown (mmap scanner) even when ``mmap=False``
-  (force ``backend="torch"`` for a strict buffered filter). Explicit
-  ``backend="cpp"`` remains the always-on pushdown surface.
+- Signed-byte (`BZERO=-128`) and unsigned smart device reads convert on the
+  host then copy once to CUDA/MPS; generic BSCALE host-scales for ≤64k pixels.
+- Automatic table `where=` uses a tensor-mask path (honoring `mmap`) before
+  Arrow so numeric predicates avoid full-column Arrow conversion; explicit
+  ``backend="cpp"`` remains the opt-in fused mmap pushdown.
 - CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
   use direct tile I/O instead of the buffered path.
 - Large multi-byte mmap image reads fall through to CFITSIO on little-endian
@@ -33,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order bias on MPS microbenches.
 - Native table predicate scan stays sequential below 16 384 rows when ATen has
   multiple threads (avoids small-N thread-pool tax).
+- CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
 - `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
   focused iteration without a full exhaustive matrix.
 
