@@ -63,6 +63,51 @@ def _median_time(fn, warmup: int, iters: int, device: str) -> float | None:
     return float(np.median(samples)) if samples else None
 
 
+def _median_times_interleaved(
+    labeled_fns: list[tuple[str, Any]],
+    warmup: int,
+    iters: int,
+    device: str,
+) -> dict[str, float | None]:
+    """Round-robin GPU timings so the first library is not favored."""
+    alive: list[tuple[str, Any]] = []
+    for label, fn in labeled_fns:
+        try:
+            for _ in range(max(1, warmup)):
+                fn()
+            alive.append((label, fn))
+        except Exception as exc:
+            print(f"[bench-gpu] skip warmup {label}: {exc}", flush=True)
+    _sync(device)
+    samples: dict[str, list[float]] = {label: [] for label, _ in labeled_fns}
+    errors: dict[str, str | None] = {label: None for label, _ in labeled_fns}
+    for label, _fn in labeled_fns:
+        if label not in {a for a, _ in alive}:
+            errors[label] = "warmup_failed"
+    for _ in range(iters):
+        order = alive[:]
+        np.random.default_rng().shuffle(order)
+        for label, fn in order:
+            if errors[label] is not None:
+                continue
+            try:
+                t0 = time.perf_counter()
+                fn()
+                _sync(device)
+                samples[label].append(time.perf_counter() - t0)
+            except Exception as exc:
+                errors[label] = str(exc)
+                print(f"[bench-gpu] skip {label}: {exc}", flush=True)
+    return {
+        label: (
+            None
+            if errors[label] is not None or not samples[label]
+            else float(np.median(samples[label]))
+        )
+        for label, _ in labeled_fns
+    }
+
+
 def run_gpu_transport_rows(
     *,
     run_id: str,
@@ -71,6 +116,7 @@ def run_gpu_transport_rows(
     warmup: int = 3,
     quick: bool = False,
     use_mmap: bool = True,
+    case_filter: str = "",
 ) -> list[dict[str, Any]]:
     device = device or default_device()
     if device == "cpu":
@@ -102,6 +148,17 @@ def run_gpu_transport_rows(
                 for k, v in files.items()
                 if k in {"tiny_int16_2d", "mef_small", "compressed_rice_1"}
             }
+        if case_filter:
+            import re
+
+            rx = re.compile(case_filter)
+            files = {k: v for k, v in files.items() if rx.search(k)}
+            print(
+                f"[bench-gpu] case filter {case_filter!r} -> {len(files)} file(s)",
+                flush=True,
+            )
+            if not files:
+                return []
 
         rows: list[dict[str, Any]] = []
         mmap_target = "on" if use_mmap else "off"
@@ -167,12 +224,17 @@ def run_gpu_transport_rows(
                 ),
             ]
 
-            for library, method, family, mode, fn in methods:
-                try:
-                    t = _median_time(fn, warmup, iterations, device)
-                except Exception as exc:
-                    print(f"[bench-gpu] skip {name} {library}: {exc}", flush=True)
-                    continue
+            # Interleaved timing — sequential order favored later methods (fitsio)
+            # on MPS microbenches when torchfits always ran first.
+            timed = _median_times_interleaved(
+                [(method, fn) for _lib, method, _fam, _mode, fn in methods],
+                warmup,
+                iterations,
+                device,
+            )
+
+            for library, method, family, mode, _fn in methods:
+                t = timed.get(method)
                 if t is None:
                     continue
                 rows.append(

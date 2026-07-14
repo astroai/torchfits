@@ -79,7 +79,7 @@ cmake.build-type = "Release"
 cmake.args = [
     "-DTORCHFITS_USE_VENDORED_CFITSIO=ON",
     "-DTORCHFITS_NIOBUF=80",
-    "-DTORCHFITS_MINDIRECT=16384",
+    "-DTORCHFITS_MINDIRECT=8640",
     "-DUSE_CUDA=OFF",
     # The C++ extension has no .cu kernels; libtorch_cuda.so from the cu128
     # wheel is linked for tensor API surface but never invoked for compile.

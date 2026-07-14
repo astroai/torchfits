@@ -1245,7 +1245,7 @@ public:
                 }
             };
 
-            if (torch::get_num_threads() > 1) {
+            if (torch::get_num_threads() > 1 && nrows_ >= 16384) {
                 at::parallel_for(0, nrows_, 4096, [&](long start, long end) {
                     std::vector<long> local;
                     local.reserve(end - start);

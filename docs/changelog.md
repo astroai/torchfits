@@ -5,6 +5,36 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
+- Signed-byte (`BZERO=-128`) and unsigned smart device reads prefer one C++
+  logical tensor + H2D (no post-H2D cast chain; generic BSCALE host-scales for
+  ≤4M pixels).
+- Automatic table `where=` uses a tensor-mask path (honoring `mmap`) before
+  Arrow so numeric predicates avoid full-column Arrow conversion; explicit
+  ``backend="cpp"`` remains the opt-in fused mmap pushdown.
+- CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
+  use direct tile I/O instead of the buffered path.
+- Large multi-byte mmap image reads fall through to CFITSIO on little-endian
+  hosts when N > 64k elements — the prior scalar parallel bswap path could lose
+  ~2.5× to fitsio on Apple Silicon for 2048² int16.
+- Uncompressed BYTE_IMG reads use direct `pread` for both mmap on and off
+  (avoids CFITSIO `fits_read_img` overhead on large int8).
+- Deficit scoring ignores sub-8% lags (measurement noise floor) and does not
+  rank fitsio under table mmap-on (fitsio has no mmap mode).
+
+### Changed
+
+- Image GPU timings interleave libraries (not only compressed) to reduce
+  order bias on MPS microbenches.
+- Native table predicate scan stays sequential below 16 384 rows when ATen has
+  multiple threads (avoids small-N thread-pool tax).
+- `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
+  focused iteration without a full exhaustive matrix.
+
 ## [0.9.0] - 2026-07-14
 
 ### Fixed

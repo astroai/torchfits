@@ -363,9 +363,10 @@ inline torch::Tensor read_tensor_canonical(
 
     auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
 
-    // Signed-byte mmap fast path
+    // BYTE_IMG direct pread — works for mmap on/off (pread is buffered I/O,
+    // not a secret mmap). Beats CFITSIO fits_read_img on large int8 payloads.
     const bool signed_byte_scaled = scaled && bitpix == BYTE_IMG && bscale == 1.0 && bzero == -128.0;
-    if (use_mmap && !compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled)) {
+    if (!compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled)) {
         int status = 0;
         LONGLONG headstart = 0, data_offset = 0, dataend = 0;
         fits_get_hduaddrll(fptr, &headstart, &data_offset, &dataend, &status);
@@ -380,9 +381,16 @@ inline torch::Tensor read_tensor_canonical(
         }
     }
 
-    // Multi-byte mmap fast path — single-pass: mmap directly and bswap while copying
-    if (use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
-        path.find('[') == std::string::npos) {
+    // Multi-byte mmap fast path — single-pass: mmap directly and bswap while copying.
+    // ponytail: on little-endian hosts this scalar parallel_for bswap loses to
+    // CFITSIO fits_read_img for multi-MB images (Apple Silicon ~2.5× slower on
+    // 2048² int16). Keep mmap bytes for tiny payloads; otherwise fall through.
+    // Upgrade path: NEON/AVX endian convert, then re-enable for large N.
+    const bool multi_byte_mmap_ok =
+        use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
+        path.find('[') == std::string::npos &&
+        nelements <= (1 << 16);  // ≤64k elements
+    if (multi_byte_mmap_ok) {
         size_t elem_size = 0;
         switch (bitpix) {
             case SHORT_IMG: elem_size = sizeof(uint16_t); break;

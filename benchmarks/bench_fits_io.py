@@ -281,10 +281,16 @@ class FITSBenchmarkSuite:
                 "compression": self._get_compression_type(name),
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
-            for method_name, fn in methods.items():
-                median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
-                row[f"{method_name}_median"] = median_s
-                row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+            if file_type == "compressed":
+                timed = _time_medians_interleaved(methods, runs=runs, warmup=warmup)
+                for method_name, (median_s, _err) in timed.items():
+                    row[f"{method_name}_median"] = median_s
+                    row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+            else:
+                for method_name, fn in methods.items():
+                    median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
+                    row[f"{method_name}_median"] = median_s
+                    row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
             rows.append(row)
 
         rows.extend(
@@ -554,6 +560,46 @@ def _time_median(fn, *, runs: int, warmup: int) -> tuple[float | None, str | Non
     if not times:
         return None, "no_samples"
     return float(np.median(times)), None
+
+
+def _time_medians_interleaved(
+    methods: dict[str, Any],
+    *,
+    runs: int,
+    warmup: int,
+) -> dict[str, tuple[float | None, str | None]]:
+    """Round-robin timing so codecs/thermal state don't favor the first method."""
+    names = list(methods.keys())
+    for _ in range(max(0, warmup)):
+        for name in names:
+            try:
+                methods[name]()
+            except Exception as exc:
+                return {n: (None, str(exc) if n == name else None) for n in names}
+
+    samples: dict[str, list[float]] = {name: [] for name in names}
+    errors: dict[str, str | None] = {name: None for name in names}
+    for _ in range(max(1, runs)):
+        gc.collect()
+        order = names[:]
+        np.random.default_rng().shuffle(order)
+        for name in order:
+            if errors[name] is not None:
+                continue
+            try:
+                t0 = time.perf_counter()
+                methods[name]()
+                samples[name].append(time.perf_counter() - t0)
+            except Exception as exc:
+                errors[name] = str(exc)
+
+    out: dict[str, tuple[float | None, str | None]] = {}
+    for name in names:
+        if errors[name] is not None or not samples[name]:
+            out[name] = (None, errors[name] or "no_samples")
+        else:
+            out[name] = (float(np.median(samples[name])), None)
+    return out
 
 
 def _strict_patch_astropy(suite: FITSBenchmarkSuite) -> None:

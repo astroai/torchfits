@@ -77,6 +77,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keep-temp", action="store_true", help="Keep temporary fixture files"
     )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Skip GPU transport rows even when CUDA/MPS is available",
+    )
     return parser.parse_args()
 
 
@@ -160,6 +165,8 @@ def _run_fitstable_isolated(
         command.extend(["--quick", "--max-cases", str(QUICK_CASES_PER_DOMAIN)])
     if args.keep_temp:
         command.append("--keep-temp")
+    if getattr(args, "filter", ""):
+        command.extend(["--filter", args.filter])
 
     try:
         subprocess.run(command, cwd=ROOT, check=True)
@@ -247,6 +254,7 @@ def main() -> int:
                             quick=args.quick,
                             max_cases=QUICK_CASES_PER_DOMAIN if args.quick else None,
                             keep_temp=args.keep_temp,
+                            case_filter=args.filter,
                         )
                     )
             except Exception as exc:
@@ -260,6 +268,8 @@ def main() -> int:
                 )
 
         try:
+            if args.no_gpu:
+                raise RuntimeError("GPU transports disabled via --no-gpu")
             from benchmarks.bench_gpu_transports import run_gpu_transport_rows
 
             iterations = 7 if args.profile == "lab" else 3
@@ -273,6 +283,7 @@ def main() -> int:
                 warmup=warmup,
                 quick=args.quick,
                 use_mmap=use_mmap,
+                case_filter=args.filter,
             )
             if gpu_rows:
                 rows.extend(gpu_rows)
@@ -281,10 +292,13 @@ def main() -> int:
                     flush=True,
                 )
         except Exception as exc:
-            print(
-                f"[bench-all][gpu][mmap={mmap_label}] failed: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            if args.no_gpu and "disabled via --no-gpu" in str(exc):
+                pass
+            else:
+                print(
+                    f"[bench-all][gpu][mmap={mmap_label}] failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
     annotate_rankings(rows)
     deficits = compute_deficits(rows, run_id=run_id)

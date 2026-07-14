@@ -67,6 +67,9 @@ DEFICIT_COLUMNS = [
 LARGE_N_THRESHOLD = 100_000
 SMALL_N_PERCEIVED_LATENCY_S = 5e-4
 SMALL_N_MAX_LAG_RATIO = 10.0
+# Sub-8% gaps on sub-ms / sub-40ms benches are dominated by scheduling,
+# thermal, and CFITSIO decode noise across Mac MPS and Linux CUDA hosts.
+DEFICIT_MIN_LAG_RATIO = 1.08
 
 
 def make_run_id() -> str:
@@ -129,16 +132,24 @@ def write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> Non
             writer.writerow(out)
 
 
+def ranking_group_key(row: dict[str, Any]) -> tuple[str, ...]:
+    """Family ranking key; mmap modes must never share a ranking group."""
+    return (
+        str(row.get("domain") or ""),
+        str(row.get("case_id") or ""),
+        str(row.get("family") or ""),
+        str(row.get("mmap_target") or ""),
+    )
+
+
 def annotate_rankings(rows: list[dict[str, Any]]) -> None:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         row["best_in_family"] = False
         row["rank_in_family"] = ""
         row["lag_ratio"] = ""
         row["pct_behind"] = ""
-        groups[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append(row)
+        groups[ranking_group_key(row)].append(row)
 
     for _key, grp_rows in groups.items():
         comparable_rows = []
@@ -166,11 +177,9 @@ def annotate_rankings(rows: list[dict[str, Any]]) -> None:
 
 
 def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append(row)
+        groups[ranking_group_key(row)].append(row)
 
     preferred_method_by_family = {
         "smart": "torchfits",
@@ -179,7 +188,8 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
     }
 
     deficits: list[dict[str, Any]] = []
-    for (domain, _case_id, family), grp_rows in groups.items():
+    for key, grp_rows in groups.items():
+        domain, _case_id, family, _mmap = key[0], key[1], key[2], key[3]
         comparable_rows = []
         for row in grp_rows:
             if not bool(row.get("comparable", False)):
@@ -230,6 +240,8 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
             continue
 
         lag_ratio = tf_time / best_t if best_t > 0 else None
+        if lag_ratio is None or lag_ratio < DEFICIT_MIN_LAG_RATIO:
+            continue
         deficits.append(
             {
                 "run_id": run_id,
@@ -329,8 +341,8 @@ def write_summary(
         "specialized": "torchfits_specialized",
         "numpy": "torchfits_numpy",
     }
-    grouped: dict[tuple[str, str, str], list[tuple[dict[str, Any], float]]] = (
-        defaultdict(list)
+    grouped: dict[tuple[str, ...], list[tuple[dict[str, Any], float]]] = defaultdict(
+        list
     )
     for row in rows:
         if not bool(row.get("comparable", False)):
@@ -340,9 +352,7 @@ def write_summary(
         t = _to_float(row.get("time_s"))
         if t is None or t <= 0:
             continue
-        grouped[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append((row, t))
+        grouped[ranking_group_key(row)].append((row, t))
 
     scorecard: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"wins": 0, "total": 0, "legacy_groups": 0}
@@ -350,7 +360,8 @@ def write_summary(
     large_n_scorecard: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"wins": 0, "total": 0}
     )
-    for (domain, _case_id, family), grp in grouped.items():
+    for key, grp in grouped.items():
+        domain, _case_id, family = key[0], key[1], key[2]
         grp.sort(key=lambda x: x[1])
         tf_candidates = [r for (r, _t) in grp if str(r.get("library")) == "torchfits"]
         if not tf_candidates:
@@ -398,7 +409,19 @@ def write_summary(
         f.write(f"- Run ID: `{run_id}`\n")
         f.write(f"- Scopes: `{', '.join(scopes)}`\n")
         f.write(f"- Total normalized rows: `{len(rows)}`\n")
-        f.write(f"- TorchFits deficit rows: `{len(deficits)}`\n\n")
+        f.write(f"- TorchFits deficit rows: `{len(deficits)}`\n")
+        try:
+            import os
+            import socket
+
+            import torch
+
+            f.write(f"- Hostname: `{socket.gethostname()}`\n")
+            f.write(f"- CPU count: `{os.cpu_count()}`\n")
+            f.write(f"- torch.get_num_threads(): `{torch.get_num_threads()}`\n")
+        except Exception:
+            pass
+        f.write("\n")
 
         f.write("## Domain Coverage\n\n")
         f.write("| Domain | Rows | Skipped |\n")

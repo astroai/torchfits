@@ -65,7 +65,8 @@ def render_full_table(results_dir: Path) -> str:
             except Exception:
                 pass
 
-        key = (domain, case_id, operation, size_mb, device)
+        mmap_target = row.get("mmap_target") or "-"
+        key = (domain, case_id, operation, size_mb, device, mmap_target)
 
         lib = row.get("library")
         method = row.get("method")
@@ -86,7 +87,8 @@ def render_full_table(results_dir: Path) -> str:
 
     # Sort key order: domain desc (fits first, fitstable next), then case_id
     sorted_keys = sorted(
-        grouped.keys(), key=lambda k: (k[0] != "fits", k[4] != "CPU", k[1])
+        grouped.keys(),
+        key=lambda k: (k[0] != "fits", k[4] != "CPU", k[5], k[1]),
     )
 
     lines = [
@@ -94,12 +96,12 @@ def render_full_table(results_dir: Path) -> str:
         "",
         "The complete, un-cherrypicked list of all measured benchmark configurations.",
         "",
-        "| Domain | Benchmark Case | Operation | Size | Device | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Speedup vs Astropy | Speedup vs fitsio |",
-        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
+        "| Domain | Benchmark Case | Operation | Size | Device | mmap | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Speedup vs Astropy | Speedup vs fitsio |",
+        "|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|",
     ]
 
     for key in sorted_keys:
-        domain, case_id, operation, size_mb, device = key
+        domain, case_id, operation, size_mb, device, mmap_target = key
         times = grouped[key]
 
         tf = times.get("tf")
@@ -133,7 +135,7 @@ def render_full_table(results_dir: Path) -> str:
         size_str = f"{size_mb:.2f} MB" if size_mb > 0.05 else f"{size_mb * 1024:.1f} KB"
 
         lines.append(
-            f"| {domain} | {case_name} | {operation} | {size_str} | {device} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
+            f"| {domain} | {case_name} | {operation} | {size_str} | {device} | {mmap_target} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
         )
 
     lines.append("")

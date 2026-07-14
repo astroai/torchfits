@@ -68,6 +68,17 @@ pixi run -e bench-all python benchmarks/bench_all.py --scope fits --filter '^(me
 pixi run -e bench-all python benchmarks/bench_all.py --scope fits --filter '^(scaled_|compressed_|mef_)'
 ```
 
+Named **deficit-cluster** recipes (mmap on+off, no unrelated GPU matrix when scoped to tables):
+
+```bash
+pixi run bench-deficit-focus              # hcompress + tiny_int8 + narrow predicates
+pixi run bench-deficit-focus hcompress
+pixi run bench-deficit-focus tiny_int8
+pixi run bench-deficit-focus predicate
+```
+
+Rankings and deficit scoring group by `(domain, case_id, family, mmap_target)` so
+mmap-on and mmap-off peers are never cross-compared.
 ## Benchmark Scripts
 
 | Script | Domain | Description |

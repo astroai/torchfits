@@ -27,16 +27,19 @@ def render_deficits(csv_path: Path, *, max_rows: int = 40) -> str:
 
     lines.extend(
         [
-            "| Domain | Case | torchfits | Winner | Lag ratio |",
-            "|---|---|---|---:|---:|",
+            "| Domain | Case | mmap | torchfits | Winner | Lag ratio |",
+            "|---|---|---|---:|---|---:|",
         ]
     )
     for row in rows[:max_rows]:
         case = row.get("case_label") or row.get("case_id") or "-"
+        mmap = row.get("mmap_target") or "-"
         tf = row.get("torchfits_time_s") or "-"
         winner = f"{row.get('best_library', '-')}/{row.get('best_method', '-')}"
         lag = row.get("lag_ratio") or "-"
-        lines.append(f"| {row.get('domain', '-')} | {case} | {tf} | {winner} | {lag} |")
+        lines.append(
+            f"| {row.get('domain', '-')} | {case} | {mmap} | {tf} | {winner} | {lag} |"
+        )
     if len(rows) > max_rows:
         lines.append("")
         lines.append(

@@ -111,12 +111,28 @@ def _apply_scale_on_device(
         return data.to(device=device)
 
     if data.dtype == torch.int16 and bscale == 1.0 and bzero == 32768.0:
-        return _apply_unsigned_offset(data, torch.uint16, 32768, device=device)
+        # Unsigned-16: convert on host, then one device copy (like signed-byte).
+        logical = _apply_unsigned_offset(data, torch.uint16, 32768, device="cpu")
+        return logical.to(device=device)
     if data.dtype == torch.int32 and bscale == 1.0 and bzero == 2147483648.0:
-        return _apply_unsigned_offset(data, torch.uint32, 2147483648, device=device)
+        logical = _apply_unsigned_offset(data, torch.uint32, 2147483648, device="cpu")
+        return logical.to(device=device)
     if data.dtype == torch.uint8 and bscale == 1.0 and bzero == -128.0:
-        data = data.to(device=device)
-        return (data.to(torch.int16) - 128).to(torch.int8)
+        # FITS signed-byte (BZERO=-128): convert on host, then one device copy.
+        # Avoids CUDA/MPS int16/subtract/int8 cast kernels on tiny payloads.
+        logical = (data ^ 0x80).view(torch.int8)
+        return logical.to(device=device)
+
+    # ponytail: generic BSCALE/BZERO — host float scale for small N (MPS/CUDA
+    # launch tax dominates); on-device mul/add for larger payloads where H2D of
+    # narrower ints can still win. Upgrade: tune threshold per device.
+    if data.numel() <= (1 << 16):
+        out = data.to(dtype=torch.float32)
+        if bscale != 1.0:
+            out = out.mul(bscale)
+        if bzero != 0.0:
+            out = out.add(bzero)
+        return out.to(device=device)
 
     data = data.to(device=device, dtype=torch.float32)
     if bscale != 1.0:
@@ -714,19 +730,52 @@ def _read_generic_fast_path(
             if _cpp_has(cpp_module, "read_full_raw_with_scale"):
                 if debug_scale:
                     print("TORCHFITS_DEBUG_SCALE: fast_path_scaled")
-                data, scaled, bscale, bzero = cpp_module.read_full_raw_with_scale(
-                    path, hdu, effective_mmap
-                )
-                if scaled or device != "cpu":
-                    data = _apply_scale_on_device(
-                        data,
-                        scaled=scaled,
-                        bscale=bscale,
-                        bzero=bzero,
-                        device=device,
-                    )
-                else:
+                # Device + unsigned/sbyte: one C++ logical read + H2D beats raw
+                # storage + Python cast (and avoids a double CFITSIO pass).
+                use_logical_device = False
+                if device != "cpu" and _cpp_has(cpp_module, "read_header_dict"):
+                    try:
+                        hdr = Header(cpp_module.read_header_dict(path, hdu))
+                        bscale_h = float(hdr.get("BSCALE", 1.0) or 1.0)
+                        bzero_h = float(hdr.get("BZERO", 0.0) or 0.0)
+                        bitpix = int(hdr.get("BITPIX", 0) or 0)
+                        naxis = int(hdr.get("NAXIS", 0) or 0)
+                        nelem = 1
+                        for i in range(1, naxis + 1):
+                            nelem *= int(hdr.get(f"NAXIS{i}", 1) or 1)
+                        unsigned_or_sbyte = bscale_h == 1.0 and (
+                            (bitpix == 8 and bzero_h == -128.0)
+                            or (bitpix == 16 and bzero_h == 32768.0)
+                            or (bitpix == 32 and bzero_h == 2147483648.0)
+                        )
+                        unscaled = bscale_h == 1.0 and bzero_h == 0.0
+                        # Generic BSCALE float-on-device only for very large cubes
+                        # where int H2D bandwidth can matter. Otherwise one
+                        # C++ logical float read + H2D beats raw+Python/MPS scale.
+                        use_logical_device = (
+                            unscaled
+                            or unsigned_or_sbyte
+                            or nelem <= (1 << 22)  # ≤4M px
+                        )
+                    except Exception:
+                        use_logical_device = False
+                if use_logical_device:
+                    data = cpp_module.read_full(path, hdu, effective_mmap)
                     data = data.to(device)
+                else:
+                    data, scaled, bscale, bzero = cpp_module.read_full_raw_with_scale(
+                        path, hdu, effective_mmap
+                    )
+                    if scaled or device != "cpu":
+                        data = _apply_scale_on_device(
+                            data,
+                            scaled=scaled,
+                            bscale=bscale,
+                            bzero=bzero,
+                            device=device,
+                        )
+                    else:
+                        data = data.to(device)
             else:
                 data = cpp_module.read_full(path, hdu, effective_mmap)
                 data = data.to(device)

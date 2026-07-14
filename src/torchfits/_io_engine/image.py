@@ -85,21 +85,7 @@ def read_image(
 
     validate_read_image_args(path, hdu, mmap, handle_cache, device)
 
-    data = None
-    if not raw_scale and not (fp16 or bf16):
-        try:
-            header = Header(cpp.read_header_dict(path, hdu))
-        except Exception:
-            header = None
-        data = _read_unsigned_image_if_needed(
-            cpp_module=cpp,
-            path=path,
-            hdu_num=hdu,
-            effective_mmap=mmap,
-            header=header,
-        )
-    if data is None:
-        data = dispatch_read_image_cpp(cpp, path, hdu, mmap, handle_cache, raw_scale)
+    data = dispatch_read_image_cpp(cpp, path, hdu, mmap, handle_cache, raw_scale)
 
     if fp16:
         data = data.to(torch.float16)

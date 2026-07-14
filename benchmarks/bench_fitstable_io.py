@@ -12,6 +12,7 @@ import argparse
 import gc
 import gzip
 import os
+import re
 import shutil
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -433,6 +434,12 @@ def _bench_case(
             )
             mode = "smart" if family == "smart" else "specialized"
 
+            # fitsio has no mmap toggle — timing it under mmap-on unfairly
+            # ranks a buffered peer against torchfits honoring mmap=True.
+            if method in {"fitsio", "fitsio_torch"} and target_memmap:
+                comparable = False
+                skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+
             # If strict mmap parity cannot be honored by astropy in this case, mark SKIPPED.
             if library == "astropy" and err and target_memmap:
                 status = "SKIPPED"
@@ -771,6 +778,7 @@ def run_fitstable_domain(
     quick: bool = False,
     max_cases: int | None = None,
     keep_temp: bool = False,
+    case_filter: str = "",
 ) -> list[dict[str, Any]]:
     _ = profile
     temp_root = Path(tempfile.mkdtemp(prefix="torchfits_fitstable_"))
@@ -778,6 +786,18 @@ def run_fitstable_domain(
 
     try:
         cases = _build_cases(temp_root, quick=quick)
+        if case_filter:
+            rx = re.compile(case_filter)
+            cases = [
+                c
+                for c in cases
+                if rx.search(str(c.get("name", "")))
+                or rx.search(f"{c.get('name')}::")
+            ]
+            print(
+                f"[fitstable] case filter {case_filter!r} -> {len(cases)} case(s)",
+                flush=True,
+            )
         if max_cases is not None and max_cases > 0:
             supported_cases = [
                 c for c in cases if not bool(c.get("unsupported", False))
@@ -819,6 +839,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--filter", type=str, default="", help="Regex case filter")
     return parser.parse_args()
 
 
@@ -840,6 +861,7 @@ def main() -> int:
         quick=args.quick,
         max_cases=(args.max_cases if args.max_cases > 0 else None),
         keep_temp=args.keep_temp,
+        case_filter=args.filter,
     )
 
     out_csv = run_dir / "fitstable_results.csv"
