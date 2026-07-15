@@ -5,6 +5,16 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-15
+
+### Fixed
+
+- Native wheel metadata now constrains PyTorch to the 2.10 ABI used to build
+  the extension. Torchfits 0.9.0 incorrectly allowed newer incompatible
+  libtorch releases, which could segfault during image or table conversion.
+- Native builds and imports now reject mismatched PyTorch ABIs, and every CI
+  build path installs the same PyTorch minor used by the release wheels.
+
 ## [0.9.0] - 2026-07-14
 
 ### Fixed
