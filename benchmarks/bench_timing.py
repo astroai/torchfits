@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import threading
 import time
 from typing import Any, Callable
 
@@ -47,6 +48,47 @@ def _cuda_reset() -> None:
         return
 
 
+class _RssPeakSampler:
+    """Background RSS peak tracker for the duration of a timed call."""
+
+    def __init__(self, *, interval_s: float = 0.001) -> None:
+        self._interval_s = interval_s
+        self._stop = threading.Event()
+        self._peak: float | None = None
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_RssPeakSampler":
+        self._peak = _rss_mb()
+        self._stop.clear()
+        if _PROC is None:
+            return self
+        self._thread = threading.Thread(
+            target=self._run, name="bench-rss-sampler", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        # Capture a final sample in case peak occurred after last tick.
+        last = _rss_mb()
+        if last is not None:
+            self._peak = last if self._peak is None else max(self._peak, last)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_s):
+            sample = _rss_mb()
+            if sample is None:
+                continue
+            self._peak = sample if self._peak is None else max(self._peak, sample)
+
+    @property
+    def peak_mb(self) -> float | None:
+        return self._peak
+
+
 def time_median(
     fn: Callable[[], Any],
     *,
@@ -81,23 +123,18 @@ def time_median(
     cuda_peaks: list[float] = []
     for _ in range(max(1, runs)):
         gc.collect()
-        # ponytail: start/end RSS only — misses frees mid-call; upgrade to
-        # a sampler thread if comparative RAM needs true peak.
-        rss0 = _rss_mb()
         _cuda_reset()
-        t0 = time.perf_counter()
-        try:
-            _ = fn()
-            _sync()
-        except Exception as exc:
-            return None, None, None, str(exc)
-        elapsed = time.perf_counter() - t0
+        with _RssPeakSampler() as sampler:
+            t0 = time.perf_counter()
+            try:
+                _ = fn()
+                _sync()
+            except Exception as exc:
+                return None, None, None, str(exc)
+            elapsed = time.perf_counter() - t0
         times.append(elapsed)
-        rss1 = _rss_mb()
-        if rss0 is not None and rss1 is not None:
-            rss_peaks.append(max(rss0, rss1))
-        elif rss1 is not None:
-            rss_peaks.append(rss1)
+        if sampler.peak_mb is not None:
+            rss_peaks.append(sampler.peak_mb)
         cu = _cuda_alloc_mb()
         if cu is not None:
             cuda_peaks.append(cu)
@@ -153,25 +190,21 @@ def time_medians_interleaved(
         for name in order:
             if errors[name] is not None:
                 continue
-            # ponytail: start/end RSS only — misses frees mid-call; upgrade to
-            # a sampler thread if comparative RAM needs true peak.
-            rss0 = _rss_mb()
             _cuda_reset()
-            try:
-                t0 = time.perf_counter()
-                methods[name]()
-                _sync()
-                samples[name].append(time.perf_counter() - t0)
-                rss1 = _rss_mb()
-                if rss0 is not None and rss1 is not None:
-                    rss_peaks[name].append(max(rss0, rss1))
-                elif rss1 is not None:
-                    rss_peaks[name].append(rss1)
-                cu = _cuda_alloc_mb()
-                if cu is not None:
-                    cuda_peaks[name].append(cu)
-            except Exception as exc:
-                errors[name] = str(exc)
+            with _RssPeakSampler() as sampler:
+                try:
+                    t0 = time.perf_counter()
+                    methods[name]()
+                    _sync()
+                    samples[name].append(time.perf_counter() - t0)
+                except Exception as exc:
+                    errors[name] = str(exc)
+                    continue
+            if sampler.peak_mb is not None:
+                rss_peaks[name].append(sampler.peak_mb)
+            cu = _cuda_alloc_mb()
+            if cu is not None:
+                cuda_peaks[name].append(cu)
 
     out: dict[str, tuple[float | None, float | None, float | None, str | None]] = {}
     for name in names:

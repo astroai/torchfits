@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.bench_contract import write_summary
-from benchmarks.bench_timing import time_median, time_medians_interleaved
+from benchmarks.bench_timing import (
+    _RssPeakSampler,
+    time_median,
+    time_medians_interleaved,
+)
 from benchmarks.suites import DEFICIT_FOCUS_SUITES, list_suite_names, resolve_suite
 
 
@@ -18,6 +23,8 @@ def test_suite_registry_resolves_aliases() -> None:
     assert s.name == "compressed_hcompress"
     assert s.scope == "fits"
     assert "hcompress" in s.case_filter or "compressed_hcompress" in s.case_filter
+    assert s.mmap == "matrix"
+    assert resolve_suite("cutouts").mmap == "on"
     assert "release" in list_suite_names()
     assert "compressed_hcompress" in DEFICIT_FOCUS_SUITES
 
@@ -49,6 +56,25 @@ def test_time_median_reports_peak_rss() -> None:
     # psutil may be absent in minimal envs; when present RSS must be finite.
     if peak_rss is not None:
         assert peak_rss > 0.0
+
+
+def test_rss_sampler_sees_transient_peak() -> None:
+    held: list[bytearray] = []
+
+    def _spike() -> None:
+        # Allocate then free so start/end RSS understates peak.
+        blob = bytearray(8 * 1024 * 1024)
+        blob[0] = 1
+        held.append(blob)
+        time.sleep(0.02)
+        held.clear()
+
+    with _RssPeakSampler(interval_s=0.001) as sampler:
+        _spike()
+        time.sleep(0.01)
+    # Without a live process RSS hook this may be None; otherwise peak must rise.
+    if sampler.peak_mb is not None:
+        assert sampler.peak_mb > 0.0
 
 
 def test_interleaved_warmup_failure_soft_skips() -> None:

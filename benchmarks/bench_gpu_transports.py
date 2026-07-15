@@ -105,6 +105,7 @@ def run_gpu_transport_rows(
     use_mmap: bool = True,
     case_filter: str = "",
     operation_filter: str = "",
+    fixture_profile: str = "full",
 ) -> list[dict[str, Any]]:
     device = device or default_device()
     if device == "cpu":
@@ -141,7 +142,9 @@ def run_gpu_transport_rows(
     _strict_patch_astropy(suite)
 
     try:
-        files = suite.create_test_files()
+        files = suite.create_test_files(
+            fixture_profile=("gpu_core" if quick else fixture_profile)
+        )
         files = {
             k: v
             for k, v in files.items()

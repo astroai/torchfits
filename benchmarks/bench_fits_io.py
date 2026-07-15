@@ -88,11 +88,17 @@ class FITSBenchmarkSuite:
 
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def create_test_files(self) -> dict[str, Path]:
+    def create_test_files(self, *, fixture_profile: str = "full") -> dict[str, Path]:
         files: dict[str, Path] = {}
         rng = np.random.default_rng(20260318)
+        # gpu_core: skip large* to keep modular GPU-only suites cheap while
+        # still covering cutouts + compressed + MEF transports.
+        size_names = list(self.size_categories.keys())
+        if fixture_profile == "gpu_core":
+            size_names = [s for s in size_names if s != "large"]
 
-        for size_name, dimensions in self.size_categories.items():
+        for size_name in size_names:
+            dimensions = self.size_categories[size_name]
             for dtype_name, dtype in self.data_types.items():
                 for dim_name, shape in dimensions.items():
                     if size_name == "large" and dim_name == "3d":
@@ -133,7 +139,12 @@ class FITSBenchmarkSuite:
         astropy_fits.HDUList(hdus).writeto(multi_path, overwrite=True)
         files["multi_mef_10ext"] = multi_path
 
-        for size_name in ("small", "medium", "large"):
+        scaled_sizes = (
+            ("small", "medium")
+            if fixture_profile == "gpu_core"
+            else ("small", "medium", "large")
+        )
+        for size_name in scaled_sizes:
             shape = self.size_categories[size_name]["2d"]
             data = (rng.normal(size=shape).astype(np.float32) * 1000 + 32768).astype(
                 np.int16
@@ -145,7 +156,7 @@ class FITSBenchmarkSuite:
             hdu.writeto(path, overwrite=True)
             files[f"scaled_{size_name}"] = path
 
-        for size_name in ("small", "medium", "large"):
+        for size_name in scaled_sizes:
             shape = self.size_categories[size_name]["2d"]
             for dtype_name, np_dtype in (("uint16", np.uint16), ("uint32", np.uint32)):
                 name = f"{size_name}_{dtype_name}_2d"
@@ -177,7 +188,7 @@ class FITSBenchmarkSuite:
                 self._generate_data(rng, (256, 256), np.float32) + index * 100
             ).writeto(path, overwrite=True)
             files[name] = path
-        if len(files) != self.EXPECTED_FILE_COUNT:
+        if fixture_profile == "full" and len(files) != self.EXPECTED_FILE_COUNT:
             raise RuntimeError(
                 "FITS benchmark fixture contract changed: "
                 f"expected {self.EXPECTED_FILE_COUNT} files, created {len(files)}"
@@ -246,10 +257,18 @@ class FITSBenchmarkSuite:
             return None
         return path.stat().st_size / (1024.0 * 1024.0) / seconds
 
-    def run_exhaustive_benchmarks(self, files: dict[str, Path]) -> list[dict[str, Any]]:
+    def run_exhaustive_benchmarks(
+        self,
+        files: dict[str, Path],
+        *,
+        runs: int | None = None,
+        warmup: int | None = None,
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        runs = 3 if self.profile == "user" else 7
-        warmup = 1 if self.profile == "user" else 2
+        if runs is None:
+            runs = 3 if self.profile == "user" else 7
+        if warmup is None:
+            warmup = 1 if self.profile == "user" else 2
         torchfits_mmap: bool | str = (
             "auto" if self.profile == "user" and self.use_mmap else self.use_mmap
         )
@@ -876,6 +895,8 @@ def run_fits_domain(
     header_runs: int = 7,
     header_warmup: int = 2,
     keep_temp: bool = False,
+    runs: int | None = None,
+    warmup: int | None = None,
 ) -> list[dict[str, Any]]:
     mmap_target = "on" if use_mmap else "off"
     raw_dir = output_dir / "_raw" / "fits"
@@ -902,7 +923,7 @@ def run_fits_domain(
             flush=True,
         )
 
-        raw_rows = suite.run_exhaustive_benchmarks(files)
+        raw_rows = suite.run_exhaustive_benchmarks(files, runs=runs, warmup=warmup)
         if op_rx is not None:
             raw_rows = [
                 r for r in raw_rows if op_rx.search(str(r.get("operation", "")))
@@ -910,6 +931,7 @@ def run_fits_domain(
         if (
             not case_filter
             and not operation_filter
+            and runs is None
             and len(raw_rows) != suite.EXPECTED_WORKFLOW_COUNT
         ):
             raise RuntimeError(

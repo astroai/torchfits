@@ -299,6 +299,8 @@ def main() -> int:
                         header_runs=3 if args.quick else 7,
                         header_warmup=1 if args.quick else 2,
                         keep_temp=args.keep_temp,
+                        runs=1 if args.quick else None,
+                        warmup=0 if args.quick else None,
                     )
                 )
             except Exception as exc:
@@ -364,6 +366,9 @@ def main() -> int:
                     use_mmap=use_mmap,
                     case_filter=args.filter,
                     operation_filter=args.operation,
+                    fixture_profile=(
+                        "gpu_core" if gpu_only and not args.filter else "full"
+                    ),
                 )
                 if gpu_rows:
                     rows.extend(gpu_rows)

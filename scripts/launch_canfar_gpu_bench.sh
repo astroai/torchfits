@@ -11,9 +11,9 @@ MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 case "${MODE}" in
   exhaustive-cpu)
     DEFAULT_RUN_ID="exhaustive_cpu_$(date -u +%Y%m%d_%H%M%S)"
-    # Skaha CreateRequest requires gpus>=1; CPU-only is enforced in-container
-    # via --no-gpu (no GPU transport rows), not by requesting zero GPUs.
-    DEFAULT_GPU=1
+    # Omit --gpu (do not pass --gpu 0 — Skaha rejects zero). CPU-only scorecard
+    # is still enforced in-container via --no-gpu.
+    DEFAULT_GPU=""
     ;;
   *)
     DEFAULT_RUN_ID="exhaustive_cuda_$(date -u +%Y%m%d_%H%M%S)"
@@ -22,7 +22,12 @@ case "${MODE}" in
 esac
 RUN_ID="${TORCHFITS_BENCH_RUN_ID:-${DEFAULT_RUN_ID}}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
-GPU="${TORCHFITS_CANFAR_GPU:-${DEFAULT_GPU}}"
+# Empty TORCHFITS_CANFAR_GPU means "omit --gpu" (CPU session).
+if [[ -n "${TORCHFITS_CANFAR_GPU+x}" ]]; then
+  GPU="${TORCHFITS_CANFAR_GPU}"
+else
+  GPU="${DEFAULT_GPU}"
+fi
 CPU="${TORCHFITS_CANFAR_CPU:-8}"
 MEMORY="${TORCHFITS_CANFAR_MEMORY:-32}"
 # ponytail: CANFAR session names allow [A-Za-z0-9-] only (no dots/underscores)
@@ -44,7 +49,7 @@ fi
 
 echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
 echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "image=${IMAGE} gpu=${GPU} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "image=${IMAGE} gpu=${GPU:-omit} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
 echo "vos_dest=${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
 
 # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
@@ -52,22 +57,26 @@ REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; 
 REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
 
 CREATE_LOG="${LOCAL_OUT}/create.log"
+CREATE_ARGS=(
+  create headless "${IMAGE}"
+  --name "${NAME}"
+  --cpu "${CPU}"
+  --memory "${MEMORY}"
+  --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}"
+  --env "TORCHFITS_BENCH_MODE=${MODE}"
+  --env "TORCHFITS_GIT_REF=${GIT_REF}"
+  --env "TORCHFITS_BENCH_LOG_REDIRECTED=1"
+  --env "PIXI_HOME=/scratch/torchfits-pixi-home"
+  --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache"
+  --env "TORCHFITS_VOS_DEST=${VOS_DEST}"
+  --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}"
+  --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}"
+)
+if [[ -n "${GPU}" ]]; then
+  CREATE_ARGS+=(--gpu "${GPU}")
+fi
 set +o pipefail
-canfar create headless "${IMAGE}" \
-  --name "${NAME}" \
-  --gpu "${GPU}" \
-  --cpu "${CPU}" \
-  --memory "${MEMORY}" \
-  --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}" \
-  --env "TORCHFITS_BENCH_MODE=${MODE}" \
-  --env "TORCHFITS_GIT_REF=${GIT_REF}" \
-  --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
-  --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
-  --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
-  --env "TORCHFITS_VOS_DEST=${VOS_DEST}" \
-  --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}" \
-  --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}" \
-  -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
+canfar "${CREATE_ARGS[@]}" -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
 CREATE_RC=${PIPESTATUS[0]}
 set -o pipefail
 if [[ "${CREATE_RC}" -ne 0 ]]; then

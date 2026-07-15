@@ -23,7 +23,8 @@ class Suite:
     no_gpu: bool = False
     # When True, skip CPU image/table ops and keep GPU transport rows only.
     gpu_only: bool = False
-    mmap: MmapMode = "matrix"
+    # Modular suites default to a single mmap mode; release/deficit use matrix.
+    mmap: MmapMode = "on"
     profile: Profile = "lab"
     aliases: tuple[str, ...] = ()
 
@@ -43,6 +44,7 @@ _reg(
         name="compressed_hcompress",
         scope="fits",
         case_filter="^(compressed_hcompress_)",
+        mmap="matrix",
         aliases=("hcompress",),
     )
 )
@@ -59,6 +61,7 @@ _reg(
         name="tiny_int8",
         scope="fits",
         case_filter="^(tiny_int8_)",
+        mmap="matrix",
     )
 )
 _reg(
@@ -85,6 +88,7 @@ _reg(
         case_filter="^(narrow_1000|narrow_10000)$",
         operation="predicate",
         no_gpu=True,
+        mmap="matrix",
         aliases=("predicate",),
     )
 )
@@ -106,6 +110,7 @@ _reg(
     Suite(
         name="release_fits",
         scope="fits",
+        mmap="matrix",
     )
 )
 _reg(
@@ -113,6 +118,7 @@ _reg(
         name="release_fitstable",
         scope="fitstable",
         no_gpu=True,
+        mmap="matrix",
     )
 )
 _reg(
