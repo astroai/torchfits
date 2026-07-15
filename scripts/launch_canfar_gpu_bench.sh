@@ -132,24 +132,58 @@ echo "${VOS_DEST}" > "${LOCAL_OUT}/vos_dest.txt"
 # Set TORCHFITS_CANFAR_FOREGROUND=1 to wait in-process.
 if [[ "${TORCHFITS_CANFAR_FOREGROUND:-0}" != "1" && -z "${TORCHFITS_CANFAR_POLLER:-}" ]]; then
   POLLER_LOG="${LOCAL_OUT}/poller.log"
-  nohup env \
-    TORCHFITS_CANFAR_POLLER=1 \
-    TORCHFITS_CANFAR_FOREGROUND=1 \
-    TORCHFITS_GIT_REF="${GIT_REF}" \
-    TORCHFITS_BENCH_MODE="${MODE}" \
-    TORCHFITS_BENCH_RUN_ID="${RUN_ID}" \
-    TORCHFITS_CANFAR_IMAGE="${IMAGE}" \
-    TORCHFITS_CANFAR_GPU="${GPU}" \
-    TORCHFITS_CANFAR_CPU="${CPU}" \
-    TORCHFITS_CANFAR_MEMORY="${MEMORY}" \
-    TORCHFITS_CANFAR_NAME="${NAME}" \
-    TORCHFITS_VOS_DEST="${VOS_DEST}" \
-    TORCHFITS_CANFAR_POLL_SECS="${POLL_SECS}" \
-    TORCHFITS_CANFAR_MAX_WAIT_SECS="${MAX_WAIT_SECS}" \
-    TORCHFITS_CANFAR_EXISTING_SESSION="${SESSION_ID}" \
-    bash "${ROOT_DIR}/scripts/launch_canfar_gpu_bench.sh" \
-    >>"${POLLER_LOG}" 2>&1 &
-  echo $! > "${LOCAL_OUT}/poller.pid"
+  # Double-fork out of the launcher process group (Cursor/agent shells
+  # often reap the whole group when the parent command exits; nohup alone
+  # is not enough without leaving the session).
+  CANFAR_BIN="$(command -v canfar)"
+  CANFAR_DIR="$(cd "$(dirname "${CANFAR_BIN}")" && pwd)"
+  POLLER_PATH="${PATH}:${CANFAR_DIR}"
+  {
+    echo '#!/usr/bin/env bash'
+    echo "export PATH=$(printf %q "${POLLER_PATH}")"
+    echo 'export TORCHFITS_CANFAR_POLLER=1'
+    echo 'export TORCHFITS_CANFAR_FOREGROUND=1'
+    echo "export TORCHFITS_GIT_REF=$(printf %q "${GIT_REF}")"
+    echo "export TORCHFITS_BENCH_MODE=$(printf %q "${MODE}")"
+    echo "export TORCHFITS_BENCH_RUN_ID=$(printf %q "${RUN_ID}")"
+    echo "export TORCHFITS_CANFAR_IMAGE=$(printf %q "${IMAGE}")"
+    echo "export TORCHFITS_CANFAR_GPU=$(printf %q "${GPU}")"
+    echo "export TORCHFITS_CANFAR_CPU=$(printf %q "${CPU}")"
+    echo "export TORCHFITS_CANFAR_MEMORY=$(printf %q "${MEMORY}")"
+    echo "export TORCHFITS_CANFAR_NAME=$(printf %q "${NAME}")"
+    echo "export TORCHFITS_VOS_DEST=$(printf %q "${VOS_DEST}")"
+    echo "export TORCHFITS_CANFAR_POLL_SECS=$(printf %q "${POLL_SECS}")"
+    echo "export TORCHFITS_CANFAR_MAX_WAIT_SECS=$(printf %q "${MAX_WAIT_SECS}")"
+    echo "export TORCHFITS_CANFAR_EXISTING_SESSION=$(printf %q "${SESSION_ID}")"
+    echo "exec bash $(printf %q "${ROOT_DIR}/scripts/launch_canfar_gpu_bench.sh")"
+  } > "${LOCAL_OUT}/poller_daemon.sh"
+  chmod +x "${LOCAL_OUT}/poller_daemon.sh"
+  python3 - "${LOCAL_OUT}/poller_daemon.sh" "${LOCAL_OUT}/poller.pid" "${POLLER_LOG}" <<'PY'
+import os, sys
+
+daemon, pid_path, log_path = sys.argv[1:4]
+# First fork.
+if os.fork() > 0:
+    raise SystemExit(0)
+os.setsid()
+# Second fork — orphan under launchd/init.
+if os.fork() > 0:
+    raise SystemExit(0)
+os.chdir("/")
+os.umask(0)
+with open(log_path, "a", encoding="utf-8") as log:
+    os.dup2(log.fileno(), 1)
+    os.dup2(log.fileno(), 2)
+devnull = open(os.devnull, "r")
+os.dup2(devnull.fileno(), 0)
+pid = os.spawnvpe(os.P_NOWAIT, "/bin/bash", ["bash", daemon], os.environ)
+with open(pid_path, "w", encoding="utf-8") as fh:
+    fh.write(str(pid))
+os.waitpid(pid, 0)
+raise SystemExit(0)
+PY
+  # Give the daemon a moment to write the pid file.
+  sleep 0.2
   echo "detached poller pid=$(cat "${LOCAL_OUT}/poller.pid") log=${POLLER_LOG}" | tee -a "${LAUNCH_LOG}"
   echo "session_id=${SESSION_ID} run_id=${RUN_ID} vos=${VOS_DEST}"
   exit 0
