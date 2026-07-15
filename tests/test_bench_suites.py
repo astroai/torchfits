@@ -113,7 +113,7 @@ def test_scorecard_counts_table_within_floor() -> None:
             "case_id": "narrow::predicate_filter",
             "family": "smart",
             "library": "fitsio",
-            "method": "fitsio",
+            "method": "fitsio_torch",
             "comparable": True,
             "status": "OK",
             "time_s": 1.0,
@@ -127,3 +127,74 @@ def test_scorecard_counts_table_within_floor() -> None:
         write_summary(path, run_id="t", scopes=["fitstable"], rows=rows, deficits=[])
         text = path.read_text(encoding="utf-8")
         assert "1/1" in text
+
+
+def test_bench_all_exits_nonzero_on_domain_failure(monkeypatch) -> None:
+    import benchmarks.bench_all as bench_all
+
+    monkeypatch.setattr(
+        bench_all,
+        "_parse_args",
+        lambda: __import__("argparse").Namespace(
+            scope="fits",
+            fits_only=False,
+            fitstable_only=False,
+            suite="",
+            output_dir=Path(tempfile.mkdtemp()),
+            run_id="fail_test",
+            profile="user",
+            mmap=False,
+            no_mmap=True,
+            mmap_matrix=False,
+            filter="",
+            operation="",
+            quick=True,
+            keep_temp=False,
+            no_gpu=True,
+            gpu_only=False,
+        ),
+    )
+
+    def _boom(**kwargs):
+        raise RuntimeError("forced_domain_failure")
+
+    monkeypatch.setattr(bench_all, "run_fits_domain", _boom)
+    monkeypatch.setattr(bench_all, "_clear_bench_caches", lambda: None)
+    assert bench_all.main() != 0
+
+
+def test_scorecard_ignores_singleton_torchfits_group() -> None:
+    rows = [
+        {
+            "domain": "fits",
+            "case_id": "solo::read_full",
+            "family": "smart",
+            "library": "torchfits",
+            "method": "torchfits",
+            "comparable": True,
+            "status": "OK",
+            "time_s": 0.1,
+            "mmap_target": "off",
+            "n_points": 1000,
+            "metadata": {},
+        },
+        {
+            "domain": "fits",
+            "case_id": "solo::read_full",
+            "family": "smart",
+            "library": "torchfits",
+            "method": "torchfits_specialized",
+            "comparable": True,
+            "status": "OK",
+            "time_s": 0.2,
+            "mmap_target": "off",
+            "n_points": 1000,
+            "metadata": {},
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "summary.md"
+        write_summary(path, run_id="t", scopes=["fits"], rows=rows, deficits=[])
+        text = path.read_text(encoding="utf-8")
+        assert "0/0" in text or "n/a" in text.lower() or "Scorecard" in text
+        assert "1/1" not in text

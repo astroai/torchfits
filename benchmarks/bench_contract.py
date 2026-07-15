@@ -74,27 +74,18 @@ LARGE_N_THRESHOLD = 100_000
 SMALL_N_PERCEIVED_LATENCY_S = 5e-4
 SMALL_N_MAX_LAG_RATIO = 10.0
 # Scorecard floors (same-mmap peers only):
-# - images/cubes/spectra/cutouts (domain=fits): must win — any lag counts.
-# - Arrow table interchange (domain=fitstable): allow up to 1.05×.
-# Absolute ε ignores float timer ties only, not percent-level gaps.
+# - images/cubes/spectra/cutouts (domain=fits): must win — any lag above timer ε.
+# - Arrow table interchange (domain=fitstable): allow up to 1.05× (inclusive).
+# Absolute ε is clock-resolution only — never a percent-of-median floor.
 DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
 DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
-# Absolute timer floor machinery — not a percent deficit gate on images.
-# Large CFITSIO decompress medians jitter hundreds of µs; tiny device copies
-# need a small hard floor so 1.2× on ~200µs still counts.
 DEFICIT_MIN_ABS_DELTA_S = 2e-5
-DEFICIT_ABS_DELTA_FRAC = 0.01
-DEFICIT_ABS_DELTA_CAP_S = 2e-3
 
 
 def deficit_abs_delta_floor(best_time_s: float) -> float:
-    """Adaptive timer ε: grows gently with median duration, hard-capped."""
-    if best_time_s <= 0:
-        return DEFICIT_MIN_ABS_DELTA_S
-    return max(
-        DEFICIT_MIN_ABS_DELTA_S,
-        min(DEFICIT_ABS_DELTA_CAP_S, best_time_s * DEFICIT_ABS_DELTA_FRAC),
-    )
+    """Float-timer ε (clock noise), independent of median duration."""
+    _ = best_time_s
+    return DEFICIT_MIN_ABS_DELTA_S
 
 
 def deficit_min_lag_ratio(domain: str) -> float:
@@ -235,6 +226,9 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
 
         if len(comparable_rows) < 2:
             continue
+        # TorchFits-only groups (e.g. GPU dtype_fair vs specialized) are not deficits.
+        if not any(str(r.get("library")) != "torchfits" for (r, _t) in comparable_rows):
+            continue
 
         comparable_rows.sort(key=lambda x: x[1])
         best_row, best_t = comparable_rows[0]
@@ -275,7 +269,8 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
         if lag_ratio is None:
             continue
         min_lag = deficit_min_lag_ratio(domain)
-        if lag_ratio < min_lag:
+        # Inclusive table slack: lag == 1.05× is still within policy.
+        if lag_ratio <= min_lag:
             continue
         # Timer ε only — reject microscopic float ties, not percent lags.
         if (tf_time - best_t) < deficit_abs_delta_floor(best_t):
@@ -407,6 +402,12 @@ def write_summary(
         tf_candidates = [r for (r, _t) in grp if str(r.get("library")) == "torchfits"]
         if not tf_candidates:
             continue
+        # Singleton / torchfits-only groups are not external wins.
+        has_external_peer = any(
+            str(r.get("library")) != "torchfits" for (r, _t) in grp
+        )
+        if not has_external_peer:
+            continue
 
         preferred = preferred_method_by_family.get(family)
         torch_row = None
@@ -431,7 +432,7 @@ def write_summary(
         within_policy = False
         if tf_t is not None and best_t > 0:
             lag = tf_t / best_t
-            within_policy = lag < deficit_min_lag_ratio(domain) or (
+            within_policy = lag <= deficit_min_lag_ratio(domain) or (
                 (tf_t - best_t) < deficit_abs_delta_floor(best_t)
             )
         if within_policy:

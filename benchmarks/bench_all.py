@@ -184,7 +184,9 @@ def _scopes_from_scope(scope: str) -> list[str]:
     return [scope]
 
 
-def _domain_failure_row(*, run_id: str, domain: str, error: str) -> dict[str, Any]:
+def _domain_failure_row(
+    *, run_id: str, domain: str, error: str, mmap_target: str = ""
+) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "domain": domain,
@@ -196,6 +198,8 @@ def _domain_failure_row(*, run_id: str, domain: str, error: str) -> dict[str, An
         "method": "torchfits",
         "status": "ERROR",
         "skip_reason": error,
+        "comparable": False,
+        "mmap_target": mmap_target,
         "time_s": None,
         "median_s": None,
     }
@@ -277,6 +281,7 @@ def main() -> int:
 
     rows: list[dict[str, Any]] = []
     gpu_only = bool(getattr(args, "gpu_only", False))
+    had_failure = False
 
     for use_mmap in mmap_settings:
         mmap_label = "on" if use_mmap else "off"
@@ -304,10 +309,16 @@ def main() -> int:
                     )
                 )
             except Exception as exc:
+                had_failure = True
                 err = f"{type(exc).__name__}: {exc}"
                 print(f"[bench-all][fits][mmap={mmap_label}] failed: {err}", flush=True)
                 rows.append(
-                    _domain_failure_row(run_id=run_id, domain="fits", error=err)
+                    _domain_failure_row(
+                        run_id=run_id,
+                        domain="fits",
+                        error=err,
+                        mmap_target=mmap_label,
+                    )
                 )
 
         if "fitstable" in scopes and not gpu_only:
@@ -337,13 +348,19 @@ def main() -> int:
                         )
                     )
             except Exception as exc:
+                had_failure = True
                 err = f"{type(exc).__name__}: {exc}"
                 print(
                     f"[bench-all][fitstable][mmap={mmap_label}] failed: {err}",
                     flush=True,
                 )
                 rows.append(
-                    _domain_failure_row(run_id=run_id, domain="fitstable", error=err)
+                    _domain_failure_row(
+                        run_id=run_id,
+                        domain="fitstable",
+                        error=err,
+                        mmap_target=mmap_label,
+                    )
                 )
 
         # GPU transports are image fixtures; skip on fitstable-only runs.
@@ -380,9 +397,19 @@ def main() -> int:
                 if args.no_gpu and "disabled via --no-gpu" in str(exc):
                     pass
                 else:
+                    had_failure = True
+                    err = f"{type(exc).__name__}: {exc}"
                     print(
-                        f"[bench-all][gpu][mmap={mmap_label}] failed: {type(exc).__name__}: {exc}",
+                        f"[bench-all][gpu][mmap={mmap_label}] failed: {err}",
                         flush=True,
+                    )
+                    rows.append(
+                        _domain_failure_row(
+                            run_id=run_id,
+                            domain="fits",
+                            error=f"gpu:{err}",
+                            mmap_target=mmap_label,
+                        )
                     )
 
     annotate_rankings(rows)
@@ -403,7 +430,7 @@ def main() -> int:
         f"Wrote {len(deficits)} deficit rows to {run_dir / 'torchfits_deficits.csv'}",
         flush=True,
     )
-    return 0
+    return 1 if had_failure else 0
 
 
 if __name__ == "__main__":

@@ -119,30 +119,34 @@ def time_median(
             return None, None, None, str(exc)
 
     times: list[float] = []
-    rss_peaks: list[float] = []
-    cuda_peaks: list[float] = []
     for _ in range(max(1, runs)):
         gc.collect()
         _cuda_reset()
-        with _RssPeakSampler() as sampler:
-            t0 = time.perf_counter()
-            try:
-                _ = fn()
-                _sync()
-            except Exception as exc:
-                return None, None, None, str(exc)
-            elapsed = time.perf_counter() - t0
-        times.append(elapsed)
-        if sampler.peak_mb is not None:
-            rss_peaks.append(sampler.peak_mb)
-        cu = _cuda_alloc_mb()
-        if cu is not None:
-            cuda_peaks.append(cu)
+        # Time without RSS sampler — background sampling woke mid-CFITSIO and
+        # invented 1–5% ranking flips. Peak RSS is probed once after timing.
+        t0 = time.perf_counter()
+        try:
+            _ = fn()
+            _sync()
+        except Exception as exc:
+            return None, None, None, str(exc)
+        times.append(time.perf_counter() - t0)
 
     if not times:
         return None, None, None, "no_samples"
-    peak_rss = float(max(rss_peaks)) if rss_peaks else None
-    peak_cuda = float(max(cuda_peaks)) if cuda_peaks else None
+
+    peak_rss: float | None = None
+    peak_cuda: float | None = None
+    gc.collect()
+    _cuda_reset()
+    with _RssPeakSampler() as sampler:
+        try:
+            _ = fn()
+            _sync()
+        except Exception:
+            pass
+    peak_rss = sampler.peak_mb
+    peak_cuda = _cuda_alloc_mb()
     return float(np.median(times)), peak_rss, peak_cuda, None
 
 
@@ -191,9 +195,6 @@ def time_medians_interleaved(
             if errors[name] is not None:
                 continue
             _cuda_reset()
-            # ponytail: start+end RSS only — 1ms background sampler woke tens of
-            # times per ~50ms CFITSIO decode and invented 1–5% torchfits↔fitsio flips.
-            rss0 = _rss_mb()
             try:
                 t0 = time.perf_counter()
                 methods[name]()
@@ -201,14 +202,24 @@ def time_medians_interleaved(
                 samples[name].append(time.perf_counter() - t0)
             except Exception as exc:
                 errors[name] = str(exc)
-                continue
-            rss1 = _rss_mb()
-            peaks = [r for r in (rss0, rss1) if r is not None]
-            if peaks:
-                rss_peaks[name].append(float(max(peaks)))
-            cu = _cuda_alloc_mb()
-            if cu is not None:
-                cuda_peaks[name].append(cu)
+
+    # Untimed RSS/CUDA probe per method (same definition as time_median).
+    for name in names:
+        if errors[name] is not None or not samples[name]:
+            continue
+        gc.collect()
+        _cuda_reset()
+        with _RssPeakSampler() as sampler:
+            try:
+                methods[name]()
+                _sync()
+            except Exception:
+                pass
+        if sampler.peak_mb is not None:
+            rss_peaks[name].append(sampler.peak_mb)
+        cu = _cuda_alloc_mb()
+        if cu is not None:
+            cuda_peaks[name].append(cu)
 
     out: dict[str, tuple[float | None, float | None, float | None, str | None]] = {}
     for name in names:

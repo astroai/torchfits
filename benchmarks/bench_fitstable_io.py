@@ -32,9 +32,14 @@ from benchmarks.bench_contract import (
     write_csv,
     write_json,
 )  # noqa: E402
-from benchmarks.bench_timing import time_median  # noqa: E402
+from benchmarks.bench_timing import time_median, time_medians_interleaved  # noqa: E402
 
 _BENCH_HOST = socket.gethostname()
+
+# Scorecard timings must be cold-open / no handle cache. Peers (astropy, fitsio)
+# reopen every iteration; leaving TorchFits cache on measured cache hits.
+_TF_NO_CACHE = {"cache_capacity": 0, "handle_cache_capacity": 0}
+_TF_READ_NO_CACHE = {**_TF_NO_CACHE, "use_cache": False}
 
 
 def _repeats_for_rows(nrows: int) -> int:
@@ -299,10 +304,15 @@ def _bench_case(
     operations = {
         "read_full": {
             "torchfits": lambda: torchfits.read(
-                str(path), hdu=1, mode="table", policy="smart", mmap=target_memmap
+                str(path),
+                hdu=1,
+                mode="table",
+                policy="smart",
+                mmap=target_memmap,
+                **_TF_READ_NO_CACHE,
             ),
             "torchfits_specialized": lambda: torchfits.read_table(
-                str(path), hdu=1, mmap=target_memmap
+                str(path), hdu=1, mmap=target_memmap, **_TF_NO_CACHE
             ),
             "astropy": lambda: _astropy_read_full(path, memmap=target_memmap),
             "astropy_torch": lambda: _table_to_torch_dict(
@@ -319,12 +329,14 @@ def _bench_case(
                 policy="smart",
                 mmap=target_memmap,
                 columns=proj_cols,
+                **_TF_READ_NO_CACHE,
             ),
             "torchfits_specialized": lambda: torchfits.read_table(
                 str(path),
                 hdu=1,
                 columns=proj_cols,
                 mmap=target_memmap,
+                **_TF_NO_CACHE,
             ),
             "astropy": lambda: _astropy_projection(
                 path, proj_cols, memmap=target_memmap
@@ -346,6 +358,7 @@ def _bench_case(
                 mmap=target_memmap,
                 start_row=row_slice_start,
                 num_rows=row_slice_n,
+                **_TF_READ_NO_CACHE,
             ),
             "torchfits_specialized": lambda: torchfits.read_table_rows(
                 str(path),
@@ -353,6 +366,7 @@ def _bench_case(
                 start_row=row_slice_start,
                 num_rows=row_slice_n,
                 mmap=target_memmap,
+                **_TF_NO_CACHE,
             ),
             "astropy": lambda: _astropy_row_slice(
                 path, row_slice_start, row_slice_n, memmap=target_memmap
@@ -375,12 +389,12 @@ def _bench_case(
                 path, col=num_col, mmap=target_memmap
             ),
             "astropy": lambda: _astropy_filter(path, col=num_col, memmap=target_memmap),
-            "astropy_torch": lambda: _table_to_torch_dict(
-                _astropy_filter(path, col=num_col, memmap=target_memmap)
+            "astropy_torch": lambda: torch.as_tensor(
+                _astropy_filter_col(path, col=num_col, memmap=target_memmap)
             ),
             "fitsio": lambda: _fitsio_filter(path, col=num_col),
-            "fitsio_torch": lambda: _table_to_torch_dict(
-                _fitsio_filter(path, col=num_col)
+            "fitsio_torch": lambda: torch.as_tensor(
+                _fitsio_filter_col(path, col=num_col)
             ),
         },
         "scan_count": {
@@ -406,16 +420,27 @@ def _bench_case(
     for op_name, method_map in operations.items():
         if op_rx is not None and not op_rx.search(op_name):
             continue
-        for method, fn in method_map.items():
-            # fitsio runs in both mmap modes — its internal I/O strategy
-            # is appropriate for both buffered and non-buffered comparisons.
-            if method in {"fitsio", "fitsio_torch"} and not target_memmap:
-                # Run fitsio normally — fair comparison against non-mmap torchfits.
-                pass
-
-            t_val, peak_rss, peak_cuda, err = _time_median_mem(
-                fn, runs=runs, warmup=warmup
+        smart = {
+            m: fn
+            for m, fn in method_map.items()
+            if m in {"torchfits", "astropy_torch", "fitsio_torch"}
+        }
+        specialized = {
+            m: fn
+            for m, fn in method_map.items()
+            if m in {"torchfits_specialized", "astropy", "fitsio"}
+        }
+        timed: dict[str, tuple[float | None, float | None, float | None, str | None]] = {}
+        if smart:
+            timed.update(
+                time_medians_interleaved(smart, runs=runs, warmup=warmup)
             )
+        if specialized:
+            timed.update(
+                time_medians_interleaved(specialized, runs=runs, warmup=warmup)
+            )
+
+        for method, (t_val, peak_rss, peak_cuda, err) in timed.items():
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
@@ -501,16 +526,23 @@ def _astropy_filter(path: Path, *, col: str, memmap: bool):
         return np.array(data[mask], copy=False)
 
 
-def _astropy_scan_count(path: Path, *, col: str, memmap: bool):
+def _astropy_filter_col(path: Path, *, col: str, memmap: bool):
+    """Smart-family peer: project one column then filter (matches torchfits)."""
     with astropy_fits.open(path, memmap=memmap) as hdul:
-        return int(len(hdul[1].data[col]))
+        values = np.asarray(hdul[1].data[col])
+        return values[values > 0]
+
+
+def _astropy_scan_count(path: Path, *, col: str, memmap: bool):
+    _ = col
+    with astropy_fits.open(path, memmap=memmap) as hdul:
+        return int(hdul[1].header.get("NAXIS2", 0))
 
 
 def _fitsio_row_slice(path: Path, start_row: int, num_rows: int):
-    data = fitsio.read(str(path), ext=1)
     start0 = max(0, int(start_row) - 1)
     stop0 = start0 + int(num_rows)
-    return data[start0:stop0]
+    return fitsio.read(str(path), ext=1, rows=range(start0, stop0))
 
 
 def _fitsio_filter(path: Path, *, col: str):
@@ -519,16 +551,26 @@ def _fitsio_filter(path: Path, *, col: str):
     return data[mask]
 
 
+def _fitsio_filter_col(path: Path, *, col: str):
+    """Smart-family peer: project one column then filter (matches torchfits)."""
+    data = fitsio.read(str(path), ext=1, columns=[col])
+    values = np.asarray(data[col])
+    return values[values > 0]
+
+
 def _fitsio_scan_count(path: Path, *, col: str):
-    data = fitsio.read(str(path), ext=1)
-    return int(len(data[col]))
+    _ = col
+    with fitsio.FITS(str(path)) as f:
+        return int(f[1].get_nrows())
 
 
 def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
     # Smart family scores the Tensor contract against fitsio_torch peers —
     # not Arrow interchange latency vs torch.from_numpy().
     _ = has_pyarrow
-    data = torchfits.read_table(str(path), hdu=1, columns=[col], mmap=mmap)
+    data = torchfits.read_table(
+        str(path), hdu=1, columns=[col], mmap=mmap, **_TF_NO_CACHE
+    )
     values = data[col]
     if isinstance(values, torch.Tensor):
         return values[values > 0]
@@ -537,24 +579,32 @@ def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow:
 
 
 def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
-    data = torchfits.read_table(str(path), hdu=1, mmap=mmap)
+    """Specialized peer: full-table read then row filter (matches astropy/fitsio)."""
+    data = torchfits.read_table(str(path), hdu=1, mmap=mmap, **_TF_NO_CACHE)
     values = data[col]
     if isinstance(values, torch.Tensor):
-        return values[values > 0]
-    arr = np.asarray(values)
-    return arr[arr > 0]
+        mask = values > 0
+        return {k: v[mask] if isinstance(v, torch.Tensor) else v for k, v in data.items()}
+    mask = np.asarray(values) > 0
+    out: dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, torch.Tensor):
+            out[k] = v[torch.as_tensor(mask)]
+        else:
+            out[k] = np.asarray(v)[mask]
+    return out
 
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
-    import torchfits
-
-    # Counting rows needs only the table header. Avoid materializing an HDU list
-    # or any VLA heap data.
+    _ = col, mmap, has_pyarrow
+    # Counting rows needs only the table header. Avoid materializing columns.
     return int(torchfits.get_header(str(path), hdu=1).get("NAXIS2", 0))
 
 
 def _torchfits_scan_count_local(path: Path, *, col: str, mmap: bool):
-    data = torchfits.read_table(str(path), hdu=1, mmap=mmap)
+    data = torchfits.read_table(
+        str(path), hdu=1, columns=[col], mmap=mmap, **_TF_NO_CACHE
+    )
     values = data[col]
     if isinstance(values, torch.Tensor):
         return int(values.shape[0])

@@ -116,8 +116,8 @@ def test_image_deficits_count_any_lag() -> None:
     assert deficits[0]["domain"] == "fits"
 
 
-def test_sub_ms_image_jitter_is_not_a_deficit() -> None:
-    """Adaptive timer ε absorbs sub-0.2% wall-clock jitter on long decompressions."""
+def test_timer_epsilon_absorbs_only_clock_noise() -> None:
+    """Float-timer ε is absolute (~20µs), never a percent-of-median floor."""
     rows = [
         _row(
             case_id="hcomp::read_full",
@@ -125,7 +125,7 @@ def test_sub_ms_image_jitter_is_not_a_deficit() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=60.05e-3,
+            time_s=60.0e-3 + 1e-5,  # 10µs — under ε
         ),
         _row(
             case_id="hcomp::read_full",
@@ -139,6 +139,10 @@ def test_sub_ms_image_jitter_is_not_a_deficit() -> None:
     annotate_rankings(rows)
     assert compute_deficits(rows, run_id="test") == []
 
+    rows[0]["time_s"] = 60.0e-3 + 5e-5  # 50µs — above ε, is a deficit
+    annotate_rankings(rows)
+    assert len(compute_deficits(rows, run_id="test")) == 1
+
 
 def test_table_arrow_allows_1_05() -> None:
     rows = [
@@ -149,7 +153,7 @@ def test_table_arrow_allows_1_05() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=1.04e-3,
+            time_s=1.05e-3,  # inclusive 1.05× slack
         ),
         _row(
             domain="fitstable",
@@ -169,3 +173,26 @@ def test_table_arrow_allows_1_05() -> None:
     deficits = compute_deficits(rows, run_id="test")
     assert len(deficits) == 1
     assert deficits[0]["domain"] == "fitstable"
+
+
+def test_deficits_require_external_peer() -> None:
+    rows = [
+        _row(
+            case_id="gpu::read_full",
+            family="specialized",
+            library="torchfits",
+            method="torchfits_specialized_device",
+            mmap_target="off",
+            time_s=2e-3,
+        ),
+        _row(
+            case_id="gpu::read_full",
+            family="specialized",
+            library="torchfits",
+            method="torchfits_dtype_fair_device",
+            mmap_target="off",
+            time_s=1e-3,
+        ),
+    ]
+    annotate_rankings(rows)
+    assert compute_deficits(rows, run_id="test") == []

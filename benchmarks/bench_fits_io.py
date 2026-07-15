@@ -57,7 +57,9 @@ class FITSBenchmarkSuite:
     """FITS-only version of the pre-extraction exhaustive fixture suite."""
 
     EXPECTED_FILE_COUNT = 87
+    # Full buffered pass: 87 read_full + 2 cutout + 1 repeated + 1 random_ext.
     EXPECTED_WORKFLOW_COUNT = 91
+    EXPECTED_WORKFLOW_COUNT_MMAP_ON = 87
 
     def __init__(
         self,
@@ -272,9 +274,8 @@ class FITSBenchmarkSuite:
             runs = 3 if self.profile == "user" else 7
         if warmup is None:
             warmup = 1 if self.profile == "user" else 2
-        torchfits_mmap: bool | str = (
-            "auto" if self.profile == "user" and self.use_mmap else self.use_mmap
-        )
+        # Scored runs must honor the pass Boolean — never "auto" under mmap-on.
+        torchfits_mmap = bool(self.use_mmap)
 
         for name, path in sorted(files.items()):
             file_type = self._get_file_type(name)
@@ -282,15 +283,16 @@ class FITSBenchmarkSuite:
             print(f"[fits] case={name} file_type={file_type} runs={runs}", flush=True)
 
             methods = {
+                # Peers reopen every iter — disable TorchFits caches for fair cold I/O.
                 "torchfits": lambda p=path, h=hdu: torchfits.read(
-                    str(p), hdu=h, mmap=torchfits_mmap
+                    str(p), hdu=h, mmap=torchfits_mmap, use_cache=False
                 ),
                 "astropy_torch": lambda p=path, h=hdu: self._astropy_to_torch(p, h),
                 "fitsio_torch": lambda p=path, h=hdu: torch.from_numpy(
                     self._ensure_native_endian_numpy(fitsio.read(str(p), ext=h))
                 ),
                 "torchfits_specialized": lambda p=path, h=hdu: torchfits.read_tensor(
-                    str(p), hdu=h, mmap=self.use_mmap
+                    str(p), hdu=h, mmap=self.use_mmap, handle_cache=False
                 ),
                 "astropy": lambda p=path, h=hdu: self._astropy_read(p, h),
                 "fitsio": lambda p=path, h=hdu: self._ensure_native_endian_numpy(
@@ -307,93 +309,74 @@ class FITSBenchmarkSuite:
                 "compression": self._get_compression_type(name),
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
-            if file_type == "compressed":
-                # Interleave CFITSIO peers per family. Astropy CompImage decode
-                # is ~10× slower and poisons medians when mixed into the same
-                # round-robin (false 1–3% torchfits↔fitsio flips). Keep smart
-                # vs specialized separate so Tensor vs ndarray peers do not
-                # contend in one schedule.
-                compressed_runs = max(runs, 21)
-                # One CFITSIO-Tensor interleave for all torchfits/fitsio_torch peers
-                # so smart and specialized rank against the same fitsio_torch samples.
-                timed = time_medians_interleaved(
+            # Rank peers share one schedule per family so page-cache order cannot
+            # favor the last library. Astropy CompImage (~10×) stays off the
+            # CFITSIO Tensor round-robin on compressed files only.
+            smart_runs = max(runs, 21) if file_type == "compressed" else runs
+            timed = time_medians_interleaved(
+                {
+                    "torchfits": methods["torchfits"],
+                    "fitsio_torch": methods["fitsio_torch"],
+                    **(
+                        {}
+                        if file_type == "compressed"
+                        else {"astropy_torch": methods["astropy_torch"]}
+                    ),
+                },
+                runs=smart_runs,
+                warmup=warmup,
+            )
+            timed.update(
+                time_medians_interleaved(
                     {
-                        "torchfits": methods["torchfits"],
                         "torchfits_specialized": methods["torchfits_specialized"],
-                        "fitsio_torch": methods["fitsio_torch"],
-                    },
-                    runs=compressed_runs,
-                    warmup=warmup,
-                )
-                # Bare ndarray / astropy peers: diagnostic only for image tensor
-                # scorecard (kept off the Tensor round-robin).
-                timed.update(
-                    time_medians_interleaved(
-                        {
-                            "fitsio": methods["fitsio"],
-                            "astropy": methods["astropy"],
-                            "astropy_torch": methods["astropy_torch"],
-                        },
-                        runs=runs,
-                        warmup=warmup,
-                    )
-                )
-                for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
-                    row[f"{method_name}_median"] = median_s
-                    row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
-                    row[f"{method_name}_peak_rss_mb"] = peak_rss
-                    row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
-            else:
-                # Always interleave — sequential order made torchfits look cold vs
-                # fitsio after the page cache was warmed by earlier methods.
-                timed = time_medians_interleaved(
-                    {
-                        "torchfits": methods["torchfits"],
-                        "torchfits_specialized": methods["torchfits_specialized"],
-                        "fitsio_torch": methods["fitsio_torch"],
+                        "fitsio": methods["fitsio"],
+                        "astropy": methods["astropy"],
                     },
                     runs=runs,
                     warmup=warmup,
                 )
+            )
+            if file_type == "compressed":
                 timed.update(
                     time_medians_interleaved(
-                        {
-                            "fitsio": methods["fitsio"],
-                            "astropy": methods["astropy"],
-                            "astropy_torch": methods["astropy_torch"],
-                        },
+                        {"astropy_torch": methods["astropy_torch"]},
                         runs=runs,
                         warmup=warmup,
                     )
                 )
-                for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
-                    row[f"{method_name}_median"] = median_s
-                    row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
-                    row[f"{method_name}_peak_rss_mb"] = peak_rss
-                    row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
+            for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
+                row[f"{method_name}_median"] = median_s
+                row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+                row[f"{method_name}_peak_rss_mb"] = peak_rss
+                row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
             rows.append(row)
 
-        rows.extend(
-            self._benchmark_cutout_rows(
+        # Cutout / random_ext paths do not honor the mmap matrix (subset reader
+        # has no mmap knob; random_ext peers force buffered opens). Emit once
+        # on the buffered pass; normalize labels them mmap_target=n/a.
+        if not self.use_mmap:
+            rows.extend(
+                self._benchmark_cutout_rows(
+                    files,
+                    runs=runs,
+                    warmup=warmup,
+                )
+            )
+            rows.extend(
+                self._benchmark_repeated_cutout_rows(
+                    files,
+                    runs=runs,
+                    warmup=warmup,
+                )
+            )
+            random_extension_row = self._benchmark_random_extensions(
                 files,
                 runs=runs,
                 warmup=warmup,
             )
-        )
-        rows.extend(
-            self._benchmark_repeated_cutout_rows(
-                files,
-                runs=runs,
-                warmup=warmup,
-            )
-        )
-        random_extension_row = self._benchmark_random_extensions(
-            files,
-            runs=runs,
-            warmup=warmup,
-        )
-        if random_extension_row is not None:
-            rows.append(random_extension_row)
+            if random_extension_row is not None:
+                rows.append(random_extension_row)
         return rows
 
     def _benchmark_cutout_rows(
@@ -445,10 +428,27 @@ class FITSBenchmarkSuite:
                 "compression": compression,
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
-            for method_name, fn in methods.items():
-                median_s, peak_rss, peak_cuda, _err = time_median(
-                    fn, runs=runs, warmup=warmup
+            timed = time_medians_interleaved(
+                {
+                    "torchfits": methods["torchfits"],
+                    "fitsio_torch": methods["fitsio_torch"],
+                    "astropy_torch": methods["astropy_torch"],
+                },
+                runs=runs,
+                warmup=warmup,
+            )
+            timed.update(
+                time_medians_interleaved(
+                    {
+                        "torchfits_specialized": methods["torchfits_specialized"],
+                        "fitsio": methods["fitsio"],
+                        "astropy": methods["astropy"],
+                    },
+                    runs=runs,
+                    warmup=warmup,
                 )
+            )
+            for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                 row[f"{method_name}_median"] = median_s
                 row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
                 row[f"{method_name}_peak_rss_mb"] = peak_rss
@@ -546,10 +546,27 @@ class FITSBenchmarkSuite:
             "compression": "none",
             "size_mb": path.stat().st_size / (1024.0 * 1024.0),
         }
-        for method_name, fn in methods.items():
-            median_s, peak_rss, peak_cuda, _err = time_median(
-                fn, runs=runs, warmup=warmup
+        timed = time_medians_interleaved(
+            {
+                "torchfits": methods["torchfits"],
+                "fitsio_torch": methods["fitsio_torch"],
+                "astropy_torch": methods["astropy_torch"],
+            },
+            runs=runs,
+            warmup=warmup,
+        )
+        timed.update(
+            time_medians_interleaved(
+                {
+                    "torchfits_specialized": methods["torchfits_specialized"],
+                    "fitsio": methods["fitsio"],
+                    "astropy": methods["astropy"],
+                },
+                runs=runs,
+                warmup=warmup,
             )
+        )
+        for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
             row[f"{method_name}_median"] = median_s
             row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
             row[f"{method_name}_peak_rss_mb"] = peak_rss
@@ -611,10 +628,27 @@ class FITSBenchmarkSuite:
             "compression": "uncompressed",
             "size_mb": path.stat().st_size / (1024.0 * 1024.0),
         }
-        for method_name, fn in methods.items():
-            median_s, peak_rss, peak_cuda, _err = time_median(
-                fn, runs=runs, warmup=warmup
+        timed = time_medians_interleaved(
+            {
+                "torchfits": methods["torchfits"],
+                "fitsio_torch": methods["fitsio_torch"],
+                "astropy_torch": methods["astropy_torch"],
+            },
+            runs=runs,
+            warmup=warmup,
+        )
+        timed.update(
+            time_medians_interleaved(
+                {
+                    "torchfits_specialized": methods["torchfits_specialized"],
+                    "fitsio": methods["fitsio"],
+                    "astropy": methods["astropy"],
+                },
+                runs=runs,
+                warmup=warmup,
             )
+        )
+        for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
             row[f"{method_name}_median"] = median_s
             row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
             row[f"{method_name}_peak_rss_mb"] = peak_rss
@@ -773,14 +807,23 @@ def _normalize_legacy_rows(
         if domain_file_type == "table":
             continue
 
-        case_id = f"{raw.get('filename')}::{raw.get('operation', 'read_full')}"
-        case_label = f"{raw.get('filename')} [{raw.get('operation', 'read_full')}]"
+        operation = str(raw.get("operation", "read_full"))
+        case_id = f"{raw.get('filename')}::{operation}"
+        case_label = f"{raw.get('filename')} [{operation}]"
         metadata = {
             "file_type": raw.get("file_type"),
             "data_type": raw.get("data_type"),
             "dimensions": raw.get("dimensions"),
             "compression": raw.get("compression"),
         }
+        # Ops that cannot honor mmap toggling are scored under n/a, not on/off.
+        row_mmap = mmap_target
+        if (
+            operation.startswith("cutout")
+            or "repeated_cutouts" in operation
+            or operation.startswith("random_ext")
+        ):
+            row_mmap = "n/a"
 
         for family, methods in (
             ("smart", SMART_METHODS),
@@ -840,7 +883,7 @@ def _normalize_legacy_rows(
                     "status": status,
                     "skip_reason": skip_reason,
                     "comparable": comparable,
-                    "mmap_target": mmap_target,
+                    "mmap_target": row_mmap,
                     "host": _BENCH_HOST,
                     "time_s": t_val,
                     "peak_rss_mb": raw.get(f"{method_key}_peak_rss_mb"),
@@ -886,14 +929,20 @@ def _benchmark_headers(
         def _fitsio_header():
             return fitsio.read_header(str(path), ext=hdu)
 
-        methods = [
-            ("torchfits", "torchfits_specialized", _tf_header),
-            ("astropy", "astropy", _astropy_header),
-            ("fitsio", "fitsio", _fitsio_header),
-        ]
-
-        for library, method_label, fn in methods:
-            t_val, peak_rss, peak_cuda, err = time_median(fn, runs=runs, warmup=warmup)
+        methods = {
+            "torchfits_specialized": _tf_header,
+            "astropy": _astropy_header,
+            "fitsio": _fitsio_header,
+        }
+        timed = time_medians_interleaved(methods, runs=runs, warmup=warmup)
+        for method_label, (t_val, peak_rss, peak_cuda, err) in timed.items():
+            library = (
+                "torchfits"
+                if method_label.startswith("torchfits")
+                else "fitsio"
+                if method_label.startswith("fitsio")
+                else "astropy"
+            )
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
@@ -918,7 +967,8 @@ def _benchmark_headers(
                     "status": status,
                     "skip_reason": skip_reason,
                     "comparable": comparable,
-                    "mmap_target": mmap_target,
+                    # Header parse does not toggle image mmap — score once as n/a.
+                    "mmap_target": "n/a",
                     "host": _BENCH_HOST,
                     "time_s": t_val,
                     "peak_rss_mb": peak_rss,
@@ -983,15 +1033,20 @@ def run_fits_domain(
             raw_rows = [
                 r for r in raw_rows if op_rx.search(str(r.get("operation", "")))
             ]
+        expected_workflows = (
+            suite.EXPECTED_WORKFLOW_COUNT_MMAP_ON
+            if use_mmap
+            else suite.EXPECTED_WORKFLOW_COUNT
+        )
         if (
             not case_filter
             and not operation_filter
             and runs is None
-            and len(raw_rows) != suite.EXPECTED_WORKFLOW_COUNT
+            and len(raw_rows) != expected_workflows
         ):
             raise RuntimeError(
                 "FITS benchmark workflow contract changed: "
-                f"expected {suite.EXPECTED_WORKFLOW_COUNT} workflows, "
+                f"expected {expected_workflows} workflows, "
                 f"ran {len(raw_rows)}"
             )
         astropy_fallback_paths = set(
@@ -1004,7 +1059,8 @@ def run_fits_domain(
             files=files,
             astropy_fallback_paths=astropy_fallback_paths,
         )
-        if op_rx is None or op_rx.search("header_read"):
+        # Headers are mmap-irrelevant — emit once on the buffered pass.
+        if (not use_mmap) and (op_rx is None or op_rx.search("header_read")):
             rows.extend(
                 _benchmark_headers(
                     run_id=run_id,

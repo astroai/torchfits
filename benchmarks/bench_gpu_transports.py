@@ -107,22 +107,20 @@ def _median_times_peer_groups(
     flips CFITSIO rankings by 1–20% on MPS.
     """
     timed: dict[str, tuple[float | None, float | None, float | None]] = {}
-    smart_fns = [
-        (method, fn)
-        for _lib, method, fam, _mode, fn in methods
-        if fam == "smart" and not str(method).startswith("astropy")
-    ]
-    specialized_fns = [
-        (method, fn) for _lib, method, fam, _mode, fn in methods if fam == "specialized"
-    ]
-    astropy_fns = [
-        (method, fn)
-        for _lib, method, _fam, _mode, fn in methods
-        if str(method).startswith("astropy")
-    ]
-    for group in (smart_fns, specialized_fns, astropy_fns):
-        if group:
-            timed.update(_median_times_interleaved(group, warmup, iters, device))
+    # Interleave CFITSIO Tensor peers per family. Astropy CompImage stays off the
+    # CFITSIO schedule (≈10× slower) but still ranks in its family via its own run.
+    by_family: dict[str, list[tuple[str, Any]]] = {}
+    for _lib, method, fam, _mode, fn in methods:
+        by_family.setdefault(fam, []).append((method, fn))
+    for fam, group in by_family.items():
+        cfitsio = [
+            (m, fn) for m, fn in group if not str(m).startswith("astropy")
+        ]
+        astropy = [(m, fn) for m, fn in group if str(m).startswith("astropy")]
+        if cfitsio:
+            timed.update(_median_times_interleaved(cfitsio, warmup, iters, device))
+        if astropy:
+            timed.update(_median_times_interleaved(astropy, warmup, iters, device))
     return timed
 
 
@@ -259,10 +257,26 @@ def run_gpu_transport_rows(
                         "specialized",
                         tf_specialized_read,
                     ),
+                    # External specialized peers (same work as smart device H2D).
+                    (
+                        "fitsio",
+                        "fitsio_torch_device_specialized",
+                        "specialized",
+                        "specialized",
+                        fitsio_torch_read,
+                    ),
+                    (
+                        "astropy",
+                        "astropy_torch_device_specialized",
+                        "specialized",
+                        "specialized",
+                        astropy_torch_read,
+                    ),
+                    # Diagnostic only — raw_scale dtype path, not scorecard.
                     (
                         "torchfits",
                         "torchfits_dtype_fair_device",
-                        "specialized",
+                        "dtype_fair",
                         "dtype_fair",
                         tf_dtype_fair_read,
                     ),
@@ -274,9 +288,13 @@ def run_gpu_transport_rows(
                     t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                     if t is None:
                         continue
-                    comparable = True
-                    skip_reason = ""
-                    if library == "fitsio" and mmap_target == "on":
+                    comparable = family != "dtype_fair"
+                    skip_reason = (
+                        "dtype_fair_diagnostic: not scored against scaled peers"
+                        if family == "dtype_fair"
+                        else ""
+                    )
+                    if library == "fitsio" and mmap_target == "on" and comparable:
                         # Compressed tile decode ignores mmap; fitsio stays comparable.
                         if file_type != "compressed":
                             comparable = False
@@ -365,6 +383,20 @@ def run_gpu_transport_rows(
                         "specialized",
                         tf_cutout,
                     ),
+                    (
+                        "fitsio",
+                        "fitsio_torch_device_specialized",
+                        "specialized",
+                        "specialized",
+                        fitsio_cutout,
+                    ),
+                    (
+                        "astropy",
+                        "astropy_torch_device_specialized",
+                        "specialized",
+                        "specialized",
+                        astropy_cutout,
+                    ),
                 ]
 
                 timed = _median_times_peer_groups(methods, warmup, iterations, device)
@@ -372,13 +404,9 @@ def run_gpu_transport_rows(
                     t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                     if t is None:
                         continue
+                    # Subset reader has no mmap knob — do not claim transport labels.
                     comparable = True
                     skip_reason = ""
-                    if library == "fitsio" and mmap_target == "on":
-                        # Compressed cutouts ignore mmap; keep fitsio comparable.
-                        if compression in {None, "", "none", "uncompressed"}:
-                            comparable = False
-                            skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
                     rows.append(
                         {
                             "run_id": run_id,
@@ -394,7 +422,7 @@ def run_gpu_transport_rows(
                             "status": "OK",
                             "skip_reason": skip_reason,
                             "comparable": comparable,
-                            "mmap_target": mmap_target,
+                            "mmap_target": "n/a",
                             "host": _BENCH_HOST,
                             "time_s": t,
                             "peak_rss_mb": peak_rss,
@@ -403,9 +431,7 @@ def run_gpu_transport_rows(
                             "unit": "MB/s",
                             "size_mb": size_mb,
                             "n_points": "",
-                            "metadata": json.dumps(
-                                {"device": device, "io_transport": transport}
-                            ),
+                            "metadata": json.dumps({"device": device}),
                         }
                     )
 
@@ -502,6 +528,20 @@ def run_gpu_transport_rows(
                     "specialized",
                     tf_repeated_cutout_persistent,
                 ),
+                (
+                    "fitsio",
+                    "fitsio_torch_device_specialized",
+                    "specialized",
+                    "specialized",
+                    fitsio_repeated_cutout,
+                ),
+                (
+                    "astropy",
+                    "astropy_torch_device_specialized",
+                    "specialized",
+                    "specialized",
+                    astropy_repeated_cutout,
+                ),
             ]
 
             timed = _median_times_peer_groups(methods, warmup, iterations, device)
@@ -511,9 +551,6 @@ def run_gpu_transport_rows(
                     continue
                 comparable = True
                 skip_reason = ""
-                if library == "fitsio" and mmap_target == "on":
-                    comparable = False
-                    skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
                 rows.append(
                     {
                         "run_id": run_id,
@@ -529,7 +566,7 @@ def run_gpu_transport_rows(
                         "status": "OK",
                         "skip_reason": skip_reason,
                         "comparable": comparable,
-                        "mmap_target": mmap_target,
+                        "mmap_target": "n/a",
                         "host": _BENCH_HOST,
                         "time_s": t,
                         "peak_rss_mb": peak_rss,
@@ -538,9 +575,7 @@ def run_gpu_transport_rows(
                         "unit": "MB/s",
                         "size_mb": size_mb,
                         "n_points": "",
-                        "metadata": json.dumps(
-                            {"device": device, "io_transport": transport}
-                        ),
+                        "metadata": json.dumps({"device": device}),
                     }
                 )
 
