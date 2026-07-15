@@ -81,6 +81,8 @@ def time_median(
     cuda_peaks: list[float] = []
     for _ in range(max(1, runs)):
         gc.collect()
+        # ponytail: start/end RSS only — misses frees mid-call; upgrade to
+        # a sampler thread if comparative RAM needs true peak.
         rss0 = _rss_mb()
         _cuda_reset()
         t0 = time.perf_counter()
@@ -130,21 +132,20 @@ def time_medians_interleaved(
             return
 
     names = list(methods.keys())
-    for _ in range(max(0, warmup)):
-        for name in names:
-            try:
-                methods[name]()
-                _sync()
-            except Exception as exc:
-                return {
-                    n: (None, None, None, str(exc) if n == name else None)
-                    for n in names
-                }
-
     samples: dict[str, list[float]] = {name: [] for name in names}
     rss_peaks: dict[str, list[float]] = {name: [] for name in names}
     cuda_peaks: dict[str, list[float]] = {name: [] for name in names}
     errors: dict[str, str | None] = {name: None for name in names}
+    # Soft-skip peers that fail warmup; do not poison the whole interleaved set.
+    for name in names:
+        for _ in range(max(0, warmup)):
+            try:
+                methods[name]()
+                _sync()
+            except Exception as exc:
+                errors[name] = str(exc)
+                break
+
     for _ in range(max(1, runs)):
         gc.collect()
         order = names[:]
@@ -152,6 +153,8 @@ def time_medians_interleaved(
         for name in order:
             if errors[name] is not None:
                 continue
+            # ponytail: start/end RSS only — misses frees mid-call; upgrade to
+            # a sampler thread if comparative RAM needs true peak.
             rss0 = _rss_mb()
             _cuda_reset()
             try:

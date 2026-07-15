@@ -410,12 +410,21 @@ def write_summary(
 
         key = (domain, family)
         scorecard[key]["total"] += 1
-        if grp[0][0] is torch_row:
+        best_t = grp[0][1]
+        tf_t = _to_float(torch_row.get("time_s"))
+        # Match deficit policy: Arrow tables within 1.05× still count as a win.
+        within_policy = False
+        if tf_t is not None and best_t > 0:
+            lag = tf_t / best_t
+            within_policy = lag < deficit_min_lag_ratio(domain) or (
+                (tf_t - best_t) < DEFICIT_MIN_ABS_DELTA_S
+            )
+        if within_policy:
             scorecard[key]["wins"] += 1
         n_points = _extract_n_points(torch_row)
         if n_points is not None and n_points >= LARGE_N_THRESHOLD:
             large_n_scorecard[key]["total"] += 1
-            if grp[0][0] is torch_row:
+            if within_policy:
                 large_n_scorecard[key]["wins"] += 1
 
         has_legacy = any(bool(_metadata_dict(r).get("cross_env")) for (r, _t) in grp)

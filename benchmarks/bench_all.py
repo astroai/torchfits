@@ -344,39 +344,41 @@ def main() -> int:
                     _domain_failure_row(run_id=run_id, domain="fitstable", error=err)
                 )
 
-        try:
-            if args.no_gpu:
-                raise RuntimeError("GPU transports disabled via --no-gpu")
-            from benchmarks.bench_gpu_transports import run_gpu_transport_rows
+        # GPU transports are image fixtures; skip on fitstable-only runs.
+        if "fits" in scopes:
+            try:
+                if args.no_gpu:
+                    raise RuntimeError("GPU transports disabled via --no-gpu")
+                from benchmarks.bench_gpu_transports import run_gpu_transport_rows
 
-            iterations = 7 if args.profile == "lab" else 3
-            warmup = 2 if args.profile == "lab" else 1
-            if args.quick:
-                iterations = 1
-                warmup = 0
-            gpu_rows = run_gpu_transport_rows(
-                run_id=run_id,
-                iterations=iterations,
-                warmup=warmup,
-                quick=args.quick,
-                use_mmap=use_mmap,
-                case_filter=args.filter,
-                operation_filter=args.operation,
-            )
-            if gpu_rows:
-                rows.extend(gpu_rows)
-                print(
-                    f"Added {len(gpu_rows)} GPU transport rows (mmap={mmap_label})",
-                    flush=True,
+                iterations = 7 if args.profile == "lab" else 3
+                warmup = 2 if args.profile == "lab" else 1
+                if args.quick:
+                    iterations = 1
+                    warmup = 0
+                gpu_rows = run_gpu_transport_rows(
+                    run_id=run_id,
+                    iterations=iterations,
+                    warmup=warmup,
+                    quick=args.quick,
+                    use_mmap=use_mmap,
+                    case_filter=args.filter,
+                    operation_filter=args.operation,
                 )
-        except Exception as exc:
-            if args.no_gpu and "disabled via --no-gpu" in str(exc):
-                pass
-            else:
-                print(
-                    f"[bench-all][gpu][mmap={mmap_label}] failed: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                if gpu_rows:
+                    rows.extend(gpu_rows)
+                    print(
+                        f"Added {len(gpu_rows)} GPU transport rows (mmap={mmap_label})",
+                        flush=True,
+                    )
+            except Exception as exc:
+                if args.no_gpu and "disabled via --no-gpu" in str(exc):
+                    pass
+                else:
+                    print(
+                        f"[bench-all][gpu][mmap={mmap_label}] failed: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
 
     annotate_rankings(rows)
     deficits = compute_deficits(rows, run_id=run_id)

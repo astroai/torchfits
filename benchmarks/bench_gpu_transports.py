@@ -116,8 +116,21 @@ def run_gpu_transport_rows(
         return []
 
     op_rx = re.compile(operation_filter) if operation_filter else None
-    want_read_full = op_rx is None or op_rx.search("read_full")
-    want_cutout = op_rx is None or op_rx.search("cutout")
+
+    def _want_ops(*candidates: str) -> bool:
+        if op_rx is None:
+            return True
+        return any(op_rx.search(c) for c in candidates)
+
+    # Probe real operation names (and short aliases) so filters like
+    # ``repeated_cutouts`` still enable the cutout sections.
+    want_read_full = _want_ops("read_full")
+    want_cutout = _want_ops(
+        "cutout",
+        "cutout_100x100",
+        "repeated_cutouts",
+        "repeated_cutouts_50x_100x100",
+    )
 
     data_dir = Path(tempfile.mkdtemp(prefix="torchfits_bench_gpu_"))
     suite = FITSBenchmarkSuite(
@@ -325,17 +338,14 @@ def run_gpu_transport_rows(
                     ),
                 ]
 
-                for library, method, family, mode, fn in methods:
-                    try:
-                        t, peak_rss, peak_cuda = _median_time(
-                            fn, warmup, iterations, device
-                        )
-                    except Exception as exc:
-                        print(
-                            f"[bench-gpu] skip cutout {name} {library}: {exc}",
-                            flush=True,
-                        )
-                        continue
+                timed = _median_times_interleaved(
+                    [(method, fn) for _lib, method, _fam, _mode, fn in methods],
+                    warmup,
+                    iterations,
+                    device,
+                )
+                for library, method, family, mode, _fn in methods:
+                    t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                     if t is None:
                         continue
                     comparable = True
@@ -468,16 +478,14 @@ def run_gpu_transport_rows(
                 ),
             ]
 
-            for library, method, family, mode, fn in methods:
-                try:
-                    t, peak_rss, peak_cuda = _median_time(
-                        fn, warmup, iterations, device
-                    )
-                except Exception as exc:
-                    print(
-                        f"[bench-gpu] skip repeated cutout {library}: {exc}", flush=True
-                    )
-                    continue
+            timed = _median_times_interleaved(
+                [(method, fn) for _lib, method, _fam, _mode, fn in methods],
+                warmup,
+                iterations,
+                device,
+            )
+            for library, method, family, mode, _fn in methods:
+                t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                 if t is None:
                     continue
                 comparable = True
