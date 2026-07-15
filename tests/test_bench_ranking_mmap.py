@@ -12,6 +12,7 @@ from benchmarks.bench_contract import annotate_rankings, compute_deficits
 
 def _row(
     *,
+    domain: str = "fits",
     case_id: str,
     family: str,
     library: str,
@@ -21,7 +22,7 @@ def _row(
     comparable: bool = True,
 ) -> dict:
     return {
-        "domain": "fits",
+        "domain": domain,
         "case_id": case_id,
         "case_label": case_id,
         "operation": "read_full",
@@ -84,18 +85,13 @@ def test_mmap_modes_rank_independently() -> None:
     assert off_tf["best_in_family"] is True
     assert on_tf["rank_in_family"] == 2
 
-    # mmap-on is ~15.7% — below the 25% deficit noise floor.
-    assert compute_deficits(rows, run_id="test") == []
-
-    # Amplify the mmap-on gap so it still registers as a same-mmap deficit.
-    on_tf["time_s"] = 1.0e-4
-    annotate_rankings(rows)
+    # Images: any meaningful lag is a deficit (~15.7% here).
     deficits = compute_deficits(rows, run_id="test")
     assert len(deficits) == 1
     assert deficits[0]["mmap_target"] == "on"
 
 
-def test_deficit_noise_floor_skips_sub_25pct() -> None:
+def test_image_deficits_count_any_lag() -> None:
     rows = [
         _row(
             case_id="noise::read_full",
@@ -103,7 +99,7 @@ def test_deficit_noise_floor_skips_sub_25pct() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=1.24e-3,
+            time_s=1.01e-3,
         ),
         _row(
             case_id="noise::read_full",
@@ -115,4 +111,37 @@ def test_deficit_noise_floor_skips_sub_25pct() -> None:
         ),
     ]
     annotate_rankings(rows)
+    deficits = compute_deficits(rows, run_id="test")
+    assert len(deficits) == 1
+    assert deficits[0]["domain"] == "fits"
+
+
+def test_table_arrow_allows_1_05() -> None:
+    rows = [
+        _row(
+            domain="fitstable",
+            case_id="narrow::predicate",
+            family="smart",
+            library="torchfits",
+            method="torchfits",
+            mmap_target="off",
+            time_s=1.04e-3,
+        ),
+        _row(
+            domain="fitstable",
+            case_id="narrow::predicate",
+            family="smart",
+            library="fitsio",
+            method="fitsio_torch",
+            mmap_target="off",
+            time_s=1.00e-3,
+        ),
+    ]
+    annotate_rankings(rows)
     assert compute_deficits(rows, run_id="test") == []
+
+    rows[0]["time_s"] = 1.06e-3
+    annotate_rankings(rows)
+    deficits = compute_deficits(rows, run_id="test")
+    assert len(deficits) == 1
+    assert deficits[0]["domain"] == "fitstable"

@@ -140,10 +140,15 @@ table, category summaries, and deficit transparency.
 
 ### Current deficits
 
-_None_ on the published lab scorecard
-(`exhaustive_cuda_0.9.1_20260714_202004`, 3648 rows, same-mmap ranking with a
-25% noise floor). Local Mac CPU+MPS exhaustive
-`exhaustive_mps_20260714_210854` is also at zero deficits under the same rules.
+Scorecard policy (same-mmap peers):
+
+- **Images / cubes / spectra / cutouts:** any lag above float-timer ε is a deficit
+  (rice/hcompress included — no percent floor).
+- **Arrow tables:** allow up to **1.05×**.
+
+Prior “0 deficit” claims used a 25% lag floor and are retracted. Re-score after
+the SIMD endian + thin device + WHERE⇒mmap-scan fixes; see
+`docs/benchmarks.md`.
 
 **GPU integer reads:** Default `read(..., device="cuda")` applies BSCALE/BZERO on
 device and returns `float32` for generic scaled pixels — good for ML. For native

@@ -11,29 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
 - Signed-byte (`BZERO=-128`) and unsigned smart device reads convert on the
-  host then copy once to CUDA/MPS; generic BSCALE host-scales for ≤64k pixels.
-- Automatic table `where=` uses a tensor-mask path (honoring `mmap`) before
-  Arrow so numeric predicates avoid full-column Arrow conversion; explicit
-  ``backend="cpp"`` remains the opt-in fused mmap pushdown.
+  host then copy once to CUDA/MPS; device destinations use logical `read_full`
+  then one H2D (no size-gated scale paths).
+- One-shot image reads use thin ``cpp.read_full`` instead of
+  ``read_full_cached`` handle scaffolding (that path lost ~15% to
+  fitsio+``from_numpy`` on hcompress). Handle cache remains for persistent
+  subset readers.
+- ``read_subset`` / ``SubsetReader`` keep signed-byte and unsigned integer
+  conventions as narrow dtypes (int8/uint16/uint32) instead of float-promoting
+  every cutout — matches full-image logical dtypes and fitsio.
+- Automatic table `where=` with ``mmap=True`` uses the documented native
+  mmap-scan pushdown when safe; ``mmap=False`` reads then tensor/Arrow-filters.
+  Explicit ``backend="cpp"`` always requests pushdown when safe.
 - CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
   use direct tile I/O instead of the buffered path.
-- Large multi-byte mmap image reads fall through to CFITSIO on little-endian
-  hosts when N > 64k elements — the prior scalar parallel bswap path could lose
-  ~2.5× to fitsio on Apple Silicon for 2048² int16.
+- Multi-byte mmap image reads use NEON/SSSE3 endian convert for all sizes
+  (no 64k element fallthrough).
 - Uncompressed BYTE_IMG reads use direct `pread` for both mmap on and off
   (avoids CFITSIO `fits_read_img` overhead on large int8).
-- Deficit scoring ignores sub-25% lags (matrix thermal/scheduling noise floor)
-  and does not rank fitsio under table mmap-on (fitsio has no mmap mode).
+- Deficit scorecard: **images** any lag > float-timer ε; **Arrow tables** allow
+  up to 1.05×. Fitsio is excluded from mmap-on peers for both images and tables
+  (fitsio has no mmap mode).
+- Repeated cutout benches (CPU + GPU) use the persistent subset reader so the
+  smart family matches fitsio’s open-once handle pattern.
 
 ### Changed
 
 - Image GPU timings interleave libraries (not only compressed) to reduce
   order bias on MPS microbenches.
-- Native table predicate scan stays sequential below 16 384 rows when ATen has
-  multiple threads (avoids small-N thread-pool tax).
+- Native table predicate scan is sequential (parallel chunk+merge+sort lost).
 - CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
 - `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
   focused iteration without a full exhaustive matrix.
+- Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
 
 ## [0.9.0] - 2026-07-14
 

@@ -1060,9 +1060,8 @@ public:
         }
 #endif
 
-        // Scan rows (parallelized)
+        // Scan rows
         std::vector<long> valid_indices;
-        std::mutex indices_mutex;
 
         if (ctxs.size() == 1) {
             const auto& ctx = ctxs[0];
@@ -1245,20 +1244,9 @@ public:
                 }
             };
 
-            if (torch::get_num_threads() > 1 && nrows_ >= 16384) {
-                at::parallel_for(0, nrows_, 4096, [&](long start, long end) {
-                    std::vector<long> local;
-                    local.reserve(end - start);
-                    scan_chunk(start, end, local);
-                    if (!local.empty()) {
-                        std::lock_guard<std::mutex> lock(indices_mutex);
-                        valid_indices.insert(valid_indices.end(), local.begin(), local.end());
-                    }
-                });
-                std::sort(valid_indices.begin(), valid_indices.end());
-            } else {
-                scan_chunk(0, nrows_, valid_indices);
-            }
+            // Sequential scan: parallel chunk + mutex merge + sort loses on
+            // typical predicate widths vs a single pass (no N threshold).
+            scan_chunk(0, nrows_, valid_indices);
         } else {
             // Multi-filter fallback (single-threaded, uncommon case)
             std::vector<long> local;

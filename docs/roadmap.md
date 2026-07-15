@@ -250,12 +250,12 @@ deprecation cycle.
 | Dimension | Exit criterion | Status |
 |---|---|---|
 | **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*`, and downstream boundary modules | 🟡 0.9.0 freeze reviewed; 1.0 public-boundary freeze pending |
-| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — `exhaustive_cuda_0.9.1_20260714_202004`: **0** deficits (same-mmap, 25% noise floor) |
+| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths; images never behind under the strict image gate; Arrow tables ≤1.05× | 🟡 Image/Arrow gates tightened; re-verify after SIMD/device/WHERE fixes |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
 | **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
 | **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
-| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3,648 rows, 0 deficits in published snapshot (`exhaustive_cuda_0.9.1_20260714_202004`) |
+| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | 🟡 Snapshot refresh pending new scorecard policy |
 | **GPU I/O** | E1–E3 verified on CANFAR staging | ✅ H100 NVL MIG, CUDA 12.8, 894 transport rows |
 | **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
 | **Downstream integration** | Public-only consumer contract and compatibility matrix | 🟡 Focused contract exists; clean-install matrix pending |
@@ -263,7 +263,7 @@ deprecation cycle.
 
 ### 1.0 exit checklist
 
-- [x] Performance floor ≤2× (0 deficits in 0.9.1 CANFAR snapshot)
+- [ ] Performance floor: images never behind; Arrow tables ≤1.05× (strict gate)
 - [x] `torchfits.data` complete (`FitsTableIterableDataset`, `FitsCutoutDataset`); legacy datasets removed
 - [x] `torchfits.transforms` round-trip tests
 - [x] C++ `read_table_chunk` sole table-chunk entry
@@ -293,7 +293,7 @@ High-priority benchmark gaps addressed before the 0.5.0 tag:
 | Dtype-fair GPU bench column | **Done** | `torchfits_dtype_fair_device` in `bench_gpu_transports.py` |
 | Training cache warm-up docs | **Done** | `optimize_for_dataset` in `example_image_dataset.py` |
 | ML loader diagnostic in release notes | **Done** | README + changelog cite `bench_ml_loader.py` CPU numbers |
-| Lab CUDA snapshot refresh | **Done** | `exhaustive_cuda_0.9.1_20260714_202004` — 3,648 rows, **0 deficits** (CANFAR staging; Mac MPS also 0) |
+| Lab CUDA snapshot refresh | **In progress** | Strict gate (images any lag; Arrow ≤1.05×); prior 25%-floor “0 deficit” claims retracted |
 
 **Deferred to 0.6.0** (medium/low priority from perf triage):
 

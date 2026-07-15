@@ -28,7 +28,6 @@ from ._io_engine.caches import (
     check_read_cache as _check_read_cache_impl,
     clear_file_cache as _clear_file_cache_impl,
     get_cache_performance as _get_cache_performance_impl,
-    get_cached_handle as _get_cached_handle_impl,
     invalidate_path_caches as _invalidate_path_caches_impl,
 )
 from ._io_engine.checksum_api import verify_checksums as _verify_checksums_impl
@@ -48,7 +47,6 @@ from ._io_engine.image_meta import (
 )
 from ._io_engine._read_pipeline import read_unified as _read_unified_impl
 from ._io_engine.subset import open_subset_reader as _open_subset_reader_impl
-from ._io_engine.subset import read_subset as _read_subset_impl
 from ._io_engine.table_api import read_table as _read_table_impl
 from ._io_engine.table_streaming import stream_table as _stream_table_impl
 from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
@@ -282,17 +280,14 @@ def read_subset(
     y2: int,
     handle_cache_capacity: int = 16,
 ) -> Any:
-    """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU."""
-    return _read_subset_impl(
-        get_cached_handle=_get_cached_handle_impl,
-        path=path,
-        hdu=hdu,
-        x1=x1,
-        y1=y1,
-        x2=x2,
-        y2=y2,
-        handle_cache_capacity=handle_cache_capacity,
-    )
+    """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU.
+
+    Thin open-once path (SubsetReader). ``handle_cache_capacity`` kept for API
+    compatibility; persistent reuse belongs on :func:`open_subset_reader`.
+    """
+    _ = handle_cache_capacity
+    with open_subset_reader(path, hdu=hdu) as reader:
+        return reader.read_subset(x1, y1, x2, y2)
 
 
 def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu") -> Any:

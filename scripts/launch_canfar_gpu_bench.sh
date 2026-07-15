@@ -7,10 +7,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 GIT_REF="${TORCHFITS_GIT_REF:-main}"
-RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.9.0_$(date -u +%Y%m%d_%H%M%S)}"
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
+case "${MODE}" in
+  exhaustive-cpu)
+    DEFAULT_RUN_ID="exhaustive_cpu_$(date -u +%Y%m%d_%H%M%S)"
+    DEFAULT_GPU=0
+    ;;
+  *)
+    DEFAULT_RUN_ID="exhaustive_cuda_$(date -u +%Y%m%d_%H%M%S)"
+    DEFAULT_GPU=1
+    ;;
+esac
+RUN_ID="${TORCHFITS_BENCH_RUN_ID:-${DEFAULT_RUN_ID}}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
-GPU="${TORCHFITS_CANFAR_GPU:-1}"
+GPU="${TORCHFITS_CANFAR_GPU:-${DEFAULT_GPU}}"
 CPU="${TORCHFITS_CANFAR_CPU:-8}"
 MEMORY="${TORCHFITS_CANFAR_MEMORY:-32}"
 # ponytail: CANFAR session names allow [A-Za-z0-9-] only (no dots/underscores)

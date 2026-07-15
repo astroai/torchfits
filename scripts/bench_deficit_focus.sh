@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Focused deficit-cluster benches (no full exhaustive).
+# Focused deficit-cluster benches from the suite registry (no full exhaustive).
 # Usage:
-#   bash scripts/bench_deficit_focus.sh              # all clusters
+#   bash scripts/bench_deficit_focus.sh              # all deficit-focus suites
 #   bash scripts/bench_deficit_focus.sh hcompress
 #   bash scripts/bench_deficit_focus.sh tiny_int8
 #   bash scripts/bench_deficit_focus.sh predicate
@@ -12,46 +12,36 @@ cd "$ROOT"
 
 CLUSTER="${1:-all}"
 RUN_ID="${TORCHFITS_BENCH_RUN_ID:-deficit_focus_$(date -u +%Y%m%d_%H%M%S)}"
-PROFILE="${TORCHFITS_BENCH_PROFILE:-lab}"
 ENV_NAME="${TORCHFITS_BENCH_ENV:-bench-all}"
 
-run_cluster() {
-  local name="$1"
-  local scope="$2"
-  local filter="$3"
-  local rid="${RUN_ID}_${name}"
-  echo "==> cluster=${name} scope=${scope} filter=${filter} run_id=${rid}"
-  local -a cmd=(
-    pixi run -e "$ENV_NAME" python benchmarks/bench_all.py
-    --profile "$PROFILE"
-    --scope "$scope"
-    --filter "$filter"
-    --mmap-matrix
-    --run-id "$rid"
-  )
-  if [[ "$scope" == "fitstable" ]]; then
-    cmd+=(--no-gpu)
-  fi
-  "${cmd[@]}"
+resolve_name() {
+  case "$1" in
+    hcompress) echo compressed_hcompress ;;
+    tiny_int8) echo tiny_int8 ;;
+    predicate) echo fitstable_predicate ;;
+    all) echo all ;;
+    *) echo "$1" ;;
+  esac
 }
 
-case "$CLUSTER" in
-  hcompress)
-    run_cluster hcompress fits '^(compressed_hcompress_)'
-    ;;
-  tiny_int8)
-    run_cluster tiny_int8 fits '^(tiny_int8_)'
-    ;;
-  predicate)
-    run_cluster predicate fitstable '^(narrow_1000|narrow_10000)$'
-    ;;
-  all)
-    run_cluster hcompress fits '^(compressed_hcompress_)'
-    run_cluster tiny_int8 fits '^(tiny_int8_)'
-    run_cluster predicate fitstable '^(narrow_1000|narrow_10000)$'
-    ;;
-  *)
-    echo "Unknown cluster: $CLUSTER (expected: all|hcompress|tiny_int8|predicate)" >&2
-    exit 2
-    ;;
-esac
+run_suite() {
+  local name="$1"
+  local rid="${RUN_ID}_${name}"
+  echo "==> deficit-focus suite=${name} run_id=${rid}"
+  pixi run -e "$ENV_NAME" python benchmarks/bench_all.py \
+    --suite "$name" \
+    --run-id "$rid"
+}
+
+NAME="$(resolve_name "$CLUSTER")"
+if [[ "$NAME" == "all" ]]; then
+  SUITES="$(
+    pixi run -e "$ENV_NAME" python -c \
+      "from benchmarks.suites import DEFICIT_FOCUS_SUITES; print(' '.join(DEFICIT_FOCUS_SUITES))"
+  )"
+  for s in $SUITES; do
+    run_suite "$s"
+  done
+else
+  run_suite "$NAME"
+fi

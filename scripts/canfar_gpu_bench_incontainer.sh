@@ -69,8 +69,23 @@ case "${TORCHFITS_BENCH_MODE}" in
   exhaustive)
     pixi run -e bench-gpu python benchmarks/bench_all.py \
       --profile lab \
-      --scope all \
+      --suite release \
       --mmap-matrix \
+      --run-id "${TORCHFITS_BENCH_RUN_ID}" \
+      --keep-temp
+    ;;
+  exhaustive-cpu)
+    # Multicore CPU-only release matrix (no GPU transports).
+    export TORCH_NUM_THREADS="${TORCH_NUM_THREADS:-8}"
+    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+    export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
+    export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-8}"
+    echo "exhaustive-cpu threads: TORCH=${TORCH_NUM_THREADS}"
+    pixi run -e bench-gpu python benchmarks/bench_all.py \
+      --profile lab \
+      --suite release \
+      --mmap-matrix \
+      --no-gpu \
       --run-id "${TORCHFITS_BENCH_RUN_ID}" \
       --keep-temp
     ;;

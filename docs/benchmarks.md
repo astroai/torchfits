@@ -26,8 +26,12 @@ GitHub Actions weekly benches use CPU-only PyTorch and do not refresh GPU cells.
 
 ## Methodology
 
-Each case measures median wall-clock time over multiple repetitions. Cases are
-grouped into two families:
+Each case measures median wall-clock time over multiple repetitions, plus
+**peak process RSS** (and peak CUDA alloc when on CUDA) sampled around the timed
+call for comparative memory reporting. Deficit ranking stays **time-based**;
+RSS is reported alongside times, not as a separate deficit gate.
+
+Cases are grouped into two families:
 
 - **smart** — the idiomatic high-level API, such as `torchfits.read()` vs
   `astropy.io.fits.getdata()` plus `torch.from_numpy()`.
@@ -38,8 +42,38 @@ Fairness controls:
 
 - Rows with mismatched mmap behavior are marked `SKIPPED` and excluded from
   rankings.
+- Fitsio has no mmap toggle; under `mmap_target=on` it is marked
+  non-comparable for both image and table domains.
 - FITS comparators must be official released distributions.
 - Warm-cache and cold-cache profiles are kept separate.
+
+Deficit floors (same-mmap peers):
+
+- **Images / cubes / spectra / cutouts** (`domain=fits`): any lag above float-timer
+  ε counts — including rice/hcompress (no percent floor).
+- **Arrow table interchange** (`domain=fitstable`): allow up to **1.05×**.
+
+### Modular suites and release exhaustives
+
+Named suites live in `benchmarks/suites.py` and resolve to `bench_all.py` flags
+(`--scope` / `--filter` / `--operation` / GPU / mmap / profile):
+
+```bash
+pixi run bench-suite hcompress
+pixi run bench-suite compressed_rice -- --no-mmap
+pixi run bench-suite fitstable_predicate
+pixi run bench-deficit-focus          # registry-driven deficit clusters
+```
+
+Release composition is the `release` suite (full fits + fitstable, mmap matrix,
+GPU when present). Host recipes:
+
+| Task | Host | Run ID prefix |
+|---|---|---|
+| `pixi run bench-exhaustive-local` | Mac CPU + MPS | `exhaustive_mps_*` |
+| `pixi run bench-exhaustive-canfar-cpu` | CANFAR multicore CPU | `exhaustive_cpu_*` |
+| `pixi run bench-exhaustive-canfar-cuda` | CANFAR CUDA | `exhaustive_cuda_*` |
+| `pixi run bench-release-scorecard -- <run_dir>...` | meta | patches multi-host docs |
 
 ## Correctness Gates
 
@@ -1050,32 +1084,34 @@ The complete, un-cherrypicked list of all measured benchmark configurations.
 ## Performance deficits
 
 <!-- BENCH_DEFICITS_BEGIN -->
-_No deficits in this run — torchfits won every comparable case._
+_Scorecard policy (not a noise floor):_
 
-Same-mmap ranking, a 25% lag noise floor, and excluding fitsio from table
-mmap-on peers (fitsio has no mmap mode) keep the scorecard honest. Focused
-quiet runs closed the previous published cluster gaps (hcompress `MINDIRECT`,
-signed-byte device casts, narrow WHERE tensor filters); remaining sub-25%
-matrix jitter is scheduling/thermal noise, not a product claim against.
+- **Images / cubes / spectra / cutouts** (`domain=fits`): any lag above float-timer
+  ε is a deficit — including rice/hcompress.
+- **Arrow table interchange** (`domain=fitstable`): allow up to **1.05×**.
+- Same-mmap ranking only; fitsio is excluded from table mmap-on peers (no mmap mode).
 
-**Method notes:**
-
-- Compressed codecs (including hcompress) share CFITSIO decode; rice/gzip win.
-- Smart `where=` uses a tensor mask + Arrow of survivors; use `backend="cpp"`
-  for fused mmap pushdown when you want that path explicitly.
-- Multicore: ATen/OpenMP threads help large scans; CFITSIO single-file
-  decompress is not the multi-core lever. CANFAR exhaustive seats use 8 CPUs.
+Refresh this block from the latest exhaustive run after path fixes. Prior “0 deficit”
+claims used a 25% lag floor and are retracted until images are clean under this gate.
 <!-- BENCH_DEFICITS_END -->
 
 ## Release Snapshot
 
-Latest full lab benchmark:
+Latest lab benchmarks (one row per host):
 
-| Run ID | Scope | Rows | Deficits | Notes |
-|---|---|---:|---:|---|
+| Run ID | Host / device | Scope | Rows | Deficits | Median peak RSS (MB) | Notes |
+|---|---|---|---:|---:|---:|---|
 <!-- BENCH_SNAPSHOT_BEGIN -->
-| `exhaustive_cuda_0.9.1_20260714_202004` | fits + fitstable (lab) | 3648 | 0 | lab bench-all + `--mmap-matrix` + CUDA/MPS |
+| `exhaustive_cuda_0.9.1_20260714_202004` | (prior) | fits + fitstable (lab) | 3648 | _(re-score pending)_ | - | prior 25% floor retracted; image gate = any lag |
 <!-- BENCH_SNAPSHOT_END -->
+
+### Host scorecard
+
+| Host / device | Run ID | Rows | Time deficits | Median peak RSS (MB) | Notes |
+|---|---|---:|---:|---:|---|
+<!-- BENCH_HOSTS_BEGIN -->
+| (pending multi-host refresh) | — | — | — | — | run `bench-release-scorecard` |
+<!-- BENCH_HOSTS_END -->
 
 Latest local quick benchmark evidence:
 

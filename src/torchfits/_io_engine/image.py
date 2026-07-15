@@ -49,23 +49,20 @@ def validate_read_image_args(
 def dispatch_read_image_cpp(
     cpp: Any, path: str, hdu: int, mmap: bool, handle_cache: bool, raw_scale: bool
 ) -> Tensor:
-    """Dispatch the correct C++ function for low-level image reading."""
+    """Dispatch the correct C++ function for low-level image reading.
+
+    One-shot full-image reads always use thin ``read_full`` / raw variants.
+    ``handle_cache`` is reserved for persistent subset readers — routing
+    one-shot reads through ``read_full_cached`` lost to fitsio+from_numpy.
+    """
+    _ = handle_cache
     if raw_scale:
         if not mmap and hasattr(cpp, "read_full_unmapped_raw"):
             return cast(Tensor, cpp.read_full_unmapped_raw(path, hdu))
-        elif hasattr(cpp, "read_full_raw"):
+        if hasattr(cpp, "read_full_raw"):
             return cast(Tensor, cpp.read_full_raw(path, hdu, mmap))
-        else:
-            return cast(Tensor, cpp.read_full(path, hdu, mmap))
-    else:
-        if handle_cache and hasattr(cpp, "read_full_cached"):
-            return cast(Tensor, cpp.read_full_cached(path, hdu, mmap))
-        elif not mmap and hasattr(cpp, "read_full_unmapped"):
-            return cast(Tensor, cpp.read_full_unmapped(path, hdu))
-        elif hasattr(cpp, "read_full_nocache"):
-            return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
-        else:
-            return cast(Tensor, cpp.read_full(path, hdu, mmap))
+        return cast(Tensor, cpp.read_full(path, hdu, mmap))
+    return cast(Tensor, cpp.read_full(path, hdu, mmap))
 
 
 def read_image(

@@ -773,7 +773,20 @@ void SubsetReader::init_from_hdu() {
     max_x_ = static_cast<long>(naxes[0]);
     max_y_ = static_cast<long>(naxes[1]);
     const auto scale = file_.get_scale_info_for_hdu(hdu_num_);
-    if (scale.scaled) { dtype_ = torch::kFloat32; datatype_ = TFLOAT; return; }
+    // Match full-image logical dtypes — do not float-promote signed-byte /
+    // unsigned integer conventions (that lost to fitsio int8 cutouts).
+    if (scale.scaled && bitpix == BYTE_IMG && scale.bscale == 1.0 && scale.bzero == -128.0) {
+        dtype_ = torch::kInt8; datatype_ = TSBYTE; return;
+    }
+    if (scale.scaled && bitpix == SHORT_IMG && scale.bscale == 1.0 && scale.bzero == 32768.0) {
+        dtype_ = torch::kUInt16; datatype_ = TUSHORT; return;
+    }
+    if (scale.scaled && bitpix == LONG_IMG && scale.bscale == 1.0 && scale.bzero == 2147483648.0) {
+        dtype_ = torch::kUInt32; datatype_ = TUINT; return;
+    }
+    if (scale.scaled) {
+        dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
+    }
     switch (bitpix) {
         case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      break;
         case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     break;

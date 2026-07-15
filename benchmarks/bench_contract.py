@@ -33,7 +33,10 @@ RESULT_COLUMNS = [
     "skip_reason",
     "comparable",
     "mmap_target",
+    "host",
     "time_s",
+    "peak_rss_mb",
+    "peak_cuda_alloc_mb",
     "throughput",
     "unit",
     "size_mb",
@@ -53,11 +56,14 @@ DEFICIT_COLUMNS = [
     "case_label",
     "operation",
     "mmap_target",
+    "host",
     "torchfits_method",
     "torchfits_time_s",
+    "torchfits_peak_rss_mb",
     "best_library",
     "best_method",
     "best_time_s",
+    "best_peak_rss_mb",
     "lag_ratio",
     "pct_behind",
     "n_points",
@@ -67,10 +73,20 @@ DEFICIT_COLUMNS = [
 LARGE_N_THRESHOLD = 100_000
 SMALL_N_PERCEIVED_LATENCY_S = 5e-4
 SMALL_N_MAX_LAG_RATIO = 10.0
-# Bench matrices (3k+ rows, multi-library order) leave ≤20% noise on Mac MPS
-# and underprovisioned hosts. Algorithmic gaps closed by this campaign were
-# ≥1.2× on quiet focused runs; require 25% lag before counting a deficit.
-DEFICIT_MIN_LAG_RATIO = 1.25
+# Scorecard floors (same-mmap peers only):
+# - images/cubes/spectra/cutouts (domain=fits): must win — any lag counts.
+# - Arrow table interchange (domain=fitstable): allow up to 1.05×.
+# Absolute ε ignores float timer ties only, not percent-level gaps.
+DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
+DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
+DEFICIT_MIN_ABS_DELTA_S = 1e-7
+
+
+def deficit_min_lag_ratio(domain: str) -> float:
+    """Lag floor for counting a deficit; Arrow tables alone get 1.05× slack."""
+    if domain == "fitstable":
+        return DEFICIT_MIN_LAG_RATIO_TABLE
+    return DEFICIT_MIN_LAG_RATIO_IMAGE
 
 
 def make_run_id() -> str:
@@ -241,7 +257,13 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
             continue
 
         lag_ratio = tf_time / best_t if best_t > 0 else None
-        if lag_ratio is None or lag_ratio < DEFICIT_MIN_LAG_RATIO:
+        if lag_ratio is None:
+            continue
+        min_lag = deficit_min_lag_ratio(domain)
+        if lag_ratio < min_lag:
+            continue
+        # Timer ε only — reject microscopic float ties, not percent lags.
+        if (tf_time - best_t) < DEFICIT_MIN_ABS_DELTA_S:
             continue
         deficits.append(
             {
@@ -252,11 +274,14 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
                 "case_label": torch_row.get("case_label"),
                 "operation": torch_row.get("operation"),
                 "mmap_target": torch_row.get("mmap_target"),
+                "host": torch_row.get("host") or best_row.get("host") or "",
                 "torchfits_method": torch_row.get("method"),
                 "torchfits_time_s": tf_time,
+                "torchfits_peak_rss_mb": _to_float(torch_row.get("peak_rss_mb")),
                 "best_library": best_row.get("library"),
                 "best_method": best_row.get("method"),
                 "best_time_s": best_t,
+                "best_peak_rss_mb": _to_float(best_row.get("peak_rss_mb")),
                 "lag_ratio": lag_ratio,
                 "pct_behind": ((lag_ratio - 1.0) * 100.0) if lag_ratio else "",
                 "n_points": _extract_n_points(torch_row),
@@ -422,6 +447,19 @@ def write_summary(
             f.write(f"- torch.get_num_threads(): `{torch.get_num_threads()}`\n")
         except Exception:
             pass
+        rss_vals = [
+            _to_float(r.get("peak_rss_mb"))
+            for r in rows
+            if _to_float(r.get("peak_rss_mb")) is not None
+        ]
+        if rss_vals:
+            rss_vals_f = [float(v) for v in rss_vals if v is not None]
+            rss_vals_f.sort()
+            mid = rss_vals_f[len(rss_vals_f) // 2]
+            f.write(
+                f"- Peak RSS (median across timed rows): `{mid:.1f} MB` "
+                f"(max `{max(rss_vals_f):.1f} MB`)\n"
+            )
         f.write("\n")
 
         f.write("## Domain Coverage\n\n")
@@ -519,21 +557,24 @@ def write_summary(
             for (domain, family), items in sorted(by_domain_family.items()):
                 f.write(f"### {domain.upper()} - {family}\n\n")
                 f.write(
-                    "| Case | Operation | TorchFits (s) | Winner | Winner (s) | Lag (x) | Behind (%) | mmap |\n"
+                    "| Case | Operation | TorchFits (s) | TF RSS (MB) | Winner | Winner (s) | Winner RSS (MB) | Lag (x) | Behind (%) | mmap | host |\n"
                 )
-                f.write("|---|---|---:|---|---:|---:|---:|---|\n")
+                f.write("|---|---|---:|---:|---|---:|---:|---:|---:|---|---|\n")
                 for row in items:
                     tf_time = _fmt_float(row.get("torchfits_time_s"), 6)
+                    tf_rss = _fmt_float(row.get("torchfits_peak_rss_mb"), 1)
                     best_time = _fmt_float(row.get("best_time_s"), 6)
+                    best_rss = _fmt_float(row.get("best_peak_rss_mb"), 1)
                     lag = _fmt_float(row.get("lag_ratio"), 3)
                     pct = _fmt_float(row.get("pct_behind"), 2)
                     mmap = row.get("mmap_target") or "-"
+                    host = row.get("host") or "-"
                     case_label = row.get("case_label") or row.get("case_id")
                     best_library = str(row.get("best_library") or "-")
                     best_method = str(row.get("best_method") or "-")
                     winner = f"{best_library}:{best_method}"
                     f.write(
-                        f"| {case_label} | {row.get('operation')} | {tf_time} | {winner} | {best_time} | {lag} | {pct} | {mmap} |\n"
+                        f"| {case_label} | {row.get('operation')} | {tf_time} | {tf_rss} | {winner} | {best_time} | {best_rss} | {lag} | {pct} | {mmap} | {host} |\n"
                     )
                 f.write("\n")
 

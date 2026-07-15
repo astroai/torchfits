@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import platform
+import re
+import socket
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,10 @@ if str(ROOT) not in sys.path:
 import fitsio  # noqa: E402
 import torchfits  # noqa: E402
 from benchmarks.bench_fits_io import FITSBenchmarkSuite, _strict_patch_astropy  # noqa: E402
+from benchmarks.bench_timing import time_median, time_medians_interleaved  # noqa: E402
 from astropy.io import fits as astropy_fits  # noqa: E402
+
+_BENCH_HOST = socket.gethostname()
 
 
 def default_device() -> str:
@@ -50,17 +54,15 @@ def _sync(device: str) -> None:
         torch.mps.synchronize()
 
 
-def _median_time(fn, warmup: int, iters: int, device: str) -> float | None:
-    for _ in range(warmup):
-        fn()
-    _sync(device)
-    samples: list[float] = []
-    for _ in range(iters):
-        t0 = time.perf_counter()
-        fn()
-        _sync(device)
-        samples.append(time.perf_counter() - t0)
-    return float(np.median(samples)) if samples else None
+def _median_time(
+    fn, warmup: int, iters: int, device: str
+) -> tuple[float | None, float | None, float | None]:
+    median, peak_rss, peak_cuda, err = time_median(
+        fn, runs=iters, warmup=warmup, sync_device=device
+    )
+    if err is not None:
+        return None, None, None
+    return median, peak_rss, peak_cuda
 
 
 def _median_times_interleaved(
@@ -68,44 +70,29 @@ def _median_times_interleaved(
     warmup: int,
     iters: int,
     device: str,
-) -> dict[str, float | None]:
+) -> dict[str, tuple[float | None, float | None, float | None]]:
     """Round-robin GPU timings so the first library is not favored."""
-    alive: list[tuple[str, Any]] = []
+    # Soft-skip methods that fail warmup (shared timer aborts on first failure).
+    alive: dict[str, Any] = {}
     for label, fn in labeled_fns:
         try:
             for _ in range(max(1, warmup)):
                 fn()
-            alive.append((label, fn))
+                _sync(device)
+            alive[label] = fn
         except Exception as exc:
             print(f"[bench-gpu] skip warmup {label}: {exc}", flush=True)
-    _sync(device)
-    samples: dict[str, list[float]] = {label: [] for label, _ in labeled_fns}
-    errors: dict[str, str | None] = {label: None for label, _ in labeled_fns}
-    for label, _fn in labeled_fns:
-        if label not in {a for a, _ in alive}:
-            errors[label] = "warmup_failed"
-    for _ in range(iters):
-        order = alive[:]
-        np.random.default_rng().shuffle(order)
-        for label, fn in order:
-            if errors[label] is not None:
-                continue
-            try:
-                t0 = time.perf_counter()
-                fn()
-                _sync(device)
-                samples[label].append(time.perf_counter() - t0)
-            except Exception as exc:
-                errors[label] = str(exc)
-                print(f"[bench-gpu] skip {label}: {exc}", flush=True)
-    return {
-        label: (
-            None
-            if errors[label] is not None or not samples[label]
-            else float(np.median(samples[label]))
-        )
-        for label, _ in labeled_fns
-    }
+    if not alive:
+        return {label: (None, None, None) for label, _ in labeled_fns}
+    timed = time_medians_interleaved(alive, runs=iters, warmup=0, sync_device=device)
+    out: dict[str, tuple[float | None, float | None, float | None]] = {}
+    for label, _ in labeled_fns:
+        if label not in timed:
+            out[label] = (None, None, None)
+        else:
+            median, peak_rss, peak_cuda, err = timed[label]
+            out[label] = (None, None, None) if err else (median, peak_rss, peak_cuda)
+    return out
 
 
 def run_gpu_transport_rows(
@@ -117,6 +104,7 @@ def run_gpu_transport_rows(
     quick: bool = False,
     use_mmap: bool = True,
     case_filter: str = "",
+    operation_filter: str = "",
 ) -> list[dict[str, Any]]:
     device = device or default_device()
     if device == "cpu":
@@ -126,6 +114,10 @@ def run_gpu_transport_rows(
         return []
     if device == "mps" and not torch.backends.mps.is_available():
         return []
+
+    op_rx = re.compile(operation_filter) if operation_filter else None
+    want_read_full = op_rx is None or op_rx.search("read_full")
+    want_cutout = op_rx is None or op_rx.search("cutout")
 
     data_dir = Path(tempfile.mkdtemp(prefix="torchfits_bench_gpu_"))
     suite = FITSBenchmarkSuite(
@@ -149,8 +141,6 @@ def run_gpu_transport_rows(
                 if k in {"tiny_int16_2d", "mef_small", "compressed_rice_1"}
             }
         if case_filter:
-            import re
-
             rx = re.compile(case_filter)
             files = {k: v for k, v in files.items() if rx.search(k)}
             print(
@@ -165,189 +155,227 @@ def run_gpu_transport_rows(
         transport = "disk\u2192RAM\u2192GPU" if use_mmap else "disk\u2192CPU\u2192GPU"
 
         # 1. Full image reads
-        for name, path in sorted(files.items()):
-            file_type = suite._get_file_type(name)
-            hdu = 1 if file_type in {"compressed", "mef", "multi_mef"} else 0
-            case_id = f"{name}::read_full_gpu"
-            size_mb = path.stat().st_size / (1024 * 1024)
-            print(
-                f"[bench-gpu] case={name} file_type={file_type} runs={iterations}",
-                flush=True,
-            )
-
-            # Methods to benchmark
-            def tf_read(p=path, h=hdu, um=use_mmap):
-                return torchfits.read(
-                    str(p), hdu=h, mmap=um, device=device, scale_on_device=True
+        if want_read_full:
+            for name, path in sorted(files.items()):
+                file_type = suite._get_file_type(name)
+                hdu = 1 if file_type in {"compressed", "mef", "multi_mef"} else 0
+                case_id = f"{name}::read_full_gpu"
+                size_mb = path.stat().st_size / (1024 * 1024)
+                print(
+                    f"[bench-gpu] case={name} file_type={file_type} runs={iterations}",
+                    flush=True,
                 )
 
-            def tf_specialized_read(p=path, h=hdu, um=use_mmap):
-                return torchfits.read_tensor(str(p), hdu=h, mmap=um, device=device)
+                # Methods to benchmark
+                def tf_read(p=path, h=hdu, um=use_mmap):
+                    return torchfits.read(
+                        str(p), hdu=h, mmap=um, device=device, scale_on_device=True
+                    )
 
-            def tf_dtype_fair_read(p=path, h=hdu, um=use_mmap):
-                return torchfits.read_tensor(
-                    str(p), hdu=h, mmap=um, device=device, raw_scale=True
+                def tf_specialized_read(p=path, h=hdu, um=use_mmap):
+                    return torchfits.read_tensor(str(p), hdu=h, mmap=um, device=device)
+
+                def tf_dtype_fair_read(p=path, h=hdu, um=use_mmap):
+                    return torchfits.read_tensor(
+                        str(p), hdu=h, mmap=um, device=device, raw_scale=True
+                    )
+
+                def fitsio_torch_read(p=path, h=hdu):
+                    arr = fitsio.read(str(p), ext=h)
+                    return torch.from_numpy(suite._ensure_native_endian_numpy(arr)).to(
+                        device
+                    )
+
+                def astropy_torch_read(p=path, h=hdu):
+                    return suite._astropy_to_torch(p, h).to(device)
+
+                methods = [
+                    ("torchfits", "torchfits_device", "smart", "smart", tf_read),
+                    (
+                        "fitsio",
+                        "fitsio_torch_device",
+                        "smart",
+                        "smart",
+                        fitsio_torch_read,
+                    ),
+                    (
+                        "astropy",
+                        "astropy_torch_device",
+                        "smart",
+                        "smart",
+                        astropy_torch_read,
+                    ),
+                    (
+                        "torchfits",
+                        "torchfits_specialized_device",
+                        "specialized",
+                        "specialized",
+                        tf_specialized_read,
+                    ),
+                    (
+                        "torchfits",
+                        "torchfits_dtype_fair_device",
+                        "specialized",
+                        "dtype_fair",
+                        tf_dtype_fair_read,
+                    ),
+                ]
+
+                # Interleaved timing — sequential order favored later methods (fitsio)
+                # on MPS microbenches when torchfits always ran first.
+                timed = _median_times_interleaved(
+                    [(method, fn) for _lib, method, _fam, _mode, fn in methods],
+                    warmup,
+                    iterations,
+                    device,
                 )
 
-            def fitsio_torch_read(p=path, h=hdu):
-                arr = fitsio.read(str(p), ext=h)
-                return torch.from_numpy(suite._ensure_native_endian_numpy(arr)).to(
-                    device
-                )
-
-            def astropy_torch_read(p=path, h=hdu):
-                return suite._astropy_to_torch(p, h).to(device)
-
-            methods = [
-                ("torchfits", "torchfits_device", "smart", "smart", tf_read),
-                ("fitsio", "fitsio_torch_device", "smart", "smart", fitsio_torch_read),
-                (
-                    "astropy",
-                    "astropy_torch_device",
-                    "smart",
-                    "smart",
-                    astropy_torch_read,
-                ),
-                (
-                    "torchfits",
-                    "torchfits_specialized_device",
-                    "specialized",
-                    "specialized",
-                    tf_specialized_read,
-                ),
-                (
-                    "torchfits",
-                    "torchfits_dtype_fair_device",
-                    "specialized",
-                    "dtype_fair",
-                    tf_dtype_fair_read,
-                ),
-            ]
-
-            # Interleaved timing — sequential order favored later methods (fitsio)
-            # on MPS microbenches when torchfits always ran first.
-            timed = _median_times_interleaved(
-                [(method, fn) for _lib, method, _fam, _mode, fn in methods],
-                warmup,
-                iterations,
-                device,
-            )
-
-            for library, method, family, mode, _fn in methods:
-                t = timed.get(method)
-                if t is None:
-                    continue
-                rows.append(
-                    {
-                        "run_id": run_id,
-                        "domain": "fits",
-                        "suite": "fits_gpu",
-                        "case_id": case_id,
-                        "case_label": f"{name} [read_full @ {device}]",
-                        "operation": "read_full",
-                        "family": family,
-                        "library": library,
-                        "method": method,
-                        "mode": mode,
-                        "status": "OK",
-                        "skip_reason": "",
-                        "comparable": True,
-                        "mmap_target": mmap_target,
-                        "time_s": t,
-                        "throughput": "",
-                        "unit": "MB/s",
-                        "size_mb": size_mb,
-                        "n_points": "",
-                        "metadata": json.dumps(
-                            {"device": device, "io_transport": transport}
-                        ),
-                    }
-                )
+                for library, method, family, mode, _fn in methods:
+                    t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
+                    if t is None:
+                        continue
+                    comparable = True
+                    skip_reason = ""
+                    if library == "fitsio" and mmap_target == "on":
+                        comparable = False
+                        skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "domain": "fits",
+                            "suite": "fits_gpu",
+                            "case_id": case_id,
+                            "case_label": f"{name} [read_full @ {device}]",
+                            "operation": "read_full",
+                            "family": family,
+                            "library": library,
+                            "method": method,
+                            "mode": mode,
+                            "status": "OK",
+                            "skip_reason": skip_reason,
+                            "comparable": comparable,
+                            "mmap_target": mmap_target,
+                            "host": _BENCH_HOST,
+                            "time_s": t,
+                            "peak_rss_mb": peak_rss,
+                            "peak_cuda_alloc_mb": peak_cuda,
+                            "throughput": "",
+                            "unit": "MB/s",
+                            "size_mb": size_mb,
+                            "n_points": "",
+                            "metadata": json.dumps(
+                                {"device": device, "io_transport": transport}
+                            ),
+                        }
+                    )
 
         # 2. Cutout 100x100 reads
-        targets = [
-            ("multi_mef_10ext", 5, "uncompressed"),
-            ("compressed_rice_1", 1, "compressed"),
-        ]
-        x1, y1, x2, y2 = 100, 100, 200, 200
-        for name, hdu, compression in targets:
-            path = files.get(name)
-            if path is None:
-                continue
-            case_id = f"{name}::cutout_100x100_gpu"
-            size_mb = path.stat().st_size / (1024 * 1024)
-            print(
-                f"[bench-gpu] case={name} cutout=100x100 runs={iterations}", flush=True
-            )
-
-            def tf_cutout(p=path, h=hdu):
-                return torchfits.read_subset(str(p), h, x1, y1, x2, y2).to(device)
-
-            def fitsio_cutout(p=path, h=hdu):
-                with fitsio.FITS(str(p)) as handle:
-                    arr = suite._ensure_native_endian_numpy(handle[h][y1:y2, x1:x2])
-                    return torch.from_numpy(arr).to(device)
-
-            def astropy_cutout(p=path, h=hdu, um=use_mmap):
-                with astropy_fits.open(p, memmap=um) as hdul:
-                    arr = suite._ensure_native_endian_numpy(
-                        np.array(hdul[h].section[y1:y2, x1:x2], copy=True)
-                    )
-                    return torch.from_numpy(arr).to(device)
-
-            methods = [
-                ("torchfits", "torchfits_device", "smart", "smart", tf_cutout),
-                ("fitsio", "fitsio_torch_device", "smart", "smart", fitsio_cutout),
-                ("astropy", "astropy_torch_device", "smart", "smart", astropy_cutout),
-                (
-                    "torchfits",
-                    "torchfits_specialized_device",
-                    "specialized",
-                    "specialized",
-                    tf_cutout,
-                ),
+        if want_cutout:
+            targets = [
+                ("multi_mef_10ext", 5, "uncompressed"),
+                ("compressed_rice_1", 1, "compressed"),
             ]
-
-            for library, method, family, mode, fn in methods:
-                try:
-                    t = _median_time(fn, warmup, iterations, device)
-                except Exception as exc:
-                    print(
-                        f"[bench-gpu] skip cutout {name} {library}: {exc}", flush=True
-                    )
+            x1, y1, x2, y2 = 100, 100, 200, 200
+            for name, hdu, compression in targets:
+                path = files.get(name)
+                if path is None:
                     continue
-                if t is None:
-                    continue
-                rows.append(
-                    {
-                        "run_id": run_id,
-                        "domain": "fits",
-                        "suite": "fits_gpu",
-                        "case_id": case_id,
-                        "case_label": f"{name} [cutout_100x100 @ {device}]",
-                        "operation": "cutout_100x100",
-                        "family": family,
-                        "library": library,
-                        "method": method,
-                        "mode": mode,
-                        "status": "OK",
-                        "skip_reason": "",
-                        "comparable": True,
-                        "mmap_target": mmap_target,
-                        "time_s": t,
-                        "throughput": "",
-                        "unit": "MB/s",
-                        "size_mb": size_mb,
-                        "n_points": "",
-                        "metadata": json.dumps(
-                            {"device": device, "io_transport": transport}
-                        ),
-                    }
+                case_id = f"{name}::cutout_100x100_gpu"
+                size_mb = path.stat().st_size / (1024 * 1024)
+                print(
+                    f"[bench-gpu] case={name} cutout=100x100 runs={iterations}",
+                    flush=True,
                 )
 
+                def tf_cutout(p=path, h=hdu):
+                    # Open once like fitsio.FITS(...); read_subset alone re-opens each call.
+                    with torchfits.open_subset_reader(
+                        str(p), hdu=h, device=device
+                    ) as reader:
+                        return reader.read_subset(x1, y1, x2, y2)
+
+                def fitsio_cutout(p=path, h=hdu):
+                    with fitsio.FITS(str(p)) as handle:
+                        arr = suite._ensure_native_endian_numpy(handle[h][y1:y2, x1:x2])
+                        return torch.from_numpy(arr).to(device)
+
+                def astropy_cutout(p=path, h=hdu, um=use_mmap):
+                    with astropy_fits.open(p, memmap=um) as hdul:
+                        arr = suite._ensure_native_endian_numpy(
+                            np.array(hdul[h].section[y1:y2, x1:x2], copy=True)
+                        )
+                        return torch.from_numpy(arr).to(device)
+
+                methods = [
+                    ("torchfits", "torchfits_device", "smart", "smart", tf_cutout),
+                    ("fitsio", "fitsio_torch_device", "smart", "smart", fitsio_cutout),
+                    (
+                        "astropy",
+                        "astropy_torch_device",
+                        "smart",
+                        "smart",
+                        astropy_cutout,
+                    ),
+                    (
+                        "torchfits",
+                        "torchfits_specialized_device",
+                        "specialized",
+                        "specialized",
+                        tf_cutout,
+                    ),
+                ]
+
+                for library, method, family, mode, fn in methods:
+                    try:
+                        t, peak_rss, peak_cuda = _median_time(
+                            fn, warmup, iterations, device
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[bench-gpu] skip cutout {name} {library}: {exc}",
+                            flush=True,
+                        )
+                        continue
+                    if t is None:
+                        continue
+                    comparable = True
+                    skip_reason = ""
+                    if library == "fitsio" and mmap_target == "on":
+                        comparable = False
+                        skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "domain": "fits",
+                            "suite": "fits_gpu",
+                            "case_id": case_id,
+                            "case_label": f"{name} [cutout_100x100 @ {device}]",
+                            "operation": "cutout_100x100",
+                            "family": family,
+                            "library": library,
+                            "method": method,
+                            "mode": mode,
+                            "status": "OK",
+                            "skip_reason": skip_reason,
+                            "comparable": comparable,
+                            "mmap_target": mmap_target,
+                            "host": _BENCH_HOST,
+                            "time_s": t,
+                            "peak_rss_mb": peak_rss,
+                            "peak_cuda_alloc_mb": peak_cuda,
+                            "throughput": "",
+                            "unit": "MB/s",
+                            "size_mb": size_mb,
+                            "n_points": "",
+                            "metadata": json.dumps(
+                                {"device": device, "io_transport": transport}
+                            ),
+                        }
+                    )
+
         # 3. Repeated Cutouts 50x 100x100 reads on GPU
-        path = files.get("medium_float32_2d")
-        if path is None:
+        path = files.get("medium_float32_2d") if want_cutout else None
+        if path is None and want_cutout:
             for k in sorted(files.keys()):
                 if "2d" in k:
                     path = files[k]
@@ -388,14 +416,6 @@ def run_gpu_transport_rows(
                         results.append(reader.read_subset(x1, y1, x2, y2))
                     return results
 
-            def tf_repeated_cutout_naive(p=path):
-                results = []
-                for x1, y1, x2, y2 in cutouts_coords:
-                    results.append(
-                        torchfits.read_subset(str(p), hdu, x1, y1, x2, y2).to(device)
-                    )
-                return results
-
             def fitsio_repeated_cutout(p=path):
                 with fitsio.FITS(str(p)) as handle:
                     results = []
@@ -422,7 +442,8 @@ def run_gpu_transport_rows(
                     "torchfits_device",
                     "smart",
                     "smart",
-                    tf_repeated_cutout_naive,
+                    # Match fitsio's open-once FITS handle: persistent subset reader.
+                    tf_repeated_cutout_persistent,
                 ),
                 (
                     "fitsio",
@@ -449,7 +470,9 @@ def run_gpu_transport_rows(
 
             for library, method, family, mode, fn in methods:
                 try:
-                    t = _median_time(fn, warmup, iterations, device)
+                    t, peak_rss, peak_cuda = _median_time(
+                        fn, warmup, iterations, device
+                    )
                 except Exception as exc:
                     print(
                         f"[bench-gpu] skip repeated cutout {library}: {exc}", flush=True
@@ -457,6 +480,11 @@ def run_gpu_transport_rows(
                     continue
                 if t is None:
                     continue
+                comparable = True
+                skip_reason = ""
+                if library == "fitsio" and mmap_target == "on":
+                    comparable = False
+                    skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
                 rows.append(
                     {
                         "run_id": run_id,
@@ -470,10 +498,13 @@ def run_gpu_transport_rows(
                         "method": method,
                         "mode": mode,
                         "status": "OK",
-                        "skip_reason": "",
-                        "comparable": True,
+                        "skip_reason": skip_reason,
+                        "comparable": comparable,
                         "mmap_target": mmap_target,
+                        "host": _BENCH_HOST,
                         "time_s": t,
+                        "peak_rss_mb": peak_rss,
+                        "peak_cuda_alloc_mb": peak_cuda,
                         "throughput": "",
                         "unit": "MB/s",
                         "size_mb": size_mb,
@@ -484,10 +515,9 @@ def run_gpu_transport_rows(
                     }
                 )
 
+        return rows
     finally:
         suite.cleanup()
-
-    return rows
 
 
 def main() -> int:

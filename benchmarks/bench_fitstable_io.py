@@ -9,17 +9,16 @@ if str(root) not in sys.path:
 from benchmarks.config import DEFAULT_OUTPUT_DIR  # noqa: E402
 
 import argparse
-import gc
 import gzip
 import os
 import re
 import shutil
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import socket
 import tempfile
 import time
 from typing import Any
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import fitsio
 import numpy as np
 import torch
@@ -33,6 +32,9 @@ from benchmarks.bench_contract import (
     write_csv,
     write_json,
 )  # noqa: E402
+from benchmarks.bench_timing import time_median  # noqa: E402
+
+_BENCH_HOST = socket.gethostname()
 
 
 def _repeats_for_rows(nrows: int) -> int:
@@ -44,24 +46,14 @@ def _repeats_for_rows(nrows: int) -> int:
 
 
 def _time_median(fn, *, runs: int, warmup: int) -> tuple[float | None, str | None]:
-    for _ in range(max(0, warmup)):
-        try:
-            _ = fn()
-        except Exception as exc:
-            return None, str(exc)
+    median, _rss, _cuda, err = time_median(fn, runs=runs, warmup=warmup)
+    return median, err
 
-    times: list[float] = []
-    for _ in range(max(1, runs)):
-        gc.collect()
-        t0 = time.perf_counter()
-        try:
-            _ = fn()
-        except Exception as exc:
-            return None, str(exc)
-        times.append(time.perf_counter() - t0)
-    if not times:
-        return None, "no_samples"
-    return float(np.median(times)), None
+
+def _time_median_mem(
+    fn, *, runs: int, warmup: int
+) -> tuple[float | None, float | None, float | None, str | None]:
+    return time_median(fn, runs=runs, warmup=warmup)
 
 
 def _dtype_values(dtype: str, nrows: int, rng: np.random.Generator):
@@ -227,6 +219,7 @@ def _bench_case(
     use_mmap: bool,
     policy_profile: str,
     warmup: int,
+    operation_filter: str = "",
 ) -> list[dict[str, Any]]:
     path: Path = case["path"]
     nrows: int = int(case["nrows"])
@@ -246,6 +239,7 @@ def _bench_case(
     target_memmap = use_mmap
 
     runs = _repeats_for_rows(nrows)
+    op_rx = re.compile(operation_filter) if operation_filter else None
 
     if unsupported:
         rows: list[dict[str, Any]] = []
@@ -256,6 +250,8 @@ def _bench_case(
             "predicate_filter",
             "scan_count",
         ]
+        if op_rx is not None:
+            operations = [op for op in operations if op_rx.search(op)]
         method_specs = [
             ("torchfits", "torchfits", "smart", "smart"),
             ("astropy_torch", "astropy", "smart", "smart"),
@@ -408,6 +404,8 @@ def _bench_case(
     rows: list[dict[str, Any]] = []
 
     for op_name, method_map in operations.items():
+        if op_rx is not None and not op_rx.search(op_name):
+            continue
         for method, fn in method_map.items():
             # fitsio runs in both mmap modes — its internal I/O strategy
             # is appropriate for both buffered and non-buffered comparisons.
@@ -415,7 +413,9 @@ def _bench_case(
                 # Run fitsio normally — fair comparison against non-mmap torchfits.
                 pass
 
-            t_val, err = _time_median(fn, runs=runs, warmup=warmup)
+            t_val, peak_rss, peak_cuda, err = _time_median_mem(
+                fn, runs=runs, warmup=warmup
+            )
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
@@ -463,6 +463,8 @@ def _bench_case(
                     comparable=comparable,
                     skip_reason=skip_reason,
                     time_s=t_val,
+                    peak_rss_mb=peak_rss,
+                    peak_cuda_alloc_mb=peak_cuda,
                     throughput=throughput,
                     unit="rows/s",
                     n_points=nrows,
@@ -523,19 +525,15 @@ def _fitsio_scan_count(path: Path, *, col: str):
 
 
 def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
-    if not has_pyarrow:
-        raise RuntimeError("pyarrow not available for scanner filter")
-    import torchfits.table
-
-    # Use the high-level read API which chooses the best path (C++ pushdown or local)
-    res = torchfits.table.read(
-        str(path),
-        hdu=1,
-        columns=[col],
-        where=f"{col} > 0",
-        mmap=mmap,
-    )
-    return len(res)
+    # Smart family scores the Tensor contract against fitsio_torch peers —
+    # not Arrow interchange latency vs torch.from_numpy().
+    _ = has_pyarrow
+    data = torchfits.read_table(str(path), hdu=1, columns=[col], mmap=mmap)
+    values = data[col]
+    if isinstance(values, torch.Tensor):
+        return values[values > 0]
+    arr = np.asarray(values)
+    return arr[arr > 0]
 
 
 def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
@@ -581,6 +579,8 @@ def _make_row(
     throughput: float | None,
     unit: str,
     n_points: int,
+    peak_rss_mb: float | None = None,
+    peak_cuda_alloc_mb: float | None = None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -597,7 +597,10 @@ def _make_row(
         "skip_reason": skip_reason,
         "comparable": comparable,
         "mmap_target": mmap_target,
+        "host": _BENCH_HOST,
         "time_s": time_s,
+        "peak_rss_mb": peak_rss_mb,
+        "peak_cuda_alloc_mb": peak_cuda_alloc_mb,
         "throughput": throughput,
         "unit": unit,
         "size_mb": case["size_mb"],
@@ -779,6 +782,7 @@ def run_fitstable_domain(
     max_cases: int | None = None,
     keep_temp: bool = False,
     case_filter: str = "",
+    operation_filter: str = "",
 ) -> list[dict[str, Any]]:
     _ = profile
     temp_root = Path(tempfile.mkdtemp(prefix="torchfits_fitstable_"))
@@ -813,6 +817,7 @@ def run_fitstable_domain(
                     use_mmap=use_mmap,
                     policy_profile=profile,
                     warmup=warmup,
+                    operation_filter=operation_filter,
                 )
             )
 
@@ -839,6 +844,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--filter", type=str, default="", help="Regex case filter")
+    parser.add_argument(
+        "--operation", type=str, default="", help="Regex operation filter"
+    )
     return parser.parse_args()
 
 
@@ -861,6 +869,7 @@ def main() -> int:
         max_cases=(args.max_cases if args.max_cases > 0 else None),
         keep_temp=args.keep_temp,
         case_filter=args.filter,
+        operation_filter=args.operation,
     )
 
     out_csv = run_dir / "fitstable_results.csv"

@@ -53,6 +53,7 @@ from benchmarks.bench_contract import (  # noqa: E402
 from benchmarks.bench_fits_io import run_fits_domain  # noqa: E402
 from benchmarks.bench_fitstable_io import run_fitstable_domain  # noqa: E402
 from benchmarks.config import DEFAULT_OUTPUT_DIR  # noqa: E402
+from benchmarks.suites import list_suite_names, resolve_suite  # noqa: E402
 
 
 QUICK_CASES_PER_DOMAIN = 3
@@ -75,6 +76,16 @@ def _parse_args() -> argparse.Namespace:
         help="Alias for --scope fitstable",
     )
     parser.add_argument(
+        "--suite",
+        type=str,
+        default="",
+        help=(
+            "Named suite from benchmarks.suites (sets scope/filter/operation/"
+            "gpu/mmap/profile unless overridden). Known: "
+            + ", ".join(list_suite_names())
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -91,6 +102,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--filter", type=str, default="", help="Regex case filter")
     parser.add_argument(
+        "--operation",
+        type=str,
+        default="",
+        help="Regex operation filter (skips unrelated ops on matched cases)",
+    )
+    parser.add_argument(
         "--quick", action="store_true", help="Reduce workload for smoke checks"
     )
     parser.add_argument(
@@ -102,6 +119,39 @@ def _parse_args() -> argparse.Namespace:
         help="Skip GPU transport rows even when CUDA/MPS is available",
     )
     return parser.parse_args()
+
+
+def _apply_suite(args: argparse.Namespace) -> None:
+    """Mutate args from a named suite; explicit CLI flags still win when set."""
+    if not args.suite:
+        return
+    suite = resolve_suite(args.suite)
+    # Scope aliases (--fits-only) take precedence over suite.
+    if not args.fits_only and not args.fitstable_only and args.scope == "all":
+        args.scope = suite.scope
+    if not args.filter and suite.case_filter:
+        args.filter = suite.case_filter
+    if not args.operation and suite.operation:
+        args.operation = suite.operation
+    if suite.no_gpu:
+        args.no_gpu = True
+    setattr(args, "gpu_only", bool(suite.gpu_only))
+    if "--profile" not in sys.argv:
+        args.profile = suite.profile
+    # mmap: suite matrix/on/off unless user set an explicit mmap flag.
+    if not args.mmap_matrix and not args.mmap and not args.no_mmap:
+        if suite.mmap == "matrix":
+            args.mmap_matrix = True
+        elif suite.mmap == "on":
+            args.mmap = True
+        elif suite.mmap == "off":
+            args.no_mmap = True
+    print(
+        f"[bench-all] suite={suite.name} scope={args.scope} "
+        f"filter={args.filter!r} operation={args.operation!r} "
+        f"no_gpu={args.no_gpu} gpu_only={getattr(args, 'gpu_only', False)}",
+        flush=True,
+    )
 
 
 def _resolve_scope(args: argparse.Namespace) -> str:
@@ -186,6 +236,8 @@ def _run_fitstable_isolated(
         command.append("--keep-temp")
     if getattr(args, "filter", ""):
         command.extend(["--filter", args.filter])
+    if getattr(args, "operation", ""):
+        command.extend(["--operation", args.operation])
 
     try:
         subprocess.run(command, cwd=ROOT, check=True)
@@ -206,6 +258,9 @@ def _clear_bench_caches() -> None:
 
 def main() -> int:
     args = _parse_args()
+    if not hasattr(args, "gpu_only"):
+        args.gpu_only = False
+    _apply_suite(args)
     scope = _resolve_scope(args)
     scopes = _scopes_from_scope(scope)
     mmap_settings = _resolve_mmap_settings(args)
@@ -221,13 +276,14 @@ def main() -> int:
     print(f"mmap={' then '.join(mmap_labels)}", flush=True)
 
     rows: list[dict[str, Any]] = []
+    gpu_only = bool(getattr(args, "gpu_only", False))
 
     for use_mmap in mmap_settings:
         mmap_label = "on" if use_mmap else "off"
         print(f"[bench-all] mmap pass: {mmap_label}", flush=True)
         _clear_bench_caches()
 
-        if "fits" in scopes:
+        if "fits" in scopes and not gpu_only:
             try:
                 case_filter = args.filter
                 if args.quick and not case_filter:
@@ -239,6 +295,7 @@ def main() -> int:
                         profile=args.profile,
                         use_mmap=use_mmap,
                         case_filter=case_filter,
+                        operation_filter=args.operation,
                         header_runs=3 if args.quick else 7,
                         header_warmup=1 if args.quick else 2,
                         keep_temp=args.keep_temp,
@@ -251,7 +308,7 @@ def main() -> int:
                     _domain_failure_row(run_id=run_id, domain="fits", error=err)
                 )
 
-        if "fitstable" in scopes:
+        if "fitstable" in scopes and not gpu_only:
             try:
                 if "fits" in scopes:
                     rows.extend(
@@ -274,6 +331,7 @@ def main() -> int:
                             max_cases=QUICK_CASES_PER_DOMAIN if args.quick else None,
                             keep_temp=args.keep_temp,
                             case_filter=args.filter,
+                            operation_filter=args.operation,
                         )
                     )
             except Exception as exc:
@@ -303,6 +361,7 @@ def main() -> int:
                 quick=args.quick,
                 use_mmap=use_mmap,
                 case_filter=args.filter,
+                operation_filter=args.operation,
             )
             if gpu_rows:
                 rows.extend(gpu_rows)

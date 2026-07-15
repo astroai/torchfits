@@ -9,15 +9,14 @@ if str(root) not in sys.path:
 from benchmarks.config import DEFAULT_OUTPUT_DIR  # noqa: E402
 
 import argparse
-import gc
 import os
 import re
+import socket
 import time
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from contextlib import contextmanager
 from typing import Any
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import fitsio
 import numpy as np
 import torch
@@ -31,7 +30,12 @@ from benchmarks.bench_contract import (
     write_csv,
     write_json,
 )  # noqa: E402
+from benchmarks.bench_timing import (  # noqa: E402
+    time_median,
+    time_medians_interleaved,
+)
 
+_BENCH_HOST = socket.gethostname()
 
 SMART_METHODS = [
     ("torchfits", "torchfits", "torchfits"),
@@ -282,15 +286,21 @@ class FITSBenchmarkSuite:
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
             if file_type == "compressed":
-                timed = _time_medians_interleaved(methods, runs=runs, warmup=warmup)
-                for method_name, (median_s, _err) in timed.items():
+                timed = time_medians_interleaved(methods, runs=runs, warmup=warmup)
+                for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                     row[f"{method_name}_median"] = median_s
                     row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+                    row[f"{method_name}_peak_rss_mb"] = peak_rss
+                    row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
             else:
                 for method_name, fn in methods.items():
-                    median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
+                    median_s, peak_rss, peak_cuda, _err = time_median(
+                        fn, runs=runs, warmup=warmup
+                    )
                     row[f"{method_name}_median"] = median_s
                     row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+                    row[f"{method_name}_peak_rss_mb"] = peak_rss
+                    row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
             rows.append(row)
 
         rows.extend(
@@ -344,15 +354,15 @@ class FITSBenchmarkSuite:
                 with fitsio.FITS(str(p)) as handle:
                     return self._ensure_native_endian_numpy(handle[h][y1:y2, x1:x2])
 
+            def tf_cutout(p=path, h=hdu):
+                with torchfits.open_subset_reader(str(p), hdu=h) as reader:
+                    return reader.read_subset(x1, y1, x2, y2)
+
             methods = {
-                "torchfits": lambda p=path, h=hdu: torchfits.read_subset(
-                    str(p), h, x1, y1, x2, y2
-                ),
+                "torchfits": tf_cutout,
                 "astropy_torch": lambda: torch.from_numpy(astropy_cutout()),
                 "fitsio_torch": lambda: torch.from_numpy(fitsio_cutout()),
-                "torchfits_specialized": lambda p=path, h=hdu: torchfits.read_subset(
-                    str(p), h, x1, y1, x2, y2
-                ),
+                "torchfits_specialized": tf_cutout,
                 "astropy": astropy_cutout,
                 "fitsio": fitsio_cutout,
             }
@@ -366,9 +376,13 @@ class FITSBenchmarkSuite:
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
             for method_name, fn in methods.items():
-                median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
+                median_s, peak_rss, peak_cuda, _err = time_median(
+                    fn, runs=runs, warmup=warmup
+                )
                 row[f"{method_name}_median"] = median_s
                 row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+                row[f"{method_name}_peak_rss_mb"] = peak_rss
+                row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
             rows.append(row)
         return rows
 
@@ -439,14 +453,9 @@ class FITSBenchmarkSuite:
                     results.append(reader.read_subset(x1, y1, x2, y2))
                 return results
 
-        def tf_repeated_cutout_naive():
-            results = []
-            for x1, y1, x2, y2 in cutouts_coords:
-                results.append(torchfits.read_subset(str(path), hdu, x1, y1, x2, y2))
-            return results
-
         methods = {
-            "torchfits": tf_repeated_cutout_naive,
+            # Match fitsio's open-once FITS handle: persistent subset reader.
+            "torchfits": tf_repeated_cutout_persistent,
             "astropy_torch": lambda: torch.from_numpy(
                 np.array(astropy_repeated_cutout())
             ),
@@ -468,9 +477,13 @@ class FITSBenchmarkSuite:
             "size_mb": path.stat().st_size / (1024.0 * 1024.0),
         }
         for method_name, fn in methods.items():
-            median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
+            median_s, peak_rss, peak_cuda, _err = time_median(
+                fn, runs=runs, warmup=warmup
+            )
             row[f"{method_name}_median"] = median_s
             row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+            row[f"{method_name}_peak_rss_mb"] = peak_rss
+            row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
         return [row]
 
     def _benchmark_random_extensions(
@@ -529,9 +542,13 @@ class FITSBenchmarkSuite:
             "size_mb": path.stat().st_size / (1024.0 * 1024.0),
         }
         for method_name, fn in methods.items():
-            median_s, _err = _time_median(fn, runs=runs, warmup=warmup)
+            median_s, peak_rss, peak_cuda, _err = time_median(
+                fn, runs=runs, warmup=warmup
+            )
             row[f"{method_name}_median"] = median_s
             row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
+            row[f"{method_name}_peak_rss_mb"] = peak_rss
+            row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
         return row
 
 
@@ -539,67 +556,6 @@ def _hdu_for_file_type(file_type: str) -> int:
     if file_type in {"compressed", "mef", "multi_mef"}:
         return 1
     return 0
-
-
-def _time_median(fn, *, runs: int, warmup: int) -> tuple[float | None, str | None]:
-    for _ in range(max(0, warmup)):
-        try:
-            _ = fn()
-        except Exception as exc:
-            return None, str(exc)
-
-    times: list[float] = []
-    for _ in range(max(1, runs)):
-        gc.collect()
-        t0 = time.perf_counter()
-        try:
-            _ = fn()
-        except Exception as exc:
-            return None, str(exc)
-        times.append(time.perf_counter() - t0)
-    if not times:
-        return None, "no_samples"
-    return float(np.median(times)), None
-
-
-def _time_medians_interleaved(
-    methods: dict[str, Any],
-    *,
-    runs: int,
-    warmup: int,
-) -> dict[str, tuple[float | None, str | None]]:
-    """Round-robin timing so codecs/thermal state don't favor the first method."""
-    names = list(methods.keys())
-    for _ in range(max(0, warmup)):
-        for name in names:
-            try:
-                methods[name]()
-            except Exception as exc:
-                return {n: (None, str(exc) if n == name else None) for n in names}
-
-    samples: dict[str, list[float]] = {name: [] for name in names}
-    errors: dict[str, str | None] = {name: None for name in names}
-    for _ in range(max(1, runs)):
-        gc.collect()
-        order = names[:]
-        np.random.default_rng().shuffle(order)
-        for name in order:
-            if errors[name] is not None:
-                continue
-            try:
-                t0 = time.perf_counter()
-                methods[name]()
-                samples[name].append(time.perf_counter() - t0)
-            except Exception as exc:
-                errors[name] = str(exc)
-
-    out: dict[str, tuple[float | None, str | None]] = {}
-    for name in names:
-        if errors[name] is not None or not samples[name]:
-            out[name] = (None, errors[name] or "no_samples")
-        else:
-            out[name] = (float(np.median(samples[name])), None)
-    return out
 
 
 def _strict_patch_astropy(suite: FITSBenchmarkSuite) -> None:
@@ -790,6 +746,11 @@ def _normalize_legacy_rows(
                     )
                     t_val = None
                     tp_val = None
+                elif library == "fitsio" and mmap_target == "on":
+                    # fitsio has no mmap toggle — ranking it under mmap-on
+                    # compares buffered CFITSIO to torchfits honoring mmap=True.
+                    comparable = False
+                    skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
 
                 row = {
                     "run_id": run_id,
@@ -806,7 +767,10 @@ def _normalize_legacy_rows(
                     "skip_reason": skip_reason,
                     "comparable": comparable,
                     "mmap_target": mmap_target,
+                    "host": _BENCH_HOST,
                     "time_s": t_val,
+                    "peak_rss_mb": raw.get(f"{method_key}_peak_rss_mb"),
+                    "peak_cuda_alloc_mb": raw.get(f"{method_key}_peak_cuda_alloc_mb"),
                     "throughput": tp_val,
                     "unit": "MB/s",
                     "size_mb": raw.get("size_mb"),
@@ -855,7 +819,7 @@ def _benchmark_headers(
         ]
 
         for library, method_label, fn in methods:
-            t_val, err = _time_median(fn, runs=runs, warmup=warmup)
+            t_val, peak_rss, peak_cuda, err = time_median(fn, runs=runs, warmup=warmup)
             status = "OK" if t_val is not None else "FAILED"
             comparable = status == "OK"
             skip_reason = ""
@@ -881,7 +845,10 @@ def _benchmark_headers(
                     "skip_reason": skip_reason,
                     "comparable": comparable,
                     "mmap_target": mmap_target,
+                    "host": _BENCH_HOST,
                     "time_s": t_val,
+                    "peak_rss_mb": peak_rss,
+                    "peak_cuda_alloc_mb": peak_cuda,
                     "throughput": "",
                     "unit": "ops/s",
                     "size_mb": path.stat().st_size / (1024.0 * 1024.0),
@@ -905,6 +872,7 @@ def run_fits_domain(
     profile: str = "user",
     use_mmap: bool = True,
     case_filter: str = "",
+    operation_filter: str = "",
     header_runs: int = 7,
     header_warmup: int = 2,
     keep_temp: bool = False,
@@ -912,6 +880,7 @@ def run_fits_domain(
     mmap_target = "on" if use_mmap else "off"
     raw_dir = output_dir / "_raw" / "fits"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    op_rx = re.compile(operation_filter) if operation_filter else None
 
     suite = FITSBenchmarkSuite(
         output_dir=raw_dir,
@@ -928,12 +897,21 @@ def run_fits_domain(
             files = {k: v for k, v in files.items() if rx.search(k)}
 
         print(
-            f"[fits] cases={len(files)} mmap={mmap_target} profile={profile}",
+            f"[fits] cases={len(files)} mmap={mmap_target} profile={profile}"
+            + (f" op_filter={operation_filter!r}" if operation_filter else ""),
             flush=True,
         )
 
         raw_rows = suite.run_exhaustive_benchmarks(files)
-        if not case_filter and len(raw_rows) != suite.EXPECTED_WORKFLOW_COUNT:
+        if op_rx is not None:
+            raw_rows = [
+                r for r in raw_rows if op_rx.search(str(r.get("operation", "")))
+            ]
+        if (
+            not case_filter
+            and not operation_filter
+            and len(raw_rows) != suite.EXPECTED_WORKFLOW_COUNT
+        ):
             raise RuntimeError(
                 "FITS benchmark workflow contract changed: "
                 f"expected {suite.EXPECTED_WORKFLOW_COUNT} workflows, "
@@ -949,16 +927,17 @@ def run_fits_domain(
             files=files,
             astropy_fallback_paths=astropy_fallback_paths,
         )
-        rows.extend(
-            _benchmark_headers(
-                run_id=run_id,
-                files=files,
-                suite=suite,
-                mmap_target=mmap_target,
-                runs=header_runs,
-                warmup=header_warmup,
+        if op_rx is None or op_rx.search("header_read"):
+            rows.extend(
+                _benchmark_headers(
+                    run_id=run_id,
+                    files=files,
+                    suite=suite,
+                    mmap_target=mmap_target,
+                    runs=header_runs,
+                    warmup=header_warmup,
+                )
             )
-        )
 
         annotate_rankings(rows)
         return rows
@@ -982,6 +961,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mmap", action="store_true")
     parser.add_argument("--no-mmap", action="store_true")
     parser.add_argument("--filter", type=str, default="")
+    parser.add_argument(
+        "--operation", type=str, default="", help="Regex operation filter"
+    )
     parser.add_argument("--header-runs", type=int, default=7)
     parser.add_argument("--header-warmup", type=int, default=2)
     parser.add_argument("--keep-temp", action="store_true")
@@ -1003,6 +985,7 @@ def main() -> int:
         profile=args.profile,
         use_mmap=use_mmap,
         case_filter=args.filter,
+        operation_filter=args.operation,
         header_runs=args.header_runs,
         header_warmup=args.header_warmup,
         keep_temp=args.keep_temp,
