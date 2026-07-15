@@ -95,6 +95,37 @@ def _median_times_interleaved(
     return out
 
 
+def _median_times_peer_groups(
+    methods: list[tuple[str, str, str, str, Any]],
+    warmup: int,
+    iters: int,
+    device: str,
+) -> dict[str, tuple[float | None, float | None, float | None]]:
+    """Interleave CFITSIO peers per family; time astropy alone.
+
+    Mixing astropy CompImage (~10×) into the same round-robin with fitsio/torchfits
+    flips CFITSIO rankings by 1–20% on MPS.
+    """
+    timed: dict[str, tuple[float | None, float | None, float | None]] = {}
+    smart_fns = [
+        (method, fn)
+        for _lib, method, fam, _mode, fn in methods
+        if fam == "smart" and not str(method).startswith("astropy")
+    ]
+    specialized_fns = [
+        (method, fn) for _lib, method, fam, _mode, fn in methods if fam == "specialized"
+    ]
+    astropy_fns = [
+        (method, fn)
+        for _lib, method, _fam, _mode, fn in methods
+        if str(method).startswith("astropy")
+    ]
+    for group in (smart_fns, specialized_fns, astropy_fns):
+        if group:
+            timed.update(_median_times_interleaved(group, warmup, iters, device))
+    return timed
+
+
 def run_gpu_transport_rows(
     *,
     run_id: str,
@@ -237,14 +268,7 @@ def run_gpu_transport_rows(
                     ),
                 ]
 
-                # Interleaved timing — sequential order favored later methods (fitsio)
-                # on MPS microbenches when torchfits always ran first.
-                timed = _median_times_interleaved(
-                    [(method, fn) for _lib, method, _fam, _mode, fn in methods],
-                    warmup,
-                    iterations,
-                    device,
-                )
+                timed = _median_times_peer_groups(methods, warmup, iterations, device)
 
                 for library, method, family, mode, _fn in methods:
                     t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
@@ -253,8 +277,10 @@ def run_gpu_transport_rows(
                     comparable = True
                     skip_reason = ""
                     if library == "fitsio" and mmap_target == "on":
-                        comparable = False
-                        skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+                        # Compressed tile decode ignores mmap; fitsio stays comparable.
+                        if file_type != "compressed":
+                            comparable = False
+                            skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
                     rows.append(
                         {
                             "run_id": run_id,
@@ -341,12 +367,7 @@ def run_gpu_transport_rows(
                     ),
                 ]
 
-                timed = _median_times_interleaved(
-                    [(method, fn) for _lib, method, _fam, _mode, fn in methods],
-                    warmup,
-                    iterations,
-                    device,
-                )
+                timed = _median_times_peer_groups(methods, warmup, iterations, device)
                 for library, method, family, mode, _fn in methods:
                     t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                     if t is None:
@@ -354,8 +375,10 @@ def run_gpu_transport_rows(
                     comparable = True
                     skip_reason = ""
                     if library == "fitsio" and mmap_target == "on":
-                        comparable = False
-                        skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+                        # Compressed cutouts ignore mmap; keep fitsio comparable.
+                        if compression in {None, "", "none", "uncompressed"}:
+                            comparable = False
+                            skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
                     rows.append(
                         {
                             "run_id": run_id,
@@ -481,12 +504,7 @@ def run_gpu_transport_rows(
                 ),
             ]
 
-            timed = _median_times_interleaved(
-                [(method, fn) for _lib, method, _fam, _mode, fn in methods],
-                warmup,
-                iterations,
-                device,
-            )
+            timed = _median_times_peer_groups(methods, warmup, iterations, device)
             for library, method, family, mode, _fn in methods:
                 t, peak_rss, peak_cuda = timed.get(method, (None, None, None))
                 if t is None:

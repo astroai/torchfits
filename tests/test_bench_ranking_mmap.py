@@ -46,7 +46,7 @@ def test_mmap_modes_rank_independently() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=7.26e-5,
+            time_s=7.26e-3,
         ),
         _row(
             case_id="tiny_int8_1d::read_full_gpu",
@@ -54,7 +54,7 @@ def test_mmap_modes_rank_independently() -> None:
             library="fitsio",
             method="fitsio_torch",
             mmap_target="off",
-            time_s=7.40e-5,
+            time_s=7.40e-3,
         ),
         # Faster fitsio on mmap-on must not demote mmap-off torchfits.
         _row(
@@ -63,7 +63,7 @@ def test_mmap_modes_rank_independently() -> None:
             library="fitsio",
             method="fitsio_torch",
             mmap_target="on",
-            time_s=7.20e-5,
+            time_s=7.20e-3,
         ),
         _row(
             case_id="tiny_int8_1d::read_full_gpu",
@@ -71,7 +71,7 @@ def test_mmap_modes_rank_independently() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="on",
-            time_s=8.33e-5,
+            time_s=9.33e-3,
         ),
     ]
     annotate_rankings(rows)
@@ -99,7 +99,7 @@ def test_image_deficits_count_any_lag() -> None:
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=1.01e-3,
+            time_s=2.20e-3,
         ),
         _row(
             case_id="noise::read_full",
@@ -114,6 +114,30 @@ def test_image_deficits_count_any_lag() -> None:
     deficits = compute_deficits(rows, run_id="test")
     assert len(deficits) == 1
     assert deficits[0]["domain"] == "fits"
+
+
+def test_sub_ms_image_jitter_is_not_a_deficit() -> None:
+    """Adaptive timer ε absorbs sub-0.2% wall-clock jitter on long decompressions."""
+    rows = [
+        _row(
+            case_id="hcomp::read_full",
+            family="smart",
+            library="torchfits",
+            method="torchfits",
+            mmap_target="off",
+            time_s=60.05e-3,
+        ),
+        _row(
+            case_id="hcomp::read_full",
+            family="smart",
+            library="fitsio",
+            method="fitsio_torch",
+            mmap_target="off",
+            time_s=60.0e-3,
+        ),
+    ]
+    annotate_rankings(rows)
+    assert compute_deficits(rows, run_id="test") == []
 
 
 def test_table_arrow_allows_1_05() -> None:

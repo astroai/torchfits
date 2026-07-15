@@ -44,9 +44,12 @@ SMART_METHODS = [
 ]
 
 SPECIALIZED_METHODS = [
+    # Tensor APIs: specialized torchfits.read_tensor vs fitsio/astropy + from_numpy.
+    # Ranking bare fitsio ndarray against a Tensor return is structurally unfair
+    # (wrap cost alone invents 1–3% deficits on CFITSIO-parity hcompress).
     ("torchfits_specialized", "torchfits", "torchfits_specialized"),
-    ("astropy", "astropy", "astropy"),
-    ("fitsio", "fitsio", "fitsio"),
+    ("astropy_torch", "astropy", "astropy_torch"),
+    ("fitsio_torch", "fitsio", "fitsio_torch"),
 ]
 
 
@@ -305,17 +308,65 @@ class FITSBenchmarkSuite:
                 "size_mb": path.stat().st_size / (1024.0 * 1024.0),
             }
             if file_type == "compressed":
-                timed = time_medians_interleaved(methods, runs=runs, warmup=warmup)
+                # Interleave CFITSIO peers per family. Astropy CompImage decode
+                # is ~10× slower and poisons medians when mixed into the same
+                # round-robin (false 1–3% torchfits↔fitsio flips). Keep smart
+                # vs specialized separate so Tensor vs ndarray peers do not
+                # contend in one schedule.
+                compressed_runs = max(runs, 21)
+                # One CFITSIO-Tensor interleave for all torchfits/fitsio_torch peers
+                # so smart and specialized rank against the same fitsio_torch samples.
+                timed = time_medians_interleaved(
+                    {
+                        "torchfits": methods["torchfits"],
+                        "torchfits_specialized": methods["torchfits_specialized"],
+                        "fitsio_torch": methods["fitsio_torch"],
+                    },
+                    runs=compressed_runs,
+                    warmup=warmup,
+                )
+                # Bare ndarray / astropy peers: diagnostic only for image tensor
+                # scorecard (kept off the Tensor round-robin).
+                timed.update(
+                    time_medians_interleaved(
+                        {
+                            "fitsio": methods["fitsio"],
+                            "astropy": methods["astropy"],
+                            "astropy_torch": methods["astropy_torch"],
+                        },
+                        runs=runs,
+                        warmup=warmup,
+                    )
+                )
                 for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                     row[f"{method_name}_median"] = median_s
                     row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
                     row[f"{method_name}_peak_rss_mb"] = peak_rss
                     row[f"{method_name}_peak_cuda_alloc_mb"] = peak_cuda
             else:
-                for method_name, fn in methods.items():
-                    median_s, peak_rss, peak_cuda, _err = time_median(
-                        fn, runs=runs, warmup=warmup
+                # Always interleave — sequential order made torchfits look cold vs
+                # fitsio after the page cache was warmed by earlier methods.
+                timed = time_medians_interleaved(
+                    {
+                        "torchfits": methods["torchfits"],
+                        "torchfits_specialized": methods["torchfits_specialized"],
+                        "fitsio_torch": methods["fitsio_torch"],
+                    },
+                    runs=runs,
+                    warmup=warmup,
+                )
+                timed.update(
+                    time_medians_interleaved(
+                        {
+                            "fitsio": methods["fitsio"],
+                            "astropy": methods["astropy"],
+                            "astropy_torch": methods["astropy_torch"],
+                        },
+                        runs=runs,
+                        warmup=warmup,
                     )
+                )
+                for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                     row[f"{method_name}_median"] = median_s
                     row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
                     row[f"{method_name}_peak_rss_mb"] = peak_rss
@@ -768,8 +819,12 @@ def _normalize_legacy_rows(
                 elif library == "fitsio" and mmap_target == "on":
                     # fitsio has no mmap toggle — ranking it under mmap-on
                     # compares buffered CFITSIO to torchfits honoring mmap=True.
-                    comparable = False
-                    skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
+                    # Exception: compressed images ignore mmap (tile decode), so
+                    # fitsio remains a comparable CFITSIO peer.
+                    compression = str(raw.get("compression") or "").strip().lower()
+                    if compression in {"", "none", "uncompressed", "n/a", "nan"}:
+                        comparable = False
+                        skip_reason = "fitsio_no_mmap: not comparable under mmap-on"
 
                 row = {
                     "run_id": run_id,

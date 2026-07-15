@@ -75,6 +75,11 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
     if (!has_extension) {
         start_hdu_ = 1;
         current_hdu_ = -1;
+        if (shared_meta_) {
+            std::lock_guard<std::mutex> lock(shared_meta_->mutex);
+            // Shared fptr remembers its HDU across one-shot wrappers.
+            current_hdu_ = shared_meta_->current_fits_hdu;
+        }
     } else {
         fits_get_hdu_num(fptr_, &start_hdu_);
         current_hdu_ = start_hdu_;
@@ -97,7 +102,13 @@ void FITSFile::ensure_hdu(int hdu_num, int* status) {
     int target_hdu = hdu_num + start_hdu_;
     if (current_hdu_ != target_hdu) {
         fits_movabs_hdu(fptr_, target_hdu, nullptr, status);
-        if (*status == 0) current_hdu_ = target_hdu;
+        if (*status == 0) {
+            current_hdu_ = target_hdu;
+            if (shared_meta_) {
+                std::lock_guard<std::mutex> lock(shared_meta_->mutex);
+                shared_meta_->current_fits_hdu = target_hdu;
+            }
+        }
     }
 }
 
@@ -208,12 +219,11 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     if (status != 0) throw std::runtime_error("Could not move to HDU");
     int bitpix = 0, naxis = 0;
     std::array<LONGLONG, 9> naxes_ll{};
-    {
-        const auto& info = get_image_info(hdu_num);
-        bitpix = std::get<0>(info);
-        naxis = std::get<1>(info);
-        naxes_ll = std::get<2>(info);
-    }
+    naxes_ll.fill(0);
+    // Direct paramll (skip shared_meta locks) — local FITSFile caches die with
+    // the one-shot wrapper anyway.
+    fits_get_img_paramll(fptr_, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+    if (status != 0) throw std::runtime_error("Could not read image parameters");
     if (naxis == 0) {
         torch::ScalarType dtype;
         switch (bitpix) {
@@ -227,19 +237,44 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
         }
         return torch::empty({0}, torch::TensorOptions().dtype(dtype));
     }
-    const auto& scale_info = get_scale_info(hdu_num, bitpix);
-
     detail::ResolvedFITSMeta meta;
     meta.bitpix = bitpix;
     meta.naxis = naxis;
     meta.naxes_ll = naxes_ll;
+
+    // Float/double thin path when mmap cannot help: either the caller asked
+    // mmap-off or the HDU is CompImage (tile decode). Skip scale/null/fd probes.
+    const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
+    bool take_thin_float = !use_mmap && float_like;
+    if (!take_thin_float && float_like && use_mmap) {
+        int st = 0;
+        const int is_comp = fits_is_compressed_image(fptr_, &st);
+        take_thin_float = (st == 0) && (is_comp != 0);
+    }
+    if (take_thin_float) {
+        meta.scaled = false;
+        meta.bscale = 1.0;
+        meta.bzero = 0.0;
+        meta.compressed = false;
+        meta.compressed_nulls = false;
+        return detail::read_tensor_canonical(
+            fptr_, filename_, meta, /*use_mmap=*/false, /*raw_fd=*/-1, /*use_chunking=*/false);
+    }
+
+    image_info_cache_[hdu_num] = std::make_tuple(bitpix, naxis, naxes_ll);
+    if (shared_meta_) {
+        std::lock_guard<std::mutex> lock(shared_meta_->mutex);
+        shared_meta_->image_info_cache[hdu_num] = image_info_cache_[hdu_num];
+    }
+
+    const auto& scale_info = get_scale_info(hdu_num, bitpix);
     meta.scaled = scale_info.scaled;
     meta.bscale = scale_info.bscale;
     meta.bzero = scale_info.bzero;
     meta.compressed = is_compressed_image_cached(hdu_num);
-    meta.compressed_nulls = has_compressed_nulls_cached(hdu_num);
+    meta.compressed_nulls = meta.compressed ? has_compressed_nulls_cached(hdu_num) : false;
 
-    const int fd = detail::get_shared_raw_fd(shared_meta_, filename_);
+    const int fd = meta.compressed ? -1 : detail::get_shared_raw_fd(shared_meta_, filename_);
     return detail::read_tensor_canonical(fptr_, filename_, meta, use_mmap, fd, /*use_chunking=*/false);
 }
 

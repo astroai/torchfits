@@ -51,7 +51,7 @@ def _cuda_reset() -> None:
 class _RssPeakSampler:
     """Background RSS peak tracker for the duration of a timed call."""
 
-    def __init__(self, *, interval_s: float = 0.001) -> None:
+    def __init__(self, *, interval_s: float = 0.01) -> None:
         self._interval_s = interval_s
         self._stop = threading.Event()
         self._peak: float | None = None
@@ -183,25 +183,29 @@ def time_medians_interleaved(
                 errors[name] = str(exc)
                 break
 
+    gc.collect()
     for _ in range(max(1, runs)):
-        gc.collect()
         order = names[:]
         np.random.default_rng().shuffle(order)
         for name in order:
             if errors[name] is not None:
                 continue
             _cuda_reset()
-            with _RssPeakSampler() as sampler:
-                try:
-                    t0 = time.perf_counter()
-                    methods[name]()
-                    _sync()
-                    samples[name].append(time.perf_counter() - t0)
-                except Exception as exc:
-                    errors[name] = str(exc)
-                    continue
-            if sampler.peak_mb is not None:
-                rss_peaks[name].append(sampler.peak_mb)
+            # ponytail: start+end RSS only — 1ms background sampler woke tens of
+            # times per ~50ms CFITSIO decode and invented 1–5% torchfits↔fitsio flips.
+            rss0 = _rss_mb()
+            try:
+                t0 = time.perf_counter()
+                methods[name]()
+                _sync()
+                samples[name].append(time.perf_counter() - t0)
+            except Exception as exc:
+                errors[name] = str(exc)
+                continue
+            rss1 = _rss_mb()
+            peaks = [r for r in (rss0, rss1) if r is not None]
+            if peaks:
+                rss_peaks[name].append(float(max(peaks)))
             cu = _cuda_alloc_mb()
             if cu is not None:
                 cuda_peaks[name].append(cu)

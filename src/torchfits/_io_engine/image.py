@@ -7,6 +7,8 @@ from typing import Any, Callable, Sequence, Tuple, Union, cast
 import torch
 from torch import Tensor
 
+import torchfits._C as _cpp
+
 from ..hdu import Header
 
 from ._read_pipeline import _read_unsigned_image_if_needed
@@ -78,11 +80,9 @@ def read_image(
     fallback_get_header: Callable[[str, int], Header] | None = None,
 ) -> Union[Tensor, Tuple[Tensor, Header]]:
     """Read image data through a direct low-level path."""
-    import torchfits._C as cpp
-
     validate_read_image_args(path, hdu, mmap, handle_cache, device)
 
-    data = dispatch_read_image_cpp(cpp, path, hdu, mmap, handle_cache, raw_scale)
+    data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, handle_cache, raw_scale)
 
     if fp16:
         data = data.to(torch.float16)
@@ -94,7 +94,7 @@ def read_image(
 
     if return_header:
         try:
-            return data, Header(cpp.read_header_dict(path, hdu))
+            return data, Header(_cpp.read_header_dict(path, hdu))
         except Exception:
             if fallback_get_header is None:
                 raise
@@ -111,8 +111,6 @@ def read_hdus(
     return_header: bool = False,
 ) -> Any:
     """Read multiple image HDUs from one file using a direct one-handle path."""
-    import torchfits._C as cpp
-
     if not isinstance(path, str):
         raise ValueError("path must be a string")
     if not isinstance(hdus, (list, tuple)) or len(hdus) == 0:
@@ -130,20 +128,20 @@ def read_hdus(
             resolved_hdus.append(int(hdu))
             continue
         if isinstance(hdu, str):
-            if hasattr(cpp, "resolve_hdu_name_cached"):
-                resolved_hdus.append(int(cpp.resolve_hdu_name_cached(path, hdu)))
+            if hasattr(_cpp, "resolve_hdu_name_cached"):
+                resolved_hdus.append(int(_cpp.resolve_hdu_name_cached(path, hdu)))
                 continue
             raise ValueError("named HDUs require resolve_hdu_name_cached support")
         raise ValueError("each item in hdus must be an int or str")
 
-    data = cpp.read_hdus_batch(path, resolved_hdus, mmap)
+    data = _cpp.read_hdus_batch(path, resolved_hdus, mmap)
     for idx, hdu_num in enumerate(resolved_hdus):
         try:
-            header = Header(cpp.read_header_dict(path, hdu_num))
+            header = Header(_cpp.read_header_dict(path, hdu_num))
         except Exception:
             header = None
         unsigned = _read_unsigned_image_if_needed(
-            cpp_module=cpp,
+            cpp_module=_cpp,
             path=path,
             hdu_num=hdu_num,
             effective_mmap=mmap,
@@ -157,5 +155,7 @@ def read_hdus(
     if not return_header:
         return data
 
-    headers = [Header(cpp.read_header_dict(path, hdu_num)) for hdu_num in resolved_hdus]
+    headers = [
+        Header(_cpp.read_header_dict(path, hdu_num)) for hdu_num in resolved_hdus
+    ]
     return data, headers

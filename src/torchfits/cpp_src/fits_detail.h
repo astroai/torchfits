@@ -144,6 +144,9 @@ struct SharedReadMeta {
     ino_t inode = 0;
     int64_t last_stat_check_ns = 0;
     int raw_fd = -1;
+    // Absolute CFITSIO HDU the shared fptr is currently on (-1 = unknown).
+    // Lets one-shot FITSFile wrappers skip redundant fits_movabs_hdu.
+    int current_fits_hdu = -1;
     std::mutex mutex;
 
     ~SharedReadMeta() {
@@ -197,6 +200,7 @@ inline std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::strin
             meta->compressed_cache.clear();
             meta->compressed_nulls_cache.clear();
             meta->scale_cache.clear();
+            meta->current_fits_hdu = -1;
             meta->has_stat = true;
             meta->size = st.st_size;
             meta->mtime_ns = cur_mtime_ns;

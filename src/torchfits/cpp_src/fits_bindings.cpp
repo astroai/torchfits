@@ -691,6 +691,9 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
 
         bool compressed = false;
         bool compressed_cached = false;
+        const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
+        // mmap-off float/double: skip compress/null/fd probes (see FITSFile::read_tensor).
+        if (!( !use_mmap && float_like )) {
         if (shared_meta) {
             std::lock_guard<std::mutex> lock(shared_meta->mutex);
             auto it = shared_meta->compressed_cache.find(hdu_num);
@@ -710,6 +713,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
                 std::lock_guard<std::mutex> lock(shared_meta->mutex);
                 shared_meta->compressed_cache[hdu_num] = compressed;
             }
+        }
         }
 
         bool scaled = false;
@@ -753,21 +757,24 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         resolved.bscale = bscale;
         resolved.bzero = bzero;
         resolved.compressed = compressed;
-        resolved.compressed_nulls = [&]() {
-            if (shared_meta) {
-                std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                auto it = shared_meta->compressed_nulls_cache.find(hdu_num);
-                if (it != shared_meta->compressed_nulls_cache.end()) return it->second;
-            }
-            bool has_nulls = d::has_compressed_nulls(fptr);
-            if (shared_meta) {
-                std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                shared_meta->compressed_nulls_cache[hdu_num] = has_nulls;
-            }
-            return has_nulls;
-        }();
+        resolved.compressed_nulls = false;
+        if (compressed) {
+            resolved.compressed_nulls = [&]() {
+                if (shared_meta) {
+                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                    auto it = shared_meta->compressed_nulls_cache.find(hdu_num);
+                    if (it != shared_meta->compressed_nulls_cache.end()) return it->second;
+                }
+                bool has_nulls = d::has_compressed_nulls(fptr);
+                if (shared_meta) {
+                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                    shared_meta->compressed_nulls_cache[hdu_num] = has_nulls;
+                }
+                return has_nulls;
+            }();
+        }
 
-        const int fd = shared_meta ? d::get_shared_raw_fd(shared_meta, path) : -1;
+        const int fd = (!compressed && shared_meta) ? d::get_shared_raw_fd(shared_meta, path) : -1;
         auto tensor = d::read_tensor_canonical(fptr, path, resolved, use_mmap, fd, /*use_chunking=*/false);
         close_guard();
         return tensor;

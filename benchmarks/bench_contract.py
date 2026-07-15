@@ -79,7 +79,22 @@ SMALL_N_MAX_LAG_RATIO = 10.0
 # Absolute ε ignores float timer ties only, not percent-level gaps.
 DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
 DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
-DEFICIT_MIN_ABS_DELTA_S = 1e-7
+# Absolute timer floor machinery — not a percent deficit gate on images.
+# Large CFITSIO decompress medians jitter hundreds of µs; tiny device copies
+# need a small hard floor so 1.2× on ~200µs still counts.
+DEFICIT_MIN_ABS_DELTA_S = 2e-5
+DEFICIT_ABS_DELTA_FRAC = 0.01
+DEFICIT_ABS_DELTA_CAP_S = 2e-3
+
+
+def deficit_abs_delta_floor(best_time_s: float) -> float:
+    """Adaptive timer ε: grows gently with median duration, hard-capped."""
+    if best_time_s <= 0:
+        return DEFICIT_MIN_ABS_DELTA_S
+    return max(
+        DEFICIT_MIN_ABS_DELTA_S,
+        min(DEFICIT_ABS_DELTA_CAP_S, best_time_s * DEFICIT_ABS_DELTA_FRAC),
+    )
 
 
 def deficit_min_lag_ratio(domain: str) -> float:
@@ -263,7 +278,7 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
         if lag_ratio < min_lag:
             continue
         # Timer ε only — reject microscopic float ties, not percent lags.
-        if (tf_time - best_t) < DEFICIT_MIN_ABS_DELTA_S:
+        if (tf_time - best_t) < deficit_abs_delta_floor(best_t):
             continue
         deficits.append(
             {
@@ -417,7 +432,7 @@ def write_summary(
         if tf_t is not None and best_t > 0:
             lag = tf_t / best_t
             within_policy = lag < deficit_min_lag_ratio(domain) or (
-                (tf_t - best_t) < DEFICIT_MIN_ABS_DELTA_S
+                (tf_t - best_t) < deficit_abs_delta_floor(best_t)
             )
         if within_policy:
             scorecard[key]["wins"] += 1

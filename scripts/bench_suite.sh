@@ -25,6 +25,11 @@ fi
 ENV_NAME="${TORCHFITS_BENCH_ENV:-bench-all}"
 RUN_ID="${TORCHFITS_BENCH_RUN_ID:-suite_${SUITE}_$(date -u +%Y%m%d_%H%M%S)}"
 
+# Disable stale-stat revalidation during one-shot benches — 1s polling adds
+# jitter that invents CFITSIO-parity flips vs fitsio (which never re-stats).
+export TORCHFITS_CACHE_VALIDATE="${TORCHFITS_CACHE_VALIDATE:-0}"
+export TORCHFITS_SHARED_META_VALIDATE="${TORCHFITS_SHARED_META_VALIDATE:-0}"
+
 echo "==> suite=${SUITE} run_id=${RUN_ID}"
 pixi run -e "$ENV_NAME" python benchmarks/bench_all.py \
   --suite "$SUITE" \
