@@ -140,6 +140,17 @@ execute_process(
     OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c "import torch; print(torch.__version__)"
+    OUTPUT_VARIABLE TORCHFITS_BUILD_TORCH_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT TORCHFITS_BUILD_TORCH_VERSION MATCHES "^2\\.10([.+]|$)")
+    message(FATAL_ERROR
+        "torchfits 0.9.1 requires PyTorch 2.10.x at build time; found ${TORCHFITS_BUILD_TORCH_VERSION}. "
+        "Install 'torch>=2.10,<2.11' before using --no-build-isolation."
+    )
+endif()
 list(APPEND CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
 
 # CUDA-enabled PyTorch only: cuda.cmake expects CUDA::nvrtc before extension targets link. Conda
@@ -484,6 +495,7 @@ if(DLPACK_INCLUDE_DIR)
     target_include_directories(_C PRIVATE ${DLPACK_INCLUDE_DIR})
 endif()
 target_compile_definitions(_C PRIVATE HAS_CFITSIO)
+target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="2.10")
 
 
 # Compiler flags

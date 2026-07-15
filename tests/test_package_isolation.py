@@ -5,8 +5,56 @@ import os
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "torchfits"
+REPO_ROOT = PACKAGE_ROOT.parents[1]
+
+
+def test_native_torch_abi_range_is_consistent() -> None:
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    pixi = tomllib.loads((REPO_ROOT / "pixi.toml").read_text(encoding="utf-8"))
+
+    assert "torch>=2.10,<2.11" in pyproject["build-system"]["requires"]
+    assert "torch>=2.10,<2.11" in pyproject["project"]["dependencies"]
+    for section in ("build-dependencies", "host-dependencies", "run-dependencies"):
+        assert pixi["package"][section]["pytorch"] == ">=2.10,<2.11"
+    assert pixi["dependencies"]["pytorch"] == ">=2.10,<2.11"
+
+    workflow_paths = (
+        REPO_ROOT / ".github" / "workflows" / "ci.yml",
+        REPO_ROOT / ".github" / "workflows" / "build_wheels.yml",
+        REPO_ROOT / ".github" / "workflows" / "bench-report.yml",
+    )
+    for path in workflow_paths:
+        workflow = path.read_text(encoding="utf-8")
+        assert 'pip install "torch>=2.10,<2.11"' in workflow
+        assert "pip install torch " not in workflow
+
+    cmake = (PACKAGE_ROOT / "cpp_src" / "CMakeLists.txt").read_text(encoding="utf-8")
+    bindings = (PACKAGE_ROOT / "cpp_src" / "bindings.cpp").read_text(encoding="utf-8")
+    assert "TORCHFITS_BUILD_TORCH_VERSION" in cmake
+    assert 'TORCHFITS_TORCH_ABI="2.10"' in cmake
+    assert "matching_abi" in bindings
+
+
+def test_native_extension_rejects_mismatched_torch_runtime() -> None:
+    script = """
+import torch
+torch.__version__ = "2.11.0"
+import torchfits._C
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0
+    assert "built for PyTorch 2.10.x but found PyTorch 2.11.0" in result.stderr
 
 
 def test_torchfits_source_does_not_reference_torchsky() -> None:
