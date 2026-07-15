@@ -198,3 +198,16 @@ def test_scorecard_ignores_singleton_torchfits_group() -> None:
         text = path.read_text(encoding="utf-8")
         assert "0/0" in text or "n/a" in text.lower() or "Scorecard" in text
         assert "1/1" not in text
+
+
+def test_fitstable_scan_count_uses_header_not_column() -> None:
+    """Specialized scan_count must match peer O(1) NAXIS2 / get_nrows contract."""
+    import inspect
+
+    from benchmarks import bench_fitstable_io as m
+
+    src_smart = inspect.getsource(m._torchfits_scan_count)
+    src_local = inspect.getsource(m._torchfits_scan_count_local)
+    assert "get_header" in src_smart
+    assert "get_header" in src_local
+    assert "read_table" not in src_local

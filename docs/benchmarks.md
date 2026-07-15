@@ -231,10 +231,13 @@ Skaha passes headless `args` as URL query parameters (spaces/`$`/`&` break remot
 bash). The launcher tab-encodes the clone+bench script; ops may want a proper
 argv array in the API long term.
 
-In-container work uses **pixi**; bench CSVs upload to **`vos:sfabbro/torchfits-gpu-bench/<run-id>/`**
-via `vcp` (x509 in the session). Platform logs land under
-`benchmarks_results/canfar_<run-id>/` locally. Download results with
-`scripts/fetch_canfar_bench_vos.sh` (needs `pip install vos` + cert locally).
+In-container work uses **pixi**; bench CSVs archive to
+**`/arc/home/$USER/torchfits-gpu-bench/<run-id>/`** (persistent) and upload to
+**`vos:sfabbro/torchfits-gpu-bench/<run-id>/`** via `vcp` (x509 in the session).
+Either sink is required before the in-container job exits 0. Platform logs land
+under `benchmarks_results/canfar_<run-id>/` locally (poller detaches by default).
+Download results with `scripts/fetch_canfar_bench_vos.sh` (needs `pip install vos`
++ cert locally).
 
 ```bash
 # Local CI + docs before push (mirrors GitHub workflows)

@@ -196,9 +196,7 @@ def _count_job_rows(jobs_path: Path) -> int:
     return n
 
 
-def _run_c(
-    exe: Path, jobs_path: Path, csv_path: Path, runs: int, warmup: int
-) -> None:
+def _run_c(exe: Path, jobs_path: Path, csv_path: Path, runs: int, warmup: int) -> None:
     cmd = [
         str(exe),
         "--jobs",

@@ -47,41 +47,51 @@ if ! command -v canfar >/dev/null; then
   exit 1
 fi
 
-echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
-echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "image=${IMAGE} gpu=${GPU:-omit} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "vos_dest=${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
-
-# ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
-REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
-REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
-
-CREATE_LOG="${LOCAL_OUT}/create.log"
-CREATE_ARGS=(
-  create headless "${IMAGE}"
-  --name "${NAME}"
-  --cpu "${CPU}"
-  --memory "${MEMORY}"
-  --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}"
-  --env "TORCHFITS_BENCH_MODE=${MODE}"
-  --env "TORCHFITS_GIT_REF=${GIT_REF}"
-  --env "TORCHFITS_BENCH_LOG_REDIRECTED=1"
-  --env "PIXI_HOME=/scratch/torchfits-pixi-home"
-  --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache"
-  --env "TORCHFITS_VOS_DEST=${VOS_DEST}"
-  --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}"
-  --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}"
-)
-if [[ -n "${GPU}" ]]; then
-  CREATE_ARGS+=(--gpu "${GPU}")
+LAUNCH_LOG="${LOCAL_OUT}/launcher.log"
+if [[ -z "${TORCHFITS_CANFAR_EXISTING_SESSION:-}" ]]; then
+  : > "${LAUNCH_LOG}"
 fi
-set +o pipefail
-canfar "${CREATE_ARGS[@]}" -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
-CREATE_RC=${PIPESTATUS[0]}
-set -o pipefail
-if [[ "${CREATE_RC}" -ne 0 ]]; then
-  if rg -q 'No authentication provided for unknown or private image' "${CREATE_LOG}" 2>/dev/null; then
-    cat >&2 <<EOF
+
+echo "=== CANFAR GPU bench launcher ===" | tee -a "${LAUNCH_LOG}"
+echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LAUNCH_LOG}"
+echo "image=${IMAGE} gpu=${GPU:-omit} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LAUNCH_LOG}"
+echo "vos_dest=${VOS_DEST}" | tee -a "${LAUNCH_LOG}"
+
+if [[ -n "${TORCHFITS_CANFAR_EXISTING_SESSION:-}" ]]; then
+  SESSION_ID="${TORCHFITS_CANFAR_EXISTING_SESSION}"
+  echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
+  echo "poller resume session_id=${SESSION_ID}" | tee -a "${LAUNCH_LOG}"
+else
+  # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
+  REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+  REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
+
+  CREATE_LOG="${LOCAL_OUT}/create.log"
+  CREATE_ARGS=(
+    create headless "${IMAGE}"
+    --name "${NAME}"
+    --cpu "${CPU}"
+    --memory "${MEMORY}"
+    --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}"
+    --env "TORCHFITS_BENCH_MODE=${MODE}"
+    --env "TORCHFITS_GIT_REF=${GIT_REF}"
+    --env "TORCHFITS_BENCH_LOG_REDIRECTED=1"
+    --env "PIXI_HOME=/scratch/torchfits-pixi-home"
+    --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache"
+    --env "TORCHFITS_VOS_DEST=${VOS_DEST}"
+    --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}"
+    --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}"
+  )
+  if [[ -n "${GPU}" ]]; then
+    CREATE_ARGS+=(--gpu "${GPU}")
+  fi
+  set +o pipefail
+  canfar "${CREATE_ARGS[@]}" -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
+  CREATE_RC=${PIPESTATUS[0]}
+  set -o pipefail
+  if [[ "${CREATE_RC}" -ne 0 ]]; then
+    if rg -q 'No authentication provided for unknown or private image' "${CREATE_LOG}" 2>/dev/null; then
+      cat >&2 <<EOF
 canfar create failed: private registry image (${IMAGE}).
 
 ${IMAGE} is not in \`canfar image ls\`; x509 alone only pulls contributed/public
@@ -94,26 +104,56 @@ images. For astroai/base configure Harbor once:
 Or use a listed image, e.g.:
   TORCHFITS_CANFAR_IMAGE=astroai/notebook:latest pixi run bench-canfar-gpu
 EOF
+    fi
+    echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
+    exit 1
   fi
-  echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
-  exit 1
-fi
 
-SESSION_ID="$(
-  python3 - "${CREATE_LOG}" <<'PY'
+  SESSION_ID="$(
+    python3 - "${CREATE_LOG}" <<'PY'
 import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
 m = re.search(r"ID:\s*([^)]+)\)", text)
 print(m.group(1).strip() if m else "")
 PY
-)"
-if [[ -z "${SESSION_ID}" ]]; then
-  echo "could not parse session ID from ${CREATE_LOG}" >&2
-  exit 1
+  )"
+  if [[ -z "${SESSION_ID}" ]]; then
+    echo "could not parse session ID from ${CREATE_LOG}" >&2
+    exit 1
+  fi
+  echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
+  echo "session_id=${SESSION_ID}" | tee -a "${LAUNCH_LOG}"
 fi
-echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
-echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "${RUN_ID}" > "${LOCAL_OUT}/run_id.txt"
+echo "${VOS_DEST}" > "${LOCAL_OUT}/vos_dest.txt"
+
+# Detach poll+fetch by default so a dead parent shell cannot drop durable results.
+# Set TORCHFITS_CANFAR_FOREGROUND=1 to wait in-process.
+if [[ "${TORCHFITS_CANFAR_FOREGROUND:-0}" != "1" && -z "${TORCHFITS_CANFAR_POLLER:-}" ]]; then
+  POLLER_LOG="${LOCAL_OUT}/poller.log"
+  nohup env \
+    TORCHFITS_CANFAR_POLLER=1 \
+    TORCHFITS_CANFAR_FOREGROUND=1 \
+    TORCHFITS_GIT_REF="${GIT_REF}" \
+    TORCHFITS_BENCH_MODE="${MODE}" \
+    TORCHFITS_BENCH_RUN_ID="${RUN_ID}" \
+    TORCHFITS_CANFAR_IMAGE="${IMAGE}" \
+    TORCHFITS_CANFAR_GPU="${GPU}" \
+    TORCHFITS_CANFAR_CPU="${CPU}" \
+    TORCHFITS_CANFAR_MEMORY="${MEMORY}" \
+    TORCHFITS_CANFAR_NAME="${NAME}" \
+    TORCHFITS_VOS_DEST="${VOS_DEST}" \
+    TORCHFITS_CANFAR_POLL_SECS="${POLL_SECS}" \
+    TORCHFITS_CANFAR_MAX_WAIT_SECS="${MAX_WAIT_SECS}" \
+    TORCHFITS_CANFAR_EXISTING_SESSION="${SESSION_ID}" \
+    bash "${ROOT_DIR}/scripts/launch_canfar_gpu_bench.sh" \
+    >>"${POLLER_LOG}" 2>&1 &
+  echo $! > "${LOCAL_OUT}/poller.pid"
+  echo "detached poller pid=$(cat "${LOCAL_OUT}/poller.pid") log=${POLLER_LOG}" | tee -a "${LAUNCH_LOG}"
+  echo "session_id=${SESSION_ID} run_id=${RUN_ID} vos=${VOS_DEST}"
+  exit 0
+fi
 
 terminal_status() {
   local info_status ps_status

@@ -190,9 +190,15 @@ def _gzip_fits(in_path: Path, out_path: Path) -> None:
 
 def _table_to_torch_dict(data) -> dict[str, torch.Tensor]:
     out: dict[str, torch.Tensor] = {}
-    names = list(data.dtype.names or [])
-    for name in names:
-        arr = np.ascontiguousarray(np.asarray(data[name]))
+    if isinstance(data, dict):
+        items = data.items()
+    else:
+        items = ((name, data[name]) for name in list(data.dtype.names or []))
+    for name, value in items:
+        if isinstance(value, list):
+            # VLA: leave object heap columns out of Tensor dict (parity with prior skip).
+            continue
+        arr = np.ascontiguousarray(np.asarray(value))
         if arr.dtype.byteorder not in ("=", "|"):
             arr = arr.astype(arr.dtype.newbyteorder("="))
         if arr.dtype.kind in {"S", "U"}:
@@ -430,11 +436,11 @@ def _bench_case(
             for m, fn in method_map.items()
             if m in {"torchfits_specialized", "astropy", "fitsio"}
         }
-        timed: dict[str, tuple[float | None, float | None, float | None, str | None]] = {}
+        timed: dict[
+            str, tuple[float | None, float | None, float | None, str | None]
+        ] = {}
         if smart:
-            timed.update(
-                time_medians_interleaved(smart, runs=runs, warmup=warmup)
-            )
+            timed.update(time_medians_interleaved(smart, runs=runs, warmup=warmup))
         if specialized:
             timed.update(
                 time_medians_interleaved(specialized, runs=runs, warmup=warmup)
@@ -500,8 +506,21 @@ def _bench_case(
 
 
 def _astropy_read_full(path: Path, *, memmap: bool):
+    """Materialize the full table, including VLA heap payloads.
+
+    ``np.array(FITS_rec, copy=False)`` leaves object/VLA columns as lazy
+    views and understates Astropy cost vs eager TorchFits/fitsio reads.
+    """
     with astropy_fits.open(path, memmap=memmap) as hdul:
-        return np.array(hdul[1].data, copy=False)
+        data = hdul[1].data
+        out: dict[str, Any] = {}
+        for name in data.columns.names:
+            col = np.asarray(data[name])
+            if col.dtype == object:
+                out[name] = [np.asarray(x).copy() for x in col]
+            else:
+                out[name] = np.ascontiguousarray(col).copy()
+        return out
 
 
 def _astropy_projection(path: Path, columns: list[str], *, memmap: bool):
@@ -584,7 +603,9 @@ def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
     values = data[col]
     if isinstance(values, torch.Tensor):
         mask = values > 0
-        return {k: v[mask] if isinstance(v, torch.Tensor) else v for k, v in data.items()}
+        return {
+            k: v[mask] if isinstance(v, torch.Tensor) else v for k, v in data.items()
+        }
     mask = np.asarray(values) > 0
     out: dict[str, Any] = {}
     for k, v in data.items():
@@ -597,18 +618,13 @@ def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
     _ = col, mmap, has_pyarrow
-    # Counting rows needs only the table header. Avoid materializing columns.
+    # Peer contract: NAXIS2 / get_nrows — not a column materialize.
     return int(torchfits.get_header(str(path), hdu=1).get("NAXIS2", 0))
 
 
 def _torchfits_scan_count_local(path: Path, *, col: str, mmap: bool):
-    data = torchfits.read_table(
-        str(path), hdu=1, columns=[col], mmap=mmap, **_TF_NO_CACHE
-    )
-    values = data[col]
-    if isinstance(values, torch.Tensor):
-        return int(values.shape[0])
-    return int(len(values))
+    _ = col, mmap
+    return int(torchfits.get_header(str(path), hdu=1).get("NAXIS2", 0))
 
 
 def _make_row(

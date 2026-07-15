@@ -1977,6 +1977,8 @@ public:
         std::unordered_map<std::string, ColumnData>& result) {
 
         // 16MB chunk target, then align with CFITSIO's suggested table row buffer.
+        // Clamp to the requested row window so small tables do not allocate a full
+        // 16 MiB scratch (visible as rss when mmap/cache are off in scorecard).
         const size_t TARGET_CHUNK_SIZE = 16 * 1024 * 1024;
         long rows_per_chunk = std::max(1L, (long)(TARGET_CHUNK_SIZE / row_width_bytes_));
         {
@@ -1992,8 +1994,10 @@ public:
                 }
             }
         }
+        rows_per_chunk = std::max(1L, std::min(rows_per_chunk, num_rows));
 
-        std::vector<uint8_t> buffer(rows_per_chunk * row_width_bytes_);
+        std::vector<uint8_t> buffer(
+            static_cast<size_t>(rows_per_chunk) * row_width_bytes_);
 
         long rows_read = 0;
         while (rows_read < num_rows) {

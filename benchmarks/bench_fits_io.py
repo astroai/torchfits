@@ -30,10 +30,7 @@ from benchmarks.bench_contract import (
     write_csv,
     write_json,
 )  # noqa: E402
-from benchmarks.bench_timing import (  # noqa: E402
-    time_median,
-    time_medians_interleaved,
-)
+from benchmarks.bench_timing import time_medians_interleaved  # noqa: E402
 
 _BENCH_HOST = socket.gethostname()
 

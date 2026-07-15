@@ -113,9 +113,7 @@ def _median_times_peer_groups(
     for _lib, method, fam, _mode, fn in methods:
         by_family.setdefault(fam, []).append((method, fn))
     for fam, group in by_family.items():
-        cfitsio = [
-            (m, fn) for m, fn in group if not str(m).startswith("astropy")
-        ]
+        cfitsio = [(m, fn) for m, fn in group if not str(m).startswith("astropy")]
         astropy = [(m, fn) for m, fn in group if str(m).startswith("astropy")]
         if cfitsio:
             timed.update(_median_times_interleaved(cfitsio, warmup, iters, device))

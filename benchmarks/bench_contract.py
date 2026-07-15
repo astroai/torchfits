@@ -403,9 +403,7 @@ def write_summary(
         if not tf_candidates:
             continue
         # Singleton / torchfits-only groups are not external wins.
-        has_external_peer = any(
-            str(r.get("library")) != "torchfits" for (r, _t) in grp
-        )
+        has_external_peer = any(str(r.get("library")) != "torchfits" for (r, _t) in grp)
         if not has_external_peer:
             continue
 

@@ -96,10 +96,44 @@ case "${TORCHFITS_BENCH_MODE}" in
 esac
 
 BENCH_OUT="benchmarks_results/${TORCHFITS_BENCH_RUN_ID}"
+PERSISTED=0
+ARC_URI=""
+VOS_URI=""
+
 if [[ -d "${BENCH_OUT}" ]]; then
   cp -a "${BENCH_OUT}" "${RUN_DIR}/benchmarks_results"
+
+  # Persistent on-cluster archive under /arc (survives session delete; scratch does not).
+  if [[ -z "${TORCHFITS_ARC_DEST:-}" ]]; then
+    if [[ -n "${USER:-}" && -d "/arc/home/${USER}" ]]; then
+      TORCHFITS_ARC_DEST="/arc/home/${USER}/torchfits-gpu-bench/${TORCHFITS_BENCH_RUN_ID}"
+    elif [[ -n "${HOME:-}" && -d "${HOME}" && "${HOME}" == /arc/* ]]; then
+      TORCHFITS_ARC_DEST="${HOME}/torchfits-gpu-bench/${TORCHFITS_BENCH_RUN_ID}"
+    fi
+  fi
+  if [[ -n "${TORCHFITS_ARC_DEST:-}" ]]; then
+    echo "archiving bench CSVs to ${TORCHFITS_ARC_DEST}"
+    mkdir -p "$(dirname "${TORCHFITS_ARC_DEST}")"
+    rm -rf "${TORCHFITS_ARC_DEST}"
+    cp -a "${BENCH_OUT}" "${TORCHFITS_ARC_DEST}"
+    cp -a "${RUN_DIR}/manifest.txt" "${TORCHFITS_ARC_DEST}/scratch_manifest.txt" 2>/dev/null || true
+    # Keep session logs next to CSVs so a dead poller still has evidence on /arc.
+    cp -a "${RUN_DIR}/stdout.log" "${TORCHFITS_ARC_DEST}/" 2>/dev/null || true
+    cp -a "${RUN_DIR}/stderr.log" "${TORCHFITS_ARC_DEST}/" 2>/dev/null || true
+    ARC_URI="${TORCHFITS_ARC_DEST}"
+    PERSISTED=1
+    echo "TORCHFITS_ARC_URI=${ARC_URI}"
+  else
+    echo "WARN: no /arc home found; skipping ARC archive" >&2
+  fi
+
   if [[ -n "${TORCHFITS_VOS_DEST:-}" ]]; then
-    bash scripts/publish_canfar_bench_vos.sh "${BENCH_OUT}" "${TORCHFITS_VOS_DEST}"
+    if bash scripts/publish_canfar_bench_vos.sh "${BENCH_OUT}" "${TORCHFITS_VOS_DEST}"; then
+      VOS_URI="${TORCHFITS_VOS_DEST}"
+      PERSISTED=1
+    else
+      echo "WARN: VOS publish failed for ${TORCHFITS_VOS_DEST}" >&2
+    fi
   fi
 fi
 
@@ -108,9 +142,22 @@ fi
   echo "TORCHFITS_BENCH_RUN_ID=${TORCHFITS_BENCH_RUN_ID}"
   echo "TORCHFITS_BENCH_MODE=${TORCHFITS_BENCH_MODE}"
   echo "TORCHFITS_BENCH_GIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-  if [[ -n "${TORCHFITS_VOS_DEST:-}" ]]; then
-    echo "TORCHFITS_VOS_URI=${TORCHFITS_VOS_DEST}"
+  if [[ -n "${ARC_URI}" ]]; then
+    echo "TORCHFITS_ARC_URI=${ARC_URI}"
+  fi
+  if [[ -n "${VOS_URI}" ]]; then
+    echo "TORCHFITS_VOS_URI=${VOS_URI}"
   fi
 } > "${RUN_DIR}/manifest.txt"
+# Rewrite into ARC copy now that manifest is complete.
+if [[ -n "${ARC_URI}" && -d "${ARC_URI}" ]]; then
+  cp -a "${RUN_DIR}/manifest.txt" "${ARC_URI}/manifest.txt"
+fi
 
-echo "=== done; artifacts on scratch: ${RUN_DIR} ==="
+if [[ "${PERSISTED}" -ne 1 ]]; then
+  echo "ERROR: bench finished but neither /arc nor vos: archive succeeded" >&2
+  echo "  ARC=${TORCHFITS_ARC_DEST:-unset} VOS=${TORCHFITS_VOS_DEST:-unset}" >&2
+  exit 1
+fi
+
+echo "=== done; scratch=${RUN_DIR} arc=${ARC_URI:-none} vos=${VOS_URI:-none} ==="
