@@ -615,6 +615,24 @@ class _TableHDUWriteProxy:
         self._schema = schema
 
 
+# ⚡ Bolt: Lifted internal proxy class to the module level and added __slots__
+# to prevent dynamic class creation overhead (~2x faster instantiation).
+class _TableWriteProxy:
+    """Internal proxy for writing table data."""
+
+    __slots__ = ("_raw_data", "header", "_schema")
+
+    def __init__(
+        self,
+        raw_data: Any,
+        header: Header,
+        schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        self._raw_data = raw_data
+        self.header = header
+        self._schema = schema
+
+
 def _detach_hdus_for_rewrite(path: str) -> List[Any]:
     """Materialize file-backed HDUs so rewrite paths never hold stale handles."""
     with open_hdulist(path) as hdul:
@@ -732,17 +750,6 @@ def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> Non
     """Write an HDU sequence through the uncompressed C++ writer."""
     import torchfits._C as cpp
 
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
-
     payload: List[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007
         if isinstance(hdu, TableHDURef):
@@ -795,17 +802,6 @@ def _write_hdus_with_optional_compression(
         return
 
     import torchfits._C as cpp
-
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
 
     payload: list[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007

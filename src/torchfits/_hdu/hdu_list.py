@@ -10,6 +10,17 @@ from .table_hdu import TableHDU
 from .table_hdu_ref import TableHDURef
 
 
+# ⚡ Bolt: Define internal proxy classes at the module level with __slots__
+# to prevent dynamic class creation overhead inside the frequent fromfile loop.
+class _HDUInfo:
+    __slots__ = ("index", "type", "header")
+
+    def __init__(self, index: int, type: str, header: Any):
+        self.index = index
+        self.type = type
+        self.header = header
+
+
 class HDUList:
     def __init__(
         self, hdus: Optional[List[Union[TensorHDU, TableHDU, TableHDURef]]] = None
@@ -47,17 +58,7 @@ class HDUList:
                 for i in range(num_hdus):
                     header_dict = cpp.read_header(handle, i)
                     hdu_type = cpp.get_hdu_type(handle, i)
-
-                    class Info:
-                        index: int
-                        type: str
-                        header: Any
-
-                    info = Info()
-                    info.index = i
-                    info.type = hdu_type
-                    info.header = header_dict
-                    hdu_infos.append(info)
+                    hdu_infos.append(_HDUInfo(i, hdu_type, header_dict))
 
             hdul._file_handle = handle
 
