@@ -48,40 +48,26 @@ fi
 
 bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
 
-pixi install
-pixi run -e bench-gpu gpu-bootstrap
-pixi run -e bench-gpu bench-gpu-install
-pixi run -e bench-gpu gpu-env-check
+# Keep pip/user-site off the shared /arc home — concurrent sessions and
+# leftover ~/.local packages have corrupted setuptools uninstalls there.
+export PYTHONNOUSERSITE=1
+export PIP_CACHE_DIR="${SCRATCH}/pip-cache"
+export TMPDIR="${SCRATCH}/tmp"
+mkdir -p "${PIP_CACHE_DIR}" "${TMPDIR}"
 
-pixi run -e bench-gpu python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)"
+pixi install
 
 case "${TORCHFITS_BENCH_MODE}" in
-  smoke)
-    mkdir -p benchmarks_results
-    pixi run -e bench-gpu pytest tests/test_scale_on_device.py -q
-    pixi run -e bench-gpu python benchmarks/bench_gpu_transports.py \
-      --run-id "${TORCHFITS_BENCH_RUN_ID}" \
-      --output "benchmarks_results/${TORCHFITS_BENCH_RUN_ID}/gpu_transports.csv"
-    ;;
-  release-gate)
-    pixi run -e bench-gpu release-gate
-    ;;
-  exhaustive)
-    pixi run -e bench-gpu python benchmarks/bench_all.py \
-      --profile lab \
-      --suite release \
-      --mmap-matrix \
-      --run-id "${TORCHFITS_BENCH_RUN_ID}" \
-      --keep-temp
-    ;;
   exhaustive-cpu)
-    # Multicore CPU-only release matrix (no GPU transports).
+    # CPU scorecard: no CUDA torch swap, no gpu-env-check.
+    pixi run -e bench-all bench-install
+    pixi run -e bench-all python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
     export TORCH_NUM_THREADS="${TORCH_NUM_THREADS:-8}"
     export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
     export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
     export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-8}"
     echo "exhaustive-cpu threads: TORCH=${TORCH_NUM_THREADS}"
-    pixi run -e bench-gpu python benchmarks/bench_all.py \
+    pixi run -e bench-all python benchmarks/bench_all.py \
       --profile lab \
       --suite release \
       --mmap-matrix \
@@ -90,8 +76,35 @@ case "${TORCHFITS_BENCH_MODE}" in
       --keep-temp
     ;;
   *)
-    echo "unknown TORCHFITS_BENCH_MODE=${TORCHFITS_BENCH_MODE}" >&2
-    exit 1
+    pixi run -e bench-gpu gpu-bootstrap
+    pixi run -e bench-gpu bench-gpu-install
+    pixi run -e bench-gpu gpu-env-check
+    pixi run -e bench-gpu python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)"
+
+    case "${TORCHFITS_BENCH_MODE}" in
+      smoke)
+        mkdir -p benchmarks_results
+        pixi run -e bench-gpu pytest tests/test_scale_on_device.py -q
+        pixi run -e bench-gpu python benchmarks/bench_gpu_transports.py \
+          --run-id "${TORCHFITS_BENCH_RUN_ID}" \
+          --output "benchmarks_results/${TORCHFITS_BENCH_RUN_ID}/gpu_transports.csv"
+        ;;
+      release-gate)
+        pixi run -e bench-gpu release-gate
+        ;;
+      exhaustive)
+        pixi run -e bench-gpu python benchmarks/bench_all.py \
+          --profile lab \
+          --suite release \
+          --mmap-matrix \
+          --run-id "${TORCHFITS_BENCH_RUN_ID}" \
+          --keep-temp
+        ;;
+      *)
+        echo "unknown TORCHFITS_BENCH_MODE=${TORCHFITS_BENCH_MODE}" >&2
+        exit 1
+        ;;
+    esac
     ;;
 esac
 
