@@ -113,10 +113,7 @@ def _snapshot_rows(runs: list[dict[str, str]]) -> str:
 
 
 def _hosts_table(runs: list[dict[str, str]]) -> str:
-    lines = [
-        "| Host / device | Run ID | Rows | Time deficits | Median peak RSS (MB) | Notes |",
-        "|---|---|---:|---:|---:|---|",
-    ]
+    lines = []
     for r in runs:
         lines.append(
             f"| {r['host']} | `{r['run_id']}` | {r['rows']} | {r['deficits']} | "

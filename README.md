@@ -104,10 +104,12 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 
 ## Performance
 
-Lab exhaustive benchmark suite (`exhaustive_cuda_0.9.0_20260714_065950`,
-3,648 rows, CANFAR staging GPU + CPU); see
+Lab multi-host exhaustive scorecard
+(`exhaustive_mps_20260715_002839` Mac MPS,
+`exhaustive_cpu_20260715_002944` CANFAR CPU,
+`exhaustive_cuda_20260715_003158` CANFAR CUDA); see
 [docs/benchmarks.md](docs/benchmarks.md) for methodology, full exhaustive
-table, category summaries, and deficit transparency.
+table, category summaries, RSS columns, and deficit transparency.
 
 ### Headline numbers
 
