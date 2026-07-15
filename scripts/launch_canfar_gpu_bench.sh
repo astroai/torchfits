@@ -11,7 +11,9 @@ MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
 case "${MODE}" in
   exhaustive-cpu)
     DEFAULT_RUN_ID="exhaustive_cpu_$(date -u +%Y%m%d_%H%M%S)"
-    DEFAULT_GPU=0
+    # Skaha CreateRequest requires gpus>=1; CPU-only is enforced in-container
+    # via --no-gpu (no GPU transport rows), not by requesting zero GPUs.
+    DEFAULT_GPU=1
     ;;
   *)
     DEFAULT_RUN_ID="exhaustive_cuda_$(date -u +%Y%m%d_%H%M%S)"
