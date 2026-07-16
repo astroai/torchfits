@@ -56,14 +56,16 @@ def dispatch_read_image_cpp(
     One-shot full-image reads always use thin ``read_full`` / raw variants.
     ``handle_cache`` is reserved for persistent subset readers — routing
     one-shot reads through ``read_full_cached`` lost to fitsio+from_numpy.
+    Cold scorecard paths prefer ``read_full_nocache`` (no handle-pool lock).
     """
-    _ = handle_cache
     if raw_scale:
         if not mmap and hasattr(cpp, "read_full_unmapped_raw"):
             return cast(Tensor, cpp.read_full_unmapped_raw(path, hdu))
         if hasattr(cpp, "read_full_raw"):
             return cast(Tensor, cpp.read_full_raw(path, hdu, mmap))
         return cast(Tensor, cpp.read_full(path, hdu, mmap))
+    if not handle_cache and hasattr(cpp, "read_full_nocache"):
+        return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
     return cast(Tensor, cpp.read_full(path, hdu, mmap))
 
 

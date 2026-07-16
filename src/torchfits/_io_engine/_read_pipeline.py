@@ -656,7 +656,10 @@ def _read_cpu_fast_path(
     _ = (handle_cache_capacity, get_cached_handle)
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
-        data = cpp_module.read_full(path, hdu, effective_mmap)
+        if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
+            data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
+        else:
+            data = cpp_module.read_full(path, hdu, effective_mmap)
 
         if fp16:
             data = data.to(torch.float16)
@@ -718,7 +721,10 @@ def _read_generic_fast_path(
                 # through read_full_raw_with_scale (extra host ops vs fitsio).
                 if debug_scale:
                     print("TORCHFITS_DEBUG_SCALE: thin_cpu_logical")
-                data = cpp_module.read_full(path, hdu, effective_mmap)
+                if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
+                    data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
+                else:
+                    data = cpp_module.read_full(path, hdu, effective_mmap)
         elif raw_scale:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: raw_scale")
@@ -729,7 +735,10 @@ def _read_generic_fast_path(
         else:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: unscaled")
-            data = cpp_module.read_full(path, hdu, effective_mmap)
+            if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
+                data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
+            else:
+                data = cpp_module.read_full(path, hdu, effective_mmap)
 
         if fp16:
             data = data.to(torch.float16)

@@ -689,12 +689,11 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             return torch::empty({0}, torch::TensorOptions().dtype(dtype));
         }
 
+        // Float/double: always thin CFITSIO→tensor (matches FITSFile::read_tensor).
+        const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         bool compressed = false;
         bool compressed_cached = false;
-        const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
-        // mmap-off float/double: skip compress/null/fd probes (see FITSFile::read_tensor).
-        // CompImage still decompresses via fits_read_img; compressed=false only skips nullval setup.
-        if (!( !use_mmap && float_like )) {
+        if (!float_like) {
         if (shared_meta) {
             std::lock_guard<std::mutex> lock(shared_meta->mutex);
             auto it = shared_meta->compressed_cache.find(hdu_num);
@@ -721,7 +720,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         bool scale_trusted = true;
         double bscale = 1.0;
         double bzero = 0.0;
-        if (bitpix != FLOAT_IMG && bitpix != DOUBLE_IMG) {
+        if (!float_like) {
             bool scale_cached = false;
             if (shared_meta) {
                 std::lock_guard<std::mutex> lock(shared_meta->mutex);
@@ -757,9 +756,9 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         resolved.scaled = scaled;
         resolved.bscale = bscale;
         resolved.bzero = bzero;
-        resolved.compressed = compressed;
+        resolved.compressed = float_like ? false : compressed;
         resolved.compressed_nulls = false;
-        if (compressed) {
+        if (resolved.compressed) {
             resolved.compressed_nulls = [&]() {
                 if (shared_meta) {
                     std::lock_guard<std::mutex> lock(shared_meta->mutex);
@@ -775,8 +774,9 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             }();
         }
 
-        const int fd = (!compressed && shared_meta) ? d::get_shared_raw_fd(shared_meta, path) : -1;
-        auto tensor = d::read_tensor_canonical(fptr, path, resolved, use_mmap, fd, /*use_chunking=*/false);
+        const int fd = (!resolved.compressed && shared_meta) ? d::get_shared_raw_fd(shared_meta, path) : -1;
+        auto tensor = d::read_tensor_canonical(
+            fptr, path, resolved, float_like ? false : use_mmap, fd, /*use_chunking=*/false);
         close_guard();
         return tensor;
     } catch (...) {
