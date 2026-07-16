@@ -72,10 +72,9 @@ torchfits.read_tensor(path, hdu=0, device="cpu", mmap=True, handle_cache=True,
     `read_subset()`.
 
 !!! tip "GPU reads"
-    Pass `device="cuda"` or `device="mps"` to read directly to GPU. The
-    default `scale_on_device=True` applies BSCALE/BZERO on the device,
-    returning `float32` for generic scaled pixels. For native integer dtypes
-    (int8, uint16), use `raw_scale=True`.
+    Pass `device="cuda"` or `device="mps"` to place the result on device.
+    Generic BSCALE/BZERO scaling still yields `float32` unless you opt into
+    storage dtypes with `raw_scale=True` (e.g. int8 / uint16 parity with fitsio).
 
 ```python
 # Read to GPU
@@ -103,7 +102,7 @@ torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
 | `hdu` | `int` | *(required)* | HDU index |
-| `x1, y1, x2, y2` | `int` | *(required)* | Inclusive pixel bounds |
+| `x1, y1, x2, y2` | `int` | *(required)* | Half-open pixel window `[x1,x2)×[y1,y2)` |
 
 **Returns:** `torch.Tensor`
 

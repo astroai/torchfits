@@ -21,6 +21,7 @@ Read these in order on your first time through:
 | 4 | [`example_image_dataset.py`](../examples/example_image_dataset.py) | `FitsImageDataset`, `make_loader`, cache warmup |
 | 5 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline |
 | 6 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | Table + cutout datasets |
+| 7 | [`example_time_series.py`](../examples/example_time_series.py) | Light curves: clip, phase-fold, smooth |
 
 ---
 
@@ -52,6 +53,12 @@ Read these in order on your first time through:
 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset` |
 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline + `FitsImageDataset` |
 | [`example_hyperspectral.py`](../examples/example_hyperspectral.py) | Spectral/hyperspectral transforms on tensor cubes |
+
+### Time series
+
+| Script | What it demonstrates |
+|---|---|
+| [`example_time_series.py`](../examples/example_time_series.py) | Exoplanet transit light curve, FITS table write/read, `AsymmetricSigmaClip`, `PhaseFold`, `SavitzkyGolayFilter` |
 
 ---
 

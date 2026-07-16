@@ -56,6 +56,13 @@ public:
         if (status != 0) {
             throw std::runtime_error("Failed to move to table HDU");
         }
+        // Needed for VLA heap pread coalesce (diskfile path).
+        char fname[FLEN_FILENAME] = {0};
+        int name_status = 0;
+        fits_file_name(fptr_, fname, &name_status);
+        if (name_status == 0 && fname[0] != '\0') {
+            filename_ = fname;
+        }
         analyze_table();
     }
 
@@ -152,39 +159,15 @@ public:
             col.repeat = (int)repeat_long;
             col.name = std::string(ttype);
             col.width = 1;  // Will be set based on type
+            col.fits_typecode = typecode;
 
-            // Read scaling keywords if present
+            // Defer TSCAL/TZERO until a column is first read (ensure_column_scale).
             col.tscale = 1.0;
             col.tzero = 0.0;
             col.scaled = false;
-            int scale_status = 0;
-            char scale_key[FLEN_KEYWORD];
-            snprintf(scale_key, FLEN_KEYWORD, "TSCAL%d", i);
-            fits_read_key(fptr_, TDOUBLE, scale_key, &col.tscale, nullptr, &scale_status);
-            if (scale_status != 0) { scale_status = 0; col.tscale = 1.0; }
-            snprintf(scale_key, FLEN_KEYWORD, "TZERO%d", i);
-            fits_read_key(fptr_, TDOUBLE, scale_key, &col.tzero, nullptr, &scale_status);
-            if (scale_status != 0) { scale_status = 0; col.tzero = 0.0; }
-            col.scaled = (col.tscale != 1.0 || col.tzero != 0.0);
-
-            // Detect unsigned integer FITS convention:
-            //   uint16 stored as int16 with TZERO=32768, TSCAL=1.0
-            //   uint32 stored as int32 with TZERO=2147483648, TSCAL=1.0
-            if (col.tscale == 1.0) {
-                if ((typecode == TSHORT || typecode == TUSHORT) &&
-                    col.tzero == 32768.0) {
-                    col.is_unsigned_int = true;
-                    col.unsigned_offset = 32768;
-                    col.unsigned_target_type = torch::kUInt16;
-                    col.scaled = false;  // skip float64 scaling; apply offset instead
-                } else if ((typecode == TINT || typecode == TUINT) &&
-                           col.tzero == 2147483648.0) {
-                    col.is_unsigned_int = true;
-                    col.unsigned_offset = 2147483648;
-                    col.unsigned_target_type = torch::kUInt32;
-                    col.scaled = false;
-                }
-            }
+            col.scale_resolved = false;
+            col.is_unsigned_int = false;
+            col.unsigned_offset = 0;
 
             #ifdef DEBUG_TABLE
             fprintf(stderr, "Column %d: name='%s', typecode=%d, repeat=%d\n", i, ttype, typecode, col.repeat);
@@ -374,6 +357,48 @@ public:
             : is_vla(true), fixed_data(values), vla_offsets(offsets) {}
     };
 
+    void ensure_column_scale(int col_idx) {
+        auto& col = columns_[col_idx];
+        if (col.scale_resolved) {
+            return;
+        }
+        col.scale_resolved = true;
+        int scale_status = 0;
+        char scale_key[FLEN_KEYWORD];
+        const int i = col_idx + 1;
+        snprintf(scale_key, FLEN_KEYWORD, "TSCAL%d", i);
+        fits_read_key(fptr_, TDOUBLE, scale_key, &col.tscale, nullptr, &scale_status);
+        if (scale_status != 0) {
+            scale_status = 0;
+            col.tscale = 1.0;
+        }
+        snprintf(scale_key, FLEN_KEYWORD, "TZERO%d", i);
+        fits_read_key(fptr_, TDOUBLE, scale_key, &col.tzero, nullptr, &scale_status);
+        if (scale_status != 0) {
+            scale_status = 0;
+            col.tzero = 0.0;
+        }
+        col.scaled = (col.tscale != 1.0 || col.tzero != 0.0);
+        const int typecode = col.fits_typecode;
+        if (col.tscale == 1.0) {
+            if ((typecode == TSHORT || typecode == TUSHORT) && col.tzero == 32768.0) {
+                col.is_unsigned_int = true;
+                col.unsigned_offset = 32768;
+                col.unsigned_target_type = torch::kUInt16;
+                col.scaled = false;
+            } else if (
+                // CFITSIO reports FITS `J` as TLONG/TINT32BIT (41), not TINT (31).
+                (typecode == TINT || typecode == TUINT || typecode == TLONG ||
+                 typecode == TINT32BIT) &&
+                col.tzero == 2147483648.0) {
+                col.is_unsigned_int = true;
+                col.unsigned_offset = 2147483648;
+                col.unsigned_target_type = torch::kUInt32;
+                col.scaled = false;
+            }
+        }
+    }
+
     // Read columns from the table
     // Returns a map of column name to ColumnData
     std::unordered_map<std::string, ColumnData> read_columns(
@@ -423,6 +448,9 @@ public:
                     throw std::runtime_error("Column not found: " + name);
                 }
             }
+        }
+        for (int col_idx : col_indices) {
+            ensure_column_scale(col_idx);
         }
 
         int status = 0;
@@ -486,9 +514,9 @@ public:
             result[col.name] = ColumnData(tensor);
         }
 
-        // Row-buffered reads via fits_read_tblbytes when the selected fixed-width
-        // columns cover the full binary-table row payload (no unused bytes).
-        // Partial column projections use per-column fits_read_col to avoid I/O waste.
+        // Row-buffered reads via fits_read_tblbytes when selecting fixed-width
+        // binary columns (≥2 cols or full row). Deinterleave beats N× fits_read_col
+        // on wide projections; single-column / VLA / BIT / complex stay on fits_read_col.
         long requested_bytes = 0;
         bool has_vla = false;
         bool has_bit = false;
@@ -509,7 +537,11 @@ public:
         bool use_buffered = false;
         if (table_buffered_read_enabled() &&
             !is_ascii_ && !has_vla && !has_bit && !has_complex && row_width_bytes_ > 0) {
-            use_buffered = (requested_bytes == row_width_bytes_);
+            // Full-row OR multi-column projection (≥2 fixed cols): one
+            // fits_read_tblbytes + deinterleave beats N× fits_read_col on wide tables.
+            const long nsel = static_cast<long>(col_indices.size());
+            use_buffered = (requested_bytes == row_width_bytes_) ||
+                           (nsel >= 2 && requested_bytes > 0);
         }
 
         auto read_column_by_column = [&]() {
@@ -745,6 +777,7 @@ public:
         }
 
         for (int col_idx : col_indices) {
+            ensure_column_scale(col_idx);
             const auto& col = columns_[col_idx];
             if (col.type == FITSColumnType::VARIABLE) {
                 throw std::runtime_error("VLA columns not supported for mmap");
@@ -1060,9 +1093,8 @@ public:
         }
 #endif
 
-        // Scan rows (parallelized)
+        // Scan rows
         std::vector<long> valid_indices;
-        std::mutex indices_mutex;
 
         if (ctxs.size() == 1) {
             const auto& ctx = ctxs[0];
@@ -1245,20 +1277,9 @@ public:
                 }
             };
 
-            if (torch::get_num_threads() > 1) {
-                at::parallel_for(0, nrows_, 4096, [&](long start, long end) {
-                    std::vector<long> local;
-                    local.reserve(end - start);
-                    scan_chunk(start, end, local);
-                    if (!local.empty()) {
-                        std::lock_guard<std::mutex> lock(indices_mutex);
-                        valid_indices.insert(valid_indices.end(), local.begin(), local.end());
-                    }
-                });
-                std::sort(valid_indices.begin(), valid_indices.end());
-            } else {
-                scan_chunk(0, nrows_, valid_indices);
-            }
+            // Sequential scan: parallel chunk + mutex merge + sort loses on
+            // typical predicate widths vs a single pass (no N threshold).
+            scan_chunk(0, nrows_, valid_indices);
         } else {
             // Multi-filter fallback (single-threaded, uncommon case)
             std::vector<long> local;
@@ -1803,75 +1824,17 @@ public:
     }
 
     // Read a Variable Length Array column
-    // Returns a list of tensors (one per row)
+    // Returns a list of tensors (one per row) as views into one flat buffer.
     std::vector<torch::Tensor> read_vla_column(int col_idx, long start_row, long num_rows, const ColumnInfo& col) {
+        auto flat = read_vla_column_flat(col_idx, start_row, num_rows, col);
+        torch::Tensor& values = flat.first;
+        torch::Tensor& offs = flat.second;
         std::vector<torch::Tensor> column_data;
-        column_data.reserve(num_rows);
-
-        // Determine type code for cfitsio once.
-        int type_code = 0;
-        switch (col.torch_type) {
-            case torch::kFloat32: type_code = TFLOAT; break;
-            case torch::kFloat64: type_code = TDOUBLE; break;
-            case torch::kInt32: type_code = TINT; break;
-            case torch::kInt16: type_code = TSHORT; break;
-            case torch::kInt64: type_code = TLONGLONG; break;
-            case torch::kUInt8: type_code = TBYTE; break;
-            case torch::kBool: type_code = TLOGICAL; break;
-            default: type_code = TFLOAT;
-        }
-
-        // Bulk-read all VLA descriptors first to reduce per-row CFITSIO overhead.
-        std::vector<long> repeats(num_rows, 0);
-        std::vector<long> heap_offsets(num_rows, 0);
-        int status = 0;
-        fits_read_descripts(
-            fptr_, col_idx + 1, start_row, num_rows, repeats.data(), heap_offsets.data(), &status
-        );
-
-        if (status != 0) {
-            // Fallback to per-row descriptors for older/edge-case CFITSIO behavior.
-            status = 0;
-            for (long i = 0; i < num_rows; i++) {
-                long row = start_row + i;
-                fits_read_descript(fptr_, col_idx + 1, row, &repeats[i], &heap_offsets[i], &status);
-                if (status != 0) {
-                    char err_msg[81];
-                    fits_get_errstatus(status, err_msg);
-                    throw std::runtime_error(
-                        "Failed to read VLA descriptor: " + std::string(err_msg)
-                    );
-                }
-            }
-        }
-
+        column_data.reserve(static_cast<size_t>(num_rows));
+        const int64_t* op = offs.data_ptr<int64_t>();
         for (long i = 0; i < num_rows; i++) {
-            long repeat = repeats[i];
-            if (repeat < 0) {
-                repeat = 0;
-            }
-
-            std::vector<int64_t> shape;
-            shape.push_back(repeat);
-            torch::Tensor tensor = torch::empty(shape, torch::TensorOptions().dtype(col.torch_type));
-
-            if (repeat > 0) {
-                long row = start_row + i;
-                int anynul = 0;
-                status = 0;
-                fits_read_col(
-                    fptr_, type_code, col_idx + 1, row, 1, repeat, nullptr, tensor.data_ptr(), &anynul, &status
-                );
-                if (status != 0) {
-                    char err_msg[81];
-                    fits_get_errstatus(status, err_msg);
-                    throw std::runtime_error("Failed to read VLA data: " + std::string(err_msg));
-                }
-            }
-
-            column_data.push_back(tensor);
+            column_data.push_back(values.slice(0, op[i], op[i + 1]));
         }
-
         return column_data;
     }
 
@@ -1928,6 +1891,104 @@ public:
             case torch::kUInt8: type_code = TBYTE; break;
             case torch::kBool: type_code = TLOGICAL; break;
             default: type_code = TFLOAT;
+        }
+
+        size_t elem_bytes = 0;
+        switch (values.scalar_type()) {
+            case torch::kUInt8: elem_bytes = 1; break;
+            case torch::kInt16: elem_bytes = 2; break;
+            case torch::kInt32:
+            case torch::kFloat32: elem_bytes = 4; break;
+            case torch::kInt64:
+            case torch::kFloat64: elem_bytes = 8; break;
+            default: break;  // BOOL/LOGICAL: CFITSIO conversion required
+        }
+
+        // Contiguous heap → one pread + endian convert (skips N× fits_read_col).
+        // Default off until THEAP/offset edge cases are fully proven vs CFITSIO.
+        static const bool heap_pread_enabled = []() {
+            const char* env = std::getenv("TORCHFITS_VLA_HEAP_PREAD");
+            if (!env || env[0] == '\0') return false;
+            return (env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T');
+        }();
+        bool heap_contiguous =
+            heap_pread_enabled && (elem_bytes > 0 && total > 0 && !filename_.empty());
+        long expect_off = -1;
+        long first_heap = -1;
+        for (long i = 0; i < num_rows && heap_contiguous; i++) {
+            if (repeats[i] <= 0) {
+                continue;
+            }
+            if (first_heap < 0) {
+                first_heap = heap_offsets[i];
+                expect_off = heap_offsets[i] + repeats[i] * static_cast<long>(elem_bytes);
+            } else if (heap_offsets[i] != expect_off) {
+                heap_contiguous = false;
+            } else {
+                expect_off = heap_offsets[i] + repeats[i] * static_cast<long>(elem_bytes);
+            }
+        }
+
+        if (heap_contiguous && first_heap >= 0) {
+            LONGLONG headstart = 0, datastart = 0, dataend = 0;
+            status = 0;
+            fits_get_hduaddrll(fptr_, &headstart, &datastart, &dataend, &status);
+            long theap = 0;
+            int ks = 0;
+            fits_read_key_lng(fptr_, "THEAP", &theap, nullptr, &ks);
+            if (ks != 0 || theap <= 0) {
+                theap = row_width_bytes_ * nrows_;
+            }
+            if (status == 0) {
+                const off_t file_off =
+                    static_cast<off_t>(datastart + static_cast<LONGLONG>(theap) + first_heap);
+                const size_t nbytes = static_cast<size_t>(total) * elem_bytes;
+                int fd = ::open(filename_.c_str(), O_RDONLY);
+                if (fd >= 0) {
+                    std::vector<uint8_t> raw(nbytes);
+                    size_t got = 0;
+                    bool ok = true;
+                    while (got < nbytes) {
+                        const ssize_t n = ::pread(
+                            fd, raw.data() + got, nbytes - got,
+                            file_off + static_cast<off_t>(got));
+                        if (n <= 0) {
+                            ok = false;
+                            break;
+                        }
+                        got += static_cast<size_t>(n);
+                    }
+                    ::close(fd);
+                    if (ok) {
+                        uint8_t* dst = static_cast<uint8_t*>(values.data_ptr());
+                        if (elem_bytes == 1 || !host_is_little_endian()) {
+                            std::memcpy(dst, raw.data(), nbytes);
+                        } else if (elem_bytes == 2) {
+                            for (size_t i = 0; i < static_cast<size_t>(total); i++) {
+                                uint16_t v;
+                                std::memcpy(&v, raw.data() + i * 2, 2);
+                                v = bswap_16(v);
+                                std::memcpy(dst + i * 2, &v, 2);
+                            }
+                        } else if (elem_bytes == 4) {
+                            for (size_t i = 0; i < static_cast<size_t>(total); i++) {
+                                uint32_t v;
+                                std::memcpy(&v, raw.data() + i * 4, 4);
+                                v = bswap_32(v);
+                                std::memcpy(dst + i * 4, &v, 4);
+                            }
+                        } else {
+                            for (size_t i = 0; i < static_cast<size_t>(total); i++) {
+                                uint64_t v;
+                                std::memcpy(&v, raw.data() + i * 8, 8);
+                                v = bswap_64(v);
+                                std::memcpy(dst + i * 8, &v, 8);
+                            }
+                        }
+                        return std::make_pair(values, offs);
+                    }
+                }
+            }
         }
 
         int64_t cursor = 0;
@@ -1989,6 +2050,8 @@ public:
         std::unordered_map<std::string, ColumnData>& result) {
 
         // 16MB chunk target, then align with CFITSIO's suggested table row buffer.
+        // Clamp to the requested row window so small tables do not allocate a full
+        // 16 MiB scratch (visible as rss when mmap/cache are off in scorecard).
         const size_t TARGET_CHUNK_SIZE = 16 * 1024 * 1024;
         long rows_per_chunk = std::max(1L, (long)(TARGET_CHUNK_SIZE / row_width_bytes_));
         {
@@ -2004,19 +2067,59 @@ public:
                 }
             }
         }
+        rows_per_chunk = std::max(1L, std::min(rows_per_chunk, num_rows));
 
-        std::vector<uint8_t> buffer(rows_per_chunk * row_width_bytes_);
+        std::vector<uint8_t> buffer(
+            static_cast<size_t>(rows_per_chunk) * row_width_bytes_);
+
+        // Prefer direct pread of the table heap over fits_read_tblbytes when we
+        // have a local path (same bytes, less CFITSIO overhead on cold opens).
+        int data_fd = -1;
+        LONGLONG data_offset = 0;
+        if (!filename_.empty() && filename_.find('[') == std::string::npos) {
+            LONGLONG headstart = 0, dataend = 0;
+            int addr_status = 0;
+            fits_get_hduaddrll(fptr_, &headstart, &data_offset, &dataend, &addr_status);
+            if (addr_status == 0 && data_offset > 0) {
+                data_fd = ::open(filename_.c_str(), O_RDONLY);
+            }
+        }
 
         long rows_read = 0;
         while (rows_read < num_rows) {
             long current_chunk_rows = std::min(rows_per_chunk, num_rows - rows_read);
 
             int status = 0;
-            // Read raw bytes for the chunk of rows
-            fits_read_tblbytes(fptr_, start_row + rows_read, 1, current_chunk_rows * row_width_bytes_,
-                             buffer.data(), &status);
+            if (data_fd >= 0) {
+                const off_t file_off = static_cast<off_t>(
+                    data_offset +
+                    static_cast<LONGLONG>(start_row - 1 + rows_read) * row_width_bytes_);
+                const size_t nbytes =
+                    static_cast<size_t>(current_chunk_rows) * row_width_bytes_;
+                size_t got = 0;
+                while (got < nbytes) {
+                    const ssize_t n = ::pread(
+                        data_fd, buffer.data() + got, nbytes - got,
+                        file_off + static_cast<off_t>(got));
+                    if (n <= 0) {
+                        if (data_fd >= 0) {
+                            ::close(data_fd);
+                        }
+                        throw std::runtime_error("Failed to pread table bytes");
+                    }
+                    got += static_cast<size_t>(n);
+                }
+            } else {
+                fits_read_tblbytes(
+                    fptr_, start_row + rows_read, 1,
+                    current_chunk_rows * row_width_bytes_, buffer.data(), &status);
+            }
 
             if (status != 0) {
+                 if (data_fd >= 0) {
+                     ::close(data_fd);
+                     data_fd = -1;
+                 }
                  char err_msg[81];
                  fits_get_errstatus(status, err_msg);
                  throw std::runtime_error("Failed to read table bytes: " + std::string(err_msg));
@@ -2036,6 +2139,9 @@ public:
             }
 
             rows_read += current_chunk_rows;
+        }
+        if (data_fd >= 0) {
+            ::close(data_fd);
         }
     }
 
@@ -2067,12 +2173,24 @@ public:
         // with grain size 2048, bringing the buffered read path to
         // parity with the mmap path for multi-core systems.
         const bool swap_endian = host_is_little_endian();
+        // Tiny windows: avoid parallel_for scheduling overhead (scorecard small-N).
+        const long grain = (num_rows < 512) ? num_rows : 2048;
+        auto for_rows = [&](auto&& body) {
+            if (num_rows <= 0) {
+                return;
+            }
+            if (num_rows < 512) {
+                body(0L, num_rows);
+            } else {
+                at::parallel_for(0, num_rows, grain, body);
+            }
+        };
 
         if (col.type == FITSColumnType::LOGICAL) {
              // Convert 'T'/'F' (or '1'/'0') to bool
              bool* out = reinterpret_cast<bool*>(dest);
              const int repeat = col.repeat;
-             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+             for_rows([&](long start, long end) {
                  for (long i = start; i < end; i++) {
                      const uint8_t* src_cell = buffer + i * row_stride + col_offset;
                      for (int j = 0; j < repeat; j++) {
@@ -2083,14 +2201,14 @@ public:
              });
         } else if (col.type == FITSColumnType::STRING || col.type == FITSColumnType::BYTE) {
              // No swapping needed for bytes/strings
-             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+             for_rows([&](long start, long end) {
                  for (long i = start; i < end; i++) {
                      std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
                  }
              });
         } else if (col_width == 2) {
             const int repeat = col.repeat;
-            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            for_rows([&](long start, long end) {
                 for (long i = start; i < end; i++) {
                     const uint8_t* src_cell = buffer + i * row_stride + col_offset;
                     uint16_t* dest_cell = (uint16_t*)(dest + i * total_width);
@@ -2103,7 +2221,7 @@ public:
             });
         } else if (col_width == 4) {
             const int repeat = col.repeat;
-            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            for_rows([&](long start, long end) {
                 for (long i = start; i < end; i++) {
                     const uint8_t* src_cell = buffer + i * row_stride + col_offset;
                     uint32_t* dest_cell = (uint32_t*)(dest + i * total_width);
@@ -2116,7 +2234,7 @@ public:
             });
         } else if (col_width == 8) {
             const int repeat = col.repeat;
-            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            for_rows([&](long start, long end) {
                 for (long i = start; i < end; i++) {
                     const uint8_t* src_cell = buffer + i * row_stride + col_offset;
                     uint64_t* dest_cell = (uint64_t*)(dest + i * total_width);
@@ -2129,7 +2247,7 @@ public:
             });
         } else {
             // Fallback memcpy (should not happen for standard types needing swap)
-             at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+             for_rows([&](long start, long end) {
                  for (long i = start; i < end; i++) {
                      std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
                  }

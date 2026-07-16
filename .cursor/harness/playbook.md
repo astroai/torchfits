@@ -13,3 +13,6 @@
 
 - id: minimal-diff
   desc: Smallest correct change; match existing repo style and tools.
+
+- id: docs-api-sync
+  desc: Root table helpers return dict[str,Tensor]; Arrow path is torchfits.table.*; never document env vars absent from src; integrity tests guard Core I/O signature fences + api.md env table.

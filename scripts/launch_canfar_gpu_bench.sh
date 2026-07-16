@@ -7,10 +7,29 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 GIT_REF="${TORCHFITS_GIT_REF:-main}"
-RUN_ID="${TORCHFITS_BENCH_RUN_ID:-exhaustive_cuda_0.9.0_$(date -u +%Y%m%d_%H%M%S)}"
 MODE="${TORCHFITS_BENCH_MODE:-exhaustive}"
+case "${MODE}" in
+  exhaustive-cpu)
+    DEFAULT_RUN_ID="exhaustive_cpu_$(date -u +%Y%m%d_%H%M%S)"
+    # Omit --gpu (do not pass --gpu 0 — Skaha rejects zero). CPU-only scorecard
+    # is still enforced in-container via --no-gpu.
+    DEFAULT_GPU=""
+    ;;
+  *)
+    DEFAULT_RUN_ID="exhaustive_cuda_$(date -u +%Y%m%d_%H%M%S)"
+    DEFAULT_GPU=1
+    ;;
+esac
+RUN_ID="${TORCHFITS_BENCH_RUN_ID:-${DEFAULT_RUN_ID}}"
 IMAGE="${TORCHFITS_CANFAR_IMAGE:-astroai/base:latest}"
-GPU="${TORCHFITS_CANFAR_GPU:-1}"
+# Empty TORCHFITS_CANFAR_GPU means "omit --gpu" (CPU session).
+if [[ -n "${TORCHFITS_CANFAR_GPU+x}" ]]; then
+  GPU="${TORCHFITS_CANFAR_GPU}"
+else
+  GPU="${DEFAULT_GPU}"
+fi
+CPU="${TORCHFITS_CANFAR_CPU:-8}"
+MEMORY="${TORCHFITS_CANFAR_MEMORY:-32}"
 # ponytail: CANFAR session names allow [A-Za-z0-9-] only (no dots/underscores)
 SAFE_TAG="$(printf '%s' "${RUN_ID}" | tr '_.' '--' | tr -cd '[:alnum:]-')"
 NAME="${TORCHFITS_CANFAR_NAME:-torchfits-gpu-${SAFE_TAG}}"
@@ -28,33 +47,51 @@ if ! command -v canfar >/dev/null; then
   exit 1
 fi
 
-echo "=== CANFAR GPU bench launcher ===" | tee "${LOCAL_OUT}/launcher.log"
-echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "image=${IMAGE} gpu=${GPU} ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
-echo "vos_dest=${VOS_DEST}" | tee -a "${LOCAL_OUT}/launcher.log"
+LAUNCH_LOG="${LOCAL_OUT}/launcher.log"
+if [[ -z "${TORCHFITS_CANFAR_EXISTING_SESSION:-}" ]]; then
+  : > "${LAUNCH_LOG}"
+fi
 
-# ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
-REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
-REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
+echo "=== CANFAR GPU bench launcher ===" | tee -a "${LAUNCH_LOG}"
+echo "server: $(canfar auth show 2>&1 | rg 'Server' || true)" | tee -a "${LAUNCH_LOG}"
+echo "image=${IMAGE} gpu=${GPU:-omit} cpu=${CPU} memory=${MEMORY}G ref=${GIT_REF} mode=${MODE} run_id=${RUN_ID}" | tee -a "${LAUNCH_LOG}"
+echo "vos_dest=${VOS_DEST}" | tee -a "${LAUNCH_LOG}"
 
-CREATE_LOG="${LOCAL_OUT}/create.log"
-set +o pipefail
-canfar create headless "${IMAGE}" \
-  --name "${NAME}" \
-  --gpu "${GPU}" \
-  --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}" \
-  --env "TORCHFITS_BENCH_MODE=${MODE}" \
-  --env "TORCHFITS_GIT_REF=${GIT_REF}" \
-  --env "TORCHFITS_BENCH_LOG_REDIRECTED=1" \
-  --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
-  --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
-  --env "TORCHFITS_VOS_DEST=${VOS_DEST}" \
-  -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
-CREATE_RC=${PIPESTATUS[0]}
-set -o pipefail
-if [[ "${CREATE_RC}" -ne 0 ]]; then
-  if rg -q 'No authentication provided for unknown or private image' "${CREATE_LOG}" 2>/dev/null; then
-    cat >&2 <<EOF
+if [[ -n "${TORCHFITS_CANFAR_EXISTING_SESSION:-}" ]]; then
+  SESSION_ID="${TORCHFITS_CANFAR_EXISTING_SESSION}"
+  echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
+  echo "poller resume session_id=${SESSION_ID}" | tee -a "${LAUNCH_LOG}"
+else
+  # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
+  REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+  REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
+
+  CREATE_LOG="${LOCAL_OUT}/create.log"
+  CREATE_ARGS=(
+    create headless "${IMAGE}"
+    --name "${NAME}"
+    --cpu "${CPU}"
+    --memory "${MEMORY}"
+    --env "TORCHFITS_BENCH_RUN_ID=${RUN_ID}"
+    --env "TORCHFITS_BENCH_MODE=${MODE}"
+    --env "TORCHFITS_GIT_REF=${GIT_REF}"
+    --env "TORCHFITS_BENCH_LOG_REDIRECTED=1"
+    --env "PIXI_HOME=/scratch/torchfits-pixi-home"
+    --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache"
+    --env "TORCHFITS_VOS_DEST=${VOS_DEST}"
+    --env "TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-${CPU}}"
+    --env "OMP_NUM_THREADS=${OMP_NUM_THREADS:-${CPU}}"
+  )
+  if [[ -n "${GPU}" ]]; then
+    CREATE_ARGS+=(--gpu "${GPU}")
+  fi
+  set +o pipefail
+  canfar "${CREATE_ARGS[@]}" -- bash -c "${REMOTE_CMD}" 2>&1 | tee "${CREATE_LOG}"
+  CREATE_RC=${PIPESTATUS[0]}
+  set -o pipefail
+  if [[ "${CREATE_RC}" -ne 0 ]]; then
+    if rg -q 'No authentication provided for unknown or private image' "${CREATE_LOG}" 2>/dev/null; then
+      cat >&2 <<EOF
 canfar create failed: private registry image (${IMAGE}).
 
 ${IMAGE} is not in \`canfar image ls\`; x509 alone only pulls contributed/public
@@ -67,26 +104,90 @@ images. For astroai/base configure Harbor once:
 Or use a listed image, e.g.:
   TORCHFITS_CANFAR_IMAGE=astroai/notebook:latest pixi run bench-canfar-gpu
 EOF
+    fi
+    echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
+    exit 1
   fi
-  echo "canfar create failed (rc=${CREATE_RC}); see ${CREATE_LOG}" >&2
-  exit 1
-fi
 
-SESSION_ID="$(
-  python3 - "${CREATE_LOG}" <<'PY'
+  SESSION_ID="$(
+    python3 - "${CREATE_LOG}" <<'PY'
 import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
 m = re.search(r"ID:\s*([^)]+)\)", text)
 print(m.group(1).strip() if m else "")
 PY
-)"
-if [[ -z "${SESSION_ID}" ]]; then
-  echo "could not parse session ID from ${CREATE_LOG}" >&2
-  exit 1
+  )"
+  if [[ -z "${SESSION_ID}" ]]; then
+    echo "could not parse session ID from ${CREATE_LOG}" >&2
+    exit 1
+  fi
+  echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
+  echo "session_id=${SESSION_ID}" | tee -a "${LAUNCH_LOG}"
 fi
-echo "${SESSION_ID}" > "${LOCAL_OUT}/session_id.txt"
-echo "session_id=${SESSION_ID}" | tee -a "${LOCAL_OUT}/launcher.log"
+echo "${RUN_ID}" > "${LOCAL_OUT}/run_id.txt"
+echo "${VOS_DEST}" > "${LOCAL_OUT}/vos_dest.txt"
+
+# Detach poll+fetch by default so a dead parent shell cannot drop durable results.
+# Set TORCHFITS_CANFAR_FOREGROUND=1 to wait in-process.
+if [[ "${TORCHFITS_CANFAR_FOREGROUND:-0}" != "1" && -z "${TORCHFITS_CANFAR_POLLER:-}" ]]; then
+  POLLER_LOG="${LOCAL_OUT}/poller.log"
+  # Double-fork out of the launcher process group (Cursor/agent shells
+  # often reap the whole group when the parent command exits; nohup alone
+  # is not enough without leaving the session).
+  CANFAR_BIN="$(command -v canfar)"
+  CANFAR_DIR="$(cd "$(dirname "${CANFAR_BIN}")" && pwd)"
+  POLLER_PATH="${PATH}:${CANFAR_DIR}"
+  {
+    echo '#!/usr/bin/env bash'
+    echo "export PATH=$(printf %q "${POLLER_PATH}")"
+    echo 'export TORCHFITS_CANFAR_POLLER=1'
+    echo 'export TORCHFITS_CANFAR_FOREGROUND=1'
+    echo "export TORCHFITS_GIT_REF=$(printf %q "${GIT_REF}")"
+    echo "export TORCHFITS_BENCH_MODE=$(printf %q "${MODE}")"
+    echo "export TORCHFITS_BENCH_RUN_ID=$(printf %q "${RUN_ID}")"
+    echo "export TORCHFITS_CANFAR_IMAGE=$(printf %q "${IMAGE}")"
+    echo "export TORCHFITS_CANFAR_GPU=$(printf %q "${GPU}")"
+    echo "export TORCHFITS_CANFAR_CPU=$(printf %q "${CPU}")"
+    echo "export TORCHFITS_CANFAR_MEMORY=$(printf %q "${MEMORY}")"
+    echo "export TORCHFITS_CANFAR_NAME=$(printf %q "${NAME}")"
+    echo "export TORCHFITS_VOS_DEST=$(printf %q "${VOS_DEST}")"
+    echo "export TORCHFITS_CANFAR_POLL_SECS=$(printf %q "${POLL_SECS}")"
+    echo "export TORCHFITS_CANFAR_MAX_WAIT_SECS=$(printf %q "${MAX_WAIT_SECS}")"
+    echo "export TORCHFITS_CANFAR_EXISTING_SESSION=$(printf %q "${SESSION_ID}")"
+    echo "exec bash $(printf %q "${ROOT_DIR}/scripts/launch_canfar_gpu_bench.sh")"
+  } > "${LOCAL_OUT}/poller_daemon.sh"
+  chmod +x "${LOCAL_OUT}/poller_daemon.sh"
+  python3 - "${LOCAL_OUT}/poller_daemon.sh" "${LOCAL_OUT}/poller.pid" "${POLLER_LOG}" <<'PY'
+import os, sys
+
+daemon, pid_path, log_path = sys.argv[1:4]
+# First fork.
+if os.fork() > 0:
+    raise SystemExit(0)
+os.setsid()
+# Second fork — orphan under launchd/init.
+if os.fork() > 0:
+    raise SystemExit(0)
+os.chdir("/")
+os.umask(0)
+with open(log_path, "a", encoding="utf-8") as log:
+    os.dup2(log.fileno(), 1)
+    os.dup2(log.fileno(), 2)
+devnull = open(os.devnull, "r")
+os.dup2(devnull.fileno(), 0)
+pid = os.spawnvpe(os.P_NOWAIT, "/bin/bash", ["bash", daemon], os.environ)
+with open(pid_path, "w", encoding="utf-8") as fh:
+    fh.write(str(pid))
+os.waitpid(pid, 0)
+raise SystemExit(0)
+PY
+  # Give the daemon a moment to write the pid file.
+  sleep 0.2
+  echo "detached poller pid=$(cat "${LOCAL_OUT}/poller.pid") log=${POLLER_LOG}" | tee -a "${LAUNCH_LOG}"
+  echo "session_id=${SESSION_ID} run_id=${RUN_ID} vos=${VOS_DEST}"
+  exit 0
+fi
 
 terminal_status() {
   local info_status ps_status

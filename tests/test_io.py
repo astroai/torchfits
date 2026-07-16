@@ -103,29 +103,18 @@ class TestIORead:
         assert res.dtype == torch.bfloat16
 
     def test_read_scale_on_device_scaled(self, mock_cpp):
-        """Test scale_on_device when cpp says scaled=True."""
-        mock_cpp.read_full_raw_with_scale.return_value = (
-            torch.ones((10, 10)),
-            True,
-            2.0,
-            1.0,
-        )
+        """Test scale_on_device uses thin read_full (scale applied in C++)."""
+        mock_cpp.read_full.return_value = torch.full((10, 10), 3.0)
         res = io.read("file.fits", hdu=0, scale_on_device=True, raw_scale=False)
-        mock_cpp.read_full_raw_with_scale.assert_called_once_with("file.fits", 0, True)
+        mock_cpp.read_full.assert_called_once_with("file.fits", 0, True)
         assert res.dtype == torch.float32
-        # (1 * 2.0) + 1.0 = 3.0
         assert torch.all(res == 3.0)
 
     def test_read_scale_on_device_not_scaled(self, mock_cpp):
-        """Test scale_on_device when cpp says scaled=False."""
-        mock_cpp.read_full_raw_with_scale.return_value = (
-            torch.zeros((10, 10)),
-            False,
-            1.0,
-            0.0,
-        )
+        """Test scale_on_device thin path when values need no host rescale."""
+        mock_cpp.read_full.return_value = torch.zeros((10, 10))
         io.read("file.fits", hdu=0, scale_on_device=True, raw_scale=False)
-        mock_cpp.read_full_raw_with_scale.assert_called_once_with("file.fits", 0, True)
+        mock_cpp.read_full.assert_called_once_with("file.fits", 0, True)
 
     def test_read_use_cache_raw_scale(self, mock_cpp):
         """Test use_cache=True and raw_scale=True."""
@@ -166,7 +155,7 @@ class TestIORead:
         mock_cpp.read_full_raw.assert_called_once_with("file.fits", 0, True)
 
     def test_read_no_cache_no_raw_scale_nommap(self, mock_cpp):
-        """Test use_cache=False, raw_scale=False, mmap=False."""
+        """Test use_cache=False, raw_scale=False, mmap=False uses read_full_nocache."""
         io.read(
             "file.fits",
             hdu=0,
@@ -175,10 +164,10 @@ class TestIORead:
             mmap=False,
             scale_on_device=False,
         )
-        mock_cpp.read_full_unmapped.assert_called_once_with("file.fits", 0)
+        mock_cpp.read_full_nocache.assert_called_once_with("file.fits", 0, False)
 
     def test_read_no_cache_no_raw_scale_mmap(self, mock_cpp):
-        """Test use_cache=False, raw_scale=False, mmap=True."""
+        """Test use_cache=False, raw_scale=False, mmap=True uses read_full_nocache."""
         io.read(
             "file.fits",
             hdu=0,

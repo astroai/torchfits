@@ -63,6 +63,55 @@ def main() -> None:
             f"stream_table: {len(chunks)} chunk(s), ids={[c['id'].tolist() for c in chunks]}"
         )
 
+        # --- In-place table mutations via torchfits.table ---
+        # Append new rows to the existing FITS file in-place
+        torchfits.table.append_rows(
+            path,
+            {
+                "ra": np.array([203.0], dtype=np.float64),
+                "dec": np.array([48.0], dtype=np.float64),
+                "flux": np.array([4.0], dtype=np.float32),
+                "id": np.array([4], dtype=np.int32),
+                "flag": np.array([False], dtype=bool),
+            },
+            hdu=1,
+        )
+        print("\nAppended 1 row to FITS table.")
+
+        # Update specific rows (e.g., set flux to 9.9 for row indices 1 and 2)
+        torchfits.table.update_rows(
+            path,
+            {"flux": np.array([9.9, 9.9], dtype=np.float32)},
+            row_slice=slice(1, 3),
+            hdu=1,
+        )
+        print("Updated flux for rows index 1 to 3.")
+
+        # Insert a new column (quality)
+        torchfits.table.insert_column(
+            path,
+            "quality",
+            np.array([100, 100, 100, 100], dtype=np.int16),
+            hdu=1,
+            format="I",
+        )
+        print("Inserted new column 'quality'.")
+
+        # Rename a column (ra -> right_ascension)
+        torchfits.table.rename_columns(path, {"ra": "right_ascension"}, hdu=1)
+        print("Renamed column 'ra' to 'right_ascension'.")
+
+        # Drop a column (flag)
+        torchfits.table.drop_columns(path, ["flag"], hdu=1)
+        print("Dropped column 'flag'.")
+
+        # Read modified table back to verify in-place changes
+        modified = torchfits.read_table(path, hdu=1)
+        print("Modified table columns:", list(modified.keys()))
+        print(f"  right_ascension: {modified['right_ascension'].tolist()}")
+        print(f"  flux (updated): {modified['flux'].tolist()}")
+        print(f"  quality (inserted): {modified['quality'].tolist()}")
+
         # --- Write back with table.write ---
         out_path = path.replace(".fits", "_out.fits")
         new_data = {

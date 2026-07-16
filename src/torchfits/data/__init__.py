@@ -532,7 +532,7 @@ class FitsTableIterableDataset(IterableDataset[Any]):
 # ---------------------------------------------------------------------------
 
 CutoutSpec = tuple[str, int, int, int, int, int]
-"""(path, hdu, x1, y1, x2, y2) inclusive pixel bounds."""
+"""(path, hdu, x1, y1, x2, y2) half-open [x1,x2)x[y1,y2) exclusive upper bounds (matches read_subset)."""
 
 
 class FitsCutoutDataset(Dataset[Any]):

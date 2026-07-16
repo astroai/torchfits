@@ -5,6 +5,49 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
+- Signed-byte (`BZERO=-128`) and unsigned smart device reads convert on the
+  host then copy once to CUDA/MPS; device destinations use logical `read_full`
+  then one H2D (no size-gated scale paths).
+- One-shot image reads use thin ``cpp.read_full`` instead of
+  ``read_full_cached`` handle scaffolding (that path lost ~15% to
+  fitsio+``from_numpy`` on hcompress). Handle cache remains for persistent
+  subset readers.
+- ``read_subset`` / ``SubsetReader`` keep signed-byte and unsigned integer
+  conventions as narrow dtypes (int8/uint16/uint32) instead of float-promoting
+  every cutout — matches full-image logical dtypes and fitsio.
+- Automatic table `where=` with ``mmap=True`` uses the documented native
+  mmap-scan pushdown when safe; ``mmap=False`` reads then tensor/Arrow-filters.
+  Explicit ``backend="cpp"`` always requests pushdown when safe.
+- CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
+  use direct tile I/O instead of the buffered path.
+- Multi-byte mmap image reads use NEON/SSSE3 endian convert for all sizes
+  (no 64k element fallthrough).
+- Uncompressed BYTE_IMG reads use direct `pread` for both mmap on and off
+  (avoids CFITSIO `fits_read_img` overhead on large int8).
+- Deficit scorecard: **images** any lag > float-timer ε; **Arrow tables** allow
+  up to 1.05×. Fitsio is excluded from mmap-on peers for both images and tables
+  (fitsio has no mmap mode).
+- Repeated cutout benches (CPU + GPU) use the persistent subset reader so the
+  smart family matches fitsio’s open-once handle pattern.
+- Image specialized scorecards use Tensor peers (`fitsio_torch` /
+  `astropy_torch`); bare ndarray peers emit under `family=numpy` for
+  NumPy→PyTorch switch cost without inventing wrap-only deficits.
+
+### Changed
+
+- Image GPU timings interleave libraries (not only compressed) to reduce
+  order bias on MPS microbenches.
+- Native table predicate scan is sequential (parallel chunk+merge+sort lost).
+- CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
+- `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
+  focused iteration without a full exhaustive matrix.
+- Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
+
 ## [0.9.1] - 2026-07-15
 
 ### Fixed
@@ -90,14 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`should_skip_cpp_numpy_for_where`** — internal alias removed from
   `torchfits._table_engine`. Use `should_skip_cpp_for_where`.
 
-### Changed
-
-- **Blocking mypy in CI** — the `mypy src/` step in GitHub Actions is now a
-  hard gate (previously non-blocking via `|| echo`). All 103 type errors have
-  been resolved across 18+ source files. Added `[[tool.mypy.overrides]]` in
-  `pyproject.toml` for `pyarrow.compute` (`attr-defined`) and `pyarrow.*`
-  (`ignore_missing_imports`).
-
 ## [0.7.0] - 2026-07-10
 
 ### Added
@@ -143,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Unified C++ table chunk reads:** Refactored `_read_cpp_numpy_table` to clean up the 7-deep C++ dispatch fallback chain and `hasattr` checks, delegating directly to the modern C++ `TableReader` and `read_fits_table_rows_numpy` APIs. This successfully resolves Roadmap Track B1.
 - **Version synchronization:** Unified package version triplet to `0.6.0` across `pyproject.toml`, `pixi.toml`, and package source.
+- **Blocking mypy in CI** — the `mypy src/` step in GitHub Actions is now a hard gate (previously non-blocking via `|| echo`). All 103 type errors have been resolved across 18+ source files. Added `[[tool.mypy.overrides]]` in `pyproject.toml` for `pyarrow.compute` (`attr-defined`) and `pyarrow.*` (`ignore_missing_imports`).
 
 ## [0.6.0b2] - 2026-07-09
 

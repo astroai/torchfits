@@ -160,9 +160,11 @@ pip install polars duckdb  # optional table interop
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: No module named 'torchfits.cpp'`**
+**`ModuleNotFoundError: No module named 'torchfits._C'`** (or `'torchfits.cpp'`)
 
-The native extension did not build. Check that CMake, a C++17 compiler, and
+The compiled extension (`torchfits._C`) did not build. `torchfits.cpp` is a
+pure-Python compatibility shim that re-exports it, so either import failure
+points at the missing extension. Check that CMake, a C++17 compiler, and
 Ninja are installed. Re-run with verbose output:
 
 ```bash

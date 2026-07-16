@@ -15,6 +15,7 @@
 #include "torchfits_torch.h"
 #include "torch_compat.h"
 #include "fits_rw.h"
+#include "fits_detail.h"
 #include "cache.h"
 #include "table_types.h"
 #include "table_reader.h"
@@ -31,11 +32,23 @@ nb::dict table_result_to_python(
     nb::dict result_dict;
     for (auto& [key, col_data] : result_map) {
         if (col_data.is_vla) {
-            if (as_numpy && col_data.vla_offsets.defined()) {
-                result_dict[key.c_str()] = nb::make_tuple(
-                    tensor_to_numpy_object(col_data.fixed_data),
-                    tensor_to_numpy_object(col_data.vla_offsets)
-                );
+            if (col_data.vla_offsets.defined() && col_data.fixed_data.defined()) {
+                if (as_numpy) {
+                    result_dict[key.c_str()] = nb::make_tuple(
+                        tensor_to_numpy_object(col_data.fixed_data),
+                        tensor_to_numpy_object(col_data.vla_offsets)
+                    );
+                    continue;
+                }
+                // One flat buffer → list of row views (avoids per-row CFITSIO + extra C++ vector).
+                const torch::Tensor& values = col_data.fixed_data;
+                const int64_t* op = col_data.vla_offsets.data_ptr<int64_t>();
+                const long n = col_data.vla_offsets.size(0) - 1;
+                nb::list vla_list;
+                for (long i = 0; i < n; i++) {
+                    vla_list.append(tensor_to_python(values.slice(0, op[i], op[i + 1])));
+                }
+                result_dict[key.c_str()] = vla_list;
                 continue;
             }
             nb::list vla_list;
@@ -73,7 +86,7 @@ void bind_table(nb::module_& m) {
                              const std::vector<std::string>& column_names,
                              long start_row, long num_rows) -> nb::object {
             nb::gil_scoped_release release;
-            auto result_map = self.read_columns(column_names, start_row, num_rows);
+            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
             nb::gil_scoped_acquire acquire;
             return table_result_to_python(result_map, false);
         }, nb::arg("column_names") = std::vector<std::string>(),
@@ -147,7 +160,7 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table", [](const std::string& filename, int hdu_num) -> nb::object {
         nb::gil_scoped_release release;
         torchfits::TableReader reader(filename, hdu_num);
-        auto result_map = reader.read_columns({}, 1, -1);
+        auto result_map = reader.read_columns({}, 1, -1, true);
         nb::gil_scoped_acquire acquire;
         nb::dict result_dict;
         for (auto& [key, col_data] : result_map) {
@@ -168,7 +181,7 @@ void bind_table(nb::module_& m) {
         nb::gil_scoped_release release;
         fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
         torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns({}, 1, -1);
+        auto result_map = reader.read_columns({}, 1, -1, true);
         nb::gil_scoped_acquire acquire;
         return table_result_to_python(result_map, false);
     });
@@ -179,7 +192,7 @@ void bind_table(nb::module_& m) {
         nb::gil_scoped_release release;
         fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
         torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows);
+        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
         nb::gil_scoped_acquire acquire;
         return table_result_to_python(result_map, false);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
@@ -196,12 +209,12 @@ void bind_table(nb::module_& m) {
             fitsfile* fptr = nullptr;
             int status = 0;
             torchfits::check_fits_filename_security(filename);
-            fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
+            status = torchfits::detail::open_fits_readonly(&fptr, filename);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");
             }
             torchfits::TableReader reader(fptr, hdu_num);
-            auto result_map = reader.read_columns(column_names);
+            auto result_map = reader.read_columns(column_names, 1, -1, true);
             nb::gil_scoped_acquire acquire;
             nb::object out = nb::object(table_result_to_python(result_map, false));
             int close_status = 0;
@@ -222,12 +235,12 @@ void bind_table(nb::module_& m) {
             fitsfile* fptr = nullptr;
             int status = 0;
             torchfits::check_fits_filename_security(filename);
-            fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
+            status = torchfits::detail::open_fits_readonly(&fptr, filename);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");
             }
             torchfits::TableReader reader(fptr, hdu_num);
-            auto result_map = reader.read_columns(column_names, start_row, num_rows);
+            auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
             nb::gil_scoped_acquire acquire;
             nb::object out = nb::object(table_result_to_python(result_map, false));
             int close_status = 0;
@@ -277,7 +290,7 @@ void bind_table(nb::module_& m) {
             fitsfile* fptr = nullptr;
             int status = 0;
             torchfits::check_fits_filename_security(filename);
-            fits_open_file(&fptr, filename.c_str(), 0 /* READONLY */, &status);
+            status = torchfits::detail::open_fits_readonly(&fptr, filename);
             if (status != 0 || !fptr) {
                 throw std::runtime_error("Could not open FITS file");
             }

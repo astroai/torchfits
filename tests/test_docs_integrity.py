@@ -55,6 +55,7 @@ def test_docs_reference_existing_local_files() -> None:
         "examples/example_table.py",
         "examples/example_table_interop.py",
         "examples/example_table_recipes.py",
+        "examples/example_time_series.py",
         "benchmarks/bench_all.py",
         "benchmarks/bench_arrow_tables.py",
         "benchmarks/bench_cpp_backend.py",
@@ -136,6 +137,109 @@ def test_public_docs_do_not_reference_missing_root_cache_aliases() -> None:
                 offenders.append(f"{path.relative_to(ROOT)} references {call!r}")
 
     assert not offenders, "\n".join(offenders)
+
+
+def test_docs_do_not_advertise_unimplemented_worker_handle_env() -> None:
+    """TORCHFITS_WORKER_HANDLE is roadmap-only; docs must not present it as settable."""
+    docs = [
+        ROOT / "README.md",
+        ROOT / "docs" / "api.md",
+        ROOT / "docs" / "install.md",
+        ROOT / "docs" / "examples.md",
+        ROOT / "docs" / "index.md",
+        ROOT / "docs" / "migration_astropy.md",
+        ROOT / "docs" / "migration_fitsio.md",
+        ROOT / "docs" / "migration_datasets.md",
+    ]
+    # Allowed: honesty notes that the feature does not exist.
+    # Forbidden: documentation that tells users to set / rely on it.
+    forbidden = [
+        "TORCHFITS_WORKER_HANDLE=1",
+        "setting the environment variable `TORCHFITS_WORKER_HANDLE",
+        "set the environment variable `TORCHFITS_WORKER_HANDLE",
+        "When the environment variable `TORCHFITS_WORKER_HANDLE",
+    ]
+    offenders: list[str] = []
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        for claim in forbidden:
+            if claim in text:
+                offenders.append(f"{path.relative_to(ROOT)} contains {claim!r}")
+    assert not offenders, "\n".join(offenders)
+
+
+def test_api_md_env_var_table_matches_source() -> None:
+    """Only document TORCHFITS_* env vars that exist in the tree (table rows)."""
+    docs_text = "\n".join(
+        (ROOT / "docs" / name).read_text(encoding="utf-8")
+        for name in ("api.md", "architecture.md", "api-tables.md", "api-core-io.md")
+        if (ROOT / "docs" / name).exists()
+    )
+    # Rows in Environment variables Markdown tables: | `TORCHFITS_...` | ...
+    documented = set(re.findall(r"\|\s*`?(TORCHFITS_[A-Z0-9_]+)`?\s*\|", docs_text))
+    source_envs: set[str] = set()
+    for path in (ROOT / "src").rglob("*"):
+        if path.suffix not in {".py", ".cpp", ".h", ".hpp", ".cc", ".cu"}:
+            continue
+        if not path.is_file():
+            continue
+        source_envs.update(
+            re.findall(
+                r"TORCHFITS_[A-Z0-9_]+",
+                path.read_text(encoding="utf-8", errors="ignore"),
+            )
+        )
+    missing = sorted(documented - source_envs)
+    assert not missing, f"api.md env table documents missing vars: {missing}"
+
+
+def test_api_md_core_io_signatures_match_live() -> None:
+    """Guard against invented parameters on the most-copied Core I/O signatures."""
+    import torchfits
+
+    # Persona rewrite splits the hub: signatures live in api-core-io.md.
+    api = (ROOT / "docs" / "api-core-io.md").read_text(encoding="utf-8")
+
+    def _section(name: str) -> str:
+        # Headings look like: ## `read_tensor()`
+        pattern = rf"## `{re.escape(name)}\(\)`\n(.*?)(?=\n## |\Z)"
+        match = re.search(pattern, api, flags=re.S)
+        assert match, f"missing section for {name}"
+        return match.group(1)
+
+    def _first_call_sig(section: str) -> str:
+        match = re.search(
+            r"```python\n(torchfits\.\w+\(.*?)\)\n```", section, flags=re.S
+        )
+        assert match, "missing python call-signature fence"
+        return match.group(1)
+
+    read_tensor_sig = _first_call_sig(_section("read_tensor"))
+    assert "scale_on_device" not in read_tensor_sig, (
+        "read_tensor must not document scale_on_device (that belongs to read_fast / kwargs)"
+    )
+    assert "handle_cache" in read_tensor_sig
+
+    subset_section = _section("read_subset")
+    subset_sig = _first_call_sig(subset_section)
+    assert "device" not in subset_sig
+    assert "handle_cache_capacity" in subset_sig
+
+    stream_section = _section("stream_table")
+    stream_sig = _first_call_sig(stream_section)
+    assert "file_path" in stream_sig
+    assert (
+        "dict[str, torch.Tensor]" in stream_section
+        or "dict[str, Tensor]" in stream_section
+        or "Yields" in stream_section
+    )
+
+    read_section = _section("read")
+    assert "table" in read_section.lower() or "tensor" in read_section.lower()
+
+    # Live sanity: key helpers remain importable
+    assert callable(torchfits.read_table)
+    assert callable(torchfits.read_subset)
 
 
 def test_docs_examples_reference_existing_scripts() -> None:

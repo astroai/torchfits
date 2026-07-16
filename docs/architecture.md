@@ -248,9 +248,10 @@ prefix) is stripped.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_TABLE_SCANNER_THRESHOLD` | `10000` | Row count above which mmap scanner is used |
-| `TORCHFITS_TABLE_HANDLE_CACHE` | `16` | Handle cache capacity for table reads |
-| `TORCHFITS_TABLE_READER_CACHE` | `4` | TableReader instance cache size |
+| `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Set `0` to disable table handle LRU |
+| `TORCHFITS_TABLE_HANDLE_CACHE_SIZE` | `8` | Table handle LRU capacity |
+| `TORCHFITS_TABLE_READER_CACHE` | `1` | Set `0` to disable TableReader LRU |
+| `TORCHFITS_TABLE_READER_CACHE_SIZE` | `8` | TableReader LRU capacity |
 | `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row reads |
 | `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based handle cache validation |
 | `TORCHFITS_CACHE_VALIDATE_INTERVAL_MS` | `1000` | Handle cache validation interval |

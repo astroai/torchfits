@@ -43,6 +43,9 @@ def render_full_table(results_dir: Path) -> str:
         status = row.get("status")
         if status != "OK":
             continue
+        comparable = row.get("comparable")
+        if comparable in (False, "False", "false", "0", 0):
+            continue
 
         domain = row.get("domain", "")
         case_id = row.get("case_id", "")
@@ -65,28 +68,38 @@ def render_full_table(results_dir: Path) -> str:
             except Exception:
                 pass
 
-        key = (domain, case_id, operation, size_mb, device)
+        mmap_target = row.get("mmap_target") or "-"
+        key = (domain, case_id, operation, size_mb, device, mmap_target)
 
         lib = row.get("library")
-        method = row.get("method")
+        method = str(row.get("method") or "")
         try:
             time_s = float(row.get("time_s", "0.0"))
         except ValueError:
             continue
 
-        if lib == "torchfits":
-            if "specialized" in method:
-                grouped[key]["tf_pers"] = time_s
-            else:
-                grouped[key]["tf"] = time_s
-        elif lib == "astropy":
+        # Exact method identity — never substring (dtype_fair must not overwrite default).
+        if method in {"torchfits", "torchfits_device"}:
+            grouped[key]["tf"] = time_s
+        elif method in {"torchfits_specialized", "torchfits_specialized_device"}:
+            grouped[key]["tf_pers"] = time_s
+        elif lib == "astropy" and method in {
+            "astropy",
+            "astropy_torch",
+            "astropy_torch_device",
+        }:
             grouped[key]["astropy"] = time_s
-        elif lib == "fitsio":
+        elif lib == "fitsio" and method in {
+            "fitsio",
+            "fitsio_torch",
+            "fitsio_torch_device",
+        }:
             grouped[key]["fitsio"] = time_s
 
     # Sort key order: domain desc (fits first, fitstable next), then case_id
     sorted_keys = sorted(
-        grouped.keys(), key=lambda k: (k[0] != "fits", k[4] != "CPU", k[1])
+        grouped.keys(),
+        key=lambda k: (k[0] != "fits", k[4] != "CPU", k[5], k[1]),
     )
 
     lines = [
@@ -94,12 +107,12 @@ def render_full_table(results_dir: Path) -> str:
         "",
         "The complete, un-cherrypicked list of all measured benchmark configurations.",
         "",
-        "| Domain | Benchmark Case | Operation | Size | Device | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Speedup vs Astropy | Speedup vs fitsio |",
-        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
+        "| Domain | Benchmark Case | Operation | Size | Device | mmap | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Speedup vs Astropy | Speedup vs fitsio |",
+        "|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|",
     ]
 
     for key in sorted_keys:
-        domain, case_id, operation, size_mb, device = key
+        domain, case_id, operation, size_mb, device, mmap_target = key
         times = grouped[key]
 
         tf = times.get("tf")
@@ -133,7 +146,7 @@ def render_full_table(results_dir: Path) -> str:
         size_str = f"{size_mb:.2f} MB" if size_mb > 0.05 else f"{size_mb * 1024:.1f} KB"
 
         lines.append(
-            f"| {domain} | {case_name} | {operation} | {size_str} | {device} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
+            f"| {domain} | {case_name} | {operation} | {size_str} | {device} | {mmap_target} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
         )
 
     lines.append("")

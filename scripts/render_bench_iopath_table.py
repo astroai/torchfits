@@ -120,14 +120,19 @@ def _metadata_dict(row: dict[str, str]) -> dict[str, str]:
 
 
 def io_path_of(row: dict[str, str]) -> str | None:
-    """Map an OK row onto one of the I/O transports."""
+    """Map an OK comparable row onto one of the I/O transports."""
     if row.get("status") != "OK":
+        return None
+    comparable = row.get("comparable")
+    if comparable in (False, "False", "false", "0", 0):
         return None
     md = _metadata_dict(row)
     explicit = md.get("io_transport")
     if explicit:
         return explicit
     mmap = (row.get("mmap_target") or "on").lower()
+    if mmap in {"n/a", "na", "none", ""}:
+        return None
     if mmap in {"off", "false", "0"}:
         return "disk\u2192CPU"
     return "disk\u2192RAM\u2192CPU"

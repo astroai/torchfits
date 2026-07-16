@@ -95,6 +95,134 @@ def _compile_where_to_simple_predicates(
     return tuple(predicates)
 
 
+def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
+    if op == "==":
+        return torch.eq(tensor, literal)
+    if op == "!=":
+        return torch.ne(tensor, literal)
+    if op == ">":
+        return torch.gt(tensor, literal)
+    if op == ">=":
+        return torch.ge(tensor, literal)
+    if op == "<":
+        return torch.lt(tensor, literal)
+    if op == "<=":
+        return torch.le(tensor, literal)
+    raise ValueError(f"Unsupported where operator '{op}'")
+
+
+def _try_torch_tensor_where_filter(
+    *,
+    pa: Any,
+    path: str,
+    hdu: int,
+    columns: Optional[list[str]],
+    where: str,
+    row_slice: Optional[slice | tuple[int, int]],
+    rows: Optional[list[int]],
+    mmap: bool,
+    decode_bytes: bool,
+    encoding: str,
+    strip: bool,
+    header: Any | None,
+) -> Any | None:
+    """Buffered/mmap tensor read + torch mask + Arrow for simple numeric WHERE.
+
+    Honors ``mmap`` via the existing C++ row readers (no secret mmap when
+    ``mmap=False``). Skips Arrow conversion of the full column before filtering.
+    """
+    if row_slice is not None or rows is not None:
+        return None
+    predicates = _compile_where_to_simple_predicates(where)
+    if predicates is None:
+        return None
+
+    import torchfits._C as cpp
+
+    output_cols = columns
+    if output_cols is None:
+        if header is not None:
+            output_cols = [col.name for col in fits_schema.iter_table_columns(header)]
+        else:
+            return None
+
+    # decode_bytes only matters for string/bit columns; numeric WHERE paths stay eligible.
+    if decode_bytes and header is not None:
+        selected = set(output_cols)
+        for col in fits_schema.iter_table_columns(header, selected=selected):
+            if col.tform_info.is_string or col.tform_info.is_bit:
+                return None
+    elif decode_bytes and header is None:
+        return None
+
+    pred_cols = [col for col, _op, _lit in predicates]
+    read_cols: list[str] = []
+    seen: set[str] = set()
+    for name in list(output_cols) + pred_cols:
+        if name not in seen:
+            read_cols.append(name)
+            seen.add(name)
+
+    try:
+        if mmap:
+            chunk = cpp.read_fits_table(path, hdu, read_cols, True)
+        else:
+            reader = _acquire_cpp_reader(path, hdu, cpp)
+            chunk = reader.read_rows(read_cols, 1, -1)
+    except Exception:
+        return None
+    if not isinstance(chunk, dict) or not chunk:
+        return None
+
+    mask: torch.Tensor | None = None
+    try:
+        for pred_col, op, literal in predicates:
+            tensor = chunk.get(pred_col)
+            if not isinstance(tensor, torch.Tensor):
+                return None
+            part = _torch_cmp_mask(tensor, op, literal)
+            mask = part if mask is None else (mask & part)
+    except Exception:
+        return None
+    if mask is None:
+        return None
+
+    arrays = []
+    names_out = []
+    for name in output_cols:
+        value = chunk.get(name)
+        if not isinstance(value, torch.Tensor):
+            return None
+        filtered = value[mask]
+        arrays.append(
+            _tensor_to_arrow_array(
+                pa, filtered, decode_bytes, encoding, strip, fits_tform=None
+            )
+        )
+        names_out.append(name)
+
+    if not arrays:
+        # Preserve projected schema for empty output when possible.
+        empty = []
+        for name in output_cols:
+            value = chunk.get(name)
+            if isinstance(value, torch.Tensor):
+                empty.append(
+                    _tensor_to_arrow_array(
+                        pa,
+                        value[:0],
+                        decode_bytes,
+                        encoding,
+                        strip,
+                        fits_tform=None,
+                    )
+                )
+            else:
+                return pa.table({})
+        return pa.Table.from_arrays(empty, names=list(output_cols))
+    return pa.Table.from_arrays(arrays, names=names_out)
+
+
 def _where_mask_for_table(
     table: Any, where: str, parsed_ast: Any = None
 ) -> "np.ndarray":
@@ -473,9 +601,8 @@ def _iter_chunks_cpp_table(
 
 
 def _filter_table_with_where(pa: Any, table: Any, where: str) -> Any:
+    # table.filter preserves schema for empty (all-false) masks; skip a sum(mask) pass.
     mask = _where_mask_for_table(table, where)
-    if len(mask) == 0 or pa.compute.sum(mask).as_py() == 0:
-        return table.slice(0, 0)
     return table.filter(mask)
 
 
@@ -673,6 +800,7 @@ def _read_table_with_where(
             columns=columns,
             backend=backend,
             n_rows=n_rows,
+            mmap=mmap,
         )
         if header_ok
         else WhereReadPlan(
@@ -697,10 +825,46 @@ def _read_table_with_where(
         if pushed is not None:
             return pushed
 
-    base = _read_table_unfiltered(
+    torch_filtered = _try_torch_tensor_where_filter(
+        pa=pa,
         path=path,
         hdu=hdu,
         columns=columns,
+        where=where,
+        row_slice=row_slice,
+        rows=rows,
+        mmap=mmap,
+        decode_bytes=decode_bytes,
+        encoding=encoding,
+        strip=strip,
+        header=hdr if header_ok else None,
+    )
+    if torch_filtered is not None:
+        return torch_filtered
+
+    # Read output ∪ predicate columns so WHERE can reference unprojected columns,
+    # then drop hidden columns after filtering.
+    read_columns = columns
+    drop_after: list[str] = []
+    if columns is not None:
+        try:
+            where_cols = where_columns_from_ast(parse_where_expression(where))
+        except ValueError:
+            where_cols = []
+        if where_cols:
+            seen = set(columns)
+            merged = list(columns)
+            for name in where_cols:
+                if name not in seen:
+                    merged.append(name)
+                    drop_after.append(name)
+                    seen.add(name)
+            read_columns = merged
+
+    base = _read_table_unfiltered(
+        path=path,
+        hdu=hdu,
+        columns=read_columns,
         row_slice=row_slice,
         rows=rows,
         batch_size=batch_size,
@@ -712,7 +876,11 @@ def _read_table_with_where(
         apply_fits_nulls=apply_fits_nulls,
         backend=plan.unfiltered_backend,
     )
-    return _filter_table_with_where(pa, base, where)
+    filtered = _filter_table_with_where(pa, base, where)
+    if drop_after:
+        keep = [name for name in filtered.column_names if name not in set(drop_after)]
+        return filtered.select(keep)
+    return filtered
 
 
 def _resolve_rows_from_where_cpp(

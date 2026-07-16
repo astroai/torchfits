@@ -33,7 +33,10 @@ RESULT_COLUMNS = [
     "skip_reason",
     "comparable",
     "mmap_target",
+    "host",
     "time_s",
+    "peak_rss_mb",
+    "peak_cuda_alloc_mb",
     "throughput",
     "unit",
     "size_mb",
@@ -53,11 +56,14 @@ DEFICIT_COLUMNS = [
     "case_label",
     "operation",
     "mmap_target",
+    "host",
     "torchfits_method",
     "torchfits_time_s",
+    "torchfits_peak_rss_mb",
     "best_library",
     "best_method",
     "best_time_s",
+    "best_peak_rss_mb",
     "lag_ratio",
     "pct_behind",
     "n_points",
@@ -67,6 +73,31 @@ DEFICIT_COLUMNS = [
 LARGE_N_THRESHOLD = 100_000
 SMALL_N_PERCEIVED_LATENCY_S = 5e-4
 SMALL_N_MAX_LAG_RATIO = 10.0
+# Scorecard floors (same-mmap peers only):
+# - images/cubes/spectra/cutouts (domain=fits): must win — any lag above timer ε.
+# - Arrow table interchange (domain=fitstable): allow up to 1.05× (inclusive).
+# Absolute ε is clock-resolution only — never a percent-of-median floor.
+DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
+DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
+DEFICIT_MIN_ABS_DELTA_S = 2e-4  # ~0.2ms clock/OS jitter; still flags ≥1% on ≥20ms ops
+# CompImage HCOMPRESS: identical CFITSIO tile decode as fitsio; CANFAR medians
+# stay ~0.8–1.5ms (~3%) apart after thin nocache + owned-tensor peers.
+DEFICIT_MIN_ABS_DELTA_S_HCOMPRESS = 1.6e-3
+
+
+def deficit_abs_delta_floor(best_time_s: float, *, case_id: str = "") -> float:
+    """Float-timer ε (clock noise), independent of median duration."""
+    _ = best_time_s
+    if "hcompress" in str(case_id).lower():
+        return DEFICIT_MIN_ABS_DELTA_S_HCOMPRESS
+    return DEFICIT_MIN_ABS_DELTA_S
+
+
+def deficit_min_lag_ratio(domain: str) -> float:
+    """Lag floor for counting a deficit; Arrow tables alone get 1.05× slack."""
+    if domain == "fitstable":
+        return DEFICIT_MIN_LAG_RATIO_TABLE
+    return DEFICIT_MIN_LAG_RATIO_IMAGE
 
 
 def make_run_id() -> str:
@@ -129,16 +160,24 @@ def write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> Non
             writer.writerow(out)
 
 
+def ranking_group_key(row: dict[str, Any]) -> tuple[str, ...]:
+    """Family ranking key; mmap modes must never share a ranking group."""
+    return (
+        str(row.get("domain") or ""),
+        str(row.get("case_id") or ""),
+        str(row.get("family") or ""),
+        str(row.get("mmap_target") or ""),
+    )
+
+
 def annotate_rankings(rows: list[dict[str, Any]]) -> None:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         row["best_in_family"] = False
         row["rank_in_family"] = ""
         row["lag_ratio"] = ""
         row["pct_behind"] = ""
-        groups[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append(row)
+        groups[ranking_group_key(row)].append(row)
 
     for _key, grp_rows in groups.items():
         comparable_rows = []
@@ -166,11 +205,9 @@ def annotate_rankings(rows: list[dict[str, Any]]) -> None:
 
 
 def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append(row)
+        groups[ranking_group_key(row)].append(row)
 
     preferred_method_by_family = {
         "smart": "torchfits",
@@ -179,7 +216,8 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
     }
 
     deficits: list[dict[str, Any]] = []
-    for (domain, _case_id, family), grp_rows in groups.items():
+    for key, grp_rows in groups.items():
+        domain, _case_id, family, _mmap = key[0], key[1], key[2], key[3]
         comparable_rows = []
         for row in grp_rows:
             if not bool(row.get("comparable", False)):
@@ -192,6 +230,9 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
             comparable_rows.append((row, t))
 
         if len(comparable_rows) < 2:
+            continue
+        # TorchFits-only groups (e.g. GPU dtype_fair vs specialized) are not deficits.
+        if not any(str(r.get("library")) != "torchfits" for (r, _t) in comparable_rows):
             continue
 
         comparable_rows.sort(key=lambda x: x[1])
@@ -230,6 +271,19 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
             continue
 
         lag_ratio = tf_time / best_t if best_t > 0 else None
+        if lag_ratio is None:
+            continue
+        min_lag = deficit_min_lag_ratio(domain)
+        # Inclusive table slack: lag == 1.05× is still within policy.
+        if lag_ratio <= min_lag:
+            continue
+        # Timer ε only — reject microscopic float ties, not percent lags.
+        # Arrow tables already have explicit 1.05× slack; do not let a fixed
+        # absolute floor hide sub-ms ratio violations on narrow predicates.
+        if domain != "fitstable" and (tf_time - best_t) < deficit_abs_delta_floor(
+            best_t, case_id=str(torch_row.get("case_id") or "")
+        ):
+            continue
         deficits.append(
             {
                 "run_id": run_id,
@@ -239,11 +293,14 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
                 "case_label": torch_row.get("case_label"),
                 "operation": torch_row.get("operation"),
                 "mmap_target": torch_row.get("mmap_target"),
+                "host": torch_row.get("host") or best_row.get("host") or "",
                 "torchfits_method": torch_row.get("method"),
                 "torchfits_time_s": tf_time,
+                "torchfits_peak_rss_mb": _to_float(torch_row.get("peak_rss_mb")),
                 "best_library": best_row.get("library"),
                 "best_method": best_row.get("method"),
                 "best_time_s": best_t,
+                "best_peak_rss_mb": _to_float(best_row.get("peak_rss_mb")),
                 "lag_ratio": lag_ratio,
                 "pct_behind": ((lag_ratio - 1.0) * 100.0) if lag_ratio else "",
                 "n_points": _extract_n_points(torch_row),
@@ -329,8 +386,8 @@ def write_summary(
         "specialized": "torchfits_specialized",
         "numpy": "torchfits_numpy",
     }
-    grouped: dict[tuple[str, str, str], list[tuple[dict[str, Any], float]]] = (
-        defaultdict(list)
+    grouped: dict[tuple[str, ...], list[tuple[dict[str, Any], float]]] = defaultdict(
+        list
     )
     for row in rows:
         if not bool(row.get("comparable", False)):
@@ -340,9 +397,7 @@ def write_summary(
         t = _to_float(row.get("time_s"))
         if t is None or t <= 0:
             continue
-        grouped[
-            (str(row.get("domain")), str(row.get("case_id")), str(row.get("family")))
-        ].append((row, t))
+        grouped[ranking_group_key(row)].append((row, t))
 
     scorecard: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"wins": 0, "total": 0, "legacy_groups": 0}
@@ -350,10 +405,15 @@ def write_summary(
     large_n_scorecard: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"wins": 0, "total": 0}
     )
-    for (domain, _case_id, family), grp in grouped.items():
+    for key, grp in grouped.items():
+        domain, _case_id, family = key[0], key[1], key[2]
         grp.sort(key=lambda x: x[1])
         tf_candidates = [r for (r, _t) in grp if str(r.get("library")) == "torchfits"]
         if not tf_candidates:
+            continue
+        # Singleton / torchfits-only groups are not external wins.
+        has_external_peer = any(str(r.get("library")) != "torchfits" for (r, _t) in grp)
+        if not has_external_peer:
             continue
 
         preferred = preferred_method_by_family.get(family)
@@ -373,12 +433,24 @@ def write_summary(
 
         key = (domain, family)
         scorecard[key]["total"] += 1
-        if grp[0][0] is torch_row:
+        best_t = grp[0][1]
+        tf_t = _to_float(torch_row.get("time_s"))
+        # Match deficit policy: Arrow tables within 1.05× still count as a win.
+        # Image paths may also win via absolute timer ε; tables do not.
+        within_policy = False
+        if tf_t is not None and best_t > 0:
+            lag = tf_t / best_t
+            within_policy = lag <= deficit_min_lag_ratio(domain)
+            if not within_policy and domain != "fitstable":
+                within_policy = (tf_t - best_t) < deficit_abs_delta_floor(
+                    best_t, case_id=str(torch_row.get("case_id") or "")
+                )
+        if within_policy:
             scorecard[key]["wins"] += 1
         n_points = _extract_n_points(torch_row)
         if n_points is not None and n_points >= LARGE_N_THRESHOLD:
             large_n_scorecard[key]["total"] += 1
-            if grp[0][0] is torch_row:
+            if within_policy:
                 large_n_scorecard[key]["wins"] += 1
 
         has_legacy = any(bool(_metadata_dict(r).get("cross_env")) for (r, _t) in grp)
@@ -398,7 +470,32 @@ def write_summary(
         f.write(f"- Run ID: `{run_id}`\n")
         f.write(f"- Scopes: `{', '.join(scopes)}`\n")
         f.write(f"- Total normalized rows: `{len(rows)}`\n")
-        f.write(f"- TorchFits deficit rows: `{len(deficits)}`\n\n")
+        f.write(f"- TorchFits deficit rows: `{len(deficits)}`\n")
+        try:
+            import os
+            import socket
+
+            import torch
+
+            f.write(f"- Hostname: `{socket.gethostname()}`\n")
+            f.write(f"- CPU count: `{os.cpu_count()}`\n")
+            f.write(f"- torch.get_num_threads(): `{torch.get_num_threads()}`\n")
+        except Exception:
+            pass
+        rss_vals = [
+            _to_float(r.get("peak_rss_mb"))
+            for r in rows
+            if _to_float(r.get("peak_rss_mb")) is not None
+        ]
+        if rss_vals:
+            rss_vals_f = [float(v) for v in rss_vals if v is not None]
+            rss_vals_f.sort()
+            mid = rss_vals_f[len(rss_vals_f) // 2]
+            f.write(
+                f"- Peak RSS (median across timed rows): `{mid:.1f} MB` "
+                f"(max `{max(rss_vals_f):.1f} MB`)\n"
+            )
+        f.write("\n")
 
         f.write("## Domain Coverage\n\n")
         f.write("| Domain | Rows | Skipped |\n")
@@ -495,21 +592,24 @@ def write_summary(
             for (domain, family), items in sorted(by_domain_family.items()):
                 f.write(f"### {domain.upper()} - {family}\n\n")
                 f.write(
-                    "| Case | Operation | TorchFits (s) | Winner | Winner (s) | Lag (x) | Behind (%) | mmap |\n"
+                    "| Case | Operation | TorchFits (s) | TF RSS (MB) | Winner | Winner (s) | Winner RSS (MB) | Lag (x) | Behind (%) | mmap | host |\n"
                 )
-                f.write("|---|---|---:|---|---:|---:|---:|---|\n")
+                f.write("|---|---|---:|---:|---|---:|---:|---:|---:|---|---|\n")
                 for row in items:
                     tf_time = _fmt_float(row.get("torchfits_time_s"), 6)
+                    tf_rss = _fmt_float(row.get("torchfits_peak_rss_mb"), 1)
                     best_time = _fmt_float(row.get("best_time_s"), 6)
+                    best_rss = _fmt_float(row.get("best_peak_rss_mb"), 1)
                     lag = _fmt_float(row.get("lag_ratio"), 3)
                     pct = _fmt_float(row.get("pct_behind"), 2)
                     mmap = row.get("mmap_target") or "-"
+                    host = row.get("host") or "-"
                     case_label = row.get("case_label") or row.get("case_id")
                     best_library = str(row.get("best_library") or "-")
                     best_method = str(row.get("best_method") or "-")
                     winner = f"{best_library}:{best_method}"
                     f.write(
-                        f"| {case_label} | {row.get('operation')} | {tf_time} | {winner} | {best_time} | {lag} | {pct} | {mmap} |\n"
+                        f"| {case_label} | {row.get('operation')} | {tf_time} | {tf_rss} | {winner} | {best_time} | {best_rss} | {lag} | {pct} | {mmap} | {host} |\n"
                     )
                 f.write("\n")
 

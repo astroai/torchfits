@@ -38,21 +38,28 @@ def choose_where_read_plan(
     columns: Optional[list[str]],
     backend: str,
     n_rows: int,
+    mmap: bool = True,
 ) -> WhereReadPlan:
     """Select Arrow filtering vs C++ pushdown for a where= table read.
 
-    Auto mode reads through the fast native table path and filters with Arrow.
-    Explicit ``backend="cpp"`` remains the opt-in native pushdown surface.
+    Policy (no size thresholds):
+
+    - ``backend="cpp"`` → fused native pushdown when safe.
+    - ``backend="auto"`` + ``mmap=True`` → native mmap-scan pushdown when safe
+      (documented WHERE⇒mmap-scan).
+    - ``backend="auto"`` + ``mmap=False`` → read then tensor/Arrow filter
+      (buffered I/O; comparable to fitsio-style full-read + mask).
     """
+    _ = n_rows  # kept for API stability; no N-based strategy forks.
     vla_in_projection = (
         fits_schema.selected_includes_vla(header, columns) if header_ok else True
     )
     cpp_pushdown_safe = header_ok and not vla_in_projection
 
-    use_arrow_first = backend in {"auto", "torch"} or not cpp_pushdown_safe
-    strategy = (
-        WhereStrategy.ARROW_FILTER if use_arrow_first else WhereStrategy.CPP_PUSHDOWN
-    )
+    if cpp_pushdown_safe and (backend == "cpp" or (backend == "auto" and mmap)):
+        strategy = WhereStrategy.CPP_PUSHDOWN
+    else:
+        strategy = WhereStrategy.ARROW_FILTER
     unfiltered_backend = "cpp" if backend == "auto" else backend
 
     return WhereReadPlan(

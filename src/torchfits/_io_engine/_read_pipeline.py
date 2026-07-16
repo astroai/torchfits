@@ -111,19 +111,26 @@ def _apply_scale_on_device(
         return data.to(device=device)
 
     if data.dtype == torch.int16 and bscale == 1.0 and bzero == 32768.0:
-        return _apply_unsigned_offset(data, torch.uint16, 32768, device=device)
+        # Unsigned-16: convert on host, then one device copy (like signed-byte).
+        logical = _apply_unsigned_offset(data, torch.uint16, 32768, device="cpu")
+        return logical.to(device=device)
     if data.dtype == torch.int32 and bscale == 1.0 and bzero == 2147483648.0:
-        return _apply_unsigned_offset(data, torch.uint32, 2147483648, device=device)
+        logical = _apply_unsigned_offset(data, torch.uint32, 2147483648, device="cpu")
+        return logical.to(device=device)
     if data.dtype == torch.uint8 and bscale == 1.0 and bzero == -128.0:
-        data = data.to(device=device)
-        return (data.to(torch.int16) - 128).to(torch.int8)
+        # FITS signed-byte (BZERO=-128): convert on host, then one device copy.
+        # Avoids CUDA/MPS int16/subtract/int8 cast kernels on tiny payloads.
+        logical = (data ^ 0x80).view(torch.int8)
+        return logical.to(device=device)
 
-    data = data.to(device=device, dtype=torch.float32)
+    # Generic BSCALE/BZERO: host float scale, then one H2D. No size gate —
+    # device launch tax is never free for this one mul/add.
+    out = data.to(dtype=torch.float32)
     if bscale != 1.0:
-        data.mul_(bscale)
+        out = out.mul(bscale)
     if bzero != 0.0:
-        data.add_(bzero)
-    return data
+        out = out.add(bzero)
+    return out.to(device=device)
 
 
 def _read_unsigned_image_if_needed(
@@ -643,25 +650,16 @@ def _read_cpu_fast_path(
     logger: Any,
 ) -> tuple[Tensor | None, bool]:
     """Try the CPU image fast path; return (data, fallback_required)."""
+    # One-shot full-image read: thin CFITSIO → Tensor (matches fitsio+from_numpy).
+    # Handle-cache scaffolding (read_full_cached) is for persistent subset readers,
+    # not single full reads — it lost ~15% to fitsio on hcompress.
+    _ = (handle_cache_capacity, get_cached_handle)
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
-        if handle_cache_capacity > 0:
-            if _cpp_has(cpp_module, "read_full_cached"):
-                data = cpp_module.read_full_cached(path, hdu, effective_mmap)
-            else:
-                file_handle, _cached = get_cached_handle(path, handle_cache_capacity)
-                data = cpp_module.read_full(file_handle, hdu, effective_mmap)
-        elif cache_capacity == 0 and _cpp_has(cpp_module, "read_full_nocache"):
+        if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
             data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
         else:
-            file_handle = cpp_module.open_fits_file(path, "r")
-            try:
-                data = cpp_module.read_full(file_handle, hdu, effective_mmap)
-            finally:
-                try:
-                    file_handle.close()
-                except Exception:
-                    pass
+            data = cpp_module.read_full(path, hdu, effective_mmap)
 
         if fp16:
             data = data.to(torch.float16)
@@ -708,28 +706,25 @@ def _read_generic_fast_path(
     logger: Any,
 ) -> Tensor | None:
     """Try the generic image fast path; return None when fallback is required."""
+    _ = cold_nocache
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
         if scale_on_device and not raw_scale:
-            if _cpp_has(cpp_module, "read_full_raw_with_scale"):
+            # Thin device path: logical host tensor → one H2D. No size heuristics.
+            if device != "cpu":
                 if debug_scale:
-                    print("TORCHFITS_DEBUG_SCALE: fast_path_scaled")
-                data, scaled, bscale, bzero = cpp_module.read_full_raw_with_scale(
-                    path, hdu, effective_mmap
-                )
-                if scaled or device != "cpu":
-                    data = _apply_scale_on_device(
-                        data,
-                        scaled=scaled,
-                        bscale=bscale,
-                        bzero=bzero,
-                        device=device,
-                    )
-                else:
-                    data = data.to(device)
-            else:
+                    print("TORCHFITS_DEBUG_SCALE: thin_device_logical")
                 data = cpp_module.read_full(path, hdu, effective_mmap)
                 data = data.to(device)
+            else:
+                # CPU logical scale is applied inside read_full; do not detour
+                # through read_full_raw_with_scale (extra host ops vs fitsio).
+                if debug_scale:
+                    print("TORCHFITS_DEBUG_SCALE: thin_cpu_logical")
+                if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
+                    data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
+                else:
+                    data = cpp_module.read_full(path, hdu, effective_mmap)
         elif raw_scale:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: raw_scale")
@@ -740,19 +735,10 @@ def _read_generic_fast_path(
         else:
             if debug_scale:
                 print("TORCHFITS_DEBUG_SCALE: unscaled")
-            if not effective_mmap and _cpp_has(cpp_module, "read_full_unmapped"):
-                data = cpp_module.read_full_unmapped(path, hdu)
+            if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):
+                data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
             else:
-                if (
-                    cold_nocache
-                    and cache_capacity == 0
-                    and _cpp_has(cpp_module, "read_full_nocache")
-                ):
-                    data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
-                elif cache_capacity == 0 and _cpp_has(cpp_module, "read_full_nocache"):
-                    data = cpp_module.read_full_nocache(path, hdu, effective_mmap)
-                else:
-                    data = cpp_module.read_full(path, hdu, effective_mmap)
+                data = cpp_module.read_full(path, hdu, effective_mmap)
 
         if fp16:
             data = data.to(torch.float16)

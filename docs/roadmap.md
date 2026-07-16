@@ -131,7 +131,7 @@ Goal: one canonical read API per domain; worker-safe batching; less Python featu
 | B2 | **`read_images_batch(paths, hdu, …)`** — vectorized multi-file image decode with shared handle pool | Powers DataLoader workers + `read_batch` without per-item Python overhead |
 | B3 | **Consolidated scaling in C++** — apply BSCALE/BZERO (images) and TSCAL/TZERO (tables) in one layer with `scale_on_device` policy | Same semantics across `read`, `read_tensor`, table paths, and future datasets |
 | B4 | **Table pushdown v2** — extend `read_fits_table_filtered` for VLA-safe projections, `IN` lists, and compound predicates where mmap-safe | Closes gap where Python falls back to read-then-filter on large catalogs |
-| B5 | **Worker-local handle affinity** — optional `TORCHFITS_WORKER_HANDLE=1` so forked DataLoader workers don't fight a global LRU | Documented pattern for `num_workers > 0` without stale-handle bugs |
+| B5 | **Worker-local handle affinity** — optional `TORCHFITS_WORKER_HANDLE=1` so forked DataLoader workers don't fight a global LRU | **Not shipped yet.** Until then: use `torchfits.data` + `make_loader` / `cache.optimize_for_dataset` (see `docs/api.md`) |
 | B6 | **Pinned host buffer pool** *(stretch)* — reuse pinned CPU staging for CUDA `read_tensor` | Cuts H2D alloc churn in tight training loops; benchmarked in `bench_ml_loader` |
 
 **Exit criteria:** one Python call site per table chunk read; `bench_ml_loader` rows merged
@@ -236,7 +236,7 @@ In addition to the standard release gate:
 - [x] `torchfits.data` documented with multi-worker test coverage (`tests/test_data.py::TestMultiWorkerDataLoader`)
 - [x] `torchfits.transforms` round-trip tests for scaled images and tables
       (`tests/test_transforms.py` + `tests/test_transforms_e2e.py`, roundtripped via real FITS files)
-- [ ] `bench_ml_loader` median throughput documented vs fitsio baseline *(lab snapshot pending)*
+- [x] `bench_ml_loader` median throughput documented vs fitsio baseline
 - [x] No parity regression on existing upstream smoke gates
 
 ## Path to 1.0
@@ -250,12 +250,12 @@ deprecation cycle.
 | Dimension | Exit criterion | Status |
 |---|---|---|
 | **API surface** | Stable root I/O, `table.*`, `cache.*`, `data.*`, `transforms.*`, and downstream boundary modules | 🟡 0.9.0 freeze reviewed; 1.0 public-boundary freeze pending |
-| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths | ✅ Met — `exhaustive_cuda_0.9.0_20260714_065950`: 7 deficits, all ≤1.439×; no large-N deficits |
+| **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths; images never behind under the strict image gate; Arrow tables ≤1.05× | 🟡 Image/Arrow gates tightened; re-verify after SIMD/device/WHERE fixes |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
 | **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
 | **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
-| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | ✅ 3,648 rows, 7 deficits in published snapshot (`exhaustive_cuda_0.9.0_20260714_065950`) |
+| **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | 🟡 Snapshot refresh pending new scorecard policy |
 | **GPU I/O** | E1–E3 verified on CANFAR staging | ✅ H100 NVL MIG, CUDA 12.8, 894 transport rows |
 | **Docs contract** | Zensical site + parity matrix current | ✅ Zensical + integrity tests |
 | **Downstream integration** | Public-only consumer contract and compatibility matrix | 🟡 Focused contract exists; clean-install matrix pending |
@@ -263,7 +263,7 @@ deprecation cycle.
 
 ### 1.0 exit checklist
 
-- [x] Performance floor ≤2× (7 deficits at ≤1.439× in 0.9.0 CANFAR snapshot)
+- [ ] Performance floor: images never behind; Arrow tables ≤1.05× (strict gate)
 - [x] `torchfits.data` complete (`FitsTableIterableDataset`, `FitsCutoutDataset`); legacy datasets removed
 - [x] `torchfits.transforms` round-trip tests
 - [x] C++ `read_table_chunk` sole table-chunk entry
@@ -293,7 +293,7 @@ High-priority benchmark gaps addressed before the 0.5.0 tag:
 | Dtype-fair GPU bench column | **Done** | `torchfits_dtype_fair_device` in `bench_gpu_transports.py` |
 | Training cache warm-up docs | **Done** | `optimize_for_dataset` in `example_image_dataset.py` |
 | ML loader diagnostic in release notes | **Done** | README + changelog cite `bench_ml_loader.py` CPU numbers |
-| Lab CUDA snapshot refresh | **Done** | `exhaustive_cuda_0.9.0_20260714_065950` — 3,648 rows, **7 deficits**, maximum 1.439× (CANFAR staging) |
+| Lab CUDA snapshot refresh | **In progress** | Strict gate (images any lag; Arrow ≤1.05×); prior 25%-floor “0 deficit” claims retracted |
 
 **Deferred to 0.6.0** (medium/low priority from perf triage):
 

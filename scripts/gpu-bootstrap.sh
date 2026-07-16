@@ -12,9 +12,16 @@ esac
 
 INDEX="${TORCHFITS_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 
+# Avoid writing into ~/.local on CANFAR (/arc/home) — concurrent sessions
+# corrupt shared user-site packages mid-uninstall.
+export PYTHONNOUSERSITE=1
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${TMPDIR:-/tmp}/torchfits-pip-cache}"
+mkdir -p "${PIP_CACHE_DIR}"
+
 python -m pip install \
     --no-cache-dir \
     --force-reinstall \
+    --no-user \
     torch \
     --index-url "${INDEX}"
 

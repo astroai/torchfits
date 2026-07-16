@@ -144,6 +144,9 @@ struct SharedReadMeta {
     ino_t inode = 0;
     int64_t last_stat_check_ns = 0;
     int raw_fd = -1;
+    // Absolute CFITSIO HDU the shared fptr is currently on (-1 = unknown).
+    // Lets one-shot FITSFile wrappers skip redundant fits_movabs_hdu.
+    int current_fits_hdu = -1;
     std::mutex mutex;
 
     ~SharedReadMeta() {
@@ -197,6 +200,7 @@ inline std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::strin
             meta->compressed_cache.clear();
             meta->compressed_nulls_cache.clear();
             meta->scale_cache.clear();
+            meta->current_fits_hdu = -1;
             meta->has_stat = true;
             meta->size = st.st_size;
             meta->mtime_ns = cur_mtime_ns;
@@ -212,6 +216,17 @@ inline int open_readonly_fd(const std::string& filename) {
     if (fd != -1) return fd;
 #endif
     return ::open(filename.c_str(), O_RDONLY);
+}
+
+// Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
+inline int open_fits_readonly(fitsfile** fptr, const std::string& path) {
+    int status = 0;
+    if (path.find('[') != std::string::npos || path.find("://") != std::string::npos) {
+        fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
+    } else {
+        fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
+    }
+    return status;
 }
 
 inline int get_shared_raw_fd(const std::shared_ptr<SharedReadMeta>& meta, const std::string& filename) {
@@ -363,9 +378,10 @@ inline torch::Tensor read_tensor_canonical(
 
     auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
 
-    // Signed-byte mmap fast path
+    // BYTE_IMG direct pread — works for mmap on/off (pread is buffered I/O,
+    // not a secret mmap). Beats CFITSIO fits_read_img on large int8 payloads.
     const bool signed_byte_scaled = scaled && bitpix == BYTE_IMG && bscale == 1.0 && bzero == -128.0;
-    if (use_mmap && !compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled)) {
+    if (!compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled)) {
         int status = 0;
         LONGLONG headstart = 0, data_offset = 0, dataend = 0;
         fits_get_hduaddrll(fptr, &headstart, &data_offset, &dataend, &status);
@@ -380,9 +396,11 @@ inline torch::Tensor read_tensor_canonical(
         }
     }
 
-    // Multi-byte mmap fast path — single-pass: mmap directly and bswap while copying
-    if (use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
-        path.find('[') == std::string::npos) {
+    // Multi-byte mmap fast path — SIMD endian convert while copying (all sizes).
+    const bool multi_byte_mmap_ok =
+        use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
+        path.find('[') == std::string::npos;
+    if (multi_byte_mmap_ok) {
         size_t elem_size = 0;
         switch (bitpix) {
             case SHORT_IMG: elem_size = sizeof(uint16_t); break;
@@ -418,41 +436,35 @@ inline torch::Tensor read_tensor_canonical(
                         const size_t src_offset = static_cast<size_t>(data_offset - page_offset);
                         if (host_is_little_endian()) {
                             if (elem_size == sizeof(uint16_t)) {
-                                const auto* src = reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                const auto* src = reinterpret_cast<const uint16_t*>(
+                                    static_cast<const uint8_t*>(map_ptr) + src_offset);
                                 auto* dst = static_cast<uint16_t*>(tensor.data_ptr());
                                 if (unsigned_short) {
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                        for (int64_t i = begin; i < end; ++i)
-                                            dst[i] = internal::bswap_16(src[i]) + static_cast<uint16_t>(32768);
-                                    });
+                                    internal::bswap16_copy_u16_offset(
+                                        src, dst, static_cast<size_t>(nelements),
+                                        static_cast<uint16_t>(32768));
                                 } else {
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                        for (int64_t i = begin; i < end; ++i)
-                                            dst[i] = internal::bswap_16(src[i]);
-                                    });
+                                    internal::bswap16_copy(
+                                        src, dst, static_cast<size_t>(nelements));
                                 }
                             } else if (elem_size == sizeof(uint32_t)) {
-                                const auto* src = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                const auto* src = reinterpret_cast<const uint32_t*>(
+                                    static_cast<const uint8_t*>(map_ptr) + src_offset);
                                 auto* dst = static_cast<uint32_t*>(tensor.data_ptr());
                                 if (unsigned_long) {
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                        for (int64_t i = begin; i < end; ++i)
-                                            dst[i] = internal::bswap_32(src[i]) + 2147483648u;
-                                    });
+                                    internal::bswap32_copy_u32_offset(
+                                        src, dst, static_cast<size_t>(nelements),
+                                        2147483648u);
                                 } else {
-                                    // Plain int32 or float32: bswap only, no offset.
-                                    at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                        for (int64_t i = begin; i < end; ++i)
-                                            dst[i] = internal::bswap_32(src[i]);
-                                    });
+                                    internal::bswap32_copy(
+                                        src, dst, static_cast<size_t>(nelements));
                                 }
                             } else if (elem_size == sizeof(uint64_t)) {
-                                const auto* src = reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(map_ptr) + src_offset);
+                                const auto* src = reinterpret_cast<const uint64_t*>(
+                                    static_cast<const uint8_t*>(map_ptr) + src_offset);
                                 auto* dst = static_cast<uint64_t*>(tensor.data_ptr());
-                                at::parallel_for(0, static_cast<int64_t>(nelements), 1 << 19, [&](int64_t begin, int64_t end) {
-                                    for (int64_t i = begin; i < end; ++i)
-                                        dst[i] = internal::bswap_64(src[i]);
-                                });
+                                internal::bswap64_copy(
+                                    src, dst, static_cast<size_t>(nelements));
                             }
                         } else {
                             std::memcpy(tensor.data_ptr(), static_cast<const uint8_t*>(map_ptr) + src_offset, nbytes);

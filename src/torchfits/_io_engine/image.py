@@ -7,6 +7,8 @@ from typing import Any, Callable, Sequence, Tuple, Union, cast
 import torch
 from torch import Tensor
 
+import torchfits._C as _cpp
+
 from ..hdu import Header
 
 from ._read_pipeline import _read_unsigned_image_if_needed
@@ -49,23 +51,22 @@ def validate_read_image_args(
 def dispatch_read_image_cpp(
     cpp: Any, path: str, hdu: int, mmap: bool, handle_cache: bool, raw_scale: bool
 ) -> Tensor:
-    """Dispatch the correct C++ function for low-level image reading."""
+    """Dispatch the correct C++ function for low-level image reading.
+
+    One-shot full-image reads always use thin ``read_full`` / raw variants.
+    ``handle_cache`` is reserved for persistent subset readers — routing
+    one-shot reads through ``read_full_cached`` lost to fitsio+from_numpy.
+    Cold scorecard paths prefer ``read_full_nocache`` (no handle-pool lock).
+    """
     if raw_scale:
         if not mmap and hasattr(cpp, "read_full_unmapped_raw"):
             return cast(Tensor, cpp.read_full_unmapped_raw(path, hdu))
-        elif hasattr(cpp, "read_full_raw"):
+        if hasattr(cpp, "read_full_raw"):
             return cast(Tensor, cpp.read_full_raw(path, hdu, mmap))
-        else:
-            return cast(Tensor, cpp.read_full(path, hdu, mmap))
-    else:
-        if handle_cache and hasattr(cpp, "read_full_cached"):
-            return cast(Tensor, cpp.read_full_cached(path, hdu, mmap))
-        elif not mmap and hasattr(cpp, "read_full_unmapped"):
-            return cast(Tensor, cpp.read_full_unmapped(path, hdu))
-        elif hasattr(cpp, "read_full_nocache"):
-            return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
-        else:
-            return cast(Tensor, cpp.read_full(path, hdu, mmap))
+        return cast(Tensor, cpp.read_full(path, hdu, mmap))
+    if not handle_cache and hasattr(cpp, "read_full_nocache"):
+        return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
+    return cast(Tensor, cpp.read_full(path, hdu, mmap))
 
 
 def read_image(
@@ -81,25 +82,9 @@ def read_image(
     fallback_get_header: Callable[[str, int], Header] | None = None,
 ) -> Union[Tensor, Tuple[Tensor, Header]]:
     """Read image data through a direct low-level path."""
-    import torchfits._C as cpp
-
     validate_read_image_args(path, hdu, mmap, handle_cache, device)
 
-    data = None
-    if not raw_scale and not (fp16 or bf16):
-        try:
-            header = Header(cpp.read_header_dict(path, hdu))
-        except Exception:
-            header = None
-        data = _read_unsigned_image_if_needed(
-            cpp_module=cpp,
-            path=path,
-            hdu_num=hdu,
-            effective_mmap=mmap,
-            header=header,
-        )
-    if data is None:
-        data = dispatch_read_image_cpp(cpp, path, hdu, mmap, handle_cache, raw_scale)
+    data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, handle_cache, raw_scale)
 
     if fp16:
         data = data.to(torch.float16)
@@ -111,7 +96,7 @@ def read_image(
 
     if return_header:
         try:
-            return data, Header(cpp.read_header_dict(path, hdu))
+            return data, Header(_cpp.read_header_dict(path, hdu))
         except Exception:
             if fallback_get_header is None:
                 raise
@@ -128,8 +113,6 @@ def read_hdus(
     return_header: bool = False,
 ) -> Any:
     """Read multiple image HDUs from one file using a direct one-handle path."""
-    import torchfits._C as cpp
-
     if not isinstance(path, str):
         raise ValueError("path must be a string")
     if not isinstance(hdus, (list, tuple)) or len(hdus) == 0:
@@ -147,20 +130,20 @@ def read_hdus(
             resolved_hdus.append(int(hdu))
             continue
         if isinstance(hdu, str):
-            if hasattr(cpp, "resolve_hdu_name_cached"):
-                resolved_hdus.append(int(cpp.resolve_hdu_name_cached(path, hdu)))
+            if hasattr(_cpp, "resolve_hdu_name_cached"):
+                resolved_hdus.append(int(_cpp.resolve_hdu_name_cached(path, hdu)))
                 continue
             raise ValueError("named HDUs require resolve_hdu_name_cached support")
         raise ValueError("each item in hdus must be an int or str")
 
-    data = cpp.read_hdus_batch(path, resolved_hdus, mmap)
+    data = _cpp.read_hdus_batch(path, resolved_hdus, mmap)
     for idx, hdu_num in enumerate(resolved_hdus):
         try:
-            header = Header(cpp.read_header_dict(path, hdu_num))
+            header = Header(_cpp.read_header_dict(path, hdu_num))
         except Exception:
             header = None
         unsigned = _read_unsigned_image_if_needed(
-            cpp_module=cpp,
+            cpp_module=_cpp,
             path=path,
             hdu_num=hdu_num,
             effective_mmap=mmap,
@@ -174,5 +157,7 @@ def read_hdus(
     if not return_header:
         return data
 
-    headers = [Header(cpp.read_header_dict(path, hdu_num)) for hdu_num in resolved_hdus]
+    headers = [
+        Header(_cpp.read_header_dict(path, hdu_num)) for hdu_num in resolved_hdus
+    ]
     return data, headers
