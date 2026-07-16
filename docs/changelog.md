@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (fitsio has no mmap mode).
 - Repeated cutout benches (CPU + GPU) use the persistent subset reader so the
   smart family matches fitsio’s open-once handle pattern.
+- Image specialized scorecards use Tensor peers (`fitsio_torch` /
+  `astropy_torch`); bare ndarray peers emit under `family=numpy` for
+  NumPy→PyTorch switch cost without inventing wrap-only deficits.
 
 ### Changed
 
@@ -44,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
   focused iteration without a full exhaustive matrix.
 - Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
+
+## [0.9.1] - 2026-07-15
+
+### Fixed
+
+- Native wheel metadata now constrains PyTorch to the 2.10 ABI used to build
+  the extension. Torchfits 0.9.0 incorrectly allowed newer incompatible
+  libtorch releases, which could segfault during image or table conversion.
+- Native builds and imports now reject mismatched PyTorch ABIs, and every CI
+  build path installs the same PyTorch minor used by the release wheels.
 
 ## [0.9.0] - 2026-07-14
 

@@ -10,6 +10,9 @@ Confirm the version triplet matches in:
 - `pixi.toml`
 - `src/torchfits/__init__.py` (`__version__`)
 
+For native wheels, also confirm the PyTorch minor-version range is identical in
+the build-system, project runtime, and Pixi build/host/run dependencies.
+
 ## 2. Changelog
 
 Finalize the entry in `docs/changelog.md`. Follow [Keep a Changelog](https://keepachangelog.com/) format.

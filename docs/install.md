@@ -1,18 +1,21 @@
 # Installation
 
-## From PyPI
+## Quick install
 
 ```bash
 pip install torchfits
 ```
 
-Pre-built wheels are available for Linux x86_64 and macOS arm64. The wheels
-bundle [CFITSIO](https://heasarc.gsfc.nasa.gov/fitsio/) — no system library is
-needed. Other architectures build from source.
+Pre-built wheels for **Linux x86_64** and **macOS arm64**. No system
+libraries needed — CFITSIO is bundled. Other architectures build from
+source.
 
-Requires Python **3.10+** (development uses **3.13** via pixi) and [PyTorch](https://pytorch.org/) 2.0+.
+**Requires:** Python 3.10+, PyTorch 2.0+
 
-**Next:** [Home → I want to…](index.md#i-want-to) or run [`examples/example_image.py`](../examples/example_image.py).
+**Next steps:** [Quick start](quickstart.md) or
+[I want to…](index.md#i-want-to)
+
+---
 
 ## From source
 
@@ -25,11 +28,29 @@ Requires Python **3.10+** (development uses **3.13** via pixi) and [PyTorch](htt
 - [PyTorch](https://pytorch.org/) 2.0+
 - [NumPy](https://numpy.org/) 1.20+
 
-On macOS, install Xcode Command Line Tools if not present:
+=== "Linux"
 
-```bash
-xcode-select --install
-```
+    Ensure build tools are installed:
+
+    ```bash
+    sudo apt install build-essential cmake ninja-build
+    ```
+
+=== "macOS"
+
+    Install Xcode Command Line Tools if not present:
+
+    ```bash
+    xcode-select --install
+    ```
+
+=== "Windows"
+
+    Install Visual Studio 2019+ with C++ workload, then:
+
+    ```bash
+    pip install cmake ninja
+    ```
 
 ### Build
 
@@ -46,43 +67,65 @@ For a release build:
 pip install .
 ```
 
-The build uses [scikit-build-core](https://scikit-build-core.readthedocs.io/) and [nanobind](https://nanobind.readthedocs.io/) for the C++ extension.
+The build uses [scikit-build-core](https://scikit-build-core.readthedocs.io/)
+and [nanobind](https://nanobind.readthedocs.io/) for the C++ extension.
 
 ### Vendored CFITSIO
 
-torchfits vendors CFITSIO to avoid system-library version mismatches. The `extern/vendor.sh` script downloads the source and places it in `extern/cfitsio/`. By default it resolves the latest published tag; pin a version with:
+torchfits vendors CFITSIO to avoid system-library version mismatches. The
+`extern/vendor.sh` script downloads the source into `extern/cfitsio/`.
+
+Pin a specific version:
 
 ```bash
 ./extern/vendor.sh --cfitsio-version cfitsio-4.6.2
 ```
 
-To link against a system CFITSIO instead, set:
+Link against system CFITSIO instead:
 
 ```bash
 pip install -e . --config-settings=cmake.args="-DTORCHFITS_USE_VENDORED_CFITSIO=OFF"
 ```
 
+---
+
 ## GPU support
 
-torchfits reads FITS data on the CPU and places the resulting tensor on the requested device. No GPU-specific build steps are required — just install PyTorch with CUDA or MPS support:
+torchfits reads FITS data on the CPU and places the resulting tensor on
+the requested device. No GPU-specific build steps are required — just
+install PyTorch with CUDA or MPS support:
 
-```bash
-# CUDA
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+=== "CUDA"
 
-# MPS (Apple Silicon) — included in the default macOS PyTorch wheel
-pip install torch
+    ```bash
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    ```
+
+=== "MPS (Apple Silicon)"
+
+    ```bash
+    pip install torch
+    ```
+
+    MPS support is included in the default macOS PyTorch wheel.
+
+Then pass `device="cuda"` or `device="mps"` to `read_tensor()`:
+
+```python
+tensor = torchfits.read_tensor("image.fits", device="cuda")
 ```
 
-Then pass `device="cuda"` or `device="mps"` to `torchfits.read_tensor()` (or `read()`).
+---
 
-### Verify install
+## Verify install
 
 ```python
 import torchfits
 print(torchfits.__version__)
 _ = torchfits.read_tensor  # extension loaded
 ```
+
+---
 
 ## Development setup (pixi)
 
@@ -95,27 +138,53 @@ pixi run lint           # ruff lint
 pixi run bench-all      # exhaustive benchmarks
 ```
 
+---
+
 ## Optional dependencies
 
 | Extra | Installs | Use |
 |---|---|---|
-| `pip install torchfits[dev]` | pytest, ruff, mypy, ipykernel | Development |
-| `pip install torchfits[bench]` | astropy, fitsio, pandas, matplotlib | Benchmarking |
-| `pip install torchfits[test]` | pytest, pytest-cov | Testing |
-| `pip install torchfits[examples]` | matplotlib | Running examples |
+| `torchfits[dev]` | pytest, ruff, mypy, ipykernel | Development |
+| `torchfits[bench]` | astropy, fitsio, pandas, matplotlib | Benchmarking |
+| `torchfits[test]` | pytest, pytest-cov | Testing |
+| `torchfits[examples]` | matplotlib | Running examples |
 
-PyArrow is a core dependency because `torchfits.table` is Arrow-native.
-Pandas, Polars, and DuckDB remain optional integrations.
+PyArrow is a core dependency (`torchfits.table` is Arrow-native). Pandas,
+Polars, and DuckDB remain optional integrations:
+
+```bash
+pip install polars duckdb  # optional table interop
+```
+
+---
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: No module named 'torchfits._C'`** — The compiled extension (`torchfits._C`) did not build. Check that CMake, a C++17 compiler, and Ninja are installed. Re-run `pip install -e . -v` for verbose build output. (`torchfits.cpp` is a pure-Python compatibility shim that re-exports `torchfits._C`, so import failures ultimately point at the missing `torchfits._C` extension.)
+**`ModuleNotFoundError: No module named 'torchfits._C'`** (or `'torchfits.cpp'`)
 
-**`./extern/vendor.sh` fails** — Ensure `curl` or `wget` is available. If behind a proxy, set `HTTPS_PROXY`.
+The compiled extension (`torchfits._C`) did not build. `torchfits.cpp` is a
+pure-Python compatibility shim that re-exports it, so either import failure
+points at the missing extension. Check that CMake, a C++17 compiler, and
+Ninja are installed. Re-run with verbose output:
 
-**`ImportError: ... symbol not found`** — Version mismatch between the compiled extension and the installed PyTorch. Rebuild: `pip install -e . --no-build-isolation --force-reinstall`.
+```bash
+pip install -e . -v
+```
 
-**Slow first read** — The first call initializes file and metadata caches.
-Subsequent reads may be faster. Call
-`torchfits.cache.configure_for_environment()` at startup for auto-tuning before
-the first read.
+**`./extern/vendor.sh` fails**
+
+Ensure `curl` or `wget` is available. Behind a proxy? Set `HTTPS_PROXY`.
+
+**`ImportError: ... symbol not found`**
+
+Version mismatch between the compiled extension and PyTorch. Rebuild:
+
+```bash
+pip install -e . --no-build-isolation --force-reinstall
+```
+
+**Slow first read**
+
+The first call initializes file and metadata caches. Call
+`torchfits.cache.configure_for_environment()` at startup for auto-tuning
+before the first read.

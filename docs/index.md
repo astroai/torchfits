@@ -1,58 +1,153 @@
-# torchfits
+---
+template: home.html
+---
 
-**FITS → PyTorch tensors**, without NumPy glue. Images, tables, compression,
-multi-extension files, and ML-ready `Dataset` / `transforms` on top of a
-vendored CFITSIO engine.
+# Welcome to torchfits
 
-## Start here
+**FITS I/O for PyTorch** — read FITS images, tables, and headers directly as
+tensors. A multi-threaded C++ engine with vendored CFITSIO delivers
+significantly faster I/O than astropy or fitsio, with native GPU transfer,
+column and row filtering at C++ speed, and ML-ready datasets and transforms
+on top.
 
-1. **[Install](install.md)** — `pip install torchfits` (+ PyTorch with CUDA/MPS if needed).
-2. **Run one example** — `pixi run python examples/example_image.py` (or copy the snippet below).
-3. **Pick your workflow** — use the table below, then open the linked page.
+??? info "New to FITS?"
+    **FITS** (Flexible Image Transport System) is the standard file format in
+    astronomy. A FITS file contains one or more **HDUs** (Header Data Units) —
+    think of them as numbered sections, each with a header (metadata key-value
+    pairs) and data (an image array or a table). HDU 0 is usually the primary
+    image; extension HDUs (1, 2, …) hold tables or additional images. Some files
+    use **EXTNAME** labels (like `'SCI'` or `'EVENTS'`) to name extensions.
+    torchfits reads these natively — no conversion needed.
+
+---
+
+<div class="grid cards" markdown>
+
+-   :material-rocket-launch:{ .lg .middle } __Get Started in 30 Seconds__
+
+    ---
+
+    Install with pip, read your first FITS file as a tensor.
+
+    [:octicons-arrow-right-24: Installation](install.md)
+
+-   :material-image-multiple:{ .lg .middle } __Read FITS Images__
+
+    ---
+
+    `read_tensor` loads any N-D FITS image directly to CPU, CUDA, or MPS.
+
+    [:octicons-arrow-right-24: Core I/O Reference](api-core-io.md)
+
+-   :material-table-large:{ .lg .middle } __Query Tables at C++ Speed__
+
+    ---
+
+    Filter tables at C++ speed — 70x+ faster than astropy.
+
+    [:octicons-arrow-right-24: Table Reference](api-tables.md)
+
+-   :material-brain:{ .lg .middle } __Train with PyTorch__
+
+    ---
+
+    `FitsImageDataset`, `make_loader`, and 25+ transforms for ML pipelines.
+
+    [:octicons-arrow-right-24: Data & Transforms](api-data.md)
+
+</div>
+
+---
+
+## At a Glance
 
 ```python
 import torchfits
 
-tensor = torchfits.read_tensor("image.fits", hdu=0, device="cpu")
-print(tensor.shape, tensor.dtype)
+# Read an image directly as a tensor
+tensor = torchfits.read_tensor("image.fits", hdu=0, device="cuda")
+
+# Filter a table at C++ speed (column + row filtering)
+table = torchfits.table.read("catalog.fits", hdu=1, where="MAG_G < 20")
+
+# Train a model
+from torchfits.data import FitsImageDataset, make_loader
+loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32, num_workers=4)
 ```
 
-## I want to...
+## Why torchfits?
 
-| Goal | Start with | Then read |
+| | astropy / fitsio | torchfits |
 |---|---|---|
-| Read a single image or cutout | `read_tensor`, `read_subset` | [API → Core I/O](api.md#core-io-reference), [`example_image.py`](../examples/example_image.py) |
-| Load a table as tensors | `read_table` / `stream_table` → `dict[str, Tensor]` | [API → `read_table`](api.md#torchfitsread_table), [`example_table.py`](../examples/example_table.py) |
-| Filter a catalog (`WHERE`, columns) | `torchfits.table.read(..., where=...)` → Arrow | [API → Predicate pushdown](api.md#predicate-pushdown-syntax), [`example_table.py`](../examples/example_table.py) |
-| Process a light curve | `table.write` + `PhaseFold` / `AsymmetricSigmaClip` | [`example_time_series.py`](../examples/example_time_series.py) |
-| Train a model (images) | `FitsImageDataset` + `make_loader` | [API → Data module](api.md#data-module), [`example_image_dataset.py`](../examples/example_image_dataset.py) |
-| Train on table rows (large file) | `FitsTableIterableDataset` | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) |
-| Train on patches / cutouts | `FitsCutoutDataset` | [Examples → PyTorch training](examples.md#pytorch-training) |
-| SQL / Polars / DuckDB on FITS | `table.read_polars`, `scan_polars`, `to_polars_lazy`, `to_duckdb` | [`example_polars.py`](../examples/example_polars.py), [`example_table_recipes.py`](../examples/example_table_recipes.py) |
-| Switch from Astropy or fitsio | Side-by-side tables | [migration_astropy.md](migration_astropy.md), [migration_fitsio.md](migration_fitsio.md) |
-| Upgrading from pre-0.7 `FITSDataset` | Replacement classes | [migration_datasets.md](migration_datasets.md) |
-| See if a feature exists | Supported / partial / out of scope | [Parity matrix](parity.md) |
-| Compare speed vs astropy/fitsio | Highlights + deficit table | [Benchmarks → Performance highlights](benchmarks.md#performance-highlights) |
+| **Image read (16 MB, CPU)** | 16.67 ms | **3.85 ms** (4.3x faster) |
+| **Table read (100k rows)** | 6.74 ms | **95 us** (70x faster) |
+| **Repeated cutouts (50x)** | 75.36 ms | **4.68 ms** (16x faster) |
+| **GPU transfer** | manual `.to(device)` | native `device="cuda"` |
+| **Table filtering** | Python mask | C++ pushdown |
+| **PyTorch Dataset** | hand-roll | built-in |
 
-> **Two table surfaces.** Root helpers (`read_table`, `stream_table`, and
-> `read(..., mode="table")`) return `dict[str, torch.Tensor]`. Use
-> `torchfits.table.read` / `scan` when you want Arrow/`where=` pushdown.
+## I Want To...
 
-
-## How the docs are organized
-
-| Section | What you get |
+| Goal | Start with |
 |---|---|
-| [Installation](install.md) | Wheels, source build, GPU, pixi dev setup |
-| [API Reference](api.md) | Entry points grouped by task (I/O, tables, ML) |
-| [Examples](examples.md) | Runnable scripts in learning order |
-| [Benchmarks](benchmarks.md) | Methodology, highlights, full CSV-derived tables |
-| [Parity](parity.md) | Feature contract vs Astropy/fitsio |
-| [Migration](migration_astropy.md) | Cookbook replacements from other libraries |
-| [Roadmap](roadmap.md) | Release path toward 1.0 |
+| Read a FITS image as a tensor | [`read_tensor`](api-core-io.md#read_tensor) |
+| Read a table with SQL-like filters | [`table.read(..., where=...)`](api-tables.md#tableread) |
+| Build a DataLoader for training | [`FitsImageDataset` + `make_loader`](api-data.md) |
+| Stream a huge table in constant memory | [`FitsTableIterableDataset`](api-data.md#fitstableiterabledataset) |
+| Apply FITS-aware preprocessing | [`torchfits.transforms`](api-transforms.md) |
+| Migrate from astropy | [Side-by-side migration guide](migration_astropy.md) |
+| Migrate from fitsio | [Side-by-side migration guide](migration_fitsio.md) |
+| Check feature support | [Parity matrix](parity.md) |
+| See performance numbers | [Benchmarks](benchmarks.md) |
+
+## How the Docs Are Organized
+
+<div class="grid cards" markdown>
+
+-   :material-download:{ .lg .middle } __Getting Started__
+
+    ---
+
+    Installation, quick start, first examples.
+
+    [:octicons-arrow-right-24: install.md](install.md) · [:octicons-arrow-right-24: quickstart.md](quickstart.md)
+
+-   :material-api:{ .lg .middle } __API Reference__
+
+    ---
+
+    Core I/O, tables, datasets, transforms — organized by task.
+
+    [:octicons-arrow-right-24: api.md](api.md)
+
+-   :material-book-open-variant:{ .lg .middle } __Guides__
+
+    ---
+
+    Runnable examples, benchmark data, feature parity matrix.
+
+    [:octicons-arrow-right-24: examples.md](examples.md)
+
+-   :material-swap-horizontal:{ .lg .middle } __Migration__
+
+    ---
+
+    Side-by-side replacements from astropy, fitsio, and legacy datasets.
+
+    [:octicons-arrow-right-24: migration_astropy.md](migration_astropy.md)
+
+</div>
 
 ## Scope
 
-torchfits is **not** a full Astropy replacement. WCS, sky coordinates, HEALPix,
-and simulation frameworks belong in downstream sky-domain packages. See
-[Parity](parity.md) for what is in and out of scope.
+torchfits is **not** a full Astropy replacement. It owns FITS I/O:
+images, tables, headers, compression, checksums, and ML data pipelines.
+WCS, sky coordinates, HEALPix, and simulation frameworks belong in
+downstream sky-domain packages. See [Parity](parity.md) for the full
+compatibility contract.
+
+**FITS standard coverage:** BSCALE/BZERO scaled data, unsigned integer
+conventions (BZERO/TZERO), binary and ASCII tables, variable-length array
+columns, complex columns, compressed images (RICE_1, GZIP_1, PLIO_1,
+HCOMPRESS_1), and FITS checksums are all supported. See
+[Parity](parity.md) for the full matrix.

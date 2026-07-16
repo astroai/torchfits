@@ -1,20 +1,32 @@
 [project]
 site_name = "torchfits"
-site_description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
+site_description = "FITS I/O for PyTorch — read FITS images, tables, and headers as tensors. Native C++ engine, ML datasets, transforms."
 site_url = "https://astroai.github.io/torchfits/"
 repo_url = "https://github.com/astroai/torchfits"
+repo_name = "astroai/torchfits"
 edit_uri = "edit/main/docs/"
 copyright = "Copyright &copy; 2026 torchfits contributors"
 
+extra_css = ["stylesheets/extra.css"]
+
 nav = [
   {"Home" = "index.md"},
-  {"Getting started" = "install.md"},
-  {"API Reference" = "api.md"},
+  {"Getting Started" = [
+    "install.md",
+    "quickstart.md",
+  ]},
+  {"Reference" = [
+    "api.md",
+    "api-core-io.md",
+    "api-tables.md",
+    "api-data.md",
+    "api-transforms.md",
+    "architecture.md",
+  ]},
   {"Guides" = [
     "examples.md",
     "benchmarks.md",
     "parity.md",
-    "roadmap.md",
   ]},
   {"Migration" = [
     "migration_astropy.md",
@@ -23,18 +35,32 @@ nav = [
   ]},
   {"Project" = [
     "changelog.md",
+    "roadmap.md",
     "contributing.md",
     "release.md",
   ]},
 ]
 
 [project.theme]
+name = "material"
+custom_dir = "overrides"
+logo = "logo.svg"
+favicon = "logo.svg"
 features = [
-  "content.action.edit",
-  "content.action.view",
   "navigation.tabs",
+  "navigation.tabs.sticky",
+  "navigation.path",
+  "navigation.top",
+  "navigation.indexes",
+  "navigation.instant",
   "navigation.tracking",
   "search.highlight",
+  "search.suggest",
+  "content.action.edit",
+  "content.action.view",
+  "content.code.copy",
+  "content.tabs.link",
+  "toc.follow",
 ]
 
 [project.theme.icon]
@@ -49,3 +75,29 @@ toggle.name = "Switch to dark mode"
 scheme = "slate"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
+
+# ── Markdown extensions ──────────────────────────────────────
+
+[project.markdown_extensions.admonition]
+
+[project.markdown_extensions.pymdownx.details]
+
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+
+[project.markdown_extensions.pymdownx.emoji]
+emoji_index = "pymdownx.emoji.twemoji"
+emoji_generator = "pymdownx.emoji.to_svg"
+
+[project.markdown_extensions.attr_list]
+
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.def_list]
+
+[project.markdown_extensions.tables]
+
+[project.markdown_extensions.toc]
+permalink = true

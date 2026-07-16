@@ -169,7 +169,7 @@ scope or not yet wired into the published tables.
    `bench_gpu_transports.py` inside `bench-all` when `torch.cuda.is_available()` or MPS
    is available. GitHub Actions `bench-report` installs **CPU PyTorch**, so weekly CI
    runs will **not** refresh GPU cells; published CUDA numbers come from CANFAR
-   staging (`exhaustive_cuda_0.9.0_20260714_065950`, via `pixi run bench-canfar-gpu`).
+   staging (`exhaustive_cuda_20260716_191255`, via `pixi run bench-exhaustive-canfar-cuda`).
 4. **FITS tables have no GPU transport rows** — astropy/fitsio/torchfits table paths are
    CPU-buffered; GPU table benchmarks would mostly measure PyTorch copy overhead, not FITS
    decode, and are deliberately omitted.
@@ -325,8 +325,8 @@ In almost all core I/O paths, `torchfits` is significantly faster than standard 
 
 ## Benchmark category summary
 
-Aggregated wins across every domain and operation in the exhaustive suite
-(`exhaustive_cuda_0.9.0_20260714_065950`, 3,648 rows).
+Aggregated wins across every domain and operation in the CANFAR CUDA exhaustive
+(`exhaustive_cuda_20260716_191255`, 4,079 rows, **0** TorchFits deficits).
 
 ### FITS image I/O
 
@@ -976,7 +976,10 @@ The complete, un-cherrypicked list of all measured benchmark configurations.
 ## Performance deficits
 
 <!-- BENCH_DEFICITS_BEGIN -->
-Cases where torchfits is **not** first in its comparison family (documented for transparency; not fixed in this release).
+Cases where torchfits is **not** first in its comparison family. CANFAR
+Linux CPU (`exhaustive_cpu_20260716_191252`) and CUDA
+(`exhaustive_cuda_20260716_191255`) currently report **0** deficits; rows
+below are from the latest Mac MPS exhaustive (pending re-run on tip).
 
 | Host | Domain | Case | mmap | torchfits (s) | TF RSS | Winner | Lag |
 |---|---|---|---|---:|---:|---|---:|
@@ -1032,6 +1035,8 @@ Latest lab benchmarks (one row per host):
 |---|---|---|---:|---:|---:|---|
 <!-- BENCH_SNAPSHOT_BEGIN -->
 | `exhaustive_mps_20260715_190646` | NRC-054711 / mps | fits + fitstable (lab) | 3569 | 101 | 513 | lab + mmap-matrix + GPU |
+| `exhaustive_cpu_20260716_191252` | torchfits-gpu-exhaustive-cpu-20260716-191252 / cpu | fits + fitstable (lab) | 2825 | 0 | 289 | lab + mmap-matrix |
+| `exhaustive_cuda_20260716_191255` | torchfits-gpu-exhaustive-cuda-20260716-191255 / cuda | fits + fitstable (lab) | 4079 | 0 | 730 | lab + mmap-matrix + GPU |
 <!-- BENCH_SNAPSHOT_END -->
 
 ### Host scorecard
@@ -1040,6 +1045,8 @@ Latest lab benchmarks (one row per host):
 |---|---|---:|---:|---:|---|
 <!-- BENCH_HOSTS_BEGIN -->
 | NRC-054711 / mps | `exhaustive_mps_20260715_190646` | 3569 | 101 | 513 | lab + mmap-matrix + GPU |
+| torchfits-gpu-exhaustive-cpu-20260716-191252 / cpu | `exhaustive_cpu_20260716_191252` | 2825 | 0 | 289 | lab + mmap-matrix |
+| torchfits-gpu-exhaustive-cuda-20260716-191255 / cuda | `exhaustive_cuda_20260716_191255` | 4079 | 0 | 730 | lab + mmap-matrix + GPU |
 <!-- BENCH_HOSTS_END -->
 
 Latest local quick benchmark evidence:
