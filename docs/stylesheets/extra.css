@@ -1,0 +1,80 @@
+/* ── torchfits docs custom styles ────────────────────────────── */
+
+/* Hero / landing page */
+.torchfits-hero {
+  text-align: center;
+  padding: 2rem 1rem 1.5rem;
+  margin-bottom: 1rem;
+}
+.torchfits-hero h1 {
+  font-size: 2.4rem;
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+.torchfits-hero .tagline {
+  font-size: 1.15rem;
+  opacity: 0.85;
+  margin-bottom: 1.2rem;
+}
+.torchfits-hero .hero-code {
+  display: inline-block;
+  text-align: left;
+  background: var(--md-code-bg-color, #f5f5f5);
+  border: 1px solid var(--md-code-border-color, #ddd);
+  border-radius: 8px;
+  padding: 0.8rem 1.2rem;
+  font-size: 0.92rem;
+  margin-bottom: 1rem;
+}
+.torchfits-hero .hero-badges {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.torchfits-hero .hero-badges img {
+  height: 20px;
+}
+
+/* Grid cards */
+.grid.cards > ul > li {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.grid.cards > ul > li:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+/* Speed table highlights */
+.speed-highlight {
+  font-weight: 600;
+  color: var(--md-accent-fg-color, #1976d2);
+}
+
+/* API page section anchors */
+.api-section h2 {
+  border-bottom: 2px solid var(--md-primary-fg-color, #1976d2);
+  padding-bottom: 0.3rem;
+}
+
+/* Footer adjustments */
+.md-footer {
+  font-size: 0.8rem;
+}
+
+/* Code blocks: slightly smaller font for long API examples */
+.md-typeset pre > code {
+  font-size: 0.82rem;
+}
+
+/* Navigation: slightly tighter nav tabs */
+.md-header__button.md-logo img {
+  height: 1.6rem;
+}
+
+/* Feature icon alignment in cards */
+.grid.cards li .twemoji {
+  vertical-align: middle;
+  margin-right: 0.3rem;
+}

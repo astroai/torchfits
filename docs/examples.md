@@ -7,9 +7,11 @@ prints results, and cleans up. Run the full smoke suite:
 pixi run python examples/test_examples.py
 ```
 
-## Suggested order
+---
 
-Read and run in this sequence the first time through:
+## Start here
+
+Read these in order on your first time through:
 
 | Step | Script | You learn |
 |:---:|---|---|
@@ -20,22 +22,7 @@ Read and run in this sequence the first time through:
 | 5 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline |
 | 6 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | Table + cutout datasets |
 
-Then explore by interest:
-
-- **3D / MEF** — [`example_image_cube.py`](../examples/example_image_cube.py), [`example_image_mef.py`](../examples/example_image_mef.py)
-- **Table interop** — [`example_table_interop.py`](../examples/example_table_interop.py), [`example_polars.py`](../examples/example_polars.py), [`example_table_recipes.py`](../examples/example_table_recipes.py)
-- **Spectral** — [`example_hyperspectral.py`](../examples/example_hyperspectral.py)
-
-## Which dataset class?
-
-| Your data | Catalog size | Class |
-|---|---|---|
-| Image files (paths list) | Any | `FitsImageDataset` (map) or `FitsImageIterableDataset` (shuffle / many workers) |
-| One table HDU | Fits in RAM (under a few million rows) | `FitsTableDataset` |
-| One table HDU | Too large to load at once | `FitsTableIterableDataset` |
-| Fixed (path, x, y) cutouts | Any | `FitsCutoutDataset` |
-
-Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`, and optional cache warmup.
+---
 
 ## By topic
 
@@ -65,6 +52,22 @@ Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`, and op
 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset` |
 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline + `FitsImageDataset` |
 | [`example_hyperspectral.py`](../examples/example_hyperspectral.py) | Spectral/hyperspectral transforms on tensor cubes |
+
+---
+
+## Which dataset class?
+
+| Your data | Catalog size | Class |
+|---|---|---|
+| Image files (paths list) | Any | `FitsImageDataset` (map) or `FitsImageIterableDataset` (many workers) |
+| One table HDU | Fits in RAM | `FitsTableDataset` |
+| One table HDU | Too large for RAM | `FitsTableIterableDataset` |
+| Fixed `(path, hdu, x, y, size)` cutouts | Any | `FitsCutoutDataset` |
+
+Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`,
+and optional cache warmup.
+
+---
 
 ## Optional dependencies
 

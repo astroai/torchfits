@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1a237e"/>
+      <stop offset="100%" stop-color="#42a5f5"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="60" y1="30" x2="60" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ff6d00"/>
+      <stop offset="60%" stop-color="#ffab00"/>
+      <stop offset="100%" stop-color="#ffe082"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded square background -->
+  <rect x="4" y="4" width="112" height="112" rx="22" fill="url(#bg)"/>
+  <!-- FITS-style grid lines (subtle) -->
+  <g stroke="#ffffff" stroke-opacity="0.12" stroke-width="0.8">
+    <line x1="40" y1="4" x2="40" y2="116"/>
+    <line x1="80" y1="4" x2="80" y2="116"/>
+    <line x1="4" y1="40" x2="116" y2="40"/>
+    <line x1="4" y1="80" x2="116" y2="80"/>
+  </g>
+  <!-- flame / torch icon (simplified) -->
+  <path d="M60 28 C60 28 74 44 74 62 C74 70 68 78 60 80 C52 78 46 70 46 62 C46 44 60 28 60 28Z" fill="url(#flame)"/>
+  <!-- inner glow -->
+  <ellipse cx="60" cy="62" rx="6" ry="10" fill="#fff" opacity="0.35"/>
+  <!-- torch handle -->
+  <rect x="56" y="78" width="8" height="16" rx="2" fill="#ffe082" opacity="0.9"/>
+  <!-- tensor grid dots -->
+  <g fill="#ffffff" opacity="0.6">
+    <circle cx="30" cy="30" r="2.5"/>
+    <circle cx="90" cy="30" r="2.5"/>
+    <circle cx="30" cy="90" r="2.5"/>
+    <circle cx="90" cy="90" r="2.5"/>
+    <circle cx="30" cy="60" r="2"/>
+    <circle cx="90" cy="60" r="2"/>
+    <circle cx="60" cy="30" r="2"/>
+    <circle cx="60" cy="90" r="2"/>
+  </g>
+</svg>
