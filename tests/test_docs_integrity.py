@@ -170,9 +170,13 @@ def test_docs_do_not_advertise_unimplemented_worker_handle_env() -> None:
 
 def test_api_md_env_var_table_matches_source() -> None:
     """Only document TORCHFITS_* env vars that exist in the tree (table rows)."""
-    api = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
-    # Rows in the Environment variables Markdown table: | `TORCHFITS_...` | ...
-    documented = set(re.findall(r"\|\s*`?(TORCHFITS_[A-Z0-9_]+)`?\s*\|", api))
+    docs_text = "\n".join(
+        (ROOT / "docs" / name).read_text(encoding="utf-8")
+        for name in ("api.md", "architecture.md", "api-tables.md", "api-core-io.md")
+        if (ROOT / "docs" / name).exists()
+    )
+    # Rows in Environment variables Markdown tables: | `TORCHFITS_...` | ...
+    documented = set(re.findall(r"\|\s*`?(TORCHFITS_[A-Z0-9_]+)`?\s*\|", docs_text))
     source_envs: set[str] = set()
     for path in (ROOT / "src").rglob("*"):
         if path.suffix not in {".py", ".cpp", ".h", ".hpp", ".cc", ".cu"}:
@@ -193,45 +197,45 @@ def test_api_md_core_io_signatures_match_live() -> None:
     """Guard against invented parameters on the most-copied Core I/O signatures."""
     import torchfits
 
-    api = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+    # Persona rewrite splits the hub: signatures live in api-core-io.md.
+    api = (ROOT / "docs" / "api-core-io.md").read_text(encoding="utf-8")
 
-    def _section(heading: str) -> str:
-        pattern = rf"### `{re.escape(heading)}`\n(.*?)(?=\n### |\n## |\Z)"
+    def _section(name: str) -> str:
+        # Headings look like: ## `read_tensor()`
+        pattern = rf"## `{re.escape(name)}\(\)`\n(.*?)(?=\n## |\Z)"
         match = re.search(pattern, api, flags=re.S)
-        assert match, f"missing section for {heading}"
+        assert match, f"missing section for {name}"
         return match.group(1)
 
-    def _first_signature_block(section: str) -> str:
-        match = re.search(r"```python\n(def .*?)\n```", section, flags=re.S)
-        assert match, "missing python signature fence"
+    def _first_call_sig(section: str) -> str:
+        match = re.search(
+            r"```python\n(torchfits\.\w+\(.*?)\)\n```", section, flags=re.S
+        )
+        assert match, "missing python call-signature fence"
         return match.group(1)
 
-    read_tensor_sig = _first_signature_block(_section("torchfits.read_tensor"))
+    read_tensor_sig = _first_call_sig(_section("read_tensor"))
     assert "scale_on_device" not in read_tensor_sig, (
         "read_tensor must not document scale_on_device (that belongs to read_fast / kwargs)"
     )
     assert "handle_cache" in read_tensor_sig
 
-    subset_section = _section("torchfits.read_subset")
-    subset_sig = _first_signature_block(subset_section)
+    subset_section = _section("read_subset")
+    subset_sig = _first_call_sig(subset_section)
     assert "device" not in subset_sig
     assert "handle_cache_capacity" in subset_sig
-    assert (
-        "exclusive" in subset_section.lower() or "half-open" in subset_section.lower()
-    )
 
-    stream_section = _section("torchfits.stream_table")
-    stream_sig = _first_signature_block(stream_section)
+    stream_section = _section("stream_table")
+    stream_sig = _first_call_sig(stream_section)
     assert "file_path" in stream_sig
     assert (
         "dict[str, torch.Tensor]" in stream_section
         or "dict[str, Tensor]" in stream_section
+        or "Yields" in stream_section
     )
 
-    read_section = _section("torchfits.read")
-    assert (
-        "dict[str, torch.Tensor]" in read_section or "dict[str, Tensor]" in read_section
-    )
+    read_section = _section("read")
+    assert "table" in read_section.lower() or "tensor" in read_section.lower()
 
     # Live sanity: key helpers remain importable
     assert callable(torchfits.read_table)

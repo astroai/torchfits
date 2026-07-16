@@ -174,9 +174,10 @@ happens in C++ for most table sizes.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TORCHFITS_TABLE_SCANNER_THRESHOLD` | `100000` (or `1000` for VLA) | Row count threshold for pushdown vs read-then-filter |
 | `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Set `0` to disable LRU handle cache |
+| `TORCHFITS_TABLE_HANDLE_CACHE_SIZE` | `8` | Handle LRU capacity |
 | `TORCHFITS_TABLE_READER_CACHE` | `1` | Set `0` to disable `TableReader` cache |
+| `TORCHFITS_TABLE_READER_CACHE_SIZE` | `8` | `TableReader` LRU capacity |
 
 ---
 
