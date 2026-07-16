@@ -623,6 +623,7 @@ torch::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
 torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_mmap) {
     fitsfile* fptr = nullptr;
     int status = 0;
+    auto shared_meta = d::get_shared_meta_for_path(path);
     check_fits_filename_security(path);
     status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
@@ -649,11 +650,29 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         int naxis = 0;
         std::array<LONGLONG, 9> naxes_ll{};
         naxes_ll.fill(0);
-        status = 0;
-        fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
-        if (status != 0) {
-            close_guard();
-            throw std::runtime_error("Could not read image parameters");
+        bool info_cached = false;
+        if (shared_meta) {
+            std::lock_guard<std::mutex> lock(shared_meta->mutex);
+            auto it = shared_meta->image_info_cache.find(hdu_num);
+            if (it != shared_meta->image_info_cache.end()) {
+                bitpix = std::get<0>(it->second);
+                naxis = std::get<1>(it->second);
+                naxes_ll = std::get<2>(it->second);
+                info_cached = true;
+            }
+        }
+        if (!info_cached) {
+            status = 0;
+            fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+            if (status != 0) {
+                close_guard();
+                throw std::runtime_error("Could not read image parameters");
+            }
+            if (shared_meta) {
+                std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                shared_meta->image_info_cache[hdu_num] = std::make_tuple(
+                    bitpix, naxis, naxes_ll);
+            }
         }
 
         if (naxis == 0) {
@@ -671,7 +690,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             return torch::empty({0}, torch::TensorOptions().dtype(dtype));
         }
 
-        // Float/double (incl. CompImage): direct CFITSIO→tensor, no meta/mmap probes.
+        // Float/double (incl. CompImage): direct CFITSIO→tensor, no mmap/scale probes.
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         if (float_like) {
             LONGLONG nelements = 1;
@@ -699,7 +718,6 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             return tensor;
         }
 
-        auto shared_meta = d::get_shared_meta_for_path(path);
         bool compressed = false;
         bool compressed_cached = false;
         if (shared_meta) {
