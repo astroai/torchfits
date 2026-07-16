@@ -117,18 +117,18 @@ def test_image_deficits_count_any_lag() -> None:
 
 
 def test_timer_epsilon_absorbs_only_clock_noise() -> None:
-    """Float-timer ε is absolute (~20µs), never a percent-of-median floor."""
+    """Image float-timer ε is absolute (~0.2ms), never a percent-of-median floor."""
     rows = [
         _row(
-            case_id="hcomp::read_full",
+            case_id="plain::read_full",
             family="smart",
             library="torchfits",
             method="torchfits",
             mmap_target="off",
-            time_s=60.0e-3 + 1e-5,  # 10µs — under ε
+            time_s=60.0e-3 + 1e-4,  # 0.1ms — under ε
         ),
         _row(
-            case_id="hcomp::read_full",
+            case_id="plain::read_full",
             family="smart",
             library="fitsio",
             method="fitsio_torch",
@@ -139,7 +139,7 @@ def test_timer_epsilon_absorbs_only_clock_noise() -> None:
     annotate_rankings(rows)
     assert compute_deficits(rows, run_id="test") == []
 
-    rows[0]["time_s"] = 60.0e-3 + 5e-5  # 50µs — above ε, is a deficit
+    rows[0]["time_s"] = 60.0e-3 + 2.5e-4  # 0.25ms — above ε, is a deficit
     annotate_rankings(rows)
     assert len(compute_deficits(rows, run_id="test")) == 1
 

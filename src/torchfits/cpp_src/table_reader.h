@@ -386,8 +386,11 @@ public:
                 col.unsigned_offset = 32768;
                 col.unsigned_target_type = torch::kUInt16;
                 col.scaled = false;
-            } else if ((typecode == TINT || typecode == TUINT) &&
-                       col.tzero == 2147483648.0) {
+            } else if (
+                // CFITSIO reports FITS `J` as TLONG/TINT32BIT (41), not TINT (31).
+                (typecode == TINT || typecode == TUINT || typecode == TLONG ||
+                 typecode == TINT32BIT) &&
+                col.tzero == 2147483648.0) {
                 col.is_unsigned_int = true;
                 col.unsigned_offset = 2147483648;
                 col.unsigned_target_type = torch::kUInt32;

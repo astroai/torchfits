@@ -413,7 +413,10 @@ def _bench_case(
             "torchfits_specialized": lambda: _torchfits_filter_col_local(
                 path, col=num_col, mmap=target_memmap
             ),
-            "astropy": lambda: _astropy_filter(path, col=num_col, memmap=target_memmap),
+            # Specialized peers: single-column project+filter (not full-table mask).
+            "astropy": lambda: _astropy_filter_col(
+                path, col=num_col, memmap=target_memmap
+            ),
             "astropy_torch": lambda: torch.as_tensor(
                 _astropy_filter_col(path, col=num_col, memmap=target_memmap)
             ),

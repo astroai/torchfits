@@ -278,7 +278,9 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
         if lag_ratio <= min_lag:
             continue
         # Timer ε only — reject microscopic float ties, not percent lags.
-        if (tf_time - best_t) < deficit_abs_delta_floor(
+        # Arrow tables already have explicit 1.05× slack; do not let a fixed
+        # absolute floor hide sub-ms ratio violations on narrow predicates.
+        if domain != "fitstable" and (tf_time - best_t) < deficit_abs_delta_floor(
             best_t, case_id=str(torch_row.get("case_id") or "")
         ):
             continue
@@ -434,15 +436,15 @@ def write_summary(
         best_t = grp[0][1]
         tf_t = _to_float(torch_row.get("time_s"))
         # Match deficit policy: Arrow tables within 1.05× still count as a win.
+        # Image paths may also win via absolute timer ε; tables do not.
         within_policy = False
         if tf_t is not None and best_t > 0:
             lag = tf_t / best_t
-            within_policy = lag <= deficit_min_lag_ratio(domain) or (
-                (tf_t - best_t)
-                < deficit_abs_delta_floor(
+            within_policy = lag <= deficit_min_lag_ratio(domain)
+            if not within_policy and domain != "fitstable":
+                within_policy = (tf_t - best_t) < deficit_abs_delta_floor(
                     best_t, case_id=str(torch_row.get("case_id") or "")
                 )
-            )
         if within_policy:
             scorecard[key]["wins"] += 1
         n_points = _extract_n_points(torch_row)
