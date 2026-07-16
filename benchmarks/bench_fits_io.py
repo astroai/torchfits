@@ -48,6 +48,13 @@ SPECIALIZED_METHODS = [
     ("fitsio_torch", "fitsio", "fitsio_torch"),
 ]
 
+# Diagnostic ndarray peers (timed separately). Own family so Tensor ranking /
+# zero-deficit scorecard never invents wrap-only losses vs bare NumPy.
+NUMPY_METHODS = [
+    ("astropy", "astropy", "astropy"),
+    ("fitsio", "fitsio", "fitsio"),
+]
+
 
 class FITSBenchmarkSuite:
     """FITS-only version of the pre-extraction exhaustive fixture suite."""
@@ -416,16 +423,17 @@ class FITSBenchmarkSuite:
             timed = time_medians_interleaved(
                 {
                     "torchfits": methods["torchfits"],
+                    "torchfits_specialized": methods["torchfits_specialized"],
                     "fitsio_torch": methods["fitsio_torch"],
                     "astropy_torch": methods["astropy_torch"],
                 },
                 runs=runs,
                 warmup=warmup,
             )
+            # Bare ndarray schedule separate from Tensor peers (CompImage poison).
             timed.update(
                 time_medians_interleaved(
                     {
-                        "torchfits_specialized": methods["torchfits_specialized"],
                         "fitsio": methods["fitsio"],
                         "astropy": methods["astropy"],
                     },
@@ -534,6 +542,7 @@ class FITSBenchmarkSuite:
         timed = time_medians_interleaved(
             {
                 "torchfits": methods["torchfits"],
+                "torchfits_specialized": methods["torchfits_specialized"],
                 "fitsio_torch": methods["fitsio_torch"],
                 "astropy_torch": methods["astropy_torch"],
             },
@@ -543,7 +552,6 @@ class FITSBenchmarkSuite:
         timed.update(
             time_medians_interleaved(
                 {
-                    "torchfits_specialized": methods["torchfits_specialized"],
                     "fitsio": methods["fitsio"],
                     "astropy": methods["astropy"],
                 },
@@ -616,6 +624,7 @@ class FITSBenchmarkSuite:
         timed = time_medians_interleaved(
             {
                 "torchfits": methods["torchfits"],
+                "torchfits_specialized": methods["torchfits_specialized"],
                 "fitsio_torch": methods["fitsio_torch"],
                 "astropy_torch": methods["astropy_torch"],
             },
@@ -625,7 +634,6 @@ class FITSBenchmarkSuite:
         timed.update(
             time_medians_interleaved(
                 {
-                    "torchfits_specialized": methods["torchfits_specialized"],
                     "fitsio": methods["fitsio"],
                     "astropy": methods["astropy"],
                 },
@@ -813,6 +821,7 @@ def _normalize_legacy_rows(
         for family, methods in (
             ("smart", SMART_METHODS),
             ("specialized", SPECIALIZED_METHODS),
+            ("numpy", NUMPY_METHODS),
         ):
             for method_key, library, method_label in methods:
                 t_col = f"{method_key}_median"
@@ -864,7 +873,7 @@ def _normalize_legacy_rows(
                     "family": family,
                     "library": library,
                     "method": method_label,
-                    "mode": "smart" if family == "smart" else "specialized",
+                    "mode": family,
                     "status": status,
                     "skip_reason": skip_reason,
                     "comparable": comparable,
