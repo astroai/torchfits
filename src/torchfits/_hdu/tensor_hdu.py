@@ -88,6 +88,30 @@ class TensorHDU:
             return str(bitpix)
         return "unknown"
 
+    def _repr_html_(self) -> str:
+        import html as pyhtml
+
+        name = pyhtml.escape(str(self.header.get("EXTNAME", "PRIMARY")))
+        shape = pyhtml.escape(self._get_shape_str())
+        dtype = pyhtml.escape(self._get_dtype_str())
+
+        html_parts = [
+            '<div tabindex="0" aria-label="FITS Tensor HDU" style=\'max-height: 400px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;\'>',
+            "<table style='border-collapse: collapse; width: 100%; margin: 0;'>",
+            "<thead><tr>",
+            "<th scope=\"col\" style='text-align: left; padding: 8px; position: sticky; top: 0; background-color: var(--theme-ui-colors-background, white); border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>Name</th>",
+            "<th scope=\"col\" style='text-align: left; padding: 8px; position: sticky; top: 0; background-color: var(--theme-ui-colors-background, white); border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>Shape</th>",
+            "<th scope=\"col\" style='text-align: left; padding: 8px; position: sticky; top: 0; background-color: var(--theme-ui-colors-background, white); border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;'>Dtype</th>",
+            "</tr></thead><tbody>",
+            "<tr>",
+            f"<th scope=\"row\" style='text-align: left; padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-weight: normal;'>{name}</th>",
+            f"<td style='padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{shape}</td>",
+            f"<td style='padding: 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.2);'>{dtype}</td>",
+            "</tr>",
+            "</tbody></table></div>",
+        ]
+        return "".join(html_parts)
+
     def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"
