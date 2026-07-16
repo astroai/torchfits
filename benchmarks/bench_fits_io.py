@@ -41,12 +41,11 @@ SMART_METHODS = [
 ]
 
 SPECIALIZED_METHODS = [
-    # Tensor APIs: specialized torchfits.read_tensor vs fitsio/astropy + from_numpy.
-    # Ranking bare fitsio ndarray against a Tensor return is structurally unfair
-    # (wrap cost alone invents 1–3% deficits on CFITSIO-parity hcompress).
+    # Bare ndarray peers (plan: full scorecard). Keys must match the specialized
+    # timing schedule columns (fitsio/astropy), never reuse smart fitsio_torch.
     ("torchfits_specialized", "torchfits", "torchfits_specialized"),
-    ("astropy_torch", "astropy", "astropy_torch"),
-    ("fitsio_torch", "fitsio", "fitsio_torch"),
+    ("astropy", "astropy", "astropy"),
+    ("fitsio", "fitsio", "fitsio"),
 ]
 
 
@@ -308,34 +307,57 @@ class FITSBenchmarkSuite:
             }
             # Rank peers share one schedule per family so page-cache order cannot
             # favor the last library. Astropy CompImage (~10×) stays off the
-            # CFITSIO Tensor round-robin on compressed files only.
+            # CFITSIO round-robin on compressed files (poisons medians).
             smart_runs = max(runs, 21) if file_type == "compressed" else runs
-            timed = time_medians_interleaved(
-                {
-                    "torchfits": methods["torchfits"],
-                    "fitsio_torch": methods["fitsio_torch"],
-                    **(
-                        {}
-                        if file_type == "compressed"
-                        else {"astropy_torch": methods["astropy_torch"]}
-                    ),
-                },
-                runs=smart_runs,
-                warmup=warmup,
-            )
-            timed.update(
-                time_medians_interleaved(
+            if file_type == "compressed":
+                timed = time_medians_interleaved(
                     {
-                        "torchfits_specialized": methods["torchfits_specialized"],
-                        "fitsio": methods["fitsio"],
-                        "astropy": methods["astropy"],
+                        "torchfits": methods["torchfits"],
+                        "fitsio_torch": methods["fitsio_torch"],
                     },
-                    runs=runs,
+                    runs=smart_runs,
                     warmup=warmup,
                 )
-            )
-            # CompImage: do not score astropy_torch in the smart family — its
-            # decode path is not a CFITSIO peer and can invent false wins/losses.
+                # Specialized: Tensor API vs bare fitsio only (plan full scorecard).
+                timed.update(
+                    time_medians_interleaved(
+                        {
+                            "torchfits_specialized": methods["torchfits_specialized"],
+                            "fitsio": methods["fitsio"],
+                        },
+                        runs=smart_runs,
+                        warmup=warmup,
+                    )
+                )
+                # Diagnostic astropy only for specialized bare peer (keep off smart).
+                timed.update(
+                    time_medians_interleaved(
+                        {"astropy": methods["astropy"]},
+                        runs=runs,
+                        warmup=warmup,
+                    )
+                )
+            else:
+                timed = time_medians_interleaved(
+                    {
+                        "torchfits": methods["torchfits"],
+                        "fitsio_torch": methods["fitsio_torch"],
+                        "astropy_torch": methods["astropy_torch"],
+                    },
+                    runs=smart_runs,
+                    warmup=warmup,
+                )
+                timed.update(
+                    time_medians_interleaved(
+                        {
+                            "torchfits_specialized": methods["torchfits_specialized"],
+                            "fitsio": methods["fitsio"],
+                            "astropy": methods["astropy"],
+                        },
+                        runs=runs,
+                        warmup=warmup,
+                    )
+                )
             for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                 row[f"{method_name}_median"] = median_s
                 row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)

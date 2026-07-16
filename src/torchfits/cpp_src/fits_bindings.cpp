@@ -616,14 +616,14 @@ torch::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
 }
 
 // ---------------------------------------------------------------------------
-// read_full_nocache — bypasses the global handle cache, uses shared meta
+// read_full_nocache — cold open/read/close with no shared-meta or handle pool.
+// Scorecard paths use this; keep it as thin as fitsio's open→read→close.
 // ---------------------------------------------------------------------------
 torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_mmap) {
     fitsfile* fptr = nullptr;
     int status = 0;
-    auto shared_meta = d::get_shared_meta_for_path(path);
     check_fits_filename_security(path);
-    status = d::open_fits_readonly(&fptr, path);
+    status = d::open_fits_readonly_fitsio_style(&fptr, path);
     if (status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
     }
@@ -648,30 +648,11 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         int naxis = 0;
         std::array<LONGLONG, 9> naxes_ll{};
         naxes_ll.fill(0);
-        bool info_cached = false;
-        if (shared_meta) {
-            std::lock_guard<std::mutex> lock(shared_meta->mutex);
-            auto it = shared_meta->image_info_cache.find(hdu_num);
-            if (it != shared_meta->image_info_cache.end()) {
-                bitpix = std::get<0>(it->second);
-                naxis = std::get<1>(it->second);
-                naxes_ll = std::get<2>(it->second);
-                info_cached = true;
-            }
-        }
-        if (!info_cached) {
-            status = 0;
-            fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
-            if (status != 0) {
-                close_guard();
-                throw std::runtime_error("Could not read image parameters");
-            }
-            if (shared_meta) {
-                std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                shared_meta->image_info_cache[hdu_num] = std::make_tuple(
-                    bitpix, naxis, naxes_ll
-                );
-            }
+        status = 0;
+        fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+        if (status != 0) {
+            close_guard();
+            throw std::runtime_error("Could not read image parameters");
         }
 
         if (naxis == 0) {
@@ -689,66 +670,52 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             return torch::empty({0}, torch::TensorOptions().dtype(dtype));
         }
 
-        // Float/double: always thin CFITSIO→tensor (matches FITSFile::read_tensor).
+        // Float/double (incl. CompImage): direct CFITSIO→tensor, no meta/mmap probes.
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
-        bool compressed = false;
-        bool compressed_cached = false;
-        if (!float_like) {
-        if (shared_meta) {
-            std::lock_guard<std::mutex> lock(shared_meta->mutex);
-            auto it = shared_meta->compressed_cache.find(hdu_num);
-            if (it != shared_meta->compressed_cache.end()) {
-                compressed = it->second;
-                compressed_cached = true;
+        if (float_like) {
+            LONGLONG nelements = 1;
+            for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
+            int64_t torch_shape[9];
+            for (int i = 0; i < naxis; ++i)
+                torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
+            const auto dtype = (bitpix == FLOAT_IMG) ? torch::kFloat32 : torch::kFloat64;
+            const int datatype = (bitpix == FLOAT_IMG) ? TFLOAT : TDOUBLE;
+            auto tensor = torch::empty(
+                at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
+            int anynul = 0;
+            status = 0;
+            fits_read_img(
+                fptr, datatype, 1, nelements, nullptr, tensor.data_ptr(), &anynul, &status);
+            if (status != 0) {
+                close_guard();
+                char err_text[31];
+                fits_get_errstatus(status, err_text);
+                throw std::runtime_error(
+                    "Error reading image data: status=" + std::to_string(status) +
+                    " msg=" + std::string(err_text));
             }
+            close_guard();
+            return tensor;
         }
-        if (!compressed_cached) {
+
+        bool compressed = false;
+        {
             status = 0;
             const int is_comp = fits_is_compressed_image(fptr, &status);
             compressed = (status == 0) && (is_comp != 0);
-            if (status != 0) {
-                status = 0;
-            }
-            if (shared_meta) {
-                std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                shared_meta->compressed_cache[hdu_num] = compressed;
-            }
-        }
+            if (status != 0) status = 0;
         }
 
         bool scaled = false;
-        bool scale_trusted = true;
         double bscale = 1.0;
         double bzero = 0.0;
-        if (!float_like) {
-            bool scale_cached = false;
-            if (shared_meta) {
-                std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                auto it = shared_meta->scale_cache.find(hdu_num);
-                if (it != shared_meta->scale_cache.end()) {
-                    scaled = std::get<0>(it->second);
-                    scale_trusted = std::get<1>(it->second);
-                    bscale = std::get<2>(it->second);
-                    bzero = std::get<3>(it->second);
-                    scale_cached = true;
-                }
-            }
-            if (!scale_cached) {
-                const auto detected = d::detect_scale_info_fast(fptr, bitpix);
-                scaled = detected.scaled;
-                scale_trusted = detected.trusted;
-                bscale = detected.bscale;
-                bzero = detected.bzero;
-                if (shared_meta) {
-                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                    shared_meta->scale_cache[hdu_num] = std::make_tuple(
-                        scaled, scale_trusted, bscale, bzero
-                    );
-                }
-            }
+        {
+            const auto detected = d::detect_scale_info_fast(fptr, bitpix);
+            scaled = detected.scaled;
+            bscale = detected.bscale;
+            bzero = detected.bzero;
         }
 
-        // Build resolved metadata and delegate to canonical read path
         d::ResolvedFITSMeta resolved;
         resolved.bitpix = bitpix;
         resolved.naxis = naxis;
@@ -756,27 +723,13 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         resolved.scaled = scaled;
         resolved.bscale = bscale;
         resolved.bzero = bzero;
-        resolved.compressed = float_like ? false : compressed;
-        resolved.compressed_nulls = false;
-        if (resolved.compressed) {
-            resolved.compressed_nulls = [&]() {
-                if (shared_meta) {
-                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                    auto it = shared_meta->compressed_nulls_cache.find(hdu_num);
-                    if (it != shared_meta->compressed_nulls_cache.end()) return it->second;
-                }
-                bool has_nulls = d::has_compressed_nulls(fptr);
-                if (shared_meta) {
-                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
-                    shared_meta->compressed_nulls_cache[hdu_num] = has_nulls;
-                }
-                return has_nulls;
-            }();
-        }
+        resolved.compressed = compressed;
+        resolved.compressed_nulls = compressed ? d::has_compressed_nulls(fptr) : false;
 
-        const int fd = (!resolved.compressed && shared_meta) ? d::get_shared_raw_fd(shared_meta, path) : -1;
+        // No shared raw_fd on cold path — open/pread would add syscalls fitsio skips.
         auto tensor = d::read_tensor_canonical(
-            fptr, path, resolved, float_like ? false : use_mmap, fd, /*use_chunking=*/false);
+            fptr, path, resolved, compressed ? false : use_mmap, /*raw_fd=*/-1,
+            /*use_chunking=*/false);
         close_guard();
         return tensor;
     } catch (...) {
