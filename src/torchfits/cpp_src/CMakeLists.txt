@@ -388,7 +388,10 @@ else()
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
         set(TESTS OFF CACHE BOOL "Disable tests" FORCE)
         set(UTILS OFF CACHE BOOL "Disable utils" FORCE)
-        set(USE_PTHREADS ON CACHE BOOL "Enable thread-safe build" FORCE)
+        # Thread-safety for shared fptrs is provided by torchfits handle locks.
+        # CFITSIO's internal FFLOCK on every API call costs ~1–3% on CompImage
+        # HCOMPRESS cold scorecard vs fitsio (typically built without pthreads).
+        set(USE_PTHREADS OFF CACHE BOOL "Disable CFITSIO internal locks" FORCE)
 
         # Force position-independent code for static library to be linked into shared library
         set(CMAKE_POSITION_INDEPENDENT_CODE ON)

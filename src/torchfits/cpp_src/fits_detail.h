@@ -229,14 +229,6 @@ inline int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     return status;
 }
 
-// fitsio uses fits_open_file; match it on cold image scorecard paths where
-// CompImage HCOMPRESS was ~1–3% behind diskfile opens on Linux.
-inline int open_fits_readonly_fitsio_style(fitsfile** fptr, const std::string& path) {
-    int status = 0;
-    fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
-    return status;
-}
-
 inline int get_shared_raw_fd(const std::shared_ptr<SharedReadMeta>& meta, const std::string& filename) {
     if (!meta || filename.find('[') != std::string::npos) return -1;
     std::lock_guard<std::mutex> lock(meta->mutex);

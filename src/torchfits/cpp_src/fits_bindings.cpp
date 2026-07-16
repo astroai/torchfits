@@ -616,14 +616,15 @@ torch::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
 }
 
 // ---------------------------------------------------------------------------
-// read_full_nocache — cold open/read/close with no shared-meta or handle pool.
-// Scorecard paths use this; keep it as thin as fitsio's open→read→close.
+// read_full_nocache — cold open/read/close (no handle pool). Float/CompImage
+// stays ultra-thin; integer/scaled paths keep shared meta + raw_fd so mmap/pread
+// and one-time scale probes still win the scorecard.
 // ---------------------------------------------------------------------------
 torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_mmap) {
     fitsfile* fptr = nullptr;
     int status = 0;
     check_fits_filename_security(path);
-    status = d::open_fits_readonly_fitsio_style(&fptr, path);
+    status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
     }
@@ -698,22 +699,55 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             return tensor;
         }
 
+        auto shared_meta = d::get_shared_meta_for_path(path);
         bool compressed = false;
-        {
+        bool compressed_cached = false;
+        if (shared_meta) {
+            std::lock_guard<std::mutex> lock(shared_meta->mutex);
+            auto it = shared_meta->compressed_cache.find(hdu_num);
+            if (it != shared_meta->compressed_cache.end()) {
+                compressed = it->second;
+                compressed_cached = true;
+            }
+        }
+        if (!compressed_cached) {
             status = 0;
             const int is_comp = fits_is_compressed_image(fptr, &status);
             compressed = (status == 0) && (is_comp != 0);
             if (status != 0) status = 0;
+            if (shared_meta) {
+                std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                shared_meta->compressed_cache[hdu_num] = compressed;
+            }
         }
 
         bool scaled = false;
+        bool scale_trusted = true;
         double bscale = 1.0;
         double bzero = 0.0;
-        {
+        bool scale_cached = false;
+        if (shared_meta) {
+            std::lock_guard<std::mutex> lock(shared_meta->mutex);
+            auto it = shared_meta->scale_cache.find(hdu_num);
+            if (it != shared_meta->scale_cache.end()) {
+                scaled = std::get<0>(it->second);
+                scale_trusted = std::get<1>(it->second);
+                bscale = std::get<2>(it->second);
+                bzero = std::get<3>(it->second);
+                scale_cached = true;
+            }
+        }
+        if (!scale_cached) {
             const auto detected = d::detect_scale_info_fast(fptr, bitpix);
             scaled = detected.scaled;
+            scale_trusted = detected.trusted;
             bscale = detected.bscale;
             bzero = detected.bzero;
+            if (shared_meta) {
+                std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                shared_meta->scale_cache[hdu_num] = std::make_tuple(
+                    scaled, scale_trusted, bscale, bzero);
+            }
         }
 
         d::ResolvedFITSMeta resolved;
@@ -724,11 +758,31 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         resolved.bscale = bscale;
         resolved.bzero = bzero;
         resolved.compressed = compressed;
-        resolved.compressed_nulls = compressed ? d::has_compressed_nulls(fptr) : false;
+        resolved.compressed_nulls = false;
+        if (resolved.compressed) {
+            bool nulls_cached = false;
+            if (shared_meta) {
+                std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                auto it = shared_meta->compressed_nulls_cache.find(hdu_num);
+                if (it != shared_meta->compressed_nulls_cache.end()) {
+                    resolved.compressed_nulls = it->second;
+                    nulls_cached = true;
+                }
+            }
+            if (!nulls_cached) {
+                resolved.compressed_nulls = d::has_compressed_nulls(fptr);
+                if (shared_meta) {
+                    std::lock_guard<std::mutex> lock(shared_meta->mutex);
+                    shared_meta->compressed_nulls_cache[hdu_num] = resolved.compressed_nulls;
+                }
+            }
+        }
 
-        // No shared raw_fd on cold path — open/pread would add syscalls fitsio skips.
+        const int fd = (resolved.compressed || !shared_meta)
+                           ? -1
+                           : d::get_shared_raw_fd(shared_meta, path);
         auto tensor = d::read_tensor_canonical(
-            fptr, path, resolved, compressed ? false : use_mmap, /*raw_fd=*/-1,
+            fptr, path, resolved, resolved.compressed ? false : use_mmap, fd,
             /*use_chunking=*/false);
         close_guard();
         return tensor;
