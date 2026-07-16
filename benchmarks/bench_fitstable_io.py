@@ -410,14 +410,14 @@ def _bench_case(
             "torchfits": lambda: _torchfits_filter_pushdown(
                 path, col=num_col, mmap=target_memmap, has_pyarrow=has_pyarrow
             ),
-            "torchfits_specialized": lambda: _torchfits_filter_local(
+            "torchfits_specialized": lambda: _torchfits_filter_col_local(
                 path, col=num_col, mmap=target_memmap
             ),
             "astropy": lambda: _astropy_filter(path, col=num_col, memmap=target_memmap),
             "astropy_torch": lambda: torch.as_tensor(
                 _astropy_filter_col(path, col=num_col, memmap=target_memmap)
             ),
-            "fitsio": lambda: _fitsio_filter(path, col=num_col),
+            "fitsio": lambda: _fitsio_filter_col(path, col=num_col),
             "fitsio_torch": lambda: torch.as_tensor(
                 _fitsio_filter_col(path, col=num_col)
             ),
@@ -636,6 +636,15 @@ def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
     values = np.asarray(data[col])
     mask = values > 0
     return {k: np.ascontiguousarray(np.asarray(v)[mask]) for k, v in data.items()}
+
+
+def _torchfits_filter_col_local(path: Path, *, col: str, mmap: bool):
+    """Specialized peer: one-column project + mask (matches fitsio columns=[col])."""
+    from torchfits import cpp as _cpp
+
+    data = _cpp.read_fits_table_rows_numpy(str(path), 1, [col], 1, -1, bool(mmap))
+    values = np.ascontiguousarray(np.asarray(data[col]))
+    return values[values > 0]
 
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):

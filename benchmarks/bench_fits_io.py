@@ -334,14 +334,8 @@ class FITSBenchmarkSuite:
                     warmup=warmup,
                 )
             )
-            if file_type == "compressed":
-                timed.update(
-                    time_medians_interleaved(
-                        {"astropy_torch": methods["astropy_torch"]},
-                        runs=runs,
-                        warmup=warmup,
-                    )
-                )
+            # CompImage: do not score astropy_torch in the smart family — its
+            # decode path is not a CFITSIO peer and can invent false wins/losses.
             for method_name, (median_s, peak_rss, peak_cuda, _err) in timed.items():
                 row[f"{method_name}_median"] = median_s
                 row[f"{method_name}_mb_s"] = self._mb_per_second(path, median_s)
