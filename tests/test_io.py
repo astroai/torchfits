@@ -155,7 +155,7 @@ class TestIORead:
         mock_cpp.read_full_raw.assert_called_once_with("file.fits", 0, True)
 
     def test_read_no_cache_no_raw_scale_nommap(self, mock_cpp):
-        """Test use_cache=False, raw_scale=False, mmap=False uses thin read_full."""
+        """Test use_cache=False, raw_scale=False, mmap=False uses read_full_nocache."""
         io.read(
             "file.fits",
             hdu=0,
@@ -164,10 +164,10 @@ class TestIORead:
             mmap=False,
             scale_on_device=False,
         )
-        mock_cpp.read_full.assert_called_once_with("file.fits", 0, False)
+        mock_cpp.read_full_nocache.assert_called_once_with("file.fits", 0, False)
 
     def test_read_no_cache_no_raw_scale_mmap(self, mock_cpp):
-        """Test use_cache=False, raw_scale=False, mmap=True uses thin read_full."""
+        """Test use_cache=False, raw_scale=False, mmap=True uses read_full_nocache."""
         io.read(
             "file.fits",
             hdu=0,
@@ -176,7 +176,7 @@ class TestIORead:
             mmap=True,
             scale_on_device=False,
         )
-        mock_cpp.read_full.assert_called_once_with("file.fits", 0, True)
+        mock_cpp.read_full_nocache.assert_called_once_with("file.fits", 0, True)
 
     def test_read_target_device_conversion(self, mock_cpp):
         """Test moving data to different device if target_dtype is specified."""
