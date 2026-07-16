@@ -80,16 +80,11 @@ SMALL_N_MAX_LAG_RATIO = 10.0
 DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
 DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
 DEFICIT_MIN_ABS_DELTA_S = 2e-4  # ~0.2ms clock/OS jitter; still flags ≥1% on ≥20ms ops
-# CompImage HCOMPRESS is the same CFITSIO tile-decode as fitsio; on shared CANFAR
-# hosts the median gap is a stable ~1.3–1.5ms (~3%) with no remaining product lever.
-DEFICIT_MIN_ABS_DELTA_S_HCOMPRESS = 1.6e-3
 
 
-def deficit_abs_delta_floor(best_time_s: float, *, case_id: str = "") -> float:
+def deficit_abs_delta_floor(best_time_s: float) -> float:
     """Float-timer ε (clock noise), independent of median duration."""
     _ = best_time_s
-    if "hcompress" in str(case_id).lower():
-        return DEFICIT_MIN_ABS_DELTA_S_HCOMPRESS
     return DEFICIT_MIN_ABS_DELTA_S
 
 
@@ -278,9 +273,7 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
         if lag_ratio <= min_lag:
             continue
         # Timer ε only — reject microscopic float ties, not percent lags.
-        if (tf_time - best_t) < deficit_abs_delta_floor(
-            best_t, case_id=str(torch_row.get("case_id") or "")
-        ):
+        if (tf_time - best_t) < deficit_abs_delta_floor(best_t):
             continue
         deficits.append(
             {
@@ -438,10 +431,7 @@ def write_summary(
         if tf_t is not None and best_t > 0:
             lag = tf_t / best_t
             within_policy = lag <= deficit_min_lag_ratio(domain) or (
-                (tf_t - best_t)
-                < deficit_abs_delta_floor(
-                    best_t, case_id=str(torch_row.get("case_id") or "")
-                )
+                (tf_t - best_t) < deficit_abs_delta_floor(best_t)
             )
         if within_policy:
             scorecard[key]["wins"] += 1
