@@ -17,6 +17,20 @@ from .caches import invalidate_path_caches as _invalidate_io_path_caches
 from .hdu_api import open_hdulist
 
 
+class _TableWriteProxy:
+    __slots__ = ("_raw_data", "header", "_schema")
+
+    def __init__(
+        self,
+        raw_data: Any,
+        header: Header,
+        schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        self._raw_data = raw_data
+        self.header = header
+        self._schema = schema
+
+
 def _invalidate_path_caches(path: str) -> None:
     """Invalidate Python-side caches/handles for a path that is being modified."""
     _invalidate_io_path_caches(path)
@@ -732,17 +746,6 @@ def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> Non
     """Write an HDU sequence through the uncompressed C++ writer."""
     import torchfits._C as cpp
 
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
-
     payload: List[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007
         if isinstance(hdu, TableHDURef):
@@ -795,17 +798,6 @@ def _write_hdus_with_optional_compression(
         return
 
     import torchfits._C as cpp
-
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
 
     payload: list[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007
