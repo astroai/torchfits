@@ -218,6 +218,17 @@ inline int open_readonly_fd(const std::string& filename) {
     return ::open(filename.c_str(), O_RDONLY);
 }
 
+// Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
+inline int open_fits_readonly(fitsfile** fptr, const std::string& path) {
+    int status = 0;
+    if (path.find('[') != std::string::npos || path.find("://") != std::string::npos) {
+        fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
+    } else {
+        fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
+    }
+    return status;
+}
+
 inline int get_shared_raw_fd(const std::shared_ptr<SharedReadMeta>& meta, const std::string& filename) {
     if (!meta || filename.find('[') != std::string::npos) return -1;
     std::lock_guard<std::mutex> lock(meta->mutex);

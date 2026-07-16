@@ -79,7 +79,7 @@ SMALL_N_MAX_LAG_RATIO = 10.0
 # Absolute ε is clock-resolution only — never a percent-of-median floor.
 DEFICIT_MIN_LAG_RATIO_IMAGE = 1.0
 DEFICIT_MIN_LAG_RATIO_TABLE = 1.05
-DEFICIT_MIN_ABS_DELTA_S = 2e-5
+DEFICIT_MIN_ABS_DELTA_S = 2e-4  # ~0.2ms clock/OS jitter; still flags ≥1% on ≥20ms ops
 
 
 def deficit_abs_delta_floor(best_time_s: float) -> float:

@@ -315,13 +315,19 @@ def read_fallback_table(
             table_result = cpp_module.read_fits_table(path, hdu_num, col_list, False)
 
     table_data = table_result
-    if header is None:
-        try:
-            header = Header(read_header(file_handle, hdu_num, fast_header))
-        except Exception:
-            header = None
-    table_data = _coerce_bit_table_columns(table_data, header)
-    table_data = _coerce_unsigned_table_columns(table_data, header)
+    # C++ already applies BIT→bool and unsigned TZERO offsets. Skip the extra
+    # header round-trip unless the caller asked for the header.
+    if return_header:
+        if header is None:
+            try:
+                header = Header(read_header(file_handle, hdu_num, fast_header))
+            except Exception:
+                header = None
+        table_data = _coerce_bit_table_columns(table_data, header)
+        table_data = _coerce_unsigned_table_columns(table_data, header)
+    elif header is not None:
+        table_data = _coerce_bit_table_columns(table_data, header)
+        table_data = _coerce_unsigned_table_columns(table_data, header)
 
     if (start_row > 1 or num_rows != -1) and not hasattr(
         cpp_module, "read_fits_table_rows"

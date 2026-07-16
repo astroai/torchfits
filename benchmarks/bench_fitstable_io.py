@@ -188,6 +188,25 @@ def _gzip_fits(in_path: Path, out_path: Path) -> None:
             shutil.copyfileobj(f_in, f_out)
 
 
+def _numpy_native_endian(arr: np.ndarray) -> np.ndarray:
+    """Match TorchFits: deliver host-endian values (fitsio often leaves '>')."""
+    if not isinstance(arr, np.ndarray):
+        return arr
+    if arr.dtype.names:
+        need = any(
+            arr.dtype.fields[name][0].byteorder not in ("=", "|")
+            for name in arr.dtype.names
+        )
+        return arr.astype(arr.dtype.newbyteorder("=")) if need else arr
+    if arr.dtype.byteorder not in ("=", "|"):
+        return arr.astype(arr.dtype.newbyteorder("="))
+    return arr
+
+
+def _fitsio_read_native(path: Path, **kwargs):
+    return _numpy_native_endian(fitsio.read(str(path), **kwargs))
+
+
 def _table_to_torch_dict(data) -> dict[str, torch.Tensor]:
     out: dict[str, torch.Tensor] = {}
     if isinstance(data, dict):
@@ -324,7 +343,7 @@ def _bench_case(
             "astropy_torch": lambda: _table_to_torch_dict(
                 _astropy_read_full(path, memmap=target_memmap)
             ),
-            "fitsio": lambda: fitsio.read(str(path), ext=1),
+            "fitsio": lambda: _fitsio_read_native(path, ext=1),
             "fitsio_torch": lambda: _table_to_torch_dict(fitsio.read(str(path), ext=1)),
         },
         "projection": {
@@ -350,7 +369,7 @@ def _bench_case(
             "astropy_torch": lambda: _table_to_torch_dict(
                 _astropy_projection(path, proj_cols, memmap=target_memmap)
             ),
-            "fitsio": lambda: fitsio.read(str(path), ext=1, columns=proj_cols),
+            "fitsio": lambda: _fitsio_read_native(path, ext=1, columns=proj_cols),
             "fitsio_torch": lambda: _table_to_torch_dict(
                 fitsio.read(str(path), ext=1, columns=proj_cols)
             ),
@@ -505,6 +524,21 @@ def _bench_case(
     return rows
 
 
+def _astropy_materialize_col(data, name: str):
+    """Eager-copy one FITS_rec column, including VLA heap payloads."""
+    col = np.asarray(data[name])
+    if col.dtype == object:
+        return [np.asarray(x).copy() for x in col]
+    return np.ascontiguousarray(col).copy()
+
+
+def _astropy_materialize_table(
+    data, *, names: list[str] | None = None
+) -> dict[str, Any]:
+    cols = list(names) if names is not None else list(data.columns.names)
+    return {name: _astropy_materialize_col(data, name) for name in cols}
+
+
 def _astropy_read_full(path: Path, *, memmap: bool):
     """Materialize the full table, including VLA heap payloads.
 
@@ -512,37 +546,29 @@ def _astropy_read_full(path: Path, *, memmap: bool):
     views and understates Astropy cost vs eager TorchFits/fitsio reads.
     """
     with astropy_fits.open(path, memmap=memmap) as hdul:
-        data = hdul[1].data
-        out: dict[str, Any] = {}
-        for name in data.columns.names:
-            col = np.asarray(data[name])
-            if col.dtype == object:
-                out[name] = [np.asarray(x).copy() for x in col]
-            else:
-                out[name] = np.ascontiguousarray(col).copy()
-        return out
+        return _astropy_materialize_table(hdul[1].data)
 
 
 def _astropy_projection(path: Path, columns: list[str], *, memmap: bool):
     with astropy_fits.open(path, memmap=memmap) as hdul:
         data = hdul[1].data
         # FITS_rec does not support list-of-names indexing directly.
-        return {col: np.asarray(data[col]) for col in columns}
+        return _astropy_materialize_table(data, names=columns)
 
 
 def _astropy_row_slice(path: Path, start_row: int, num_rows: int, *, memmap: bool):
     start0 = max(0, int(start_row) - 1)
     stop0 = start0 + int(num_rows)
     with astropy_fits.open(path, memmap=memmap) as hdul:
-        data = hdul[1].data
-        return np.array(data[start0:stop0], copy=False)
+        data = hdul[1].data[start0:stop0]
+        return _astropy_materialize_table(data)
 
 
 def _astropy_filter(path: Path, *, col: str, memmap: bool):
     with astropy_fits.open(path, memmap=memmap) as hdul:
         data = hdul[1].data
         mask = np.asarray(data[col]) > 0
-        return np.array(data[mask], copy=False)
+        return _astropy_materialize_table(data[mask])
 
 
 def _astropy_filter_col(path: Path, *, col: str, memmap: bool):
@@ -561,18 +587,23 @@ def _astropy_scan_count(path: Path, *, col: str, memmap: bool):
 def _fitsio_row_slice(path: Path, start_row: int, num_rows: int):
     start0 = max(0, int(start_row) - 1)
     stop0 = start0 + int(num_rows)
-    return fitsio.read(str(path), ext=1, rows=range(start0, stop0))
+    return _fitsio_read_native(path, ext=1, rows=range(start0, stop0))
 
 
 def _fitsio_filter(path: Path, *, col: str):
-    data = fitsio.read(str(path), ext=1)
+    data = _fitsio_read_native(path, ext=1)
     mask = np.asarray(data[col]) > 0
-    return data[mask]
+    filtered = data[mask]
+    # Column-dict like TorchFits specialized (not a single structured ndarray).
+    return {
+        name: np.ascontiguousarray(filtered[name])
+        for name in (filtered.dtype.names or [])
+    }
 
 
 def _fitsio_filter_col(path: Path, *, col: str):
     """Smart-family peer: project one column then filter (matches torchfits)."""
-    data = fitsio.read(str(path), ext=1, columns=[col])
+    data = _fitsio_read_native(path, ext=1, columns=[col])
     values = np.asarray(data[col])
     return values[values > 0]
 
@@ -599,21 +630,12 @@ def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow:
 
 def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
     """Specialized peer: full-table read then row filter (matches astropy/fitsio)."""
-    data = torchfits.read_table(str(path), hdu=1, mmap=mmap, **_TF_NO_CACHE)
-    values = data[col]
-    if isinstance(values, torch.Tensor):
-        mask = values > 0
-        return {
-            k: v[mask] if isinstance(v, torch.Tensor) else v for k, v in data.items()
-        }
-    mask = np.asarray(values) > 0
-    out: dict[str, Any] = {}
-    for k, v in data.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v[torch.as_tensor(mask)]
-        else:
-            out[k] = np.asarray(v)[mask]
-    return out
+    from torchfits import cpp as _cpp
+
+    data = _cpp.read_fits_table_rows_numpy(str(path), 1, [], 1, -1, bool(mmap))
+    values = np.asarray(data[col])
+    mask = values > 0
+    return {k: np.ascontiguousarray(np.asarray(v)[mask]) for k, v in data.items()}
 
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):

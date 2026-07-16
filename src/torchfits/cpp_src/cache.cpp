@@ -2,6 +2,7 @@
 #include "security.h"
 #include "torch_compat.h"
 #include "internal_utils.h"
+#include "fits_detail.h"
 #include <unordered_map>
 #include <list>
 #include <mutex>
@@ -134,11 +135,10 @@ public:
 
         // Open new file
         fitsfile* fptr = nullptr;
-        int status = 0;
         check_fits_filename_security(filepath);
-        fits_open_file(&fptr, filepath.c_str(), 0 /* READONLY */, &status);
-
-        if (status != 0) return nullptr;
+        if (detail::open_fits_readonly(&fptr, filepath) != 0) {
+            return nullptr;
+        }
 
         // Add to cache
         CacheEntry entry;

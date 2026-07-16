@@ -494,7 +494,7 @@ torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
     fitsfile* fptr = nullptr;
     int status = 0;
     try {
-        fits_open_file(&fptr, path.c_str(), 0, &status);
+        status = d::open_fits_readonly(&fptr, path);
         if (status != 0) {
             throw std::runtime_error("Could not open FITS file: " + path);
         }
@@ -623,7 +623,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
     int status = 0;
     auto shared_meta = d::get_shared_meta_for_path(path);
     check_fits_filename_security(path);
-    fits_open_file(&fptr, path.c_str(), 0, &status);
+    status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
     }
@@ -693,6 +693,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         bool compressed_cached = false;
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         // mmap-off float/double: skip compress/null/fd probes (see FITSFile::read_tensor).
+        // CompImage still decompresses via fits_read_img; compressed=false only skips nullval setup.
         if (!( !use_mmap && float_like )) {
         if (shared_meta) {
             std::lock_guard<std::mutex> lock(shared_meta->mutex);

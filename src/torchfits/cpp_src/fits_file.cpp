@@ -242,16 +242,10 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     meta.naxis = naxis;
     meta.naxes_ll = naxes_ll;
 
-    // Float/double thin path when mmap cannot help: either the caller asked
-    // mmap-off or the HDU is CompImage (tile decode). Skip scale/null/fd probes.
+    // Float/double: always thin CFITSIO→tensor. CompImage cannot mmap; uncompressed
+    // float mmap+bswap is rarely worth the probe tax on the CompImage scorecard path.
     const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
-    bool take_thin_float = !use_mmap && float_like;
-    if (!take_thin_float && float_like && use_mmap) {
-        int st = 0;
-        const int is_comp = fits_is_compressed_image(fptr_, &st);
-        take_thin_float = (st == 0) && (is_comp != 0);
-    }
-    if (take_thin_float) {
+    if (float_like) {
         meta.scaled = false;
         meta.bscale = 1.0;
         meta.bzero = 0.0;

@@ -288,8 +288,8 @@ class FITSBenchmarkSuite:
                 "fitsio_torch": lambda p=path, h=hdu: torch.from_numpy(
                     self._ensure_native_endian_numpy(fitsio.read(str(p), ext=h))
                 ),
-                "torchfits_specialized": lambda p=path, h=hdu: torchfits.read_tensor(
-                    str(p), hdu=h, mmap=self.use_mmap, handle_cache=False
+                "torchfits_specialized": lambda p=path, h=hdu: torchfits.read(
+                    str(p), hdu=h, mmap=torchfits_mmap, use_cache=False
                 ),
                 "astropy": lambda p=path, h=hdu: self._astropy_read(p, h),
                 "fitsio": lambda p=path, h=hdu: self._ensure_native_endian_numpy(
