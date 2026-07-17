@@ -54,7 +54,7 @@ body,
   color: var(--tf-ink);
   background: #e9f0f8;
   margin: 0;
-  padding: clamp(2.5rem, 6vw, 4.5rem) 1.25rem clamp(2.75rem, 5vw, 4rem);
+  padding: clamp(1.75rem, 4vw, 2.75rem) 1.25rem clamp(2rem, 4vw, 3rem);
   border-bottom: 1px solid var(--tf-line);
 }
 
@@ -96,10 +96,10 @@ body,
 
 .tf-hero__brand {
   display: block;
-  width: min(34rem, 92vw);
+  width: min(14rem, 55vw);
   height: auto;
-  margin: 0 auto 1rem;
-  filter: drop-shadow(0 10px 24px rgba(11, 31, 58, 0.12));
+  margin: 0 auto 0.85rem;
+  filter: drop-shadow(0 8px 18px rgba(11, 31, 58, 0.1));
 }
 
 .tf-hero__headline {
