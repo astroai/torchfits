@@ -595,7 +595,7 @@ class TableHDU:
         return (
             "<table>"
             "<caption>TableHDU</caption>"
-            "<thead><tr><th>Name</th><th>Rows</th><th>Columns</th></tr></thead>"
-            f"<tbody><tr><td>{name}</td><td>{self.num_rows}</td>"
+            '<thead><tr><th scope="col">Name</th><th scope="col">Rows</th><th scope="col">Columns</th></tr></thead>'
+            f'<tbody><tr><th scope="row" style="font-weight: normal; text-align: left;">{name}</th><td>{self.num_rows}</td>'
             f"<td>{len(self.columns)}</td></tr></tbody></table>"
         )

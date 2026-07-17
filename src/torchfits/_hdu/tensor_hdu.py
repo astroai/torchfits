@@ -100,6 +100,6 @@ class TensorHDU:
         return (
             "<table>"
             "<caption>TensorHDU</caption>"
-            "<thead><tr><th>Name</th><th>Shape</th><th>Dtype</th></tr></thead>"
-            f"<tbody><tr><td>{name}</td><td>{shape}</td><td>{dtype}</td></tr></tbody></table>"
+            '<thead><tr><th scope="col">Name</th><th scope="col">Shape</th><th scope="col">Dtype</th></tr></thead>'
+            f'<tbody><tr><th scope="row" style="font-weight: normal; text-align: left;">{name}</th><td>{shape}</td><td>{dtype}</td></tr></tbody></table>'
         )
