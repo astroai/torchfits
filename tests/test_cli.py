@@ -277,6 +277,7 @@ def test_fitsort_with_invalid_hdu(image_fits):
     assert result.returncode == 2, result.stderr
     assert "hdu" in result.stderr.lower() or "invalid" in result.stderr.lower()
 
+
 def test_http_probe_blocks_internal_ssrf():
     result = _run_cli("probe", "http://127.0.0.1:8000/latest/meta-data/")
     assert result.returncode == 3
