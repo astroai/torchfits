@@ -535,6 +535,27 @@ def main() -> None:
     # With n_low=6 (permissive), dark outlier may survive
     print("    Dark pixel survived: {}".format(dark_kept.any().item()))
 
+    # Optional figure for the docs gallery (skip if matplotlib missing).
+    try:
+        from examples._plotting import save_spectrum_before_after
+
+        wave = torch.linspace(0.4, 2.5, 256)
+        continuum = 0.5 - 0.15 * (wave - 1.0)
+        flux = continuum - 0.2 * torch.exp(-((wave - 1.4) ** 2) / (2 * 0.05**2))
+        cr = ContinuumRemoval()
+        rem = cr(flux.clone())
+        save_spectrum_before_after(
+            wave,
+            flux,
+            rem,
+            "hyperspectral_continuum_removal",
+            continuum=cr._baseline,
+            titles=("reflectance", "residual"),
+        )
+        print("  Wrote examples/output/hyperspectral_continuum_removal.png")
+    except Exception as exc:  # noqa: BLE001 — demo optional
+        print(f"  (figure skipped: {exc})")
+
     print("\nDone — all transforms compatible with torch.utils.data.DataLoader.")
 
 

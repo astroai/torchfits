@@ -1,13 +1,22 @@
 [project]
 site_name = "torchfits"
-site_description = "FITS tensors for PyTorch — C++ engine, MEF-native CLI, no NumPy glue."
+site_description = "High-performance FITS I/O to PyTorch tensors and dataframes."
 site_url = "https://astroai.github.io/torchfits/"
 repo_url = "https://github.com/astroai/torchfits"
 repo_name = "astroai/torchfits"
 edit_uri = "edit/main/docs/"
 copyright = "Copyright &copy; 2026 torchfits contributors"
 
-extra_css = ["stylesheets/extra.css"]
+extra_css = [
+  "stylesheets/extra.css",
+  "https://unpkg.com/katex@0/dist/katex.min.css",
+]
+
+extra_javascript = [
+  "javascripts/katex.js",
+  "https://unpkg.com/katex@0/dist/katex.min.js",
+  "https://unpkg.com/katex@0/dist/contrib/auto-render.min.js",
+]
 
 nav = [
   {"Home" = "index.md"},
@@ -15,6 +24,7 @@ nav = [
     "install.md",
     "quickstart.md",
     "cli.md",
+    "cli-recipes.md",
   ]},
   {"Reference" = [
     "api.md",
@@ -26,6 +36,7 @@ nav = [
   ]},
   {"Guides" = [
     "examples.md",
+    "examples-transforms.md",
     "benchmarks.md",
     "parity.md",
   ]},
@@ -80,6 +91,9 @@ toggle.name = "Switch to light mode"
 # ── Markdown extensions ──────────────────────────────────────
 
 [project.markdown_extensions.admonition]
+
+[project.markdown_extensions.pymdownx.arithmatex]
+generic = true
 
 [project.markdown_extensions.pymdownx.details]
 

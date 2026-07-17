@@ -1,12 +1,12 @@
 # Transforms
 
 Header-aware preprocessing transforms for FITS images, spectra, and tables.
-All transforms implement the :class:`FITSTransform` callable protocol
-(``forward`` / ``inverse`` / ``__call__``). They are **not**
-``torch.nn.Module`` subclasses — use them as callables with
-``torch.utils.data.Dataset`` / ``DataLoader``. Inverse state is
-**instance-local** (``_last_*`` fields); construct one pipeline per worker
-when ``num_workers > 0``.
+All transforms implement the `FITSTransform` callable protocol
+(`forward` / `inverse` / `__call__`). They are **not**
+`torch.nn.Module` subclasses — use them as callables with
+`torch.utils.data.Dataset` / `DataLoader`. Inverse state is
+**instance-local** (`_last_*` fields); construct one pipeline per worker
+when `num_workers > 0`.
 
 ```python
 from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
@@ -15,17 +15,15 @@ pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize
 normalized = pipeline(image)
 restored = pipeline.inverse(normalized)
 ```
-
 ### Masks
 
-Most transforms accept an optional boolean ``mask`` (``True`` = valid).
-``Compose`` forwards the same mask to every child:
+Most transforms accept an optional boolean `mask` (`True` = valid).
+`Compose` forwards the same mask to every child:
 
 ```python
 pipeline(image, mask=finite_mask)
 pipeline.inverse(normalized, mask=finite_mask)
 ```
-
 ### Invertibility
 
 | Kind | `inverse()` |
@@ -33,13 +31,13 @@ pipeline.inverse(normalized, mask=finite_mask)
 | Stretches, normalizers, FITS scale, continuum divide/subtract, baseline estimators, wavelet | Yes (state cached on the instance) |
 | `BandMath`, `PhaseFold`, `SigmaClip`, `AsymmetricSigmaClip`, `TNullToNan` | No — lossy / many-to-one |
 
-Stateless stretches are the most likely to work under ``torch.compile``;
+Stateless stretches are the most likely to work under `torch.compile`;
 data-dependent normalizers cache Python-side state and may graph-break.
 There is no certified compile matrix yet.
 
-The implementation lives under ``torchfits.transforms`` as a small package
-(``stretch``, ``normalize``, ``fits_meta``, ``spectral``, ``continuum``,
-``clip``) re-exported from ``torchfits.transforms``.
+The implementation lives under `torchfits.transforms` as a small package
+(`stretch`, `normalize`, `fits_meta`, `spectral`, `continuum`,
+`clip`) re-exported from `torchfits.transforms`.
 
 ---
 
@@ -327,7 +325,6 @@ $$\text{output} = \text{func}(\text{bands})$$
 # NDVI for remote sensing
 ndvi = BandMath(lambda b: (b[3] - b[2]) / (b[3] + b[2] + 1e-8))
 ```
-
 !!! info "When to use"
     Compute spectral indices (NDVI, color ratios, etc.) from multi-band data.
     The function receives unbound band tensors and can do any arithmetic.
@@ -632,11 +629,10 @@ pipeline = Compose([
 normalized = pipeline(image)
 original = pipeline.inverse(normalized)
 ```
-
 ### `FITSTransform`
 
 Base class for custom transforms. Override `forward()` and optionally
-`inverse()`. `__call__` delegates to `forward()`. Not an ``nn.Module``.
+`inverse()`. `__call__` delegates to `forward()`. Not an `nn.Module`.
 
 ### Helpers
 
@@ -650,7 +646,7 @@ Base class for custom transforms. Override `forward()` and optionally
 
 ## Importing
 
-Import transform classes from ``torchfits.transforms`` (namespace-only since
+Import transform classes from `torchfits.transforms` (namespace-only since
 0.9.2 — they are not re-exported at the package root):
 
 ```python
@@ -666,6 +662,5 @@ from torchfits.transforms import (
     FITSScaleColumns, TNullToNan, FITSHeaderNormalize,
 )
 ```
-
 See `examples/example_transforms.py` (image pipeline) and
 `examples/example_hyperspectral.py` (spectral cube) for runnable demos.

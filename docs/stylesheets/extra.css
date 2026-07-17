@@ -336,3 +336,15 @@ body[data-md-url="./"] .md-main__inner,
   transform: translateY(-2px);
   border-color: color-mix(in srgb, var(--tf-orange) 55%, var(--tf-line));
 }
+
+/* KaTeX / Arithmatex spacing */
+.md-typeset .katex-display {
+  margin: 1.1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-typeset span.arithmatex,
+.md-typeset div.arithmatex {
+  font-size: 1.02em;
+}
