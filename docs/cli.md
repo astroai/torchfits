@@ -1,23 +1,38 @@
 # torchfits CLI
 
-Command-line FITS utilities built on the torchfits Python API. Use `--json` or
-`--jsonl` for machine-readable output. Inventory commands (`info`, `header`,
-`verify`, `stats`, `table`, `probe`) accept paths on the argv or via stdin /
-`--stdin`. Mutation commands take explicit path arguments.
+After `pip install torchfits`, the `torchfits` command inspects and transforms
+FITS files from the shell. It wraps the same C++ engine as the Python API.
 
-## Quick start
+Inventory commands (`info`, `header`, `verify`, `stats`, `table`, `probe`) take
+paths on the command line or from stdin / `--stdin`. Mutation commands
+(`copy`, `cutout`, `arith`, …) take explicit input/output paths.
+
+## Install and help
 
 ```bash
-torchfits info image.fits
-torchfits header image.fits --keyword BITPIX --json
-torchfits verify image.fits
-torchfits stats image.fits --hdu 0 --jsonl
-torchfits table catalog.fits --hdu 1 --preview 3
-torchfits cutout image.fits cutout.fits --hdu 0 --box 10,10,50,50
+pip install torchfits
+torchfits --help
+torchfits info --help
+```
+
+## Quick examples
+
+```bash
+torchfits info science.fits
+torchfits header science.fits --keyword OBJECT --json
+torchfits verify science.fits
+torchfits stats science.fits --hdu 0 --jsonl
+torchfits table catalog.fits --hdu 1 --preview 5
+torchfits cutout science.fits cutout.fits --hdu 0 --box 100,100,256,256
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
 torchfits header *.fits --fitsort --keyword OBJECT --keyword DATE-OBS
-# qfits idiom: dfits *.fits | fitsort OBJECT DATE-OBS
 torchfits probe https://example.edu/data.fits --json
+```
+
+Pipe paths into inventory commands:
+
+```bash
+find . -name '*.fits' | torchfits info --stdin --jsonl
 ```
 
 ## Exit codes
@@ -32,64 +47,77 @@ torchfits probe https://example.edu/data.fits --json
 
 ## Subcommands
 
-| Subcommand | Description |
-|------------|-------------|
-| `info` | HDU inventory (type, shape, rows) |
-| `header` | dump header cards; `--keyword` / `--fitsort` multi-file table |
-| `verify` | `DATASUM` / `CHECKSUM` verification |
-| `stats` | image min/max/mean via `read_tensor` |
+| Command | What it does |
+|---------|----------------|
+| `info` | list HDUs (type, shape, rows) |
+| `header` | dump cards; `--keyword` filter; `--fitsort` multi-file table |
+| `verify` | check `DATASUM` / `CHECKSUM` |
+| `stats` | image min / max / mean |
 | `table` | Arrow schema + preview rows |
-| `cutout` | pixel subset via `read_subset` |
-| `convert` | table→parquet; Lupton RGB→PPM |
-| `probe` | local inventory; HTTP(S) range probe; optional `vos:` via `vos` package |
-| `diff` | compare headers and image shape/stats |
-| `copy` | MEF-preserving FITS→FITS copy |
+| `cutout` | write a pixel box to a new FITS file |
+| `convert` | table → Parquet; Lupton RGB → PPM |
+| `probe` | local inventory; HTTP(S) range probe; optional `vos:` |
+| `diff` | compare two files (exit 1 if they differ) |
+| `copy` | MEF-preserving FITS → FITS copy |
 | `arith` | image ±×÷ by a constant |
-| `compress` | tile-compress via `write(..., compress=True)` |
-| `decompress` | expand compressed image HDUs |
+| `compress` / `decompress` | tile-compress or expand image HDUs |
 | `transform` | apply a named `torchfits.transforms` class |
 | `setkey` | set one header keyword |
 
 ### Multi-extension FITS (MEF)
 
-Most commands default to **all HDUs**. Pass `--hdu 0,1,2` to select specific
-extensions. JSONL mode emits one record per `(file, hdu)` pair.
+Most commands walk **all HDUs** by default. Narrow with `--hdu 0,1,2`.
+JSONL mode emits one record per `(file, hdu)`.
+
+### `header --fitsort`
+
+Print a keyword table across many files (same idea as qfits `dfits | fitsort`):
+
+```bash
+torchfits header *.fits --fitsort --keyword OBJECT --keyword DATE-OBS
+torchfits header *.fits --fitsort --keyword BITPIX --json
+```
 
 ### `convert`
 
-- **parquet** — `torchfits.table.write_parquet` on a table HDU (`--hdu`, default 1).
-- **ppm** — Lupton+ (2004) asinh RGB from one FITS (`--bands 0,1,2`) or three
-  band files; writes binary PPM (torch-only; no Pillow/numpy in the package).
+- **parquet** — export a table HDU (`--hdu`, default 1).
+- **ppm** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three
+  band files. Writes binary PPM with torch only (no Pillow dependency).
 
-### `probe` remotes
+Defaults are for previews, not journal figures — retune stretch / Q per survey.
 
-- **HTTP(S)** — range GET of the first FITS blocks; no extra dependency.
-- **`vos:` / `vos://`** — optional; requires the `vos` package (`pip`/`pixi install vos`).
-  Auth follows the client’s normal CANFAR config (never bake secrets into torchfits).
-- Full CAOM/`astquery`-style archive search stays out of scope; probe is header metadata.
+### `probe`
 
-## Tool mapping
+- **Local paths** — same inventory shape as `info`.
+- **HTTP(S)** — range-fetch enough bytes for the primary header (no extra deps).
+- **`vos:` / `vos://`** — optional; install the `vos` package for CANFAR VOSpace.
+  Auth uses the client’s normal config.
 
-| torchfits CLI | CFITSIO | Astropy | Gnuastro | qfits |
-|---------------|---------|---------|----------|-------|
-| `info` | `fits_get_num_hdus`, `fits_read_key` | `fits.open`, `len(hdul)` | `fitsfile` metadata | `qfits_header_get` |
-| `header` | `fits_read_record` | `hdul[i].header` | `fitsheader` | `qfits_header` dump |
-| `verify` | `fits_verify_chksum` | manual / third-party | — | — |
-| `stats` | `fits_read_pix` + stats | `data.min/max/mean` | `arith` stats | — |
-| `table` | table column metadata | `Table` schema | `table` | `qfits_table` |
-| `cutout` | tiled `fits_read_subset` | `data[y1:y2, x1:x2]` | `crop` | — |
-| `convert` | export | `Table.write` / PNG | `convert` | — |
-| `probe` | remote header fetch | `open` URL | — | HTTP header |
-| `diff` | — | `fitsdiff` | `fitsdiff` | — |
-| `copy` | `fits_copy_hdu` | `HDUList` copy | `fits copy` | — |
-| `arith` | pixel ops | `numpy` ops | `arith` | — |
-| `compress` | `fits_compress_img` | `compimg` | `compress` | — |
-| `decompress` | implicit on read | implicit | — | — |
-| `transform` | — | `CCDData` ops | `mkcatalog` pipeline | — |
-| `setkey` | `fits_update_key` | `header[key]=` | `fitskeyword` | `qfits_header_set` |
+Archive *search* (CAOM / `astquery`-style queries) is out of scope.
 
-## Agent notes
+## Familiar-tool mapping
 
-- No interactive prompts; stable exit codes.
-- Paths from argv or stdin (`--stdin` or piped input when argv is empty).
-- Prefer `--jsonl` for multi-file / multi-HDU automation.
+| torchfits | Closest classic tools |
+|-----------|------------------------|
+| `info` | `fitsinfo`, CFITSIO structure dump |
+| `header` | `fitsheader`, `dfits` / `fitsort` |
+| `verify` | `fitscheck`, HEASARC `fitsverify` (checksum subset) |
+| `stats` | `imstat`, `aststatistics` |
+| `table` | `tablist`, `asttable` |
+| `cutout` | `astcrop`, CFITSIO sections |
+| `convert` | `astconvertt` (tables); Lupton RGB preview |
+| `copy` | `fitscopy` / `imcopy` |
+| `arith` | `imarith` (constant operand) |
+| `compress` / `decompress` | `fpack` / `funpack` |
+| `setkey` | `modhead`, `replacekey` |
+| `probe` | local `info` + remote header peek |
+
+torchfits is FITS I/O oriented — it does not clone photometry, WCS, or
+source-detection pipelines.
+
+## Scripting notes
+
+- No prompts; stable exit codes.
+- Prefer `--json` / `--jsonl` for automation.
+- GPU tensors are staged through host memory before any FITS write (same as the
+  Python API — not GPUDirect).

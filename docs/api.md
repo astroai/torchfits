@@ -45,8 +45,9 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |
 | DataLoader with defaults | `make_loader(dataset, batch_size=32)` | [Data](api-data.md#make_loader) |
-| Image stretches, normalizers | `ArcsinhStretch`, `ZScaleNormalize`, ... | [Transforms](api-transforms.md) |
+| Image stretches, normalizers | `from torchfits.transforms import …` | [Transforms](api-transforms.md) |
 | Spectral preprocessing | `ContinuumNormalize`, `DopplerShift`, ... | [Transforms](api-transforms.md) |
+| Shell inspect / convert | `torchfits info|header|verify|…` | [CLI](cli.md) |
 
 ---
 
@@ -54,6 +55,7 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 
 | Page | What it covers |
 |---|---|
+| [CLI](cli.md) | `torchfits` command-line tools, exit codes, MEF defaults |
 | [Core I/O](api-core-io.md) | `read`, `read_tensor`, `read_subset`, `read_hdus`, `write_tensor`, `write`, `open`, headers, HDU mutation, checksums, batch reads, cache |
 | [Tables](api-tables.md) | `table.read`, `table.scan`, predicate pushdown, backend selection, mutations, Polars/DuckDB/Pandas/Arrow interop, schema |
 | [Data](api-data.md) | `FitsImageDataset`, `FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset`, `make_loader`, worker sharding |

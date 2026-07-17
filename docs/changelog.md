@@ -11,71 +11,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `torchfits header --fitsort --keyword …` multi-file keyword table (qfits
-  `dfits|fitsort` idiom).
-- Optional `vos:` / `vos://` archive probe when the `vos` package is installed;
-  clearer install hint when it is missing.
-- Invalid `--hdu` values now exit with usage code 2 instead of a traceback.
+- `torchfits header --fitsort --keyword …` multi-file keyword table (same idea
+  as qfits `dfits | fitsort`).
+- Optional `vos:` / `vos://` probe when the `vos` package is installed.
+- Invalid `--hdu` values exit with usage code 2 instead of a traceback.
 
 ## [0.9.2] — 2026-07-16
 
-### Changed
-
-- Root public API is I/O and HDU classes only. Transforms import from
-  `torchfits.transforms`. `torchfits.hdu` is a root namespace.
-- Removed `read_fast` and `read_image` from the public surface (use `read` /
-  `read_tensor`). Deleted the orphaned `_fastio` module.
-- Demoted table policy helpers from `table.__all__`.
-- Docs site logo/favicon: `torchfits-logo.png`.
-- README performance run IDs aligned with `docs/benchmarks.md` snapshots;
-  clarified Linux strict-gate 0 deficits vs Mac MPS deficits.
-- Image GPU timings interleave libraries (not only compressed) to reduce
-  order bias on MPS microbenches.
-- Native table predicate scan is sequential (parallel chunk+merge+sort lost).
-- CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
-- `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
-  focused iteration without a full exhaustive matrix.
-- Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
-
 ### Added
 
-- Release freeze review `docs/reviews/release-api-freeze-0.9.2.md` and
-  thermonuclear review `docs/reviews/thermo-nuclear-0.9.2.md`.
-- Transforms catalog review `docs/reviews/transforms-1.0.md` (1.0 prep).
-- `torchfits` CLI (`info`, `header`, `verify`, `diff`, `stats`, `table`,
-  `convert`, `copy`, `arith`, `cutout`, `compress`, `decompress`, `transform`,
-  `probe`, `setkey`) with JSON/JSONL and MEF-native defaults; see `docs/cli.md`.
+- **`torchfits` CLI** — MEF-aware shell tools: `info`, `header`, `verify`,
+  `diff`, `stats`, `table`, `convert`, `copy`, `arith`, `cutout`, `compress`,
+  `decompress`, `transform`, `probe`, `setkey`. JSON/JSONL output and stable
+  exit codes. Guide: [`docs/cli.md`](cli.md).
+
+### Changed
+
+- **Public imports** — root is I/O + HDU only. Import transforms from
+  `torchfits.transforms`. `torchfits.hdu` is a documented namespace.
+- **Removed** `read_fast` and `read_image` (use `read` / `read_tensor`).
+  Deleted the unused `_fastio` module.
+- Table policy helpers (`can_use_*`, …) are no longer listed in `table.__all__`.
 
 ### Fixed
 
-- Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
 - Signed-byte (`BZERO=-128`) and unsigned smart device reads convert on the
-  host then copy once to CUDA/MPS; device destinations use logical `read_full`
-  then one H2D (no size-gated scale paths).
-- One-shot image reads use thin ``cpp.read_full`` instead of
-  ``read_full_cached`` handle scaffolding (that path lost ~15% to
-  fitsio+``from_numpy`` on hcompress). Handle cache remains for persistent
-  subset readers.
-- ``read_subset`` / ``SubsetReader`` keep signed-byte and unsigned integer
+  host then copy once to CUDA/MPS.
+- `read_subset` / `SubsetReader` keep signed-byte and unsigned integer
   conventions as narrow dtypes (int8/uint16/uint32) instead of float-promoting
-  every cutout — matches full-image logical dtypes and fitsio.
-- Automatic table `where=` with ``mmap=True`` uses the documented native
-  mmap-scan pushdown when safe; ``mmap=False`` reads then tensor/Arrow-filters.
-  Explicit ``backend="cpp"`` always requests pushdown when safe.
-- CFITSIO `MINDIRECT` reset to 8640 (fitsio default) so ~13 KB HCOMPRESS tiles
-  use direct tile I/O instead of the buffered path.
-- Multi-byte mmap image reads use NEON/SSSE3 endian convert for all sizes
-  (no 64k element fallthrough).
-- Uncompressed BYTE_IMG reads use direct `pread` for both mmap on and off
-  (avoids CFITSIO `fits_read_img` overhead on large int8).
-- Deficit scorecard: **images** any lag > float-timer ε; **Arrow tables** allow
-  up to 1.05×. Fitsio is excluded from mmap-on peers for both images and tables
-  (fitsio has no mmap mode).
-- Repeated cutout benches (CPU + GPU) use the persistent subset reader so the
-  smart family matches fitsio’s open-once handle pattern.
-- Image specialized scorecards use Tensor peers (`fitsio_torch` /
-  `astropy_torch`); bare ndarray peers emit under `family=numpy` for
-  NumPy→PyTorch switch cost without inventing wrap-only deficits.
+  every cutout.
+- Automatic table `where=` with `mmap=True` uses native mmap-scan pushdown when
+  safe; `mmap=False` reads then filters in Arrow/tensor space.
+- CFITSIO `MINDIRECT` reset to 8640 so ~13 KB HCOMPRESS tiles use direct tile
+  I/O.
+- Multi-byte mmap image reads use NEON/SSSE3 endian convert for all sizes.
+- Uncompressed BYTE_IMG reads use direct `pread` for mmap on and off.
+- One-shot image reads use thin `cpp.read_full` instead of handle-cache
+  scaffolding on the cold path.
+- Repeated cutout benches use the persistent subset reader (open once).
+- Deficit scorecard: images any lag above ε; Arrow tables allow ≤1.05×; fitsio
+  excluded from mmap-on peers. Linux CPU/CUDA strict-gate **0** deficits; Mac
+  MPS **4** on `exhaustive_mps_20260717_000853`.
+
+### Docs
+
+- Site logo/favicon: `torchfits-logo.png`.
+- README / benchmark run IDs aligned with [`docs/benchmarks.md`](benchmarks.md).
 
 ## [0.9.1] - 2026-07-15
 

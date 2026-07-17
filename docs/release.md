@@ -94,7 +94,19 @@ git push origin main --tags
 
 ## 9. Publish
 
-Create a GitHub release for `vX.Y.Z`.
+Create a GitHub release for `vX.Y.Z` with **user-facing** notes (not an
+internal checklist). Prefer writing the body yourself over
+`generate_release_notes` alone.
+
+Suggested shape:
+
+1. **Install** — `pip install torchfits==X.Y.Z`, Python / PyTorch versions, docs URL.
+2. **Highlights** — what a user can do now, with short copy-paste examples.
+3. **Breaking changes** — before/after table when needed.
+4. **Links** — changelog, compare URL, PR.
+
+Do **not** lead with review filenames, logo changes, or bench run IDs unless
+they are the product. Put evidence in the changelog / docs site.
 
 Publishing triggers `.github/workflows/build_wheels.yml`, which:
 

@@ -6,9 +6,9 @@ template: home.html
 
 **FITS I/O for PyTorch** — read FITS images, tables, and headers directly as
 tensors. A multi-threaded C++ engine with vendored CFITSIO delivers
-significantly faster I/O than astropy or fitsio, with native GPU transfer,
-column and row filtering at C++ speed, and ML-ready datasets and transforms
-on top.
+significantly faster I/O than astropy or fitsio, with native GPU placement,
+column and row filtering at C++ speed, and ML-ready datasets and transforms.
+A `torchfits` CLI covers common inspect / convert jobs from the shell.
 
 ??? info "New to FITS?"
     **FITS** (Flexible Image Transport System) is the standard file format in
@@ -31,6 +31,14 @@ on top.
 
     [:octicons-arrow-right-24: Installation](install.md)
 
+-   :material-console:{ .lg .middle } __Command-Line Tools__
+
+    ---
+
+    `torchfits info`, `header`, `verify`, `stats`, `cutout`, and more.
+
+    [:octicons-arrow-right-24: CLI guide](cli.md)
+
 -   :material-image-multiple:{ .lg .middle } __Read FITS Images__
 
     ---
@@ -43,7 +51,7 @@ on top.
 
     ---
 
-    Filter tables at C++ speed — 70x+ faster than astropy.
+    Filter tables at C++ speed — often tens of times faster than astropy.
 
     [:octicons-arrow-right-24: Table Reference](api-tables.md)
 
@@ -51,7 +59,7 @@ on top.
 
     ---
 
-    `FitsImageDataset`, `make_loader`, and 25+ transforms for ML pipelines.
+    `FitsImageDataset`, `make_loader`, and transforms for ML pipelines.
 
     [:octicons-arrow-right-24: Data & Transforms](api-data.md)
 
@@ -75,6 +83,11 @@ from torchfits.data import FitsImageDataset, make_loader
 loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32, num_workers=4)
 ```
 
+```bash
+torchfits info image.fits
+torchfits header image.fits --keyword OBJECT --json
+```
+
 ## Why torchfits?
 
 | | astropy / fitsio | torchfits |
@@ -82,15 +95,17 @@ loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32, num_worke
 | **Image read (16 MB, CPU)** | 16.67 ms | **3.85 ms** (4.3x faster) |
 | **Table read (100k rows)** | 6.74 ms | **95 us** (70x faster) |
 | **Repeated cutouts (50x)** | 75.36 ms | **4.68 ms** (16x faster) |
-| **GPU transfer** | manual `.to(device)` | native `device="cuda"` |
+| **GPU placement** | manual `.to(device)` | native `device="cuda"` |
 | **Table filtering** | Python mask | C++ pushdown |
 | **PyTorch Dataset** | hand-roll | built-in |
+| **Shell tooling** | fitsinfo / fitsheader / … | `torchfits` CLI |
 
 ## I Want To...
 
 | Goal | Start with |
 |---|---|
 | Read a FITS image as a tensor | [`read_tensor`](api-core-io.md#read_tensor) |
+| Inspect a file from the shell | [CLI `info` / `header`](cli.md) |
 | Read a table with SQL-like filters | [`table.read(..., where=...)`](api-tables.md#tableread) |
 | Build a DataLoader for training | [`FitsImageDataset` + `make_loader`](api-data.md) |
 | Stream a huge table in constant memory | [`FitsTableIterableDataset`](api-data.md#fitstableiterabledataset) |
@@ -108,9 +123,9 @@ loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32, num_worke
 
     ---
 
-    Installation, quick start, first examples.
+    Installation, quick start, first examples, CLI.
 
-    [:octicons-arrow-right-24: install.md](install.md) · [:octicons-arrow-right-24: quickstart.md](quickstart.md)
+    [:octicons-arrow-right-24: install.md](install.md) · [:octicons-arrow-right-24: quickstart.md](quickstart.md) · [:octicons-arrow-right-24: cli.md](cli.md)
 
 -   :material-api:{ .lg .middle } __API Reference__
 

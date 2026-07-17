@@ -28,7 +28,8 @@ of scope. Transforms cover FITS scale/null/dtype and tensor preprocessing only.
 | Read multi-extension files | manual HDU dispatch | `with torchfits.open("mef.fits") as hdul: ...` |
 | PyTorch training loop | hand-rolled `Dataset` + cache tuning | `FitsImageDataset` + `make_loader(..., num_workers=4)` |
 | Normalize for model input | ad-hoc scaling in the training script | `Compose([BackgroundSubtract(), ZScaleNormalize()])` |
-| Verify FITS checksums | comparator-specific helpers | `torchfits.verify_checksums(path)` |
+| Verify FITS checksums | comparator-specific helpers | `torchfits.verify_checksums(path)` or `torchfits verify file.fits` |
+| Inspect / convert from the shell | `fitsinfo` / `fitsheader` / `fpack` … | `torchfits info` / `header` / `compress` (see [docs/cli.md](docs/cli.md)) |
 
 ## Features
 
@@ -53,29 +54,27 @@ rejection. Most ship `.inverse()` for decoding model outputs back to physical
 units. See [docs/api.md](docs/api.md#transforms) and
 `examples/example_transforms.py`.
 
+**CLI** &mdash; `torchfits` shell tools for MEF-aware inspect/convert workflows
+(`info`, `header`, `verify`, `stats`, `table`, `cutout`, `compress`, …). See
+[docs/cli.md](docs/cli.md).
+
 **Compatibility Contract** &mdash; Parity is tracked by tier: truthful public docs,
 fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
 backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
 
 ## What's New in 0.9.2
 
-0.9.2 freezes a leaner Python library surface and ships an early CLI (the
-operator surface planned for 0.9.3):
+- **CLI** — `pip install torchfits` installs a `torchfits` command for MEF-aware
+  inspect/convert workflows (`info`, `header`, `verify`, `stats`, `table`,
+  `cutout`, `compress`, …). See [docs/cli.md](docs/cli.md).
+- **Clearer imports** — transforms live under `torchfits.transforms` only.
+  Root stays I/O + HDU. `read_fast` / `read_image` are gone; use `read` /
+  `read_tensor`.
+- **Benchmarks** — Linux CPU/CUDA strict-gate **0** deficits; Mac MPS **4** on
+  the current scorecard ([docs/benchmarks.md](docs/benchmarks.md)).
 
-- **Leaner root API** — transforms live under `torchfits.transforms` only;
-  `read_fast` / `read_image` removed from the public surface; `torchfits.hdu`
-  is a documented namespace.
-- **CLI** — `torchfits` one-word commands (`info`, `header`, `verify`, `diff`,
-  `stats`, `table`, `convert`, `copy`, `arith`, `cutout`, `compress`,
-  `decompress`, `transform`, `probe`, `setkey`); see [docs/cli.md](docs/cli.md).
-- **Docs and brand** — site logo uses `torchfits-logo.png`; API docs match the
-  settled exports; README benchmark run IDs track `docs/benchmarks.md`.
-- **Deficit honesty** — Linux CPU/CUDA strict-gate scores are separate from
-  Mac MPS deficits (see Performance below).
-
-0.9.1 constrained the native ABI to PyTorch 2.10. 0.9.0 added Polars-native
-table access and handle-cache safety. See [docs/changelog.md](docs/changelog.md).
-Roadmap: [docs/roadmap.md](docs/roadmap.md).
+Requires **PyTorch 2.10** (ABI-matched wheels). Full notes:
+[docs/changelog.md](docs/changelog.md). Roadmap: [docs/roadmap.md](docs/roadmap.md).
 
 ## Transforms
 
@@ -188,7 +187,7 @@ cd torchfits
 pip install -e .
 ```
 
-Requires Python 3.10+, a C++17 compiler, CMake 3.21+, and PyTorch 2.0+.
+Requires Python 3.10+, a C++17 compiler, CMake 3.21+, and PyTorch 2.10.
 
 ## Quick Start
 
@@ -249,6 +248,15 @@ torchfits.write("output.fits", data, header=header, overwrite=True)
 torchfits.table.write("catalog_out.fits", table_dict, header=header, overwrite=True)
 ```
 
+### Shell (CLI)
+
+```bash
+torchfits info science.fits
+torchfits header science.fits --keyword OBJECT --json
+torchfits verify science.fits
+torchfits stats science.fits --hdu 0
+```
+
 ## Benchmarks
 
 torchfits is benchmarked across FITS image I/O (1D/2D/3D, all integer and
@@ -270,6 +278,7 @@ Published site: [astroai.github.io/torchfits](https://astroai.github.io/torchfit
 |---|---|
 | [Documentation site](https://astroai.github.io/torchfits/) | Browse all docs on GitHub Pages |
 | [API Reference](docs/api.md) | Full public API with signatures and examples |
+| [CLI](docs/cli.md) | `torchfits` command-line tools |
 | [Migration from Astropy](docs/migration_astropy.md) | Side-by-side workflow translation |
 | [Migration from fitsio](docs/migration_fitsio.md) | Side-by-side workflow translation |
 | [Dataset migration](docs/migration_datasets.md) | Removed `FITSDataset` → `torchfits.data` |
