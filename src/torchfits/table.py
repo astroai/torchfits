@@ -14,11 +14,6 @@ from ._table.interop import (
     write_parquet,
 )
 from ._table.cache import _close_all_cached_handles as clear_cache
-from ._table.read import (
-    _can_use_mmap_row_path_for_full_read as can_use_mmap_row_path_for_full_read,
-    _can_use_torch_table_path_for_full_read as can_use_torch_table_path_for_full_read,
-)
-from ._table.write import _column_name_index_map as column_name_index_map
 from ._table.mutation import (
     append_rows,
     delete_rows,
@@ -36,9 +31,6 @@ from ._table_engine import TABLE_BACKENDS
 __all__ = [
     "TABLE_BACKENDS",
     "append_rows",
-    "can_use_mmap_row_path_for_full_read",
-    "can_use_torch_table_path_for_full_read",
-    "column_name_index_map",
     "clear_cache",
     "FITSPolarsFrame",
     "dataset",

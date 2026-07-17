@@ -11,7 +11,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "torchfits"
-version = "0.9.1"
+version = "0.9.2"
 description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = [{ name = "Seb Fabbro", email = "sebfabbro@gmail.com" }]
 readme = "README.md"
@@ -39,6 +39,9 @@ dependencies = [
     "numpy>=1.20.0",  # Core numerical operations
     "pyarrow>=5.0",   # Table I/O (Arrow interchange)
 ]
+
+[project.scripts]
+torchfits = "torchfits.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/astroai/torchfits"

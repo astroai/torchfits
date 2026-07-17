@@ -70,7 +70,7 @@ workflows, start with [Examples](examples.md).
 
 ### 1. Data Scaling & Type Promotion
 * **Astropy**: Scaling (applying `BSCALE` and `BZERO` keywords) is applied on the CPU when the HDU data is initialized. Integer types (like `uint16` or `int32`) are promoted to double-precision `float64` in memory if the scaling yields floating-point numbers.
-* **torchfits**: Defer scaling to the device with `torchfits.read(..., scale_on_device=True)` (forwarded via `**kwargs` into the read pipeline) or the low-level `torchfits.read_fast(..., scale_on_device=True)`. This transfers raw integers to GPU/MPS and applies `BSCALE`/`BZERO` in device registers, keeping host transfers small and returning `float32` instead of `float64`. (`read_tensor` does not take `scale_on_device`.)
+* **torchfits**: Defer scaling to the device with `torchfits.read(..., scale_on_device=True)` (forwarded via `**kwargs` into the read pipeline). This transfers raw integers to GPU/MPS and applies `BSCALE`/`BZERO` in device registers, keeping host transfers small and returning `float32` instead of `float64`. (`read_tensor` does not take `scale_on_device`.)
 
 ### 2. Table Representation
 * **Astropy**: Tables are represented as `astropy.table.Table` or `numpy.recarray`.

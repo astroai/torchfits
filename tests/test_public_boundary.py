@@ -12,6 +12,15 @@ def test_hdu_and_table_public_surfaces_are_importable():
     assert callable(table.read)
     assert callable(table.write)
     assert callable(table.clear_cache)
+    assert torchfits.hdu is hdu
+    assert "hdu" in torchfits.__all__
+    assert "read_fast" not in torchfits.__all__
+    assert "SpectralBinning" not in torchfits.__all__
+    assert "can_use_mmap_row_path_for_full_read" not in table.__all__
+    import torchfits.io as io
+
+    assert not hasattr(io, "read_fast")
+    assert "read_fast" not in io.__all__
 
 
 def test_torch_frame_is_not_part_of_the_fits_hdu_surface():

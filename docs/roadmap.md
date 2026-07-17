@@ -16,6 +16,9 @@ Astropy, fitsio, or CFITSIO replacement.
 
 ## Near-term work
 
+- **0.9.3:** CLI entry point (`torchfits` console script) and archive probe commands.
+- **1.0 prep:** Transforms catalog review (`docs/reviews/transforms-1.0.md`) and
+  domain split of `transforms.py`; namespace-only transform imports (landed in 0.9.2).
 - Treat parity as a tested compatibility surface, not a blanket claim that
   torchfits reimplements Astropy, fitsio, or the CFITSIO C API.
 - Keep the package boundary clean: torchfits owns FITS I/O only; sky-domain
@@ -253,7 +256,7 @@ deprecation cycle.
 | **Performance floor** | No buffered-read deficit > 2× vs astropy or fitsio on core paths; images never behind under the strict image gate; Arrow tables ≤1.05× | 🟡 Image/Arrow gates tightened; re-verify after SIMD/device/WHERE fixes |
 | **Parity tiers** | Tier 1–2 rows in `docs/parity.md` test-backed | ✅ upstream smokes pass |
 | **Data loading** | `torchfits.data` with multi-worker tests | ✅ `tests/test_data.py` |
-| **Transforms** | Header-aware transforms + round-trip tests | ✅ `tests/test_transforms*.py` |
+| **Transforms** | Header-aware transforms + round-trip tests; catalog review for 1.0 freeze | 🟡 `tests/test_transforms*.py` green; `docs/reviews/transforms-1.0.md` in progress |
 | **C++ engine** | `read_table_chunk` sole table-chunk entry | ✅ 0.6.0 |
 | **Benchmark evidence** | `bench-all` CSV + deficits in `docs/benchmarks.md` | 🟡 Snapshot refresh pending new scorecard policy |
 | **GPU I/O** | E1–E3 verified on CANFAR staging | ✅ H100 NVL MIG, CUDA 12.8, 894 transport rows |
@@ -274,6 +277,7 @@ deprecation cycle.
 - [x] Breaking-change migration guide (`migration_datasets.md`)
 - [ ] Downstream public-boundary and compatibility matrix
 - [ ] Scratch/network deterministic I/O fixtures and replay bundle
+- [ ] Transforms catalog review + `transforms.py` domain split (`docs/reviews/transforms-1.0.md`)
 - [ ] Changelog + `1.0.0rc1` → `1.0.0`
 
 ### Legacy note — 0.5.0 quick wins *(done)*
@@ -293,7 +297,7 @@ High-priority benchmark gaps addressed before the 0.5.0 tag:
 | Dtype-fair GPU bench column | **Done** | `torchfits_dtype_fair_device` in `bench_gpu_transports.py` |
 | Training cache warm-up docs | **Done** | `optimize_for_dataset` in `example_image_dataset.py` |
 | ML loader diagnostic in release notes | **Done** | README + changelog cite `bench_ml_loader.py` CPU numbers |
-| Lab CUDA snapshot refresh | **In progress** | Strict gate (images any lag; Arrow ≤1.05×); prior 25%-floor “0 deficit” claims retracted |
+| Lab CUDA snapshot refresh | **Done** | Strict gate (images any lag; Arrow ≤1.05×); prior 25%-floor “0 deficit” claims retracted |
 
 **Deferred to 0.6.0** (medium/low priority from perf triage):
 

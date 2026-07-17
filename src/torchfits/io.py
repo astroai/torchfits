@@ -74,36 +74,6 @@ _READ_EXC_TYPES = (
 )
 
 
-def read_fast(
-    path: str | list[str] | tuple[str, ...],
-    hdu: int | list[int] | tuple[int, ...] = 0,
-    mmap: bool = True,
-    device: str = "cpu",
-    fp16: bool = False,
-    bf16: bool = False,
-    use_cache: bool = True,
-    raw_scale: bool = False,
-    scale_on_device: bool = True,
-) -> Any:
-    """Fast-path image read with optional half-precision and CUDA direct.
-
-    Uses the C++ fast I/O path. Returns a torch.Tensor.
-    """
-    from ._fastio import read as _read_fast
-
-    return _read_fast(
-        path,
-        hdu=hdu,
-        mmap=mmap,
-        device=device,
-        fp16=fp16,
-        bf16=bf16,
-        use_cache=use_cache,
-        raw_scale=raw_scale,
-        scale_on_device=scale_on_device,
-    )
-
-
 def _invalidate_path_caches(path: str) -> None:
     _invalidate_path_caches_impl(path)
 
@@ -521,7 +491,6 @@ __all__ = [
     "open_subset_reader",
     "read",
     "read_batch",
-    "read_fast",
     "read_hdus",
     "read_subset",
     "read_table",

@@ -295,7 +295,5 @@ torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
 torchfits.table.clear_cache()
 ```
 
-The public constants `torchfits.table.TABLE_BACKENDS` and the decision
-helpers `can_use_mmap_row_path_for_full_read` and
-`can_use_torch_table_path_for_full_read` are available for downstream
-packages that need to inspect table layout compatibility.
+The public constant `torchfits.table.TABLE_BACKENDS` lists recognized table
+backend names for callers that select an explicit backend.
