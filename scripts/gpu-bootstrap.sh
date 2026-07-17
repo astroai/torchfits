@@ -18,11 +18,14 @@ export PYTHONNOUSERSITE=1
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${TMPDIR:-/tmp}/torchfits-pip-cache}"
 mkdir -p "${PIP_CACHE_DIR}"
 
+# Match package pin torch>=2.10,<2.11 (cu128 index otherwise installs latest 2.11).
+TORCH_SPEC="${TORCHFITS_TORCH_SPEC:-torch>=2.10,<2.11}"
+
 python -m pip install \
     --no-cache-dir \
     --force-reinstall \
     --no-user \
-    torch \
+    "${TORCH_SPEC}" \
     --index-url "${INDEX}"
 
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available())"
