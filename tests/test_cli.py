@@ -117,3 +117,66 @@ def test_diff_detects_change(image_fits, tmp_path):
     result = _run_cli("diff", str(image_fits), str(other))
     assert result.returncode == 1, result.stderr
     assert result.stderr.strip()
+
+
+def test_header_fitsort_table(image_fits):
+    result = _run_cli(
+        "header",
+        str(image_fits),
+        "--fitsort",
+        "--keyword",
+        "BITPIX",
+        "--keyword",
+        "NAXIS",
+        "--hdu",
+        "0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "BITPIX" in result.stdout
+    assert "NAXIS" in result.stdout
+
+
+def test_header_fitsort_json(image_fits):
+    result = _run_cli(
+        "header",
+        str(image_fits),
+        "--fitsort",
+        "--keyword",
+        "BITPIX",
+        "--hdu",
+        "0",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert int(payload[0]["BITPIX"]) == -32
+
+
+def test_invalid_hdu_is_usage_error(image_fits):
+    result = _run_cli("info", str(image_fits), "--hdu", "not-an-int")
+    assert result.returncode == 2, result.stderr
+
+
+def test_vos_probe_missing_package_message(monkeypatch):
+    import builtins
+
+    from torchfits.cli import cmds_probe
+    from torchfits.cli.common import UsageError
+
+    real_import = builtins.__import__
+
+    def _block_vos(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "vos" or name.startswith("vos."):
+            raise ImportError("vos blocked for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _block_vos)
+    with pytest.raises(UsageError, match="vos"):
+        cmds_probe._probe_vos("vos:example/file.fits")
+
+
+def test_vos_probe_bad_uri_is_io_error_when_vos_present():
+    result = _run_cli("probe", "vos:sfabbro/example.fits", "--json")
+    # vos may be installed (CANFAR lab) or missing; either way no traceback.
+    assert result.returncode in (2, 3), result.stderr
+    assert "vos" in result.stderr.lower() or "service" in result.stderr.lower()

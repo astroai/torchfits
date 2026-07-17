@@ -14,7 +14,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",

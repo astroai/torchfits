@@ -59,7 +59,10 @@ def parse_hdu_list(hdu: str | None) -> list[int] | None:
         piece = part.strip()
         if not piece:
             continue
-        out.append(int(piece))
+        try:
+            out.append(int(piece))
+        except ValueError as exc:
+            raise UsageError(f"invalid HDU index: {piece!r}") from exc
     if not out:
         raise UsageError("--hdu requires at least one HDU index")
     return out

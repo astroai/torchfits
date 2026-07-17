@@ -1,4 +1,4 @@
-"""``torchfits header`` — dump FITS header cards."""
+"""``torchfits header`` — dump FITS header cards or fitsort-style tables."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import torchfits
 
 from .common import (
     EXIT_OK,
+    UsageError,
     emit_records,
     header_extname,
     iter_file_hdu_pairs,
@@ -23,7 +24,17 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
     parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument("--keyword", help="filter to a single keyword")
+    parser.add_argument(
+        "--keyword",
+        action="append",
+        dest="keywords",
+        help="filter to keyword(s); repeat for multiple; required with --fitsort",
+    )
+    parser.add_argument(
+        "--fitsort",
+        action="store_true",
+        help="print a table of selected keywords (qfits fitsort idiom)",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON array")
     parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
     parser.set_defaults(func=run)
@@ -33,13 +44,17 @@ def _card_dict(card: Any) -> dict[str, Any]:
     return {"keyword": card.key, "value": card.value, "comment": card.comment}
 
 
-def _header_records(
-    path: str, index: int, header: Any, *, keyword: str | None
+def _header_lookup(header: Any) -> dict[str, Any]:
+    return {str(card.key).upper(): card.value for card in header.cards}
+
+
+def _card_records(
+    path: str, index: int, header: Any, *, keywords: list[str] | None
 ) -> list[dict[str, Any]]:
-    cards = header.cards
-    if keyword is not None:
-        key = keyword.upper()
-        cards = [card for card in cards if card.key == key]
+    cards = list(header.cards)
+    if keywords:
+        wanted = {key.upper() for key in keywords}
+        cards = [card for card in cards if str(card.key).upper() in wanted]
     return [
         {
             "file": path,
@@ -51,14 +66,59 @@ def _header_records(
     ]
 
 
+def _fitsort_record(
+    path: str, index: int, header: Any, *, keywords: list[str]
+) -> dict[str, Any]:
+    lookup = _header_lookup(header)
+    record: dict[str, Any] = {
+        "file": path,
+        "hdu": index,
+        "name": header_extname(header, index),
+    }
+    for key in keywords:
+        record[key.upper()] = lookup.get(key.upper())
+    return record
+
+
+def _print_fitsort_table(records: list[dict[str, Any]], keywords: list[str]) -> None:
+    keys = ["file", "hdu", "name", *[key.upper() for key in keywords]]
+    widths = {key: len(key) for key in keys}
+    rows: list[dict[str, str]] = []
+    for record in records:
+        row = {
+            key: "" if record.get(key) is None else str(record.get(key)) for key in keys
+        }
+        rows.append(row)
+        for key in keys:
+            widths[key] = max(widths[key], len(row[key]))
+    print("  ".join(key.ljust(widths[key]) for key in keys))
+    print("  ".join("-" * widths[key] for key in keys))
+    for row in rows:
+        print("  ".join(row[key].ljust(widths[key]) for key in keys))
+
+
 def run(args: argparse.Namespace) -> int:
     paths = resolve_paths(args.paths, use_stdin=args.stdin)
+    keywords = list(args.keywords or [])
+    if args.fitsort and not keywords:
+        raise UsageError("--fitsort requires at least one --keyword")
+
     records: list[dict[str, Any]] = []
     for path, index, hdu in iter_file_hdu_pairs(paths, args.hdu):
         header = (
             hdu.header if hasattr(hdu, "header") else torchfits.get_header(path, index)
         )
-        records.extend(_header_records(path, index, header, keyword=args.keyword))
+        if args.fitsort:
+            records.append(_fitsort_record(path, index, header, keywords=keywords))
+        else:
+            records.extend(
+                _card_records(path, index, header, keywords=keywords or None)
+            )
+
+    if args.fitsort and not (args.json or args.jsonl):
+        _print_fitsort_table(records, keywords)
+        return EXIT_OK
+
     if not (args.json or args.jsonl):
         for record in records:
             comment = record.get("comment") or ""
@@ -68,5 +128,6 @@ def run(args: argparse.Namespace) -> int:
                 f"{record['keyword']} = {record['value']!r}{suffix}"
             )
         return EXIT_OK
+
     emit_records(records, json_mode=args.json, jsonl=args.jsonl)
     return EXIT_OK

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] — unreleased
+
+### Added
+
+- `torchfits header --fitsort --keyword …` multi-file keyword table (qfits
+  `dfits|fitsort` idiom).
+- Optional `vos:` / `vos://` archive probe when the `vos` package is installed;
+  clearer install hint when it is missing.
+- Invalid `--hdu` values now exit with usage code 2 instead of a traceback.
+
 ## [0.9.2] — 2026-07-16
 
 ### Changed

@@ -15,9 +15,9 @@ torchfits stats image.fits --hdu 0 --jsonl
 torchfits table catalog.fits --hdu 1 --preview 3
 torchfits cutout image.fits cutout.fits --hdu 0 --box 10,10,50,50
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
-torchfits convert r.fits g.fits b.fits rgb.ppm --to ppm
-torchfits copy in.fits out.fits
-torchfits diff a.fits b.fits
+torchfits header *.fits --fitsort --keyword OBJECT --keyword DATE-OBS
+# qfits idiom: dfits *.fits | fitsort OBJECT DATE-OBS
+torchfits probe https://example.edu/data.fits --json
 ```
 
 ## Exit codes
@@ -35,13 +35,13 @@ torchfits diff a.fits b.fits
 | Subcommand | Description |
 |------------|-------------|
 | `info` | HDU inventory (type, shape, rows) |
-| `header` | dump header cards; `--keyword` filter |
+| `header` | dump header cards; `--keyword` / `--fitsort` multi-file table |
 | `verify` | `DATASUM` / `CHECKSUM` verification |
 | `stats` | image min/max/mean via `read_tensor` |
 | `table` | Arrow schema + preview rows |
 | `cutout` | pixel subset via `read_subset` |
 | `convert` | table→parquet; Lupton RGB→PPM |
-| `probe` | local inventory; HTTP(S) range header probe |
+| `probe` | local inventory; HTTP(S) range probe; optional `vos:` via `vos` package |
 | `diff` | compare headers and image shape/stats |
 | `copy` | MEF-preserving FITS→FITS copy |
 | `arith` | image ±×÷ by a constant |
@@ -59,7 +59,14 @@ extensions. JSONL mode emits one record per `(file, hdu)` pair.
 
 - **parquet** — `torchfits.table.write_parquet` on a table HDU (`--hdu`, default 1).
 - **ppm** — Lupton+ (2004) asinh RGB from one FITS (`--bands 0,1,2`) or three
-  band files; writes binary PPM (no Pillow dependency).
+  band files; writes binary PPM (torch-only; no Pillow/numpy in the package).
+
+### `probe` remotes
+
+- **HTTP(S)** — range GET of the first FITS blocks; no extra dependency.
+- **`vos:` / `vos://`** — optional; requires the `vos` package (`pip`/`pixi install vos`).
+  Auth follows the client’s normal CANFAR config (never bake secrets into torchfits).
+- Full CAOM/`astquery`-style archive search stays out of scope; probe is header metadata.
 
 ## Tool mapping
 
