@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-07-16
+
+### Changed
+
+- Root public API is I/O and HDU classes only. Transforms import from
+  `torchfits.transforms`. `torchfits.hdu` is a root namespace.
+- Removed `read_fast` and `read_image` from the public surface (use `read` /
+  `read_tensor`). Deleted the orphaned `_fastio` module.
+- Demoted table policy helpers from `table.__all__`.
+- Docs site logo/favicon: `torchfits-logo.png`.
+- README performance run IDs aligned with `docs/benchmarks.md` snapshots;
+  clarified Linux strict-gate 0 deficits vs Mac MPS deficits.
+- Image GPU timings interleave libraries (not only compressed) to reduce
+  order bias on MPS microbenches.
+- Native table predicate scan is sequential (parallel chunk+merge+sort lost).
+- CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
+- `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
+  focused iteration without a full exhaustive matrix.
+- Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
+
+### Added
+
+- Release freeze review `docs/reviews/release-api-freeze-0.9.2.md` and
+  thermonuclear review `docs/reviews/thermo-nuclear-0.9.2.md`.
+- Transforms catalog review `docs/reviews/transforms-1.0.md` (1.0 prep).
+- `torchfits` CLI (`info`, `header`, `verify`, `diff`, `stats`, `table`,
+  `convert`, `copy`, `arith`, `cutout`, `compress`, `decompress`, `transform`,
+  `probe`, `setkey`) with JSON/JSONL and MEF-native defaults; see `docs/cli.md`.
+
 ### Fixed
 
 - Deficit rankings no longer cross-compare mmap-on vs mmap-off peers.
@@ -37,16 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Image specialized scorecards use Tensor peers (`fitsio_torch` /
   `astropy_torch`); bare ndarray peers emit under `family=numpy` for
   NumPy→PyTorch switch cost without inventing wrap-only deficits.
-
-### Changed
-
-- Image GPU timings interleave libraries (not only compressed) to reduce
-  order bias on MPS microbenches.
-- Native table predicate scan is sequential (parallel chunk+merge+sort lost).
-- CANFAR GPU benches request 8 CPU cores and export OMP/TORCH_NUM_THREADS.
-- `pixi run bench-deficit-focus` and `--no-gpu` / fitstable `--filter` support
-  focused iteration without a full exhaustive matrix.
-- Smart table predicate benches score the Tensor contract vs `fitsio_torch`.
 
 ## [0.9.1] - 2026-07-15
 

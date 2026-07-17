@@ -2,6 +2,10 @@
 
 The package root intentionally stays light: importing :mod:`torchfits` must not
 load tensor runtimes, NumPy, compiled extensions, or optional integration packages.
+
+Transforms live under :mod:`torchfits.transforms`. Arrow tables under
+:mod:`torchfits.table`. HDU types are available as root names and via
+:mod:`torchfits.hdu`.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -19,6 +23,7 @@ _NAMESPACES: dict[str, str] = {
     "transforms": "torchfits.transforms",
     "data": "torchfits.data",
     "where": "torchfits.where",
+    "hdu": "torchfits.hdu",
 }
 
 _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
@@ -43,7 +48,6 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "delete_hdu": ("torchfits.io", "delete_hdu"),
     "write_checksums": ("torchfits.io", "write_checksums"),
     "write_tensor": ("torchfits.io", "write_tensor"),
-    "read_fast": ("torchfits.io", "read_fast"),
     "to_pandas": ("torchfits.interop", "to_pandas"),
     "to_arrow": ("torchfits.interop", "to_arrow"),
     "to_polars": ("torchfits.interop", "to_polars"),
@@ -56,22 +60,6 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "TensorHDU": ("torchfits.hdu", "TensorHDU"),
     "TableHDU": ("torchfits.hdu", "TableHDU"),
     "TableHDURef": ("torchfits.hdu", "TableHDURef"),
-    "SpectralBinning": ("torchfits.transforms", "SpectralBinning"),
-    "ContinuumRemoval": ("torchfits.transforms", "ContinuumRemoval"),
-    "BandMath": ("torchfits.transforms", "BandMath"),
-    "ContinuumNormalize": ("torchfits.transforms", "ContinuumNormalize"),
-    "DopplerShift": ("torchfits.transforms", "DopplerShift"),
-    "PhaseFold": ("torchfits.transforms", "PhaseFold"),
-    "GlobalScalarNorm": ("torchfits.transforms", "GlobalScalarNorm"),
-    "SavitzkyGolayFilter": ("torchfits.transforms", "SavitzkyGolayFilter"),
-    "RunningPercentile": ("torchfits.transforms", "RunningPercentile"),
-    "UpperEnvelopeContinuum": ("torchfits.transforms", "UpperEnvelopeContinuum"),
-    "WaveletDecompose": ("torchfits.transforms", "WaveletDecompose"),
-    "AsymmetricLeastSquares": ("torchfits.transforms", "AsymmetricLeastSquares"),
-    "AlphaShapeContinuum": ("torchfits.transforms", "AlphaShapeContinuum"),
-    "AsymmetricSigmaClip": ("torchfits.transforms", "AsymmetricSigmaClip"),
-    "FITSScaleColumns": ("torchfits.transforms", "FITSScaleColumns"),
-    "TNullToNan": ("torchfits.transforms", "TNullToNan"),
 }
 
 __all__ = tuple(
@@ -103,26 +91,9 @@ __all__ = tuple(
         "delete_hdu",
         "write_checksums",
         "write_tensor",
-        "read_fast",
         "to_pandas",
         "to_arrow",
         "to_polars",
-        "SpectralBinning",
-        "ContinuumRemoval",
-        "BandMath",
-        "ContinuumNormalize",
-        "DopplerShift",
-        "PhaseFold",
-        "GlobalScalarNorm",
-        "SavitzkyGolayFilter",
-        "RunningPercentile",
-        "UpperEnvelopeContinuum",
-        "WaveletDecompose",
-        "AsymmetricLeastSquares",
-        "AlphaShapeContinuum",
-        "AsymmetricSigmaClip",
-        "FITSScaleColumns",
-        "TNullToNan",
         *_NAMESPACES,
     ]
 )
@@ -201,11 +172,12 @@ def __dir__() -> list[str]:
 
 if TYPE_CHECKING:
     from . import (
-        table as table,
         cache as cache,
         cpp as cpp,
-        transforms as transforms,
         data as data,
+        hdu as hdu,
+        table as table,
+        transforms as transforms,
         where as where,
     )
     from .hdu import Card as Card
@@ -214,17 +186,16 @@ if TYPE_CHECKING:
     from .hdu import TableHDU as TableHDU
     from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
-    from .io import get_header as get_header
-    from .io import get_batch_info as get_batch_info
-    from .io import get_cache_performance as get_cache_performance
     from .io import clear_file_cache as clear_file_cache
     from .io import delete_hdu as delete_hdu
+    from .io import get_batch_info as get_batch_info
+    from .io import get_cache_performance as get_cache_performance
+    from .io import get_header as get_header
     from .io import insert_hdu as insert_hdu
     from .io import open as open
     from .io import open_subset_reader as open_subset_reader
     from .io import read as read
     from .io import read_batch as read_batch
-    from .io import read_fast as read_fast
     from .io import read_hdus as read_hdus
     from .io import read_subset as read_subset
     from .io import read_table as read_table
@@ -239,19 +210,3 @@ if TYPE_CHECKING:
     from .interop import to_arrow as to_arrow
     from .interop import to_pandas as to_pandas
     from .interop import to_polars as to_polars
-    from .transforms import SpectralBinning as SpectralBinning
-    from .transforms import ContinuumRemoval as ContinuumRemoval
-    from .transforms import BandMath as BandMath
-    from .transforms import ContinuumNormalize as ContinuumNormalize
-    from .transforms import DopplerShift as DopplerShift
-    from .transforms import PhaseFold as PhaseFold
-    from .transforms import GlobalScalarNorm as GlobalScalarNorm
-    from .transforms import SavitzkyGolayFilter as SavitzkyGolayFilter
-    from .transforms import RunningPercentile as RunningPercentile
-    from .transforms import UpperEnvelopeContinuum as UpperEnvelopeContinuum
-    from .transforms import WaveletDecompose as WaveletDecompose
-    from .transforms import AsymmetricLeastSquares as AsymmetricLeastSquares
-    from .transforms import AlphaShapeContinuum as AlphaShapeContinuum
-    from .transforms import AsymmetricSigmaClip as AsymmetricSigmaClip
-    from .transforms import FITSScaleColumns as FITSScaleColumns
-    from .transforms import TNullToNan as TNullToNan

@@ -1,0 +1,119 @@
+"""Smoke tests for the torchfits CLI."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+
+import pytest
+import torch
+
+import torchfits
+
+
+def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "torchfits.cli", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.fixture
+def image_fits(tmp_path):
+    path = tmp_path / "image.fits"
+    data = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+    torchfits.write(str(path), data, header={"BITPIX": -32}, overwrite=True)
+    return path
+
+
+def test_help_lists_subcommands():
+    result = _run_cli("--help")
+    assert result.returncode == 0
+    for name in (
+        "info",
+        "header",
+        "verify",
+        "stats",
+        "table",
+        "convert",
+        "probe",
+        "copy",
+        "arith",
+        "diff",
+    ):
+        assert name in result.stdout
+
+
+def test_info_json(image_fits):
+    result = _run_cli("info", str(image_fits), "--json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload[0]["file"] == str(image_fits)
+    assert payload[0]["hdu"] == 0
+    assert payload[0]["type"] == "IMAGE"
+
+
+def test_header_keyword(image_fits):
+    result = _run_cli("header", str(image_fits), "--keyword", "BITPIX", "--json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert any(row["keyword"] == "BITPIX" for row in payload)
+
+
+def test_verify_without_checksums(image_fits):
+    result = _run_cli("verify", str(image_fits), "--json")
+    assert result.returncode == 4, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload[0]["ok"] is False
+
+
+def test_verify_after_write_checksums(image_fits):
+    torchfits.write_checksums(str(image_fits), hdu=0)
+    result = _run_cli("verify", str(image_fits))
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+def test_copy_roundtrip(image_fits, tmp_path):
+    out = tmp_path / "copy.fits"
+    result = _run_cli("copy", str(image_fits), str(out))
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+    copied = torchfits.read_tensor(str(out), hdu=0)
+    original = torchfits.read_tensor(str(image_fits), hdu=0)
+    assert torch.equal(copied, original)
+
+
+def test_arith_add(image_fits, tmp_path):
+    out = tmp_path / "arith.fits"
+    result = _run_cli(
+        "arith",
+        str(image_fits),
+        "--op",
+        "add",
+        "--value",
+        "1",
+        "--out",
+        str(out),
+    )
+    assert result.returncode == 0, result.stderr
+    tensor = torchfits.read_tensor(str(out), hdu=0)
+    expected = torchfits.read_tensor(str(image_fits), hdu=0) + 1.0
+    assert torch.allclose(tensor, expected)
+
+
+def test_diff_same_file(image_fits):
+    result = _run_cli("diff", str(image_fits), str(image_fits))
+    assert result.returncode == 0, result.stderr
+
+
+def test_diff_detects_change(image_fits, tmp_path):
+    other = tmp_path / "other.fits"
+    data = torchfits.read_tensor(str(image_fits), hdu=0) + 10.0
+    torchfits.write(str(other), data, overwrite=True)
+    result = _run_cli("diff", str(image_fits), str(other))
+    assert result.returncode == 1, result.stderr
+    assert result.stderr.strip()

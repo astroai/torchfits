@@ -66,10 +66,11 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 
 | Namespace | Purpose |
 |---|---|
-| `torchfits` (root) | I/O functions, HDU classes, re-exported transforms |
+| `torchfits` (root) | I/O functions and HDU classes |
+| `torchfits.hdu` | HDU/header types (`Header`, `Card`, `HDUList`, …) |
 | `torchfits.table` | Table I/O, mutation, interop |
 | `torchfits.data` | Dataset classes and loader factory |
-| `torchfits.transforms` | Transform classes (also re-exported at root) |
+| `torchfits.transforms` | Transform classes |
 | `torchfits.cache` | Cache configuration and management |
 | `torchfits.where` | Predicate parser and evaluator |
 | `torchfits.cpp` | Low-level native compatibility surface |
@@ -93,14 +94,17 @@ private until promoted there.
 
 ---
 
-## Deprecated Aliases (0.5.0b2)
+## Removed names
 
-Still supported, prefer the canonical paths:
-
-| Old | New |
+| Old | Use instead |
 |---|---|
 | `read_fast(...)` | `read(...)` or `read_tensor(...)` |
 | `read_image(...)` | `read_tensor(...)` |
+| Root transform classes (e.g. `torchfits.SpectralBinning`) | `torchfits.transforms.*` |
+
+Transforms are not re-exported at the package root. Import them from
+:mod:`torchfits.transforms`. HDU helpers are available as root names and via
+:mod:`torchfits.hdu`.
 
 ---
 

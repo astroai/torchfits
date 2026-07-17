@@ -57,25 +57,25 @@ units. See [docs/api.md](docs/api.md#transforms) and
 fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
 backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
 
-## What's New in 0.9.0
+## What's New in 0.9.2
 
-0.9.0 adds Polars-native FITS table access and fixes handle-cache safety:
+0.9.2 freezes a leaner Python library surface and ships an early CLI (the
+operator surface planned for 0.9.3):
 
-- **`read_polars()`** — one-call FITS-to-Polars with preserved FITS column
-  metadata (`TFORM`, `TUNIT`, `TDIM`, `TNULL`, `TSCAL`, `TZERO`).
-- **`scan_polars()`** — genuine streaming Polars path; yields `pl.DataFrame`
-  batches without materializing the entire table.
-- **Handle-cache safety** — writing one FITS file no longer invalidates
-  borrowed native handles for unrelated files.
-- **Table predicate fast path** — automatic predicates use the fast native
-  full-read path followed by Arrow filtering.
+- **Leaner root API** — transforms live under `torchfits.transforms` only;
+  `read_fast` / `read_image` removed from the public surface; `torchfits.hdu`
+  is a documented namespace.
+- **CLI** — `torchfits` one-word commands (`info`, `header`, `verify`, `diff`,
+  `stats`, `table`, `convert`, `copy`, `arith`, `cutout`, `compress`,
+  `decompress`, `transform`, `probe`, `setkey`); see [docs/cli.md](docs/cli.md).
+- **Docs and brand** — site logo uses `torchfits-logo.png`; API docs match the
+  settled exports; README benchmark run IDs track `docs/benchmarks.md`.
+- **Deficit honesty** — Linux CPU/CUDA strict-gate scores are separate from
+  Mac MPS deficits (see Performance below).
 
-0.7.0 completed the ML data layer (`FitsTableIterableDataset`,
-`FitsCutoutDataset`) and removed legacy dataset aliases.
-0.6.0 shipped the core ML surface (`torchfits.data` image/table datasets,
-`torchfits.transforms`, C++ predicate pushdown, thread-safe caches).
-See [docs/changelog.md](docs/changelog.md). Roadmap for 1.0:
-[docs/roadmap.md](docs/roadmap.md).
+0.9.1 constrained the native ABI to PyTorch 2.10. 0.9.0 added Polars-native
+table access and handle-cache safety. See [docs/changelog.md](docs/changelog.md).
+Roadmap: [docs/roadmap.md](docs/roadmap.md).
 
 ## Transforms
 
@@ -105,11 +105,16 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 ## Performance
 
 Lab multi-host exhaustive scorecard
-(`exhaustive_mps_20260715_002839` Mac MPS,
-`exhaustive_cpu_20260715_002944` CANFAR CPU,
-`exhaustive_cuda_20260715_003158` CANFAR CUDA); see
+(`exhaustive_mps_20260717_000853` Mac MPS,
+`exhaustive_cpu_20260716_191252` CANFAR CPU,
+`exhaustive_cuda_20260716_191255` CANFAR CUDA); see
 [docs/benchmarks.md](docs/benchmarks.md) for methodology, full exhaustive
 table, category summaries, RSS columns, and deficit transparency.
+
+Under the **strict** gate (images: any lag; Arrow tables: ≤1.05×), Linux CPU
+and CUDA currently report **0** TorchFits deficits. Mac MPS reports **4**
+deficits on this refresh (down from an earlier 101-row snapshot); MPS is not
+the Linux CUDA release gate.
 
 ### Headline numbers
 

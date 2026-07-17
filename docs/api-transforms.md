@@ -1,10 +1,10 @@
 # Transforms
 
 Header-aware preprocessing transforms for FITS images, spectra, and tables.
-All transforms are `nn.Module`-compatible and work with
-`torch.utils.data.Dataset` and `DataLoader`. They are also compatible
-with `torch.compile` — wrap the transform pipeline for graph-mode
-compilation in production training loops.
+All transforms implement the :class:`FITSTransform` callable protocol
+(``forward`` / ``inverse`` / ``__call__``) and work as callables with
+``torch.utils.data.Dataset`` and ``DataLoader`` (construct one pipeline
+per worker when using ``num_workers > 0``).
 
 ```python
 from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
@@ -599,8 +599,8 @@ Base class for custom transforms. Override `forward()` and optionally
 
 ## Importing
 
-All transforms are importable from `torchfits.transforms` and many are
-re-exported at the package root:
+Import transform classes from ``torchfits.transforms`` (namespace-only since
+0.9.2 — they are not re-exported at the package root):
 
 ```python
 from torchfits.transforms import (

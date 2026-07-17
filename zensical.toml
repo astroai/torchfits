@@ -17,6 +17,7 @@ nav = [
   ]},
   {"Reference" = [
     "api.md",
+    "cli.md",
     "api-core-io.md",
     "api-tables.md",
     "api-data.md",
@@ -44,8 +45,8 @@ nav = [
 [project.theme]
 name = "material"
 custom_dir = "overrides"
-logo = "logo.svg"
-favicon = "logo.svg"
+logo = "torchfits-logo.png"
+favicon = "torchfits-logo.png"
 features = [
   "navigation.tabs",
   "navigation.tabs.sticky",

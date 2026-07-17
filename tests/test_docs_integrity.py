@@ -216,7 +216,7 @@ def test_api_md_core_io_signatures_match_live() -> None:
 
     read_tensor_sig = _first_call_sig(_section("read_tensor"))
     assert "scale_on_device" not in read_tensor_sig, (
-        "read_tensor must not document scale_on_device (that belongs to read_fast / kwargs)"
+        "read_tensor must not document scale_on_device (that belongs to read(..., scale_on_device=) / kwargs)"
     )
     assert "handle_cache" in read_tensor_sig
 
