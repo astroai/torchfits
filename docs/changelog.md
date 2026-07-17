@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.3] — unreleased
+## [0.9.3] — 2026-07-17
 
 ### Added
 
@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `torchfits convert --to png` Lupton RGB preview via stdlib PNG (no Pillow /
   NumPy). PPM removed.
 - Table convert formats: **parquet**, **csv**, **tsv**, and **arrow** (Arrow
-  IPC / Feather V2). Streaming writers for large catalogs.
-- Parquet convert uses streaming `write_parquet(..., stream=True)` (out-of-core).
+  IPC / Feather V2). Streaming writers for large catalogs (CSV/TSV: flat
+  columns only).
 
 ### Changed
 
@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transforms docs: not `nn.Module`; instance-local inverse state; Advanced notes
   for `BandMath`, `PhaseFold`, `AsymmetricLeastSquares`, `AlphaShapeContinuum`;
   invertibility + helpers tables.
+- Parquet convert uses streaming `write_parquet(..., stream=True)` (out-of-core).
+- Multi-host scorecard refresh (`exhaustive_mps_20260717_040150`,
+  `exhaustive_cpu_20260717_040146`, `exhaustive_cuda_20260717_042840`): CUDA **0**
+  deficits, CPU **1**, MPS **16**.
+- `scripts/gpu-bootstrap.sh` pins `torch>=2.10,<2.11` so CANFAR cu128 installs
+  do not pull PyTorch 2.11 and fail the ABI gate.
+
+### Fixed
+
+- Block CFITSIO `sh://` filenames (command injection via `/bin/sh`), extending
+  the existing `|` checks.
 
 ## [0.9.2] — 2026-07-16
 

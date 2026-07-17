@@ -63,8 +63,3 @@ class Compose(FITSTransform):
     def __repr__(self) -> str:
         inner = ",\n    ".join(repr(t) for t in self.transforms)
         return f"Compose([\n    {inner}\n])"
-
-
-# ---------------------------------------------------------------------------
-# Stretches (stateless, always invertible)
-# ---------------------------------------------------------------------------

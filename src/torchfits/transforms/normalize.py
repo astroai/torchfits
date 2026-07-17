@@ -201,11 +201,6 @@ class MinMaxNormalize(FITSTransform):
         return f"MinMaxNormalize(dim={self.dim})"
 
 
-# ---------------------------------------------------------------------------
-# FITS metadata-aware transforms
-# ---------------------------------------------------------------------------
-
-
 class GlobalScalarNorm(FITSTransform):
     """Normalise by dividing by a global scalar statistic.
 

@@ -1042,8 +1042,3 @@ class AlphaShapeContinuum(FITSTransform):
             f"AlphaShapeContinuum(half_window={self.half_window}, "
             f"iterations={self.iterations}, dim={self.dim})"
         )
-
-
-# ---------------------------------------------------------------------------
-# Outlier rejection
-# ---------------------------------------------------------------------------

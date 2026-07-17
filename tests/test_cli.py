@@ -251,3 +251,28 @@ def test_vos_probe_bad_uri_is_io_error_when_vos_present():
     # vos may be installed (CANFAR lab) or missing; either way no traceback.
     assert result.returncode in (2, 3), result.stderr
     assert "vos" in result.stderr.lower() or "service" in result.stderr.lower()
+
+
+def test_convert_png_invalid_bands_count(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert", str(image_fits), str(out), "--to", "png", "--bands", "0,1"
+    )
+    assert result.returncode == 2, result.stderr
+    assert "bands" in result.stderr.lower()
+
+
+def test_convert_png_invalid_bands_non_integer(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert", str(image_fits), str(out), "--to", "png", "--bands", "a,b,c"
+    )
+    assert result.returncode == 2, result.stderr
+
+
+def test_fitsort_with_invalid_hdu(image_fits):
+    result = _run_cli(
+        "header", str(image_fits), "--fitsort", "--keyword", "BITPIX", "--hdu", "abc"
+    )
+    assert result.returncode == 2, result.stderr
+    assert "hdu" in result.stderr.lower() or "invalid" in result.stderr.lower()

@@ -203,6 +203,8 @@ def write_ipc(
         feather.write_feather(table, where, compression=compression)  # type: ignore[no-untyped-call]
         return
 
+    write_options = ipc.IpcWriteOptions(compression=compression)  # type: ignore[attr-defined]
+
     data_iter: Any = data
     writer = None
     try:
@@ -213,12 +215,12 @@ def write_ipc(
                 except StopIteration:
                     break
                 if writer is None:
-                    writer = ipc.new_file(where, batch.schema)  # type: ignore[no-untyped-call]
+                    writer = ipc.new_file(where, batch.schema, options=write_options)  # type: ignore[no-untyped-call]
                 writer.write_batch(batch)
         else:
             for batch in data_iter:
                 if writer is None:
-                    writer = ipc.new_file(where, batch.schema)  # type: ignore[no-untyped-call]
+                    writer = ipc.new_file(where, batch.schema, options=write_options)  # type: ignore[no-untyped-call]
                 writer.write_batch(batch)
     finally:
         if writer is not None:

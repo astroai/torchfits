@@ -56,13 +56,13 @@ where fitsio still wins on narrow table predicates.
 
 | Metric | fitsio | torchfits |
 |--------|--------|-----------|
-| Large float32 image (16 MB, CPU) | 5.89 ms | 3.85 ms (**1.53× faster**) |
-| Same read @ CUDA | 5.50 ms | 3.42 ms (**1.61× faster**) |
-| Compressed Rice image (CPU) | 9.43 ms | 9.06 ms (**1.04× faster**) |
-| 50× repeated 100×100 cutouts (CPU) | 4.94 ms | 4.68 ms (**1.09× faster**) |
-| Table read (100k rows, 8 cols) | 59.84 ms | 95.3 μs (**627.6× faster**) |
+| Large float32 image (16 MB, CPU) | 8.83 ms | 6.51 ms (**1.36× faster**) |
+| Same read @ CUDA | 11.30 ms | 9.00 ms (**1.26× faster**) |
+| Compressed Rice image (CPU) | 18.45 ms | 15.17 ms (**1.28× faster**) |
+| 50× repeated 100×100 cutouts (CPU) | 21.03 ms | 21.75 ms (**~parity**) |
+| Table read (100k rows, 8 cols) | 30.20 ms | 6.97 ms (**4.33× faster**) |
 
-*Benchmarks from `exhaustive_cuda_20260716_191255` (CANFAR staging, mmap on+off
+*Benchmarks from `exhaustive_cuda_20260717_042840` (CANFAR staging, mmap on+off
 matrix, 0 TorchFits deficits). See [benchmarks.md](benchmarks.md) for methodology.*
 
 ## Key Behavioral Differences

@@ -44,7 +44,10 @@ def _band_indices(raw: str | None, num_inputs: int) -> list[int]:
         if num_inputs == 3:
             return [0, 0, 0]
         raise UsageError("png convert needs one file plus --bands or three band files")
-    indices = [int(part.strip()) for part in raw.split(",") if part.strip()]
+    try:
+        indices = [int(part.strip()) for part in raw.split(",") if part.strip()]
+    except ValueError:
+        raise UsageError("--bands must be comma-separated integers, e.g. 0,1,2")
     if len(indices) != 3:
         raise UsageError("--bands requires exactly three HDU indices")
     return indices

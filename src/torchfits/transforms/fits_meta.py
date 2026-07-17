@@ -240,11 +240,6 @@ class TNullToNan(FITSTransform):
         return f"TNullToNan({{{items}}})"
 
 
-# ---------------------------------------------------------------------------
-# Spectral transforms (1D — not in torch/torchvision)
-# ---------------------------------------------------------------------------
-
-
 class FITSHeaderNormalize(FITSTransform):
     """Auto-detect and apply normalization from FITS header keywords.
 

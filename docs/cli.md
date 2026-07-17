@@ -84,6 +84,8 @@ torchfits header *.fits --fitsort --keyword BITPIX --json
 
 - **parquet** / **csv** / **tsv** / **arrow** — export a table HDU (`--hdu`,
   default 1). Streaming writers keep large catalogs out-of-core.
+  - `csv` / `tsv` are for flat columns (nested / list columns need parquet or
+    arrow).
   - `arrow` is Arrow IPC / Feather V2 (``.arrow``) — opens in Polars
     (`pl.read_ipc`) and PyArrow.
 - **png** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three

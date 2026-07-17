@@ -45,7 +45,7 @@ Supported feature matrix: [docs/parity.md](docs/parity.md).
 - **Leaner imports** — transforms from `torchfits.transforms`; use `read` /
   `read_tensor` (not `read_fast` / `read_image`)
 - **Convert** — tables → Parquet, CSV, TSV, or Arrow IPC; images → Lupton PNG
-- **Scorecard** — Linux CPU/CUDA **0** strict deficits; Mac MPS **4**
+- **Scorecard** — CUDA **0** strict deficits; Linux CPU **1**; Mac MPS **16**
   ([docs/benchmarks.md](docs/benchmarks.md))
 
 Full notes: [docs/changelog.md](docs/changelog.md).
@@ -78,45 +78,32 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 ## Performance
 
 Lab multi-host exhaustive scorecard
-(`exhaustive_mps_20260717_000853` Mac MPS,
-`exhaustive_cpu_20260716_191252` CANFAR CPU,
-`exhaustive_cuda_20260716_191255` CANFAR CUDA); see
+(`exhaustive_mps_20260717_040150` Mac MPS,
+`exhaustive_cpu_20260717_040146` CANFAR CPU,
+`exhaustive_cuda_20260717_042840` CANFAR CUDA); see
 [docs/benchmarks.md](docs/benchmarks.md) for methodology, full exhaustive
 table, category summaries, RSS columns, and deficit transparency.
 
-Under the **strict** gate (images: any lag; Arrow tables: ≤1.05×), Linux CPU
-and CUDA currently report **0** TorchFits deficits. Mac MPS reports **4**
-deficits on this refresh (down from an earlier 101-row snapshot); MPS is not
-the Linux CUDA release gate.
+Under the **strict** gate (images: any lag; Arrow tables: ≤1.05×), CANFAR CUDA
+reports **0** TorchFits deficits; Linux CPU **1** (narrow 1M-row predicate);
+Mac MPS **16**. MPS is not the Linux CUDA release gate.
 
 ### Headline numbers
 
 | Case | torchfits | astropy | fitsio | Speedup vs astropy |
 |---|---:|---:|---:|---:|
-| Large float32 image read (16 MB, CPU) | 3.85 ms | 16.67 ms | 5.89 ms | **4.3×** |
-| Compressed Rice image (CPU) | 9.06 ms | 27.77 ms | 9.43 ms | **3.1×** |
-| 50× repeated 100×100 cutouts (CPU) | 4.68 ms | 75.36 ms | 4.94 ms | **16.7×** |
-| Table read (100k rows, 8 cols) | 95.3 μs | 6.74 ms | 59.84 ms | **70.6×** |
-| Varlen table read (100k rows, 3 cols) | 93.9 μs | 3.52 ms | 288.81 ms | **37.5×** |
+| Large float32 image read (16 MB, CPU) | 6.51 ms | 13.95 ms | 8.83 ms | **2.1×** |
+| Compressed Rice image (CPU) | 15.17 ms | 75.41 ms | 18.45 ms | **5.2×** |
+| 50× repeated 100×100 cutouts (CPU) | 21.75 ms | 335.26 ms | 21.03 ms | **18.3×** |
+| Table read (100k rows, 8 cols) | 6.97 ms | 95.60 ms | 30.20 ms | **13.7×** |
+| Varlen table read (100k rows, 3 cols) | 258.11 ms | 1.624 s | 337.40 ms | **6.4×** |
 
 ### By benchmark category
 
-| Category | Best speedup vs astropy | Best speedup vs fitsio | Notes |
-|---|---:|---:|---|
-| **1D images** (float32/64, int8–int64) | **7.8×** | **2.3×** | All sizes, CPU |
-| **2D images** (float32/64, int8–int64, uint16/32) | **7.7×** | **2.4×** | All sizes, CPU |
-| **3D cubes** (float32/64, int8–int64) | **7.5×** | **2.1×** | Small–medium, CPU |
-| **Compressed** (gzip, rice, hcompress) | **4.3×** | **1.1×** | rice and gzip dominate; hcompress slightly behind fitsio |
-| **Scaled** (BSCALE/BZERO) | **6.1×** | **1.8×** | Automatic integer→float scaling |
-| **MEF** (multi-extension) | **9.9×** | **2.4×** | Small–medium files |
-| **Repeated cutouts** (50× 100×100) | **16.7×** | **1.1×** | Open-once, subset many times |
-| **Time series frames** | **5.1×** | **1.9×** | 5 sequential frames |
-| **Header reads** (all fixtures) | **9.5×** | **1.5×** | Sub-100 μs for all backends |
-| **Table: read_full** | **115×** | **628×** | 100k rows, 8 cols |
-| **Table: projection** | **147×** | **91×** | Column subset |
-| **Table: row_slice** | **147×** | **162×** | Row range |
-| **Table: predicate_filter** | **57×** | **25×** | WHERE clause |
-| **GPU (CUDA) images** | **78×** | **3.0×** | tiny–large, all dtypes |
+Category ranges and the full exhaustive table live in
+[docs/benchmarks.md](docs/benchmarks.md#benchmark-category-summary)
+(CANFAR CUDA `exhaustive_cuda_20260717_042840`). Use the headline table above
+for this release’s absolute timings.
 
 ### Current deficits
 
