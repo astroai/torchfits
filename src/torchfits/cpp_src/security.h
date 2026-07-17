@@ -21,8 +21,15 @@ inline void check_fits_filename_security(const std::string& filename) {
                 start_idx = filename.find_first_not_of(" \t\n\r\v\f", start_idx + 1);
             }
 
-            if (start_idx != std::string::npos && filename[start_idx] == '|') {
-                throw std::runtime_error("Security Error: Filenames starting with '|' are not allowed to prevent command execution.");
+            if (start_idx != std::string::npos) {
+                if (filename[start_idx] == '|') {
+                    throw std::runtime_error("Security Error: Filenames starting with '|' are not allowed to prevent command execution.");
+                }
+
+                // Check for sh:// prefix
+                if (filename.compare(start_idx, 5, "sh://") == 0) {
+                    throw std::runtime_error("Security Error: Filenames starting with 'sh://' are not allowed to prevent command execution.");
+                }
             }
 
             if (filename[last] == '|') {
