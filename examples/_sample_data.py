@@ -8,7 +8,9 @@ import urllib.request
 from pathlib import Path
 
 CACHE_DIR = Path(
-    os.environ.get("TORCHFITS_SAMPLE_CACHE", Path.home() / ".cache" / "torchfits" / "samples")
+    os.environ.get(
+        "TORCHFITS_SAMPLE_CACHE", Path.home() / ".cache" / "torchfits" / "samples"
+    )
 )
 
 # Stable public tutorial / survey files (astropy-data + SDSS SAS).
@@ -28,7 +30,12 @@ class SampleUnavailable(RuntimeError):
 
 
 def _fast_mode() -> bool:
-    return os.environ.get("TORCHFITS_EXAMPLE_FAST", "").strip() in ("1", "true", "TRUE", "yes")
+    return os.environ.get("TORCHFITS_EXAMPLE_FAST", "").strip() in (
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+    )
 
 
 def ensure_sample(name: str, *, allow_download: bool | None = None) -> Path:

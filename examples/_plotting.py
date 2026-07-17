@@ -11,6 +11,15 @@ import torch
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 
+def matplotlib_available() -> bool:
+    try:
+        import matplotlib  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _to_numpy(x: torch.Tensor | np.ndarray) -> np.ndarray:
     if isinstance(x, torch.Tensor):
         return x.detach().float().cpu().numpy()
@@ -25,6 +34,10 @@ def output_path(name: str) -> Path:
     return path
 
 
+def _note_skip(name: str) -> None:
+    print(f"skipping figures: matplotlib not installed ({name})")
+
+
 def save_image_before_after(
     raw: torch.Tensor | np.ndarray,
     transformed: torch.Tensor | np.ndarray,
@@ -32,8 +45,12 @@ def save_image_before_after(
     *,
     titles: Sequence[str] = ("input", "transformed"),
     cmap: str = "gray",
-) -> Path:
-    import matplotlib.pyplot as plt
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _note_skip(name)
+        return None
 
     a = _to_numpy(raw)
     b = _to_numpy(transformed)
@@ -65,8 +82,12 @@ def save_spectrum_before_after(
     *,
     continuum: torch.Tensor | np.ndarray | None = None,
     titles: Sequence[str] = ("flux", "transformed"),
-) -> Path:
-    import matplotlib.pyplot as plt
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _note_skip(name)
+        return None
 
     y0 = _to_numpy(flux).reshape(-1)
     y1 = _to_numpy(transformed).reshape(-1)
@@ -75,7 +96,9 @@ def save_spectrum_before_after(
     path = output_path(name)
 
     n = 3 if continuum is not None else 2
-    fig, axes = plt.subplots(n, 1, figsize=(8, 2.2 * n), sharex=False, constrained_layout=True)
+    fig, axes = plt.subplots(
+        n, 1, figsize=(8, 2.2 * n), sharex=False, constrained_layout=True
+    )
     axes = list(axes)
 
     axes[0].plot(x0, y0, color="#1f4e79", lw=0.8)
@@ -108,8 +131,12 @@ def save_lightcurve_before_after(
     name: str,
     *,
     titles: Sequence[str] = ("light curve", "transformed"),
-) -> Path:
-    import matplotlib.pyplot as plt
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _note_skip(name)
+        return None
 
     t0 = _to_numpy(time).reshape(-1)
     y0 = _to_numpy(flux).reshape(-1)
@@ -136,8 +163,12 @@ def save_image_triplet(
     name: str,
     *,
     titles: Sequence[str] = ("raw", "mid", "final"),
-) -> Path:
-    import matplotlib.pyplot as plt
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _note_skip(name)
+        return None
 
     panels = [_to_numpy(x) for x in (raw, mid, final)]
     for i, p in enumerate(panels):

@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from examples._plotting import save_lightcurve_before_after, save_spectrum_before_after  # noqa: E402
+from examples._plotting import (  # noqa: E402
+    save_lightcurve_before_after,
+    save_spectrum_before_after,
+)
 
 from torchfits.transforms import (  # noqa: E402
     AsymmetricSigmaClip,
@@ -22,6 +25,10 @@ from torchfits.transforms import (  # noqa: E402
     SigmaClip,
     TNullToNan,
 )
+
+
+def _log(path: Path | None) -> None:
+    print("wrote", path if path else "(figures skipped)")
 
 
 def _demo_table_meta() -> None:
@@ -45,15 +52,14 @@ def _demo_table_meta() -> None:
         "TNullToNan COUNTS NaNs:",
         int(torch.isnan(cleaned["COUNTS"]).sum().item()),
     )
-    print(
-        "wrote",
+    _log(
         save_spectrum_before_after(
             None,
             stored["FLUX"],
             scaled["FLUX"],
             "table_fits_scale_columns",
             titles=("stored", "TSCAL/TZERO"),
-        ),
+        )
     )
 
 
@@ -70,9 +76,7 @@ def _demo_lightcurve() -> None:
     flux[spikes] += 0.02
 
     clipped = AsymmetricSigmaClip(n_low=5.0, n_high=3.0, dim=(-1,))(flux.clone())
-    # Replace outliers with nan for viz clarity when clip zeroes them — plot raw vs clipped.
-    print(
-        "wrote",
+    _log(
         save_lightcurve_before_after(
             time,
             flux,
@@ -80,12 +84,11 @@ def _demo_lightcurve() -> None:
             clipped,
             "lightcurve_asymmetric_sigma_clip",
             titles=("raw", "asymmetric clip"),
-        ),
+        )
     )
 
     sym = SigmaClip(n_sigma=4.0, dim=(-1,))(flux.clone())
-    print(
-        "wrote",
+    _log(
         save_lightcurve_before_after(
             time,
             flux,
@@ -93,13 +96,12 @@ def _demo_lightcurve() -> None:
             sym,
             "lightcurve_sigma_clip",
             titles=("raw", "sigma clip"),
-        ),
+        )
     )
 
     folded = PhaseFold(period=period, n_bins=80)(flux.clone())
     phase_axis = torch.linspace(0.0, 1.0, folded.shape[-1])
-    print(
-        "wrote",
+    _log(
         save_lightcurve_before_after(
             time,
             flux,
@@ -107,12 +109,11 @@ def _demo_lightcurve() -> None:
             folded,
             "lightcurve_phase_fold",
             titles=("time series", "phase-folded"),
-        ),
+        )
     )
 
     smooth = SavitzkyGolayFilter(window_length=21, polyorder=3)(folded.clone())
-    print(
-        "wrote",
+    _log(
         save_lightcurve_before_after(
             phase_axis,
             folded,
@@ -120,7 +121,7 @@ def _demo_lightcurve() -> None:
             smooth,
             "lightcurve_savgol_folded",
             titles=("folded", "Savitzky–Golay"),
-        ),
+        )
     )
 
 

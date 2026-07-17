@@ -36,13 +36,16 @@ from torchfits.transforms import (  # noqa: E402
 )
 
 
+def _log(path: Path | None) -> None:
+    print("wrote", path if path else "(figures skipped)")
+
+
 def _load_image() -> torch.Tensor:
     path = try_ensure_sample("horsehead")
     if path is not None:
         import torchfits
 
         return torchfits.read_tensor(str(path), hdu=0).float()
-    # Synthetic fallback (CI / offline).
     yy, xx = torch.meshgrid(
         torch.linspace(-1, 1, 128), torch.linspace(-1, 1, 128), indexing="ij"
     )
@@ -60,8 +63,7 @@ def main() -> int:
     ]
     for tag, xf in stretches:
         out = xf(img)
-        p = save_image_before_after(img, out, f"image_{tag}", titles=("raw", tag))
-        print("wrote", p)
+        _log(save_image_before_after(img, out, f"image_{tag}", titles=("raw", tag)))
 
     norms = [
         ("zscale", ZScaleNormalize()),
@@ -73,47 +75,42 @@ def main() -> int:
     ]
     for tag, xf in norms:
         out = xf(img.clone())
-        p = save_image_before_after(img, out, f"image_{tag}", titles=("raw", tag))
-        print("wrote", p)
+        _log(save_image_before_after(img, out, f"image_{tag}", titles=("raw", tag)))
 
     clipped = SigmaClip(n_sigma=3.0)(img.clone())
-    print("wrote", save_image_before_after(img, clipped, "image_sigma_clip"))
+    _log(save_image_before_after(img, clipped, "image_sigma_clip"))
     aclip = AsymmetricSigmaClip(n_low=3.0, n_high=5.0)(img.clone())
-    print("wrote", save_image_before_after(img, aclip, "image_asymmetric_sigma_clip"))
+    _log(save_image_before_after(img, aclip, "image_asymmetric_sigma_clip"))
 
     scale = FITSHeaderScale(bscale=0.5, bzero=100.0)
     physical = scale(img.clone())
-    print(
-        "wrote",
+    _log(
         save_image_before_after(
             img, physical, "image_fits_header_scale", titles=("stored", "BSCALE/BZERO")
-        ),
+        )
     )
     hdr_norm = FITSHeaderNormalize({"BITPIX": 16, "BSCALE": 1.0, "BZERO": 0.0})
-    # Integer-like counts for header normalize path.
     counts = (img / img.max() * 20000).to(torch.float32)
-    print(
-        "wrote",
+    _log(
         save_image_before_after(
             counts,
             hdr_norm(counts.clone()),
             "image_fits_header_normalize",
             titles=("counts", "normalized"),
-        ),
+        )
     )
 
     pipe = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
     mid = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1)])(img.clone())
     final = pipe(img.clone())
-    print(
-        "wrote",
+    _log(
         save_image_triplet(
             img,
             mid,
             final,
             "image_compose_pipeline",
             titles=("raw", "bg+arcsinh", "+zscale"),
-        ),
+        )
     )
     print("gallery_images OK")
     return 0
