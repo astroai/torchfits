@@ -1,8 +1,9 @@
 # torchfits CLI
 
-Command-line FITS utilities built on the torchfits Python API. All subcommands
-accept paths on the command line or via stdin (one path per line). Use
-`--json` or `--jsonl` for machine-readable output.
+Command-line FITS utilities built on the torchfits Python API. Use `--json` or
+`--jsonl` for machine-readable output. Inventory commands (`info`, `header`,
+`verify`, `stats`, `table`, `probe`) accept paths on the argv or via stdin /
+`--stdin`. Mutation commands take explicit path arguments.
 
 ## Quick start
 
@@ -15,6 +16,8 @@ torchfits table catalog.fits --hdu 1 --preview 3
 torchfits cutout image.fits cutout.fits --hdu 0 --box 10,10,50,50
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
 torchfits convert r.fits g.fits b.fits rgb.ppm --to ppm
+torchfits copy in.fits out.fits
+torchfits diff a.fits b.fits
 ```
 
 ## Exit codes
@@ -22,30 +25,30 @@ torchfits convert r.fits g.fits b.fits rgb.ppm --to ppm
 | Code | Meaning |
 |------|---------|
 | 0 | success |
-| 1 | files differ (`diff`, future) |
+| 1 | files differ (`diff`) |
 | 2 | usage error |
 | 3 | I/O error |
 | 4 | checksum verification failed (`verify`) |
 
 ## Subcommands
 
-| Subcommand | Status | Description |
-|------------|--------|-------------|
-| `info` | implemented | HDU inventory (type, shape, rows) |
-| `header` | implemented | dump header cards; `--keyword` filter |
-| `verify` | implemented | `DATASUM` / `CHECKSUM` verification |
-| `stats` | implemented | image min/max/mean via `read_tensor` |
-| `table` | implemented | Arrow schema + preview rows |
-| `cutout` | implemented | pixel subset via `read_subset` |
-| `convert` | implemented | table→parquet; Lupton RGB→PPM |
-| `probe` | implemented | local files (= `info`); remote URLs error clearly |
-| `diff` | stub | not implemented yet |
-| `copy` | stub | not implemented yet |
-| `arith` | stub | not implemented yet |
-| `compress` | stub | not implemented yet |
-| `decompress` | stub | not implemented yet |
-| `transform` | stub | not implemented yet |
-| `setkey` | stub | not implemented yet |
+| Subcommand | Description |
+|------------|-------------|
+| `info` | HDU inventory (type, shape, rows) |
+| `header` | dump header cards; `--keyword` filter |
+| `verify` | `DATASUM` / `CHECKSUM` verification |
+| `stats` | image min/max/mean via `read_tensor` |
+| `table` | Arrow schema + preview rows |
+| `cutout` | pixel subset via `read_subset` |
+| `convert` | table→parquet; Lupton RGB→PPM |
+| `probe` | local inventory; HTTP(S) range header probe |
+| `diff` | compare headers and image shape/stats |
+| `copy` | MEF-preserving FITS→FITS copy |
+| `arith` | image ±×÷ by a constant |
+| `compress` | tile-compress via `write(..., compress=True)` |
+| `decompress` | expand compressed image HDUs |
+| `transform` | apply a named `torchfits.transforms` class |
+| `setkey` | set one header keyword |
 
 ### Multi-extension FITS (MEF)
 
