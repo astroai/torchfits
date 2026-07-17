@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import ipaddress
+import socket
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -87,7 +90,24 @@ def _cards_map(header_text: str) -> dict[str, Any]:
     return {key: value for key, value, _comment in fast_parse_header_cards(header_text)}
 
 
+def _is_internal_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return True
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+    except Exception:
+        return True
+
+
 def _probe_http(url: str) -> dict[str, Any]:
+    if _is_internal_url(url):
+        raise IoError(
+            f"{url}: access to internal or private networks is blocked for security reasons"
+        )
     request = urllib.request.Request(
         url,
         headers={"Range": f"bytes=0-{_HEADER_BYTES - 1}"},
