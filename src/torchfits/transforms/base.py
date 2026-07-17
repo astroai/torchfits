@@ -4,6 +4,7 @@ from typing import Any, Sequence
 
 import torch
 
+
 class FITSTransform:
     """Protocol for astronomy transforms with forward and inverse passes.
 
@@ -31,7 +32,6 @@ class FITSTransform:
 # ---------------------------------------------------------------------------
 # Compose
 # ---------------------------------------------------------------------------
-
 
 
 class Compose(FITSTransform):
@@ -68,5 +68,3 @@ class Compose(FITSTransform):
 # ---------------------------------------------------------------------------
 # Stretches (stateless, always invertible)
 # ---------------------------------------------------------------------------
-
-

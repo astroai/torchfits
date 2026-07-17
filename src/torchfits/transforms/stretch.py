@@ -11,6 +11,7 @@ from .helpers import (
     safe_log,
 )
 
+
 class ArcsinhStretch(FITSTransform):
     """Lupton+ (2004) arcsinh stretch — the standard for high-DR astronomy.
 
@@ -42,7 +43,6 @@ class ArcsinhStretch(FITSTransform):
 
     def __repr__(self) -> str:
         return f"ArcsinhStretch(a={self.a})"
-
 
 
 class LogStretch(FITSTransform):
@@ -88,7 +88,6 @@ class LogStretch(FITSTransform):
         return f"LogStretch(a={self.a}, eps={self.eps})"
 
 
-
 class SqrtStretch(FITSTransform):
     """Square-root stretch — stabilises Poisson variance.
 
@@ -113,5 +112,3 @@ class SqrtStretch(FITSTransform):
 # ---------------------------------------------------------------------------
 # Normalizers (data-dependent — cache state for inverse)
 # ---------------------------------------------------------------------------
-
-

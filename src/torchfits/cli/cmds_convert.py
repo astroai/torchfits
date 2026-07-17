@@ -1,4 +1,4 @@
-"""``torchfits convert`` — table→parquet and Lupton RGB→PNG."""
+"""``torchfits convert`` — table export and Lupton RGB→PNG."""
 
 from __future__ import annotations
 
@@ -10,18 +10,24 @@ from torchfits import table as tf_table
 from .common import EXIT_OK, IoError, UsageError
 from .rgb import lupton_rgb, write_rgb_image
 
+_TABLE_FORMATS = ("parquet", "csv", "tsv", "arrow")
+_ALL_FORMATS = (*_TABLE_FORMATS, "png")
+
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("convert", help="convert FITS to parquet or RGB PNG")
+    parser = subparsers.add_parser(
+        "convert",
+        help="convert FITS tables (parquet/csv/tsv/arrow) or RGB→PNG",
+    )
     parser.add_argument("inputs", nargs="+", help="input FITS path(s)")
     parser.add_argument("output", help="output path")
     parser.add_argument(
         "--to",
         required=True,
-        choices=("parquet", "png"),
-        help="output format (png = Lupton RGB preview)",
+        choices=_ALL_FORMATS,
+        help="parquet|csv|tsv|arrow (tables) or png (Lupton RGB)",
     )
-    parser.add_argument("--hdu", type=int, default=1, help="table HDU for parquet")
+    parser.add_argument("--hdu", type=int, default=1, help="table HDU (default: 1)")
     parser.add_argument(
         "--bands",
         help="comma-separated HDU indices for png (default: 0,1,2 on one file)",
@@ -44,12 +50,22 @@ def _band_indices(raw: str | None, num_inputs: int) -> list[int]:
     return indices
 
 
-def _convert_parquet(args: argparse.Namespace) -> int:
+def _convert_table(args: argparse.Namespace) -> int:
     if len(args.inputs) != 1:
-        raise UsageError("parquet convert accepts one input FITS file")
-    tf_table.write_parquet(
-        args.output, args.inputs[0], hdu=args.hdu, stream=True
-    )
+        raise UsageError("table convert accepts one input FITS file")
+    path = args.inputs[0]
+    hdu = args.hdu
+    fmt = args.to
+    if fmt == "parquet":
+        tf_table.write_parquet(args.output, path, hdu=hdu, stream=True)
+    elif fmt == "csv":
+        tf_table.write_csv(args.output, path, hdu=hdu, stream=True, delimiter=",")
+    elif fmt == "tsv":
+        tf_table.write_csv(args.output, path, hdu=hdu, stream=True, delimiter="\t")
+    elif fmt == "arrow":
+        tf_table.write_ipc(args.output, path, hdu=hdu, stream=True)
+    else:
+        raise UsageError(f"unsupported table format: {fmt}")
     return EXIT_OK
 
 
@@ -75,8 +91,8 @@ def _convert_png(args: argparse.Namespace) -> int:
 
 def run(args: argparse.Namespace) -> int:
     try:
-        if args.to == "parquet":
-            return _convert_parquet(args)
+        if args.to in _TABLE_FORMATS:
+            return _convert_table(args)
         return _convert_png(args)
     except UsageError:
         raise

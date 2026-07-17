@@ -15,6 +15,7 @@ from .helpers import (
     zscale_limits,
 )
 
+
 class ZScaleNormalize(FITSTransform):
     """IRAF zscale auto-contrast normalisation.
 
@@ -47,7 +48,6 @@ class ZScaleNormalize(FITSTransform):
 
     def __repr__(self) -> str:
         return f"ZScaleNormalize(contrast={self.contrast}, dim={self.dim})"
-
 
 
 class RobustNormalize(FITSTransform):
@@ -83,7 +83,6 @@ class RobustNormalize(FITSTransform):
         return f"RobustNormalize(dim={self.dim})"
 
 
-
 class BackgroundSubtract(FITSTransform):
     """Subtract the estimated background (median)."""
 
@@ -109,7 +108,6 @@ class BackgroundSubtract(FITSTransform):
 
     def __repr__(self) -> str:
         return f"BackgroundSubtract(dim={self.dim})"
-
 
 
 class PercentileClipNormalize(FITSTransform):
@@ -167,7 +165,6 @@ class PercentileClipNormalize(FITSTransform):
         )
 
 
-
 class MinMaxNormalize(FITSTransform):
     """Normalise to [0, 1] using per-image min / max."""
 
@@ -207,7 +204,6 @@ class MinMaxNormalize(FITSTransform):
 # ---------------------------------------------------------------------------
 # FITS metadata-aware transforms
 # ---------------------------------------------------------------------------
-
 
 
 class GlobalScalarNorm(FITSTransform):
@@ -293,5 +289,3 @@ class GlobalScalarNorm(FITSTransform):
 
     def __repr__(self) -> str:
         return f"GlobalScalarNorm(stat={self.stat!r}, dim={self.dim})"
-
-

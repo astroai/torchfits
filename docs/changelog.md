@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lean `_repr_html_` on `TensorHDU`, `TableHDU`, and `TableHDURef` for notebooks.
 - `torchfits convert --to png` Lupton RGB preview via stdlib PNG (no Pillow /
   NumPy). PPM removed.
+- Table convert formats: **parquet**, **csv**, **tsv**, and **arrow** (Arrow
+  IPC / Feather V2). Streaming writers for large catalogs.
 - Parquet convert uses streaming `write_parquet(..., stream=True)` (out-of-core).
 
 ### Changed

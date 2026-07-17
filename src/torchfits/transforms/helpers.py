@@ -4,10 +4,10 @@ from typing import Callable, Tuple
 
 import torch
 
+
 def _normalize_dims(ndim: int, dim: Tuple[int, ...]) -> Tuple[int, ...]:
     """Convert negative dims to positive and return sorted unique dims."""
     return tuple(sorted({d if d >= 0 else ndim + d for d in dim}))
-
 
 
 def _get_valid_mask(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
@@ -23,14 +23,12 @@ def _get_valid_mask(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
     return valid
 
 
-
 def _flatten_dims(x: torch.Tensor, dims: Tuple[int, ...]) -> torch.Tensor:
     """Collapse *dims* (sorted, positive) into a single trailing dim."""
     ndim = x.ndim
     keep = [d for d in range(ndim) if d not in dims]
     x_moved = x.permute(*keep, *dims)
     return x_moved.reshape(*x_moved.shape[: len(keep)], -1)
-
 
 
 def _unflatten_result(
@@ -41,7 +39,6 @@ def _unflatten_result(
     for d in dims:
         shape_out[d] = 1
     return reduced.reshape(shape_out)
-
 
 
 def _reduce_keepdim(
@@ -63,7 +60,6 @@ def _reduce_keepdim(
     return result.reshape(shape_out)
 
 
-
 def _median(
     x: torch.Tensor,
     dim: Tuple[int, ...],
@@ -79,7 +75,6 @@ def _median(
     return _reduce_keepdim(
         x_clean, dim, lambda t, d, k: torch.nanmedian(t, dim=d, keepdim=k).values
     )
-
 
 
 def _amin(
@@ -99,7 +94,6 @@ def _amin(
     )
 
 
-
 def _amax(
     x: torch.Tensor,
     dim: Tuple[int, ...],
@@ -115,7 +109,6 @@ def _amax(
     return _reduce_keepdim(
         x_clean, dim, lambda t, d, k: torch.amax(t, dim=d, keepdim=k)
     )
-
 
 
 def _quantile(
@@ -141,7 +134,6 @@ def _quantile(
 # ---------------------------------------------------------------------------
 
 
-
 def _upcast_for_precision(x: torch.Tensor) -> torch.Tensor:
     """Upcast to float64 for numerical stability, skipping if already float64.
 
@@ -155,7 +147,6 @@ def _upcast_for_precision(x: torch.Tensor) -> torch.Tensor:
     return x.double()
 
 
-
 def safe_arcsinh(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     """Compute ``arcsinh(scale * x)`` using float64 internally.
 
@@ -167,7 +158,6 @@ def safe_arcsinh(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     return out.to(orig_dtype)
 
 
-
 def safe_log(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
     """Compute ``log(x)`` with a floor at *eps* to avoid -inf.
 
@@ -176,7 +166,6 @@ def safe_log(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
     orig_dtype = x.dtype
     out = torch.log(torch.clamp_min(_upcast_for_precision(x), eps))
     return out.to(orig_dtype)
-
 
 
 def estimate_background(
@@ -205,7 +194,6 @@ def estimate_background(
         mad = _median(torch.abs(x - med), dim, mask=mask)
         std_approx = mad.mul_(1.4826)
     return med, std_approx
-
 
 
 def zscale_limits(

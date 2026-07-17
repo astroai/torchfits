@@ -30,7 +30,7 @@ _SUBCOMMANDS: tuple[tuple[str, Callable[..., None], str], ...] = (
     ("diff", add_diff, "compare FITS files"),
     ("stats", add_stats, "image statistics"),
     ("table", add_table, "table schema/preview"),
-    ("convert", add_convert, "convert to parquet or PNG"),
+    ("convert", add_convert, "convert to parquet/csv/tsv/arrow or PNG"),
     ("copy", add_copy, "copy HDUs"),
     ("arith", add_arith, "image arithmetic"),
     ("cutout", add_cutout, "pixel cutout"),

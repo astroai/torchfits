@@ -15,6 +15,7 @@ from .helpers import (
     estimate_background,
 )
 
+
 class SigmaClip(FITSTransform):
     """Iterative sigma-clipping outlier rejection.
 
@@ -170,7 +171,6 @@ class SigmaClip(FITSTransform):
         )
 
 
-
 class AsymmetricSigmaClip(FITSTransform):
     """Simple one-pass asymmetric sigma-clipping outlier rejection.
 
@@ -243,5 +243,3 @@ class AsymmetricSigmaClip(FITSTransform):
 # ---------------------------------------------------------------------------
 # Header-aware normalization
 # ---------------------------------------------------------------------------
-
-

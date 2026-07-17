@@ -9,6 +9,7 @@ from .helpers import (
     _amax,
 )
 
+
 class FITSHeaderScale(FITSTransform):
     """Apply or remove BSCALE/BZERO scaling using FITS header keywords.
 
@@ -67,7 +68,6 @@ class FITSHeaderScale(FITSTransform):
 
     def __repr__(self) -> str:
         return f"FITSHeaderScale(bscale={self.bscale}, bzero={self.bzero})"
-
 
 
 class FITSScaleColumns(FITSTransform):
@@ -168,7 +168,6 @@ class FITSScaleColumns(FITSTransform):
         return f"FITSScaleColumns({{{items}}})"
 
 
-
 class TNullToNan(FITSTransform):
     """Replace FITS TNULL sentinel values with NaN.
 
@@ -244,7 +243,6 @@ class TNullToNan(FITSTransform):
 # ---------------------------------------------------------------------------
 # Spectral transforms (1D — not in torch/torchvision)
 # ---------------------------------------------------------------------------
-
 
 
 class FITSHeaderNormalize(FITSTransform):
@@ -340,5 +338,3 @@ class FITSHeaderNormalize(FITSTransform):
             f"bscale={self.bscale}, bzero={self.bzero}, "
             f"scale_floats={self.scale_floats})"
         )
-
-

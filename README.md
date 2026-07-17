@@ -6,75 +6,49 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**torchfits** is FITS I/O for PyTorch: a multi-threaded C++ engine with vendored
-CFITSIO that reads and writes images, headers, HDUs, compressed images, and
-tables as tensors — without NumPy-to-torch glue. Optional **`torchfits.data`**
-datasets and **`torchfits.transforms`** provide header-aware preprocessing for
-ML training loops.
+**torchfits** reads and writes FITS files as PyTorch tensors. A multi-threaded
+C++ engine (vendored CFITSIO) handles images, tables, headers, compression, and
+MEF files. Optional datasets, transforms, and a `torchfits` CLI sit on top.
 
-It is not a full replacement for Astropy, fitsio, or CFITSIO. The supported
-surface is documented explicitly in [docs/parity.md](docs/parity.md), with
-source-backed tests for each claimed parity area. WCS, sky-coordinate models,
-HEALPix, sphere geometry, sky-domain simulation, and photometric physics are out
-of scope. Transforms cover FITS scale/null/dtype and tensor preprocessing only.
+```bash
+pip install torchfits
+```
+
+Requires **Python 3.10+** and **PyTorch 2.10**. Docs:
+[astroai.github.io/torchfits](https://astroai.github.io/torchfits/).
 
 ## At a Glance
 
-| Task | Traditional stack | torchfits equivalent |
-|---|---|---|
-| Read image to GPU | astropy/fitsio &rarr; numpy &rarr; torch &rarr; `.to(device)` | `torchfits.read_tensor("img.fits", device="cuda")` |
-| Write tensor to FITS | tensor &rarr; numpy &rarr; astropy HDU &rarr; writeto | `torchfits.write("out.fits", tensor)` |
-| Filter large table | load all rows &rarr; mask in Python | `where="MAG < 20"` pushdown in C++ |
-| Read multi-extension files | manual HDU dispatch | `with torchfits.open("mef.fits") as hdul: ...` |
-| PyTorch training loop | hand-rolled `Dataset` + cache tuning | `FitsImageDataset` + `make_loader(..., num_workers=4)` |
-| Normalize for model input | ad-hoc scaling in the training script | `Compose([BackgroundSubtract(), ZScaleNormalize()])` |
-| Verify FITS checksums | comparator-specific helpers | `torchfits.verify_checksums(path)` or `torchfits verify file.fits` |
-| Inspect / convert from the shell | `fitsinfo` / `fitsheader` / `fpack` … | `torchfits info` / `header` / `compress` (see [docs/cli.md](docs/cli.md)) |
+| Task | torchfits |
+|---|---|
+| Image → GPU tensor | `torchfits.read_tensor("img.fits", device="cuda")` |
+| Write a tensor | `torchfits.write("out.fits", tensor)` |
+| Filter a catalog in C++ | `table.read(..., where="MAG < 20")` |
+| Open a MEF | `with torchfits.open("mef.fits") as hdul: …` |
+| Train | `FitsImageDataset` + `make_loader(..., num_workers=4)` |
+| Shell | `torchfits info` / `header` / `convert` / … |
 
 ## Features
 
-**FITS I/O** &mdash; Multi-threaded C++ core with SIMD-optimized type conversion,
-memory-mapped image reads, intelligent chunking, and adaptive buffering. Reads
-and writes images, binary/ASCII tables, compressed images, and multi-extension
-FITS files with header round-trip coverage.
+- **Fast FITS I/O** — mmap image reads, compressed images, MEF, checksums
+- **Tables** — Arrow-native with `where=` pushdown, scan/stream, Parquet/CSV/TSV/Arrow IPC export
+- **ML** — `torchfits.data` datasets + `make_loader`
+- **Transforms** — stretches, FITS scale/null handling, spectral prep (`torchfits.transforms`)
+- **CLI** — MEF-aware inspect/convert tools ([docs/cli.md](docs/cli.md))
 
-**Table Engine** &mdash; Arrow-native table API with predicate pushdown (`where=`),
-column projection, row slicing, streaming `scan()`, and in-place mutations
-(append, insert, update, delete rows and columns). Interop with Pandas, Polars,
-DuckDB, and PyArrow.
+Supported feature matrix: [docs/parity.md](docs/parity.md).
 
-**ML Data Layer** &mdash; `torchfits.data` ships `FitsImageDataset`,
-`FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`,
-`FitsCutoutDataset`, and `make_loader` with automatic handle-cache warm-up.
+## What's New in 0.9.2 / 0.9.3
 
-**Transforms** &mdash; 28 `FITSTransform` classes for image stretches,
-header-aware scaling (`FITSHeaderScale`, `FITSScaleColumns`, `TNullToNan`),
-spectral/hyperspectral preprocessing, continuum estimators, and outlier
-rejection. Most ship `.inverse()` for decoding model outputs back to physical
-units. See [docs/api.md](docs/api.md#transforms) and
-`examples/example_transforms.py`.
+- **CLI** — `torchfits` for `info`, `header`, `verify`, `stats`, `table`, `cutout`,
+  `convert`, … ([docs/cli.md](docs/cli.md))
+- **Leaner imports** — transforms from `torchfits.transforms`; use `read` /
+  `read_tensor` (not `read_fast` / `read_image`)
+- **Convert** — tables → Parquet, CSV, TSV, or Arrow IPC; images → Lupton PNG
+- **Scorecard** — Linux CPU/CUDA **0** strict deficits; Mac MPS **4**
+  ([docs/benchmarks.md](docs/benchmarks.md))
 
-**CLI** &mdash; `torchfits` shell tools for MEF-aware inspect/convert workflows
-(`info`, `header`, `verify`, `stats`, `table`, `cutout`, `compress`, …). See
-[docs/cli.md](docs/cli.md).
-
-**Compatibility Contract** &mdash; Parity is tracked by tier: truthful public docs,
-fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
-backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
-
-## What's New in 0.9.2
-
-- **CLI** — `pip install torchfits` installs a `torchfits` command for MEF-aware
-  inspect/convert workflows (`info`, `header`, `verify`, `stats`, `table`,
-  `cutout`, `compress`, …). See [docs/cli.md](docs/cli.md).
-- **Clearer imports** — transforms live under `torchfits.transforms` only.
-  Root stays I/O + HDU. `read_fast` / `read_image` are gone; use `read` /
-  `read_tensor`.
-- **Benchmarks** — Linux CPU/CUDA strict-gate **0** deficits; Mac MPS **4** on
-  the current scorecard ([docs/benchmarks.md](docs/benchmarks.md)).
-
-Requires **PyTorch 2.10** (ABI-matched wheels). Full notes:
-[docs/changelog.md](docs/changelog.md). Roadmap: [docs/roadmap.md](docs/roadmap.md).
+Full notes: [docs/changelog.md](docs/changelog.md).
 
 ## Transforms
 
@@ -255,6 +229,7 @@ torchfits info science.fits
 torchfits header science.fits --keyword OBJECT --json
 torchfits verify science.fits
 torchfits stats science.fits --hdu 0
+torchfits convert catalog.fits out.csv --to csv --hdu 1
 ```
 
 ## Benchmarks

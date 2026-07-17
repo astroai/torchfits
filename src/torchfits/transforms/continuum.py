@@ -7,6 +7,8 @@ import torch
 import torch.linalg
 
 from .base import FITSTransform
+
+
 def _build_spline_basis(
     n_points: int, n_knots: int, device: torch.device, dtype: torch.dtype
 ) -> torch.Tensor:
@@ -28,13 +30,11 @@ def _build_spline_basis(
     return B
 
 
-
 def _basis_order1(
     points: torch.Tensor, t_i: torch.Tensor, t_ip1: torch.Tensor
 ) -> torch.Tensor:
     """Order-1 B-spline basis (piecewise constant)."""
     return ((points >= t_i) & (points < t_ip1)).float()
-
 
 
 def _basis_order2(
@@ -55,7 +55,6 @@ def _basis_order2(
         / torch.clamp_min(t_ip2 - t_ip1, 1e-30)
     )
     return b1 + b2
-
 
 
 def _basis_order3(
@@ -79,7 +78,6 @@ def _basis_order3(
     return b1 + b2
 
 
-
 def _bspline_cubic(x: torch.Tensor, knots: torch.Tensor) -> torch.Tensor:
     """Evaluate a cubic B-spline with given knot vector at positions x.
 
@@ -91,7 +89,6 @@ def _bspline_cubic(x: torch.Tensor, knots: torch.Tensor) -> torch.Tensor:
     b1 = _basis_order3(x, t0, t1, t2, t3) * (x - t0) / torch.clamp_min(t3 - t0, 1e-30)
     b2 = _basis_order3(x, t1, t2, t3, t4) * (t4 - x) / torch.clamp_min(t4 - t1, 1e-30)
     return b1 + b2
-
 
 
 def _fit_spline_continuum(
@@ -144,7 +141,6 @@ def _fit_spline_continuum(
     return continuum
 
 
-
 def _sg_coeffs(window_length: int, polyorder: int, deriv: int = 0) -> torch.Tensor:
     """Compute Savitzky–Golay filter coefficients.
 
@@ -170,7 +166,6 @@ def _sg_coeffs(window_length: int, polyorder: int, deriv: int = 0) -> torch.Tens
     c: torch.Tensor = torch.linalg.lstsq(A, y.unsqueeze(1)).solution.squeeze(1)  # [P+1]
     coeffs: torch.Tensor = A @ c  # [W]
     return coeffs.float()
-
 
 
 class SavitzkyGolayFilter(FITSTransform):
@@ -253,7 +248,6 @@ class SavitzkyGolayFilter(FITSTransform):
         )
 
 
-
 class RunningPercentile(FITSTransform):
     """Running percentile continuum estimator.
 
@@ -331,7 +325,6 @@ class RunningPercentile(FITSTransform):
             f"RunningPercentile(percentile={self.percentile}, "
             f"window_size={self.window_size}, dim={self.dim})"
         )
-
 
 
 class UpperEnvelopeContinuum(FITSTransform):
@@ -481,7 +474,6 @@ class UpperEnvelopeContinuum(FITSTransform):
         )
 
 
-
 def _haar_dwt_1d(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Single-level 1D Haar discrete wavelet transform.
 
@@ -499,7 +491,6 @@ def _haar_dwt_1d(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return approx, detail
 
 
-
 def _haar_idwt_1d(approx: torch.Tensor, detail: torch.Tensor) -> torch.Tensor:
     """Inverse single-level 1D Haar DWT."""
     length = approx.shape[-1] * 2
@@ -509,7 +500,6 @@ def _haar_idwt_1d(approx: torch.Tensor, detail: torch.Tensor) -> torch.Tensor:
     x[..., 0::2] = approx + detail
     x[..., 1::2] = approx - detail
     return x
-
 
 
 class WaveletDecompose(FITSTransform):
@@ -646,7 +636,6 @@ class WaveletDecompose(FITSTransform):
         return f"WaveletDecompose(levels={self.levels}, dim={self.dim})"
 
 
-
 def _build_d2_diagonals(
     n: int, device: torch.device, dtype: torch.dtype
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -684,7 +673,6 @@ def _build_d2_diagonals(
 
     d2 = torch.ones(n - 2, device=device, dtype=dtype)
     return d0, d1, d2
-
 
 
 def _banded_chol_solve_batched_impl(
@@ -820,7 +808,6 @@ except (RuntimeError, TypeError, AttributeError):
         stacklevel=2,
     )
     _banded_chol_solve_batched = _banded_chol_solve_batched_impl
-
 
 
 class AsymmetricLeastSquares(FITSTransform):
@@ -966,7 +953,6 @@ class AsymmetricLeastSquares(FITSTransform):
         )
 
 
-
 class AlphaShapeContinuum(FITSTransform):
     """Alpha-shape continuum via morphological closing.
 
@@ -1061,5 +1047,3 @@ class AlphaShapeContinuum(FITSTransform):
 # ---------------------------------------------------------------------------
 # Outlier rejection
 # ---------------------------------------------------------------------------
-
-

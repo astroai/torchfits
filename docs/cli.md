@@ -25,8 +25,10 @@ torchfits stats science.fits --hdu 0 --jsonl
 torchfits table catalog.fits --hdu 1 --preview 5
 torchfits cutout science.fits cutout.fits --hdu 0 --box 100,100,256,256
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
-torchfits header *.fits --fitsort --keyword OBJECT --keyword DATE-OBS
-torchfits probe https://example.edu/data.fits --json
+torchfits convert catalog.fits out.csv --to csv --hdu 1
+torchfits convert catalog.fits out.tsv --to tsv --hdu 1
+torchfits convert catalog.fits out.arrow --to arrow --hdu 1
+torchfits convert r.fits g.fits b.fits rgb.png --to png
 ```
 
 Pipe paths into inventory commands:
@@ -55,7 +57,7 @@ find . -name '*.fits' | torchfits info --stdin --jsonl
 | `stats` | image min / max / mean |
 | `table` | Arrow schema + preview rows |
 | `cutout` | write a pixel box to a new FITS file |
-| `convert` | table → Parquet; Lupton RGB → PNG |
+| `convert` | table → Parquet/CSV/TSV/Arrow IPC; Lupton RGB → PNG |
 | `probe` | local inventory; HTTP(S) range probe; optional `vos:` |
 | `diff` | compare two files (exit 1 if they differ) |
 | `copy` | MEF-preserving FITS → FITS copy |
@@ -80,8 +82,10 @@ torchfits header *.fits --fitsort --keyword BITPIX --json
 
 ### `convert`
 
-- **parquet** — export a table HDU (`--hdu`, default 1). Uses streaming
-  batch writes so large tables stay out-of-core (bounded memory).
+- **parquet** / **csv** / **tsv** / **arrow** — export a table HDU (`--hdu`,
+  default 1). Streaming writers keep large catalogs out-of-core.
+  - `arrow` is Arrow IPC / Feather V2 (``.arrow``) — opens in Polars
+    (`pl.read_ipc`) and PyArrow.
 - **png** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three
   band files. Writes PNG with torch + stdlib only (no Pillow dependency).
 

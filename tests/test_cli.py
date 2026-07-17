@@ -151,6 +151,29 @@ def test_convert_parquet(table_fits, tmp_path):
     assert pq.read_table(str(out)).num_rows == 3
 
 
+def test_convert_csv_tsv_arrow(table_fits, tmp_path):
+    import pyarrow.csv as pacsv
+    import pyarrow.feather as feather
+
+    csv_out = tmp_path / "t.csv"
+    tsv_out = tmp_path / "t.tsv"
+    arrow_out = tmp_path / "t.arrow"
+    for path, fmt in ((csv_out, "csv"), (tsv_out, "tsv"), (arrow_out, "arrow")):
+        result = _run_cli(
+            "convert", str(table_fits), str(path), "--to", fmt, "--hdu", "1"
+        )
+        assert result.returncode == 0, result.stderr
+        assert path.is_file()
+    assert pacsv.read_csv(csv_out).num_rows == 3
+    assert (
+        pacsv.read_csv(
+            tsv_out, parse_options=pacsv.ParseOptions(delimiter="\t")
+        ).num_rows
+        == 3
+    )
+    assert feather.read_table(arrow_out).num_rows == 3
+
+
 @pytest.fixture
 def table_fits(tmp_path):
     import numpy as np

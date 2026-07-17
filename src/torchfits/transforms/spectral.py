@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from .base import FITSTransform
 from .continuum import _fit_spline_continuum
 
+
 def _fit_poly_continuum(
     x: torch.Tensor, order: int = 3, n_sigma: float = 2.0, max_iter: int = 3
 ) -> torch.Tensor:
@@ -72,7 +73,6 @@ def _fit_poly_continuum(
     return continuum
 
 
-
 def _to_pt_mode(mode: str) -> str:
     """Map user-facing mode names to PyTorch-native function modes."""
     _map: dict[str, str] = {
@@ -83,7 +83,6 @@ def _to_pt_mode(mode: str) -> str:
     return _map[mode]
 
 
-
 def _to_interpolate_2d_mode(mode: str) -> tuple[str, dict[str, bool]]:
     """Map user mode to 2-D ``F.interpolate`` mode and kwargs."""
     if mode == "cubic":
@@ -91,7 +90,6 @@ def _to_interpolate_2d_mode(mode: str) -> tuple[str, dict[str, bool]]:
     if mode == "area":
         return "area", {}
     raise ValueError(f"_to_interpolate_2d_mode expects 'cubic' or 'area', got {mode!r}")
-
 
 
 def _resample_1d(
@@ -335,7 +333,6 @@ def _resample_1d(
     return out.reshape(*shape_in[:-1], L_dst)
 
 
-
 def _resample_scale(
     x: torch.Tensor,
     scale: float,
@@ -385,7 +382,6 @@ def _resample_scale(
 _resample_spectrum = _resample_scale  # old name
 
 
-
 def _linear_interp_1d(
     y: torch.Tensor, x_orig: torch.Tensor, x_new: torch.Tensor
 ) -> torch.Tensor:
@@ -396,7 +392,6 @@ def _linear_interp_1d(
 # ---------------------------------------------------------------------------
 # FITS table-aware transforms (TSCAL/TZERO/TNULL)
 # ---------------------------------------------------------------------------
-
 
 
 class ContinuumNormalize(FITSTransform):
@@ -458,7 +453,6 @@ class ContinuumNormalize(FITSTransform):
         )
 
 
-
 class DopplerShift(FITSTransform):
     """Apply a redshift or blueshift to spectral data via linear interpolation.
 
@@ -518,7 +512,6 @@ class DopplerShift(FITSTransform):
 # ---------------------------------------------------------------------------
 # Time-domain transforms (not in torch/torchvision)
 # ---------------------------------------------------------------------------
-
 
 
 class PhaseFold(FITSTransform):
@@ -595,7 +588,6 @@ class PhaseFold(FITSTransform):
 # ---------------------------------------------------------------------------
 # Hyperspectral transforms (not in torch/torchvision)
 # ---------------------------------------------------------------------------
-
 
 
 class SpectralBinning(FITSTransform):
@@ -690,7 +682,6 @@ class SpectralBinning(FITSTransform):
         )
 
 
-
 class ContinuumRemoval(FITSTransform):
     """Remove spectral continuum (baseline) from reflectance spectra.
 
@@ -783,7 +774,6 @@ class ContinuumRemoval(FITSTransform):
         )
 
 
-
 class BandMath(FITSTransform):
     """Apply arithmetic band ratios and indices to multi-spectral data.
 
@@ -842,5 +832,3 @@ class BandMath(FITSTransform):
 # Continuum / baseline estimators (all use additive decomposition:
 #   Original = Estimate + Residuals  →  invertible)
 # ---------------------------------------------------------------------------
-
-
