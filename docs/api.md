@@ -17,12 +17,12 @@ model is a columnar dataframe.
 |---|---|---|
 | Image / cube / spectrum | `read_tensor(path, hdu=0)` | `torch.Tensor` |
 | Catalog as dataframe (default) | `table.read(path, hdu=1, where=…)` | `pyarrow.Table` |
-| Same, explicit Arrow name | `table.read_arrow(...)` | `pyarrow.Table` (alias of `table.read`) |
 | Dataframe columns as tensors | `table.read_torch(path, hdu=1)` | `dict[str, torch.Tensor]` |
 | Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like |
 
-Root `read_table` is an alias of `table.read_torch`. Prefer `table.*` for
-dataframe workflows (`where=`, projection, Polars/Pandas).
+`table.read_arrow` is an exact synonym of `table.read` (destination-qualified
+spelling). Root `read_table` is a compatibility alias of `table.read_torch`.
+Prefer `table.*` for dataframe workflows (`where=`, projection, Polars/Pandas).
 
 ---
 
@@ -47,16 +47,17 @@ dataframe workflows (`where=`, projection, Polars/Pandas).
 | Goal | Entry point | Reference |
 |---|---|---|
 | Read dataframe (Arrow) | `table.read(path, hdu=1, columns=None, where=None)` | [Tables](api-tables.md#tableread) |
-| Same (`read_arrow` synonym) | `table.read_arrow(...)` | [Tables](api-tables.md#tableread) |
 | Stream dataframe batches | `table.scan(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan) |
 | Dataframe columns as tensors | `table.read_torch(path, hdu=1, columns=None)` | [Tables](api-tables.md#tableread_torch) |
 | Stream tensor-column chunks | `table.scan_torch(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan_torch) |
-| Root alias of `read_torch` | `read_table(path, hdu=1, columns=None)` | [Core I/O](api-core-io.md#read_table) |
-| Row-range sugar on `read_torch` | `read_table_rows(path, hdu=1, start_row=1, num_rows=1000)` | [Core I/O](api-core-io.md#read_table_rows) |
-| Stream tensor chunks (root alias) | `stream_table(path, hdu=1, chunk_rows=65536)` | [Core I/O](api-core-io.md#stream_table) |
 | Native Polars dataframe | `table.read_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | Streaming Polars batches | `table.scan_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | DuckDB SQL | `table.duckdb_query(path, sql, hdu=1)` | [Tables](api-tables.md#duckdb) |
+
+Compatibility helpers (same behavior, lower prominence): `table.read_arrow`
+(= `table.read`); root `read_table` / `read_table_rows` / `stream_table`
+(see [Core I/O](api-core-io.md#read_table)).
+
 
 ### ML Training
 
@@ -128,8 +129,8 @@ private until promoted there.
 | Root transform classes (e.g. `torchfits.SpectralBinning`) | `torchfits.transforms.*` |
 
 Transforms are not re-exported at the package root. Import them from
-:mod:`torchfits.transforms`. HDU helpers are available as root names and via
-:mod:`torchfits.hdu`.
+`torchfits.transforms`. HDU helpers are available as root names and via
+`torchfits.hdu`.
 
 ---
 

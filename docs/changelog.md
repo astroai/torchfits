@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0b1] — 2026-07-17
+
+Beta freeze of the public FITS → tensor / dataframe story. Not a SemVer 1.0.0
+API freeze; see `docs/reviews/release-api-freeze-1.0b1.md` for rc1 blockers.
+
+### Added
+
+- `torchfits.table.read_torch` (tensor-column dataframe path) and
+  `table.read_arrow` (synonym of `table.read`).
+- Docs gallery: KaTeX math, transform before/after figures, CLI recipes,
+  real-sample cache helpers (merged via docs gallery work).
+- Release reviews: rendered docs, API adoption, deep code, real-data CLI vs
+  astropy/fitsio/gnuastro/CFITSIO (FITSH skipped).
+
+### Changed
+
+- Docs teach FITS tables as dataframes while keeping the `torchfits.table`
+  namespace; which-reader box demotes compatibility aliases.
+- Landing / site_description: tensors and dataframes (columnar catalogs).
+
+### Fixed
+
+- `torchfits transform` on integer HDUs: promote to float before transform and
+  write float outputs without reusing integer BITPIX headers.
+
 ## [0.9.3] — 2026-07-17
 
 ### Added
@@ -571,7 +596,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0b1...HEAD
+[1.0b1]: https://github.com/astroai/torchfits/releases/tag/v1.0b1
 [0.9.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.9.0
 [0.7.0]: https://github.com/astroai/torchfits/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/astroai/torchfits/releases/tag/v0.6.0
