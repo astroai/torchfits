@@ -14,7 +14,7 @@ torchfits stats image.fits --hdu 0 --jsonl
 torchfits table catalog.fits --hdu 1 --preview 3
 torchfits cutout image.fits cutout.fits --hdu 0 --box 10,10,50,50
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
-torchfits convert r.fits g.fits b.fits rgb.png --to png
+torchfits convert r.fits g.fits b.fits rgb.ppm --to ppm
 ```
 
 ## Exit codes
@@ -37,7 +37,7 @@ torchfits convert r.fits g.fits b.fits rgb.png --to png
 | `stats` | implemented | image min/max/mean via `read_tensor` |
 | `table` | implemented | Arrow schema + preview rows |
 | `cutout` | implemented | pixel subset via `read_subset` |
-| `convert` | implemented | table→parquet; Lupton RGB→PNG/PPM |
+| `convert` | implemented | table→parquet; Lupton RGB→PPM |
 | `probe` | implemented | local files (= `info`); remote URLs error clearly |
 | `diff` | stub | not implemented yet |
 | `copy` | stub | not implemented yet |
@@ -55,8 +55,8 @@ extensions. JSONL mode emits one record per `(file, hdu)` pair.
 ### `convert`
 
 - **parquet** — `torchfits.table.write_parquet` on a table HDU (`--hdu`, default 1).
-- **png** — Lupton+ (2004) asinh RGB from one FITS (`--bands 0,1,2`) or three
-  band files. Writes PNG when Pillow is available, otherwise PPM.
+- **ppm** — Lupton+ (2004) asinh RGB from one FITS (`--bands 0,1,2`) or three
+  band files; writes binary PPM (no Pillow dependency).
 
 ## Tool mapping
 

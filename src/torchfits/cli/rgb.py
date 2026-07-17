@@ -1,10 +1,10 @@
-"""Minimal Lupton+ (2004) asinh RGB without astropy."""
+"""Minimal Lupton+ (2004) asinh RGB using torch only."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
+import torch
 
 
 def lupton_rgb(
@@ -15,41 +15,44 @@ def lupton_rgb(
     Q: float = 8.0,
     stretch: float = 0.5,
     minimum: float = 0.0,
-) -> np.ndarray:
-    """Return float RGB array with shape (H, W, 3) in [0, 1]."""
-    red = np.asarray(r, dtype=np.float64)
-    green = np.asarray(g, dtype=np.float64)
-    blue = np.asarray(b, dtype=np.float64)
+) -> torch.Tensor:
+    """Return float RGB tensor with shape (H, W, 3) in [0, 1]."""
+    red = torch.as_tensor(r, dtype=torch.float64)
+    green = torch.as_tensor(g, dtype=torch.float64)
+    blue = torch.as_tensor(b, dtype=torch.float64)
     intensity = (red + green + blue) / 3.0
-    floor = np.maximum(intensity, minimum)
-    f_intensity = np.arcsinh(Q * floor)
-    f_intensity = np.where(f_intensity > 0, f_intensity, 1.0)
-    ir = np.power(floor, stretch)
-    channels = (
-        np.arcsinh(Q * red) / f_intensity * ir,
-        np.arcsinh(Q * green) / f_intensity * ir,
-        np.arcsinh(Q * blue) / f_intensity * ir,
+    floor = torch.clamp(intensity, min=minimum)
+    f_intensity = torch.asinh(Q * floor)
+    f_intensity = torch.where(
+        f_intensity > 0, f_intensity, torch.ones_like(f_intensity)
     )
-    rgb = np.dstack(channels)
-    peak = float(rgb.max())
+    ir = torch.pow(floor, stretch)
+    channels = torch.stack(
+        (
+            torch.asinh(Q * red) / f_intensity * ir,
+            torch.asinh(Q * green) / f_intensity * ir,
+            torch.asinh(Q * blue) / f_intensity * ir,
+        ),
+        dim=-1,
+    )
+    peak = float(channels.max().item())
     if peak > 0:
-        rgb = rgb / peak
-    return np.clip(rgb, 0.0, 1.0)
+        channels = channels / peak
+    return torch.clamp(channels, 0.0, 1.0)
 
 
-def write_rgb_image(path: str, rgb: np.ndarray) -> None:
-    """Write RGB float image to PNG (Pillow) or PPM (stdlib fallback)."""
-    arr = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
-    try:
-        from PIL import Image
-    except ImportError:
-        _write_ppm(path, arr)
-        return
-    Image.fromarray(arr, mode="RGB").save(path)
-
-
-def _write_ppm(path: str, arr: np.ndarray) -> None:
-    height, width, _ = arr.shape
+def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
+    """Write RGB float image as binary PPM (no Pillow / NumPy import)."""
+    flat = (
+        torch.clamp(rgb, 0.0, 1.0)
+        .mul(255.0)
+        .round()
+        .to(dtype=torch.uint8)
+        .cpu()
+        .contiguous()
+        .reshape(-1)
+    )
+    height, width, _ = rgb.shape
     with open(path, "wb") as handle:
         handle.write(f"P6\n{width} {height}\n255\n".encode("ascii"))
-        handle.write(arr.tobytes())
+        handle.write(bytes(flat.tolist()))
