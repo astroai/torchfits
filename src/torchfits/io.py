@@ -140,9 +140,12 @@ def read(
 ) -> Any:
     """Read a FITS image or table from the given path and HDU.
 
-    Returns the data as a torch.Tensor (images) or a dict[str, torch.Tensor]
-    (tables), optionally with the FITS header. For an Arrow ``pyarrow.Table``
-    with ``where=`` predicate pushdown, use :func:`torchfits.table.read`.
+    Returns a ``torch.Tensor`` (images) or ``dict[str, torch.Tensor]``
+    (tables as column tensors), optionally with the FITS header.
+
+    For dataframe workflows (Arrow / ``where=`` / Polars), prefer
+    :func:`torchfits.table.read` or :func:`torchfits.table.read_polars`.
+    For explicit image tensors, prefer :func:`read_tensor`.
     """
     if "mode" in kwargs:
         raise TypeError("read() got multiple values for argument 'mode'")
@@ -210,7 +213,11 @@ def read_table(
     fast_header: bool = True,
     return_header: bool = False,
 ) -> Any:
-    """Read a FITS table HDU as a dict[str, torch.Tensor] (column name -> tensor)."""
+    """Read a FITS table as dataframe columns mapped to tensors.
+
+    Root alias of :func:`torchfits.table.read_torch`. Prefer
+    ``table.read_torch`` in new code; use ``table.read`` for Arrow dataframes.
+    """
     return _read_table_impl(
         read,
         path,
@@ -348,7 +355,11 @@ def stream_table(
     mmap: bool = False,
     max_chunks: int | None = None,
 ) -> Any:
-    """Stream a FITS table in row chunks, yielding dict[str, torch.Tensor] chunks."""
+    """Stream FITS table rows as tensor-column chunks.
+
+    Prefer :func:`torchfits.table.scan_torch` in new code (``batch_size`` /
+    ``row_slice`` / ``device``). ``scan_torch`` builds on this streaming path.
+    """
     return _stream_table_impl(
         get_header,
         file_path,

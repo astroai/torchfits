@@ -14,7 +14,7 @@
       />
       <p class="tf-hero__headline">High-performance FITS I/O</p>
       <p class="tf-hero__lede">
-        to PyTorch tensors and dataframes.
+        to PyTorch tensors and dataframes — FITS tables as columnar catalogs.
       </p>
       <div class="tf-hero__actions">
         <a class="tf-btn tf-btn--primary" href="{{ 'install/' | url }}">Install</a>
@@ -23,7 +23,7 @@
       </div>
       <pre class="tf-hero__code" tabindex="0"><code>import torchfits
 tensor = torchfits.read_tensor("science.fits", device="cuda")
-table  = torchfits.table.read("catalog.fits", where="MAG &lt; 20")</code></pre>
+df     = torchfits.table.read("catalog.fits", where="MAG &lt; 20")</code></pre>
     </div>
   </section>
 {% endblock %}

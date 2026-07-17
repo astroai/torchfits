@@ -69,25 +69,35 @@ data, header = torchfits.read("image.fits", hdu=0, return_header=True)
 print(header["OBJECT"])  # e.g. "M31"
 ```
 
-## Filter a Table
+## Filter a Table (dataframe)
+
+FITS tables are dataframes on disk. Default read is Arrow (portable
+dataframe); Polars and tensor columns are one call away. The namespace is
+`torchfits.table` because that is the FITS name.
 
 ```python
 # Filtering happens in C++, only matching rows reach Python
-table = torchfits.table.read(
+df = torchfits.table.read(
     "catalog.fits",
     hdu=1,
     columns=["RA", "DEC", "MAG_G"],
     where="MAG_G < 20.0 AND CLASS_STAR > 0.9",
 )
-# table: pyarrow.Table
-print(table.num_rows)
+# df: pyarrow.Table — dataframe via Arrow
+print(df.num_rows)
+
+# Native Polars dataframe
+pl_df = torchfits.table.read_polars("catalog.fits", hdu=1)
+
+# Dataframe columns as tensors (for training)
+cols = torchfits.table.read_torch("catalog.fits", hdu=1, columns=["RA", "DEC"])
 ```
 
 ## Stream a Large Table
 
 ```python
 # Stream 100M+ rows in constant memory
-for batch in torchfits.table.scan("survey.fits", hdu=1, chunk_rows=50_000):
+for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
     process(batch)  # batch: pyarrow.RecordBatch
 ```
 

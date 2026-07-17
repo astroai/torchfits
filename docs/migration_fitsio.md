@@ -15,15 +15,19 @@ where fitsio still wins on narrow table predicates.
 | Read image to GPU | `torch.from_numpy(fitsio.read(path)).cuda()` | `torchfits.read_tensor(path, hdu=0, device="cuda")` |
 | Read header | `fitsio.read_header(path)` | `torchfits.get_header(path, hdu=0)` |
 
-## Reading a table
+## Reading a table (dataframe path)
+
+FITS tables are dataframes on disk. Prefer `torchfits.table.read` (Arrow);
+use `table.read_torch` for tensor columns. Namespace stays `table` (FITS name).
 
 | Operation | fitsio | torchfits |
 |-----------|--------|-----------|
-| Read all rows | `fitsio.read(path, ext=1)` | `torchfits.table.read(path, hdu=1)` |
+| Read all rows (dataframe via Arrow) | `fitsio.read(path, ext=1)` | `torchfits.table.read(path, hdu=1)` |
 | Read with WHERE | `fitsio.FITS(path)[1].where("RA > 0")` | `torchfits.table.read(path, hdu=1, where="RA > 0")` |
 | Read subset of columns | `fitsio.read(path, ext=1, columns=['RA','DEC'])` | `torchfits.table.read(path, hdu=1, columns=["RA","DEC"])` |
-| Read tensor dict | `{n: torch.from_numpy(fitsio.read(path, ext=1, columns=n)) for n in names}` | `torchfits.read_table(path, hdu=1)` |
-| Stream rows | `for row in fitsio.FITS(path)[1]: ...` | `for chunk in torchfits.stream_table(path, hdu=1, chunk_rows=10000): ...` |
+| Dataframe columns as tensors | `{n: torch.from_numpy(fitsio.read(path, ext=1, columns=n)) for n in names}` | `torchfits.table.read_torch(path, hdu=1)` |
+| Stream tensor chunks | `for row in fitsio.FITS(path)[1]: ...` | `for chunk in torchfits.table.scan_torch(path, hdu=1, batch_size=10000): ...` |
+| Native Polars dataframe | *(manual)* | `torchfits.table.read_polars(path, hdu=1)` |
 
 ## Writing
 

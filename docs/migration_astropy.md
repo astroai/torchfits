@@ -14,14 +14,18 @@ workflows, start with [Examples](examples.md).
 | Read image to GPU | `torch.from_numpy(astropy.io.fits.getdata(path)).cuda()` | `torchfits.read_tensor(path, hdu=0, device="cuda")` |
 | Read image + header | `hdul = astropy.io.fits.open(path); data = hdul[0].data; hdr = hdul[0].header` | `data, header = torchfits.read(path, hdu=0, return_header=True)` |
 
-## Reading a table
+## Reading a table (dataframe path)
+
+FITS tables are dataframes on disk. Prefer `torchfits.table.read` (Arrow);
+use `table.read_torch` for tensor columns.
 
 | Operation | astropy | torchfits |
 |-----------|---------|-----------|
-| Read all rows | `astropy.io.fits.getdata(path, ext=1)` | `torchfits.table.read(path, hdu=1)` |
+| Read all rows (dataframe via Arrow) | `astropy.io.fits.getdata(path, ext=1)` | `torchfits.table.read(path, hdu=1)` |
 | Read with WHERE | `t = astropy.io.fits.getdata(path, ext=1); mask = t['RA'] > 0; t[mask]` | `torchfits.table.read(path, hdu=1, where="RA > 0")` |
 | Read subset of columns | `astropy.io.fits.getdata(path, ext=1)[['RA','DEC']]` | `torchfits.table.read(path, hdu=1, columns=["RA","DEC"])` |
-| Read tensor dict | `t = astropy.io.fits.getdata(path, ext=1); {n: torch.from_numpy(t[n]) for n in t.names}` | `torchfits.read_table(path, hdu=1)` |
+| Dataframe columns as tensors | `t = astropy.io.fits.getdata(path, ext=1); {n: torch.from_numpy(t[n]) for n in t.names}` | `torchfits.table.read_torch(path, hdu=1)` |
+| Native Polars dataframe | *(manual)* | `torchfits.table.read_polars(path, hdu=1)` |
 
 ## Writing
 
@@ -74,7 +78,10 @@ workflows, start with [Examples](examples.md).
 
 ### 2. Table Representation
 * **Astropy**: Tables are represented as `astropy.table.Table` or `numpy.recarray`.
-* **torchfits**: Tables are represented either as a Python dictionary of PyTorch Tensors (for `read_table`) or a PyArrow `Table` (for `torchfits.table.read`). Column types like variable-length arrays (VLAs) are translated to native Arrow list columns.
+* **torchfits**: FITS tables are dataframes on disk. Default path is
+  `torchfits.table.read` → `pyarrow.Table` (portable dataframe). Tensor columns
+  use `table.read_torch` (root alias `read_table`). Native Polars uses
+  `table.read_polars`. VLAs become Arrow list columns.
 
 ### 3. Thread-Safety & Multi-Processing
 * **Astropy**: HDU handles (`HDUList`) are not thread-safe. Opening the same file in multiple background threads can lead to file descriptor and read-pointer conflicts.

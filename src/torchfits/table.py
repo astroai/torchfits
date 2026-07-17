@@ -1,4 +1,9 @@
-"""Arrow-native table I/O helpers."""
+"""Arrow-native table I/O helpers.
+
+FITS tables are dataframes on disk. The namespace is ``table`` (FITS name);
+destinations are Arrow (``read`` / ``read_arrow``), tensor columns
+(``read_torch``), or Polars (``read_polars``).
+"""
 
 from __future__ import annotations
 
@@ -26,9 +31,21 @@ from ._table.mutation import (
     replace_column,
     update_rows,
 )
-from ._table.read import dataset, read, reader, scan, scan_torch, scanner, schema
+from ._table.read import (
+    dataset,
+    read,
+    read_torch,
+    reader,
+    scan,
+    scan_torch,
+    scanner,
+    schema,
+)
 from ._table.write import write
 from ._table_engine import TABLE_BACKENDS
+
+# Explicit Arrow synonym of ``read`` (destination-qualified symmetry).
+read_arrow = read
 
 __all__ = [
     "TABLE_BACKENDS",
@@ -42,7 +59,9 @@ __all__ = [
     "insert_column",
     "insert_rows",
     "read",
+    "read_arrow",
     "read_polars",
+    "read_torch",
     "reader",
     "rename_columns",
     "replace_column",

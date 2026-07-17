@@ -34,10 +34,16 @@ def run(args: argparse.Namespace) -> int:
             raise IoError(
                 f"{args.input}:{args.hdu} read_tensor did not return a tensor"
             )
+        # Stretches/norms use float ops; integer HDUs must be promoted first.
+        if not tensor.is_floating_point():
+            tensor = tensor.float()
         header = torchfits.get_header(args.input, args.hdu)
         result = transform(tensor)
         if not isinstance(result, torch.Tensor):
             raise IoError(f"{args.name} did not return a tensor")
+        # Do not reuse integer BITPIX headers for float outputs.
+        if result.is_floating_point():
+            header = None
         torchfits.write_tensor(args.out, result, header=header, overwrite=True)
     except UsageError:
         raise

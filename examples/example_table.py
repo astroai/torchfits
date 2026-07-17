@@ -1,6 +1,11 @@
 """
-Example: FITS table I/O — tensor reads, Arrow reads, predicate pushdown, and write.
+Example: FITS tables as dataframes.
+
+Primary path: ``table.read`` → Arrow (portable dataframe).
+Also: ``table.read_torch`` (tensor columns), ``table.read_polars`` (native DF).
 """
+
+from __future__ import annotations
 
 import os
 import tempfile
@@ -34,12 +39,22 @@ def main() -> None:
     try:
         _create_test_file(path)
 
-        # --- Tensor path: read_table returns dict[str, Tensor] ---
-        tensors = torchfits.read_table(path, hdu=1)
-        print("read_table columns:", list(tensors.keys()))
+        # --- Primary: dataframe via Arrow (synonym: table.read_arrow) ---
+        arrow_df = torchfits.table.read(
+            path,
+            hdu=1,
+            columns=["ra", "dec", "flux"],
+            where="flux >= 2.0",
+        )
+        print(f"table.read dataframe (where flux >= 2): {arrow_df.num_rows} rows")
+        print(f"  flux values: {arrow_df.column('flux').to_pylist()}")
+        assert torchfits.table.read_arrow is torchfits.table.read
+
+        # --- Dataframe columns as tensors (root alias: read_table) ---
+        tensors = torchfits.table.read_torch(path, hdu=1)
+        print("read_torch columns:", list(tensors.keys()))
         print(f"  ra: {tensors['ra'].tolist()}")
 
-        # Column projection and row slice on the tensor path
         subset = torchfits.read_table_rows(
             path, hdu=1, start_row=1, num_rows=2, columns=["id", "flag"]
         )
@@ -47,24 +62,22 @@ def main() -> None:
             f"read_table_rows id={subset['id'].tolist()}, flag={subset['flag'].tolist()}"
         )
 
-        # --- Arrow path: table.read returns pyarrow.Table ---
-        arrow_table = torchfits.table.read(
-            path,
-            hdu=1,
-            columns=["ra", "dec", "flux"],
-            where="flux >= 2.0",
+        chunks = list(
+            torchfits.table.scan_torch(path, hdu=1, batch_size=2, columns=["id"])
         )
-        print(f"table.read (where flux >= 2): {arrow_table.num_rows} rows")
-        print(f"  flux values: {arrow_table.column('flux').to_pylist()}")
-
-        # Stream large tables in fixed-size chunks
-        chunks = list(torchfits.stream_table(path, hdu=1, chunk_rows=2, columns=["id"]))
         print(
-            f"stream_table: {len(chunks)} chunk(s), ids={[c['id'].tolist() for c in chunks]}"
+            f"scan_torch: {len(chunks)} chunk(s), "
+            f"ids={[c['id'].tolist() for c in chunks]}"
         )
 
-        # --- In-place table mutations via torchfits.table ---
-        # Append new rows to the existing FITS file in-place
+        # --- Native Polars dataframe (optional dep) ---
+        try:
+            pl_df = torchfits.table.read_polars(path, hdu=1)
+            print(f"read_polars dataframe: {pl_df.shape[0]} rows, cols={pl_df.columns}")
+        except ImportError:
+            print("read_polars skipped (polars not installed)")
+
+        # --- In-place mutations ---
         torchfits.table.append_rows(
             path,
             {
@@ -78,7 +91,6 @@ def main() -> None:
         )
         print("\nAppended 1 row to FITS table.")
 
-        # Update specific rows (e.g., set flux to 9.9 for row indices 1 and 2)
         torchfits.table.update_rows(
             path,
             {"flux": np.array([9.9, 9.9], dtype=np.float32)},
@@ -87,7 +99,6 @@ def main() -> None:
         )
         print("Updated flux for rows index 1 to 3.")
 
-        # Insert a new column (quality)
         torchfits.table.insert_column(
             path,
             "quality",
@@ -97,22 +108,18 @@ def main() -> None:
         )
         print("Inserted new column 'quality'.")
 
-        # Rename a column (ra -> right_ascension)
         torchfits.table.rename_columns(path, {"ra": "right_ascension"}, hdu=1)
         print("Renamed column 'ra' to 'right_ascension'.")
 
-        # Drop a column (flag)
         torchfits.table.drop_columns(path, ["flag"], hdu=1)
         print("Dropped column 'flag'.")
 
-        # Read modified table back to verify in-place changes
-        modified = torchfits.read_table(path, hdu=1)
-        print("Modified table columns:", list(modified.keys()))
+        modified = torchfits.table.read_torch(path, hdu=1)
+        print("Modified dataframe columns:", list(modified.keys()))
         print(f"  right_ascension: {modified['right_ascension'].tolist()}")
         print(f"  flux (updated): {modified['flux'].tolist()}")
         print(f"  quality (inserted): {modified['quality'].tolist()}")
 
-        # --- Write back with table.write ---
         out_path = path.replace(".fits", "_out.fits")
         new_data = {
             "ra": torch.tensor([300.0, 301.0], dtype=torch.float64),
@@ -124,7 +131,7 @@ def main() -> None:
             header={"EXTNAME": "FILTERED"},
             overwrite=True,
         )
-        written = torchfits.read_table(out_path, hdu=1)
+        written = torchfits.table.read_torch(out_path, hdu=1)
         print(f"table.write round-trip: {written['ra'].tolist()}")
         os.unlink(out_path)
     finally:

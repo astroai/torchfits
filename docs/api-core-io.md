@@ -23,20 +23,21 @@ torchfits.read(path, hdu=None, device="cpu", mmap="auto", mode="auto",
 | `mode` | `str` | `"auto"` | `"auto"`, `"image"`, or `"table"` |
 | `return_header` | `bool` | `False` | Return `(data, Header)` tuple |
 
-**Returns:** `torch.Tensor` (images), `pyarrow.Table` (tables), or tuple if `return_header=True`.
+**Returns:** `torch.Tensor` (images), `dict[str, torch.Tensor]` (tables), or
+tuple if `return_header=True`.
 
 !!! info "When to use"
     Use `read()` for quick exploration or when you want auto-detection. For
-    explicit tensor reads, prefer `read_tensor()`. For table predicate
-    pushdown (`where=`), use `table.read()` instead — root `read()` does not
-    accept `where=`.
+    explicit tensor reads, prefer `read_tensor()`. For dataframe workflows
+    (predicate pushdown `where=`, Arrow/Polars), prefer `table.read()` —
+    root `read()` does not accept `where=` and does **not** return Arrow.
 
 ```python
 # Image with header
 data, hdr = torchfits.read("image.fits", hdu=0, return_header=True)
 
-# Auto-detect table
-table = torchfits.read("catalog.fits", hdu=1)
+# Auto-detect table → tensor-column dict (not a pyarrow.Table)
+columns = torchfits.read("catalog.fits", hdu=1)
 ```
 
 ---
@@ -162,7 +163,8 @@ sci, wht, msk = torchfits.read_hdus("mef.fits", hdus=["SCI", "WHT", "MASK"])
 
 ## `read_table()`
 
-Read a FITS table HDU as a PyTorch tensor dictionary.
+Root alias of [`table.read_torch`](api-tables.md#tableread_torch): read a FITS
+table (dataframe on disk) as column tensors for training.
 
 ```python
 torchfits.read_table(path, hdu=1, columns=None, start_row=1, num_rows=-1,
@@ -183,27 +185,32 @@ torchfits.read_table(path, hdu=1, columns=None, start_row=1, num_rows=-1,
 **Returns:** `dict[str, torch.Tensor]`
 
 !!! info "When to use"
-    Use `read_table()` when you want tensors directly (e.g., for ML). For
-    PyArrow tables with predicate pushdown, use `table.read()` instead.
+    Prefer `table.read_torch()` in new code. Use this root alias when you want
+    dataframe columns as tensors. For Arrow/Polars dataframes with `where=`,
+    use `table.read()` / `table.read_polars()`.
 
 ---
 
 ## `read_table_rows()`
 
-Read a contiguous row range from a FITS table.
+Sugar on `read_table` / `table.read_torch` for a contiguous row range
+(`num_rows` must be `> 0`).
 
 ```python
 torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=1000,
                           columns=None, device="cpu", mmap=True)
 ```
 
-**Returns:** `pyarrow.Table`
+**Returns:** `dict[str, torch.Tensor]`
 
 ---
 
 ## `stream_table()`
 
-Iterate over table rows in fixed-size chunks.
+Iterate over dataframe rows in fixed-size tensor chunks. Prefer
+[`table.scan_torch`](api-tables.md#tablescan_torch) in new code (same idea;
+`scan_torch` adds device/pin_memory options and uses `batch_size` /
+`row_slice`).
 
 ```python
 torchfits.stream_table(file_path, hdu=1, columns=None, start_row=1,

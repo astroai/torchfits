@@ -20,8 +20,10 @@ Astropy, fitsio, or CFITSIO replacement.
   convert (stdlib), streaming parquet, transforms package split, notebook
   `_repr_html_`, docs truth for transforms. Archive *search* (CAOM/`astquery`)
   stays out of scope.
-- **1.0:** Compat matrix, clean-install release-gate, rc checklist; transform
-  catalog freeze after external review of the split package.
+- **1.0b1 (tagged):** specialist reviews + table/dataframe API story; see
+  `docs/reviews/release-api-freeze-1.0b1.md`.
+- **1.0.0rc1:** Compat matrix, clean-install release-gate, fresh multi-host
+  exhaustive refresh, network fixtures; transform catalog freeze sign-off.
 - Treat parity as a tested compatibility surface, not a blanket claim that
   torchfits reimplements Astropy, fitsio, or the CFITSIO C API.
 - Keep the package boundary clean: torchfits owns FITS I/O only; sky-domain

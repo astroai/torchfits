@@ -1,0 +1,41 @@
+__all__ count: 33
+docs/api.md symbol mentions: 36
+
+In __all__ but weak/absent in docs/api.md:
+  - clear_file_cache
+  - delete_hdu
+  - get_batch_info
+  - get_cache_performance
+  - get_header
+  - insert_hdu
+  - open_subset_reader
+  - read_batch
+  - read_table_rows
+  - replace_hdu
+  - stream_table
+  - to_arrow
+  - to_pandas
+  - to_polars
+  - verify_checksums
+  - write_checksums
+
+In docs/api.md but not root __all__ (may be submodule API):
+  - ContinuumNormalize
+  - DataView
+  - DopplerShift
+  - FitsCutoutDataset
+  - FitsImageDataset
+  - FitsImageIterableDataset
+  - FitsTableDataset
+  - FitsTableIterableDataset
+  - SpectralBinning
+  - __all__
+  - data
+  - hdu
+  - make_loader
+  - read_arrow
+  - read_polars
+  - read_torch
+  - torchfits
+  - transforms
+  - where
