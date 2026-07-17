@@ -1111,6 +1111,41 @@ def read(
     )
 
 
+def read_torch(
+    path: str,
+    hdu: int = 1,
+    columns: Optional[list[str]] = None,
+    start_row: int = 1,
+    num_rows: int = -1,
+    device: str = "cpu",
+    mmap: bool | str = "auto",
+    cache_capacity: int = 10,
+    handle_cache_capacity: int = 16,
+    fast_header: bool = True,
+    return_header: bool = False,
+) -> Any:
+    """Read a FITS table as dataframe columns mapped to ``torch.Tensor`` values.
+
+    Root alias: :func:`torchfits.read_table`. For Arrow dataframes use
+    :func:`read` / :func:`read_arrow`.
+    """
+    from torchfits.io import read_table as _read_table
+
+    return _read_table(
+        path,
+        hdu=hdu,
+        columns=columns,
+        start_row=start_row,
+        num_rows=num_rows,
+        device=device,
+        mmap=mmap,
+        cache_capacity=cache_capacity,
+        handle_cache_capacity=handle_cache_capacity,
+        fast_header=fast_header,
+        return_header=return_header,
+    )
+
+
 def _arrow_type_from_tform(
     code: str, repeat: int, *, decode_bytes: bool, pa: Any
 ) -> Any | None:

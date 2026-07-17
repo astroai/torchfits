@@ -4,6 +4,26 @@
 ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 (WCS, coordinates, simulation) is out of scope.
 
+**FITS images → tensors. FITS tables → dataframes** (Arrow by default;
+Polars/Pandas one call away; tensor columns when you train). In code the
+namespace is `torchfits.table` because that is the FITS name; the object
+model is a columnar dataframe.
+
+---
+
+## Which reader?
+
+| Goal | Call | Returns |
+|---|---|---|
+| Image / cube / spectrum | `read_tensor(path, hdu=0)` | `torch.Tensor` |
+| Catalog as dataframe (default) | `table.read(path, hdu=1, where=…)` | `pyarrow.Table` |
+| Same, explicit Arrow name | `table.read_arrow(...)` | `pyarrow.Table` (alias of `table.read`) |
+| Dataframe columns as tensors | `table.read_torch(path, hdu=1)` | `dict[str, torch.Tensor]` |
+| Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like |
+
+Root `read_table` is an alias of `table.read_torch`. Prefer `table.*` for
+dataframe workflows (`where=`, projection, Polars/Pandas).
+
 ---
 
 ## Quick Paths
@@ -22,16 +42,19 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 | Multi-HDU context manager | `open(path, mode="r")` | [Core I/O](api-core-io.md#open) |
 | Batch-read many files | `read_batch(file_paths, hdu=0)` | [Core I/O](api-core-io.md#read_batch) |
 
-### Tables
+### Tables as dataframes
 
 | Goal | Entry point | Reference |
 |---|---|---|
-| Read table (returns `pyarrow.Table`) | `table.read(path, hdu=1, columns=None, where=None)` | [Tables](api-tables.md#tableread) |
-| Stream table in chunks | `table.scan(path, hdu=1, chunk_rows=65536)` | [Tables](api-tables.md#tablescan) |
-| Read as tensor dict | `read_table(path, hdu=1, columns=None)` | [Core I/O](api-core-io.md#read_table) |
-| Stream as tensor dicts | `stream_table(path, hdu=1, chunk_rows=65536)` | [Core I/O](api-core-io.md#stream_table) |
-| Read row range | `read_table_rows(path, hdu=1, start_row=1, num_rows=1000)` | [Core I/O](api-core-io.md#read_table_rows) |
-| Direct to Polars | `table.read_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
+| Read dataframe (Arrow) | `table.read(path, hdu=1, columns=None, where=None)` | [Tables](api-tables.md#tableread) |
+| Same (`read_arrow` synonym) | `table.read_arrow(...)` | [Tables](api-tables.md#tableread) |
+| Stream dataframe batches | `table.scan(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan) |
+| Dataframe columns as tensors | `table.read_torch(path, hdu=1, columns=None)` | [Tables](api-tables.md#tableread_torch) |
+| Stream tensor-column chunks | `table.scan_torch(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan_torch) |
+| Root alias of `read_torch` | `read_table(path, hdu=1, columns=None)` | [Core I/O](api-core-io.md#read_table) |
+| Row-range sugar on `read_torch` | `read_table_rows(path, hdu=1, start_row=1, num_rows=1000)` | [Core I/O](api-core-io.md#read_table_rows) |
+| Stream tensor chunks (root alias) | `stream_table(path, hdu=1, chunk_rows=65536)` | [Core I/O](api-core-io.md#stream_table) |
+| Native Polars dataframe | `table.read_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | Streaming Polars batches | `table.scan_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | DuckDB SQL | `table.duckdb_query(path, sql, hdu=1)` | [Tables](api-tables.md#duckdb) |
 
@@ -57,7 +80,7 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 |---|---|
 | [CLI](cli.md) | `torchfits` command-line tools, exit codes, MEF defaults |
 | [Core I/O](api-core-io.md) | `read`, `read_tensor`, `read_subset`, `read_hdus`, `write_tensor`, `write`, `open`, headers, HDU mutation, checksums, batch reads, cache |
-| [Tables](api-tables.md) | `table.read`, `table.scan`, predicate pushdown, backend selection, mutations, Polars/DuckDB/Pandas/Arrow interop, schema |
+| [Tables](api-tables.md) | FITS tables as dataframes: `table.read` / `read_torch` / `read_polars`, mutations, interop |
 | [Data](api-data.md) | `FitsImageDataset`, `FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset`, `make_loader`, worker sharding |
 | [Transforms](api-transforms.md) | Transform classes (callable protocol, not `nn.Module`) with verified math, parameters, invertibility, and when-to-use guidance |
 | [Architecture](architecture.md) | C++/Python layering, I/O paths, caching, threading, CFITSIO mapping, environment variables |
@@ -70,7 +93,7 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 |---|---|
 | `torchfits` (root) | I/O functions and HDU classes |
 | `torchfits.hdu` | HDU/header types (`Header`, `Card`, `HDUList`, …) |
-| `torchfits.table` | Table I/O, mutation, interop |
+| `torchfits.table` | FITS table / dataframe I/O, mutation, interop |
 | `torchfits.data` | Dataset classes and loader factory |
 | `torchfits.transforms` | Transform classes |
 | `torchfits.cache` | Cache configuration and management |

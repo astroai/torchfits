@@ -16,7 +16,7 @@ pixi run python examples/test_examples.py
 | 1 | [`gallery_images.py`](../examples/gallery_images.py) | Real HorseHead + stretch/normalize **before/after** figures |
 | 2 | [`gallery_spectra.py`](../examples/gallery_spectra.py) | Continuum normalize/removal (specutils-shaped plots) |
 | 3 | [`example_image.py`](../examples/example_image.py) | `read_tensor`, headers, `write_tensor` |
-| 4 | [`example_table.py`](../examples/example_table.py) | `table.read` + `where=`, `stream_table` |
+| 4 | [`example_table.py`](../examples/example_table.py) | FITS tables as dataframes: `table.read` / `read_torch` / `scan_torch` |
 | 5 | CLI recipes | [cli-recipes.md](cli-recipes.md) — `imstat` / `imarith` / fitsort analogues |
 
 Transform figure gallery (embedded PNGs): [examples-transforms.md](examples-transforms.md).
@@ -51,13 +51,13 @@ Cached under `~/.cache/torchfits/samples/` (`horsehead`, `chandra_events`,
 | [`example_image_cube.py`](../examples/example_image_cube.py) | 3D cubes with `read_tensor` and tensor slicing |
 | [`example_image_mef.py`](../examples/example_image_mef.py) | Multi-extension files with `open`, `read_hdus`, and table `filter` |
 
-### Tables
+### Tables as dataframes
 
 | Script | What it demonstrates |
 |---|---|
-| [`example_table.py`](../examples/example_table.py) | `read_table`, `table.read` with `where=`, `stream_table`, and `table.write` |
+| [`example_table.py`](../examples/example_table.py) | `table.read` (Arrow dataframe), `table.read_torch`, `table.scan_torch`, `table.write` |
 | [`example_table_interop.py`](../examples/example_table_interop.py) | VLA columns and `to_pandas` / `to_arrow` / `to_polars` conversion |
-| [`example_polars.py`](../examples/example_polars.py) | Direct FITS → Polars via `read_polars`, `scan_polars`, `to_polars`, and `to_polars_lazy` |
+| [`example_polars.py`](../examples/example_polars.py) | Direct FITS → Polars dataframe via `read_polars`, `scan_polars`, `to_polars`, and `to_polars_lazy` |
 | [`example_table_recipes.py`](../examples/example_table_recipes.py) | Arrow scanner, Polars lazy frames, and DuckDB SQL on FITS tables |
 
 ### PyTorch training

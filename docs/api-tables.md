@@ -1,13 +1,25 @@
 # Table Reference
 
-FITS table I/O with predicate pushdown, column projection, streaming, in-place
-mutations, and interop with Polars, DuckDB, Pandas, and PyArrow.
+FITS tables are **dataframes on disk** (columnar catalogs). The API namespace
+is `torchfits.table` because that is the FITS name; the object model is a
+columnar dataframe — filter, project, stream, then train or analyze.
+
+| Destination | Call | Returns |
+|---|---|---|
+| Dataframe via Arrow (default) | `table.read` / `table.read_arrow` | `pyarrow.Table` |
+| Dataframe columns as tensors | `table.read_torch` | `dict[str, torch.Tensor]` |
+| Native Polars dataframe | `table.read_polars` | Polars DataFrame-like |
+
+Predicate pushdown, column projection, streaming, in-place mutations, and
+interop with Polars, DuckDB, Pandas, and PyArrow.
 
 ---
 
 ## `table.read()`
 
-Arrow-native FITS table reader with WHERE pushdown.
+Read a FITS table as a portable dataframe (`pyarrow.Table`) with WHERE
+pushdown. Same role as a Pandas/Polars frame: named columns, row filters,
+handoff to SQL or ML. `table.read_arrow` is an explicit synonym.
 
 ```python
 torchfits.table.read(
@@ -32,28 +44,54 @@ torchfits.table.read(
 | `backend` | `str` | `"auto"` | `"auto"`, `"cpp"`, or `"torch"` |
 | `include_fits_metadata` | `bool` | `False` | Preserve FITS column metadata |
 
-**Returns:** `pyarrow.Table`
+**Returns:** `pyarrow.Table` (portable dataframe; convert with
+`table.to_polars` / `table.to_pandas` or use `table.read_polars` directly)
 
 !!! info "When to use"
-    This is the primary function for reading FITS tables. Use it when you
-    need column projection, row filtering via `where=`, or Arrow/Polars/
-    DuckDB interop. For raw tensor dictionaries, use `read_table()` instead.
+    Primary catalog / dataframe read. Use for column projection, `where=`
+    filters, or Arrow/Polars/DuckDB interop. For dataframe columns as tensors,
+    use `table.read_torch()`. `table.read_arrow(...)` is the same function.
 
 ```python
-# Filter and project
-table = torchfits.table.read(
+# Filter and project — dataframe via Arrow
+df = torchfits.table.read(
     "catalog.fits", hdu=1,
     columns=["RA", "DEC", "MAG_G"],
     where="MAG_G < 20 AND DEC > 0",
 )
-print(table.num_rows, table.column_names)
+print(df.num_rows, df.column_names)
+
+# Explicit synonym
+assert torchfits.table.read_arrow is torchfits.table.read
+```
+
+---
+
+## `table.read_torch()`
+
+Read a FITS table as dataframe columns mapped to `torch.Tensor` values
+(root alias: `torchfits.read_table`).
+
+```python
+torchfits.table.read_torch(
+    path, hdu=1, columns=None, start_row=1, num_rows=-1,
+    device="cpu", mmap="auto", cache_capacity=10,
+    handle_cache_capacity=16, fast_header=True, return_header=False,
+)
+```
+
+**Returns:** `dict[str, torch.Tensor]`
+
+```python
+cols = torchfits.table.read_torch("catalog.fits", hdu=1, columns=["RA", "DEC"])
+# train on cols["RA"], cols["DEC"]
 ```
 
 ---
 
 ## `table.scan()`
 
-Streaming FITS table scanner yielding `pyarrow.RecordBatch` objects without
+Streaming dataframe scanner yielding `pyarrow.RecordBatch` objects without
 materializing the entire table.
 
 ```python
@@ -68,7 +106,7 @@ torchfits.table.scan(
 **Yields:** `pyarrow.RecordBatch`
 
 ```python
-for batch in torchfits.table.scan("survey.fits", hdu=1, chunk_rows=50_000):
+for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
     process(batch)  # pyarrow.RecordBatch
 ```
 
@@ -81,7 +119,8 @@ for batch in torchfits.table.scan("survey.fits", hdu=1, chunk_rows=50_000):
 
 ## `table.scan_torch()`
 
-Streaming scanner yielding dictionaries of `torch.Tensor` per batch.
+Stream dataframe rows as tensor-column chunks (prefer this over root
+`stream_table` when you need `device=` / `pin_memory=`).
 
 ```python
 torchfits.table.scan_torch(
@@ -223,6 +262,8 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 ## Interop
 
 ### Polars
+
+Native DataFrame path — FITS table → Polars dataframe in one call.
 
 ```python
 # One-call FITS to Polars (preserves FITS metadata)
