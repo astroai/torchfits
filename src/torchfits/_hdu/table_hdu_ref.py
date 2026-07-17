@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any, Dict, Iterator, List, Optional, Union
 
 import torch
@@ -504,3 +505,13 @@ class TableHDURef:
         name = self.header.get("EXTNAME", "TABLE")
         proj = f", cols={len(self.columns)}" if self._columns is not None else ""
         return f"TableHDURef(name='{name}', rows={self.num_rows}{proj})"
+
+    def _repr_html_(self) -> str:
+        name = html.escape(str(self.header.get("EXTNAME", "TABLE")))
+        return (
+            "<table>"
+            "<caption>TableHDURef</caption>"
+            "<thead><tr><th>Name</th><th>Rows</th><th>Columns</th></tr></thead>"
+            f"<tbody><tr><td>{name}</td><td>{self.num_rows}</td>"
+            f"<td>{len(self.columns)}</td></tr></tbody></table>"
+        )

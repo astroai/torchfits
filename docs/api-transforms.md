@@ -2,9 +2,11 @@
 
 Header-aware preprocessing transforms for FITS images, spectra, and tables.
 All transforms implement the :class:`FITSTransform` callable protocol
-(``forward`` / ``inverse`` / ``__call__``) and work as callables with
-``torch.utils.data.Dataset`` and ``DataLoader`` (construct one pipeline
-per worker when using ``num_workers > 0``).
+(``forward`` / ``inverse`` / ``__call__``). They are **not**
+``torch.nn.Module`` subclasses — use them as callables with
+``torch.utils.data.Dataset`` / ``DataLoader``. Inverse state is
+**instance-local** (``_last_*`` fields); construct one pipeline per worker
+when ``num_workers > 0``.
 
 ```python
 from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
@@ -13,6 +15,31 @@ pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize
 normalized = pipeline(image)
 restored = pipeline.inverse(normalized)
 ```
+
+### Masks
+
+Most transforms accept an optional boolean ``mask`` (``True`` = valid).
+``Compose`` forwards the same mask to every child:
+
+```python
+pipeline(image, mask=finite_mask)
+pipeline.inverse(normalized, mask=finite_mask)
+```
+
+### Invertibility
+
+| Kind | `inverse()` |
+|---|---|
+| Stretches, normalizers, FITS scale, continuum divide/subtract, baseline estimators, wavelet | Yes (state cached on the instance) |
+| `BandMath`, `PhaseFold`, `SigmaClip`, `AsymmetricSigmaClip`, `TNullToNan` | No — lossy / many-to-one |
+
+Stateless stretches are the most likely to work under ``torch.compile``;
+data-dependent normalizers cache Python-side state and may graph-break.
+There is no certified compile matrix yet.
+
+The implementation lives under ``torchfits.transforms`` as a small package
+(``stretch``, ``normalize``, ``fits_meta``, ``spectral``, ``continuum``,
+``clip``) re-exported from ``torchfits.transforms``.
 
 ---
 
@@ -281,6 +308,10 @@ $$\text{output} = \text{reduce}(x_{\text{reshaped}},\ \text{along factor dim})$$
 
 ### `BandMath(func, band_dim=0)`
 
+!!! note "Advanced"
+    Generic NDVI-style band arithmetic — not FITS-specific. Prefer survey
+    code or a one-liner for most pipelines.
+
 Dimension-agnostic band arithmetic via `torch.unbind`.
 
 $$\text{output} = \text{func}(\text{bands})$$
@@ -370,6 +401,10 @@ Local-max detection + linear interpolation between maxima.
 
 ### `AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=10, dim=-1, envelope="lower")`
 
+!!! note "Advanced"
+    Raman/NIR specialty baseline. Prefer `UpperEnvelopeContinuum` or
+    `SavitzkyGolayFilter` for generic astronomy spectra unless you need ALS.
+
 Eilers (2003) penalized baseline with asymmetric weights. Standard in Raman
 and NIR spectroscopy.
 
@@ -395,6 +430,10 @@ Solved via O(n) banded Cholesky factorization (pentadiagonal matrix).
     envelope of broad fluorescence backgrounds.
 
 ### `AlphaShapeContinuum(half_window=15, iterations=1, dim=-1)`
+
+!!! note "Advanced"
+    Morphological upper-envelope variant. Prefer `UpperEnvelopeContinuum`
+    unless you specifically want closing (dilate+erode).
 
 Morphological closing (dilation then erosion) via `unfold`.
 
@@ -490,6 +529,10 @@ Outliers replaced with median.
 ## Time-Domain
 
 ### `PhaseFold(period=1.0, n_bins=64, t0=0.0)`
+
+!!! note "Advanced"
+    Time-series / variable-star tool — lossy. Not part of the core FITS image
+    ML path.
 
 Fold periodic time series into phase bins.
 
@@ -593,7 +636,15 @@ original = pipeline.inverse(normalized)
 ### `FITSTransform`
 
 Base class for custom transforms. Override `forward()` and optionally
-`inverse()`. `__call__` delegates to `forward()`.
+`inverse()`. `__call__` delegates to `forward()`. Not an ``nn.Module``.
+
+### Helpers
+
+| Function | Role |
+|---|---|
+| `safe_arcsinh`, `safe_log` | Numerically stable stretch primitives |
+| `estimate_background` | Shared background estimator for normalizers / clip |
+| `zscale_limits` | IRAF-style zscale limit finder used by `ZScaleNormalize` |
 
 ---
 

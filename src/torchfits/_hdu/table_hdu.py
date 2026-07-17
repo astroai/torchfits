@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import html
 from typing import Any, Dict, Iterator, List, Optional
 
 import torch
@@ -587,4 +588,14 @@ class TableHDU:
         name = self.header.get("EXTNAME", "TABLE")
         return (
             f"TableHDU(name='{name}', rows={self.num_rows}, cols={len(self.columns)})"
+        )
+
+    def _repr_html_(self) -> str:
+        name = html.escape(str(self.header.get("EXTNAME", "TABLE")))
+        return (
+            "<table>"
+            "<caption>TableHDU</caption>"
+            "<thead><tr><th>Name</th><th>Rows</th><th>Columns</th></tr></thead>"
+            f"<tbody><tr><td>{name}</td><td>{self.num_rows}</td>"
+            f"<td>{len(self.columns)}</td></tr></tbody></table>"
         )

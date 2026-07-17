@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as qfits `dfits | fitsort`).
 - Optional `vos:` / `vos://` probe when the `vos` package is installed.
 - Invalid `--hdu` values exit with usage code 2 instead of a traceback.
+- Lean `_repr_html_` on `TensorHDU`, `TableHDU`, and `TableHDURef` for notebooks.
+- `torchfits convert --to png` Lupton RGB preview via stdlib PNG (no Pillow /
+  NumPy). PPM removed.
+- Parquet convert uses streaming `write_parquet(..., stream=True)` (out-of-core).
+
+### Changed
+
+- `torchfits.transforms` is a package split by domain (`stretch`, `normalize`,
+  `fits_meta`, `spectral`, `continuum`, `clip`) with the same public `__all__`.
+- Transforms docs: not `nn.Module`; instance-local inverse state; Advanced notes
+  for `BandMath`, `PhaseFold`, `AsymmetricLeastSquares`, `AlphaShapeContinuum`;
+  invertibility + helpers tables.
 
 ## [0.9.2] — 2026-07-16
 

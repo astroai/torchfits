@@ -55,7 +55,7 @@ find . -name '*.fits' | torchfits info --stdin --jsonl
 | `stats` | image min / max / mean |
 | `table` | Arrow schema + preview rows |
 | `cutout` | write a pixel box to a new FITS file |
-| `convert` | table → Parquet; Lupton RGB → PPM |
+| `convert` | table → Parquet; Lupton RGB → PNG |
 | `probe` | local inventory; HTTP(S) range probe; optional `vos:` |
 | `diff` | compare two files (exit 1 if they differ) |
 | `copy` | MEF-preserving FITS → FITS copy |
@@ -80,9 +80,10 @@ torchfits header *.fits --fitsort --keyword BITPIX --json
 
 ### `convert`
 
-- **parquet** — export a table HDU (`--hdu`, default 1).
-- **ppm** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three
-  band files. Writes binary PPM with torch only (no Pillow dependency).
+- **parquet** — export a table HDU (`--hdu`, default 1). Uses streaming
+  batch writes so large tables stay out-of-core (bounded memory).
+- **png** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three
+  band files. Writes PNG with torch + stdlib only (no Pillow dependency).
 
 Defaults are for previews, not journal figures — retune stretch / Q per survey.
 

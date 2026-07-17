@@ -83,3 +83,37 @@ def test_tablehdu_rejects_mismatched_column_lengths():
 def test_tablehdu_rejects_non_mapping_input():
     with pytest.raises(TypeError, match="tensor_dict must be a dictionary"):
         TableHDU([1, 2, 3])  # type: ignore[arg-type]
+
+
+def test_hdu_repr_html():
+    import html
+
+    import torch
+
+    import torchfits
+    from torchfits.hdu import TableHDURef, TensorHDU
+
+    tensor = TensorHDU(
+        data=torch.zeros(2, 3),
+        header=torchfits.Header({"EXTNAME": "IMG"}),
+    )
+    tensor_html = tensor._repr_html_()
+    assert "TensorHDU" in tensor_html
+    assert html.escape("IMG") in tensor_html
+    assert "(2, 3)" in tensor_html
+
+    table = TableHDU({"x": torch.tensor([1.0, 2.0, 3.0])})
+    table_html = table._repr_html_()
+    assert "TableHDU" in table_html
+    assert "table" in table_html.lower()
+    assert "3" in table_html
+
+    ref = TableHDURef(
+        header=torchfits.Header({"EXTNAME": "CAT", "NAXIS2": 5}),
+        source_path="/tmp/x.fits",
+        source_hdu=1,
+        columns=["a", "b"],
+    )
+    ref_html = ref._repr_html_()
+    assert "TableHDURef" in ref_html
+    assert html.escape("CAT") in ref_html

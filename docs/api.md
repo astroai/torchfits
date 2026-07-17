@@ -59,7 +59,7 @@ ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
 | [Core I/O](api-core-io.md) | `read`, `read_tensor`, `read_subset`, `read_hdus`, `write_tensor`, `write`, `open`, headers, HDU mutation, checksums, batch reads, cache |
 | [Tables](api-tables.md) | `table.read`, `table.scan`, predicate pushdown, backend selection, mutations, Polars/DuckDB/Pandas/Arrow interop, schema |
 | [Data](api-data.md) | `FitsImageDataset`, `FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset`, `make_loader`, worker sharding |
-| [Transforms](api-transforms.md) | All 25+ transform classes with verified math, parameters, invertibility, and when-to-use guidance |
+| [Transforms](api-transforms.md) | Transform classes (callable protocol, not `nn.Module`) with verified math, parameters, invertibility, and when-to-use guidance |
 | [Architecture](architecture.md) | C++/Python layering, I/O paths, caching, threading, CFITSIO mapping, environment variables |
 
 ---

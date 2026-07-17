@@ -119,6 +119,54 @@ def test_diff_detects_change(image_fits, tmp_path):
     assert result.stderr.strip()
 
 
+def test_convert_png(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert",
+        str(image_fits),
+        str(out),
+        "--to",
+        "png",
+        "--bands",
+        "0,0,0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.read_bytes()[:4] == b"\x89PNG"
+
+
+def test_convert_parquet(table_fits, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    out = tmp_path / "table.parquet"
+    result = _run_cli(
+        "convert",
+        str(table_fits),
+        str(out),
+        "--to",
+        "parquet",
+        "--hdu",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+    assert pq.read_table(str(out)).num_rows == 3
+
+
+@pytest.fixture
+def table_fits(tmp_path):
+    import numpy as np
+    from astropy.io import fits
+    from astropy.table import Table
+
+    path = tmp_path / "table.fits"
+    data = {
+        "ra": np.array([200.0, 201.0, 202.0], dtype=np.float64),
+        "dec": np.array([45.0, 46.0, 47.0], dtype=np.float64),
+        "flux": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+    }
+    fits.BinTableHDU(Table(data), name="CAT").writeto(str(path), overwrite=True)
+    return path
+
+
 def test_header_fitsort_table(image_fits):
     result = _run_cli(
         "header",

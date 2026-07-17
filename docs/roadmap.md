@@ -16,11 +16,12 @@ Astropy, fitsio, or CFITSIO replacement.
 
 ## Near-term work
 
-- **0.9.3:** CLI polish — `header --fitsort`, optional `vos:` probe, clearer
-  usage errors; docs that match the shipped CLI. Archive *search* (CAOM /
-  `astquery`) stays out of scope; probe remains header metadata.
-- **1.0:** Apply the transforms catalog review (docs tiers, split the large
-  `transforms.py` module), then freeze the public Python + CLI surface.
+- **0.9.3 (this branch):** CLI polish (`--fitsort`, optional `vos:` probe), PNG
+  convert (stdlib), streaming parquet, transforms package split, notebook
+  `_repr_html_`, docs truth for transforms. Archive *search* (CAOM/`astquery`)
+  stays out of scope.
+- **1.0:** Compat matrix, clean-install release-gate, rc checklist; transform
+  catalog freeze after external review of the split package.
 - Treat parity as a tested compatibility surface, not a blanket claim that
   torchfits reimplements Astropy, fitsio, or the CFITSIO C API.
 - Keep the package boundary clean: torchfits owns FITS I/O only; sky-domain
