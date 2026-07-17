@@ -1,6 +1,6 @@
 [project]
 site_name = "torchfits"
-site_description = "FITS I/O for PyTorch — read FITS images, tables, and headers as tensors. Native C++ engine, ML datasets, transforms."
+site_description = "FITS tensors for PyTorch — C++ engine, MEF-native CLI, no NumPy glue."
 site_url = "https://astroai.github.io/torchfits/"
 repo_url = "https://github.com/astroai/torchfits"
 repo_name = "astroai/torchfits"
@@ -14,10 +14,10 @@ nav = [
   {"Getting Started" = [
     "install.md",
     "quickstart.md",
+    "cli.md",
   ]},
   {"Reference" = [
     "api.md",
-    "cli.md",
     "api-core-io.md",
     "api-tables.md",
     "api-data.md",

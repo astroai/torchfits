@@ -114,6 +114,119 @@ def write_parquet(
             writer.close()  # type: ignore[no-untyped-call]
 
 
+def write_csv(
+    where: str,
+    data: str | Any | Iterable[Any],
+    *,
+    delimiter: str = ",",
+    stream: bool = False,
+    **kwargs: Any,
+) -> None:
+    """Write table data to CSV or TSV via PyArrow.
+
+    Args:
+        where: Destination path.
+        data: FITS path, Arrow Table, reader, or batch iterable.
+        delimiter: Field separator (``,`` for CSV, ``\\t`` for TSV).
+        stream: Write batches without materializing the full table.
+    """
+    try:
+        import pyarrow.csv as pacsv
+    except ImportError as exc:
+        raise ImportError("pyarrow.csv is required for CSV/TSV export") from exc
+
+    write_options = pacsv.WriteOptions(delimiter=delimiter)  # type: ignore[attr-defined]
+
+    if isinstance(data, str):
+        data = reader(data, **kwargs) if stream else read(data, **kwargs)
+
+    if not stream:
+        table = _materialize_arrow_table(data, **kwargs)
+        pacsv.write_csv(table, where, write_options=write_options)  # type: ignore[attr-defined]
+        return
+
+    data_iter: Any = data
+    writer = None
+    try:
+        if hasattr(data_iter, "read_next_batch"):
+            while True:
+                try:
+                    batch = data_iter.read_next_batch()
+                except StopIteration:
+                    break
+                if writer is None:
+                    writer = pacsv.CSVWriter(  # type: ignore[attr-defined]
+                        where, batch.schema, write_options=write_options
+                    )
+                writer.write(batch)
+        else:
+            for batch in data_iter:
+                if writer is None:
+                    writer = pacsv.CSVWriter(  # type: ignore[attr-defined]
+                        where, batch.schema, write_options=write_options
+                    )
+                writer.write(batch)
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+def write_ipc(
+    where: str,
+    data: str | Any | Iterable[Any],
+    *,
+    stream: bool = False,
+    compression: Optional[str] = "zstd",
+    **kwargs: Any,
+) -> None:
+    """Write Arrow IPC / Feather V2 (``.arrow``) — native for Polars and Arrow.
+
+    Args:
+        where: Destination path (typically ``.arrow`` or ``.feather``).
+        data: FITS path, Arrow Table, reader, or batch iterable.
+        stream: Write batches without materializing the full table.
+        compression: Feather/IPC compression (``zstd``, ``lz4``, or ``None``).
+    """
+    try:
+        import pyarrow.feather as feather
+        import pyarrow.ipc as ipc
+    except ImportError as exc:
+        raise ImportError(
+            "pyarrow.feather/ipc is required for Arrow IPC export"
+        ) from exc
+
+    if isinstance(data, str):
+        data = reader(data, **kwargs) if stream else read(data, **kwargs)
+
+    if not stream:
+        table = _materialize_arrow_table(data, **kwargs)
+        feather.write_feather(table, where, compression=compression)  # type: ignore[no-untyped-call]
+        return
+
+    write_options = ipc.IpcWriteOptions(compression=compression)  # type: ignore[attr-defined]
+
+    data_iter: Any = data
+    writer = None
+    try:
+        if hasattr(data_iter, "read_next_batch"):
+            while True:
+                try:
+                    batch = data_iter.read_next_batch()
+                except StopIteration:
+                    break
+                if writer is None:
+                    writer = ipc.new_file(where, batch.schema, options=write_options)  # type: ignore[no-untyped-call]
+                writer.write_batch(batch)
+        else:
+            for batch in data_iter:
+                if writer is None:
+                    writer = ipc.new_file(where, batch.schema, options=write_options)  # type: ignore[no-untyped-call]
+                writer.write_batch(batch)
+    finally:
+        if writer is not None:
+            writer.close()
+
+
 def to_pandas(
     data: str | Any | Iterable[Any],
     stream: bool = False,

@@ -47,6 +47,12 @@ from torchfits.transforms import (
     UpperEnvelopeContinuum,
     WaveletDecompose,
     ZScaleNormalize,
+    estimate_background,
+    safe_arcsinh,
+    safe_log,
+    zscale_limits,
+)
+from torchfits.transforms.helpers import (
     _amin,
     _amax,
     _flatten_dims,
@@ -54,13 +60,8 @@ from torchfits.transforms import (
     _normalize_dims,
     _quantile,
     _reduce_keepdim,
-    _resample_1d,
-    _resample_scale,
-    estimate_background,
-    safe_arcsinh,
-    safe_log,
-    zscale_limits,
 )
+from torchfits.transforms.spectral import _resample_1d, _resample_scale
 
 
 # ---------------------------------------------------------------------------

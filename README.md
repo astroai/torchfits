@@ -6,76 +6,49 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**torchfits** is FITS I/O for PyTorch: a multi-threaded C++ engine with vendored
-CFITSIO that reads and writes images, headers, HDUs, compressed images, and
-tables as tensors — without NumPy-to-torch glue. Optional **`torchfits.data`**
-datasets and **`torchfits.transforms`** provide header-aware preprocessing for
-ML training loops.
+**torchfits** reads and writes FITS files as PyTorch tensors. A multi-threaded
+C++ engine (vendored CFITSIO) handles images, tables, headers, compression, and
+MEF files. Optional datasets, transforms, and a `torchfits` CLI sit on top.
 
-It is not a full replacement for Astropy, fitsio, or CFITSIO. The supported
-surface is documented explicitly in [docs/parity.md](docs/parity.md), with
-source-backed tests for each claimed parity area. WCS, sky-coordinate models,
-HEALPix, sphere geometry, sky-domain simulation, and photometric physics are out
-of scope. Transforms cover FITS scale/null/dtype and tensor preprocessing only.
+```bash
+pip install torchfits
+```
+
+Requires **Python 3.10+** and **PyTorch 2.10**. Docs:
+[astroai.github.io/torchfits](https://astroai.github.io/torchfits/).
 
 ## At a Glance
 
-| Task | Traditional stack | torchfits equivalent |
-|---|---|---|
-| Read image to GPU | astropy/fitsio &rarr; numpy &rarr; torch &rarr; `.to(device)` | `torchfits.read_tensor("img.fits", device="cuda")` |
-| Write tensor to FITS | tensor &rarr; numpy &rarr; astropy HDU &rarr; writeto | `torchfits.write("out.fits", tensor)` |
-| Filter large table | load all rows &rarr; mask in Python | `where="MAG < 20"` pushdown in C++ |
-| Read multi-extension files | manual HDU dispatch | `with torchfits.open("mef.fits") as hdul: ...` |
-| PyTorch training loop | hand-rolled `Dataset` + cache tuning | `FitsImageDataset` + `make_loader(..., num_workers=4)` |
-| Normalize for model input | ad-hoc scaling in the training script | `Compose([BackgroundSubtract(), ZScaleNormalize()])` |
-| Verify FITS checksums | comparator-specific helpers | `torchfits.verify_checksums(path)` |
+| Task | torchfits |
+|---|---|
+| Image → GPU tensor | `torchfits.read_tensor("img.fits", device="cuda")` |
+| Write a tensor | `torchfits.write("out.fits", tensor)` |
+| Filter a catalog in C++ | `table.read(..., where="MAG < 20")` |
+| Open a MEF | `with torchfits.open("mef.fits") as hdul: …` |
+| Train | `FitsImageDataset` + `make_loader(..., num_workers=4)` |
+| Shell | `torchfits info` / `header` / `convert` / … |
 
 ## Features
 
-**FITS I/O** &mdash; Multi-threaded C++ core with SIMD-optimized type conversion,
-memory-mapped image reads, intelligent chunking, and adaptive buffering. Reads
-and writes images, binary/ASCII tables, compressed images, and multi-extension
-FITS files with header round-trip coverage.
+- **Fast FITS I/O** — mmap image reads, compressed images, MEF, checksums
+- **Tables** — Arrow-native with `where=` pushdown, scan/stream, Parquet/CSV/TSV/Arrow IPC export
+- **ML** — `torchfits.data` datasets + `make_loader`
+- **Transforms** — stretches, FITS scale/null handling, spectral prep (`torchfits.transforms`)
+- **CLI** — MEF-aware inspect/convert tools ([docs/cli.md](docs/cli.md))
 
-**Table Engine** &mdash; Arrow-native table API with predicate pushdown (`where=`),
-column projection, row slicing, streaming `scan()`, and in-place mutations
-(append, insert, update, delete rows and columns). Interop with Pandas, Polars,
-DuckDB, and PyArrow.
+Supported feature matrix: [docs/parity.md](docs/parity.md).
 
-**ML Data Layer** &mdash; `torchfits.data` ships `FitsImageDataset`,
-`FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`,
-`FitsCutoutDataset`, and `make_loader` with automatic handle-cache warm-up.
+## What's New in 0.9.2 / 0.9.3
 
-**Transforms** &mdash; 28 `FITSTransform` classes for image stretches,
-header-aware scaling (`FITSHeaderScale`, `FITSScaleColumns`, `TNullToNan`),
-spectral/hyperspectral preprocessing, continuum estimators, and outlier
-rejection. Most ship `.inverse()` for decoding model outputs back to physical
-units. See [docs/api.md](docs/api.md#transforms) and
-`examples/example_transforms.py`.
+- **CLI** — `torchfits` for `info`, `header`, `verify`, `stats`, `table`, `cutout`,
+  `convert`, … ([docs/cli.md](docs/cli.md))
+- **Leaner imports** — transforms from `torchfits.transforms`; use `read` /
+  `read_tensor` (not `read_fast` / `read_image`)
+- **Convert** — tables → Parquet, CSV, TSV, or Arrow IPC; images → Lupton PNG
+- **Scorecard** — CUDA **0** strict deficits; Linux CPU **1**; Mac MPS **16**
+  ([docs/benchmarks.md](docs/benchmarks.md))
 
-**Compatibility Contract** &mdash; Parity is tracked by tier: truthful public docs,
-fitsio core workflow parity, Astropy common workflow parity, selected CFITSIO
-backend behavior, and explicit non-goals. See [docs/parity.md](docs/parity.md).
-
-## What's New in 0.9.2
-
-0.9.2 freezes a leaner Python library surface and ships an early CLI (the
-operator surface planned for 0.9.3):
-
-- **Leaner root API** — transforms live under `torchfits.transforms` only;
-  `read_fast` / `read_image` removed from the public surface; `torchfits.hdu`
-  is a documented namespace.
-- **CLI** — `torchfits` one-word commands (`info`, `header`, `verify`, `diff`,
-  `stats`, `table`, `convert`, `copy`, `arith`, `cutout`, `compress`,
-  `decompress`, `transform`, `probe`, `setkey`); see [docs/cli.md](docs/cli.md).
-- **Docs and brand** — site logo uses `torchfits-logo.png`; API docs match the
-  settled exports; README benchmark run IDs track `docs/benchmarks.md`.
-- **Deficit honesty** — Linux CPU/CUDA strict-gate scores are separate from
-  Mac MPS deficits (see Performance below).
-
-0.9.1 constrained the native ABI to PyTorch 2.10. 0.9.0 added Polars-native
-table access and handle-cache safety. See [docs/changelog.md](docs/changelog.md).
-Roadmap: [docs/roadmap.md](docs/roadmap.md).
+Full notes: [docs/changelog.md](docs/changelog.md).
 
 ## Transforms
 
@@ -105,45 +78,32 @@ Runnable demos: `examples/example_transforms.py` (image pipeline),
 ## Performance
 
 Lab multi-host exhaustive scorecard
-(`exhaustive_mps_20260717_000853` Mac MPS,
-`exhaustive_cpu_20260716_191252` CANFAR CPU,
-`exhaustive_cuda_20260716_191255` CANFAR CUDA); see
+(`exhaustive_mps_20260717_040150` Mac MPS,
+`exhaustive_cpu_20260717_040146` CANFAR CPU,
+`exhaustive_cuda_20260717_042840` CANFAR CUDA); see
 [docs/benchmarks.md](docs/benchmarks.md) for methodology, full exhaustive
 table, category summaries, RSS columns, and deficit transparency.
 
-Under the **strict** gate (images: any lag; Arrow tables: ≤1.05×), Linux CPU
-and CUDA currently report **0** TorchFits deficits. Mac MPS reports **4**
-deficits on this refresh (down from an earlier 101-row snapshot); MPS is not
-the Linux CUDA release gate.
+Under the **strict** gate (images: any lag; Arrow tables: ≤1.05×), CANFAR CUDA
+reports **0** TorchFits deficits; Linux CPU **1** (narrow 1M-row predicate);
+Mac MPS **16**. MPS is not the Linux CUDA release gate.
 
 ### Headline numbers
 
 | Case | torchfits | astropy | fitsio | Speedup vs astropy |
 |---|---:|---:|---:|---:|
-| Large float32 image read (16 MB, CPU) | 3.85 ms | 16.67 ms | 5.89 ms | **4.3×** |
-| Compressed Rice image (CPU) | 9.06 ms | 27.77 ms | 9.43 ms | **3.1×** |
-| 50× repeated 100×100 cutouts (CPU) | 4.68 ms | 75.36 ms | 4.94 ms | **16.7×** |
-| Table read (100k rows, 8 cols) | 95.3 μs | 6.74 ms | 59.84 ms | **70.6×** |
-| Varlen table read (100k rows, 3 cols) | 93.9 μs | 3.52 ms | 288.81 ms | **37.5×** |
+| Large float32 image read (16 MB, CPU) | 6.51 ms | 13.95 ms | 8.83 ms | **2.1×** |
+| Compressed Rice image (CPU) | 15.17 ms | 75.41 ms | 18.45 ms | **5.2×** |
+| 50× repeated 100×100 cutouts (CPU) | 21.75 ms | 335.26 ms | 21.03 ms | **18.3×** |
+| Table read (100k rows, 8 cols) | 6.97 ms | 95.60 ms | 30.20 ms | **13.7×** |
+| Varlen table read (100k rows, 3 cols) | 258.11 ms | 1.624 s | 337.40 ms | **6.4×** |
 
 ### By benchmark category
 
-| Category | Best speedup vs astropy | Best speedup vs fitsio | Notes |
-|---|---:|---:|---|
-| **1D images** (float32/64, int8–int64) | **7.8×** | **2.3×** | All sizes, CPU |
-| **2D images** (float32/64, int8–int64, uint16/32) | **7.7×** | **2.4×** | All sizes, CPU |
-| **3D cubes** (float32/64, int8–int64) | **7.5×** | **2.1×** | Small–medium, CPU |
-| **Compressed** (gzip, rice, hcompress) | **4.3×** | **1.1×** | rice and gzip dominate; hcompress slightly behind fitsio |
-| **Scaled** (BSCALE/BZERO) | **6.1×** | **1.8×** | Automatic integer→float scaling |
-| **MEF** (multi-extension) | **9.9×** | **2.4×** | Small–medium files |
-| **Repeated cutouts** (50× 100×100) | **16.7×** | **1.1×** | Open-once, subset many times |
-| **Time series frames** | **5.1×** | **1.9×** | 5 sequential frames |
-| **Header reads** (all fixtures) | **9.5×** | **1.5×** | Sub-100 μs for all backends |
-| **Table: read_full** | **115×** | **628×** | 100k rows, 8 cols |
-| **Table: projection** | **147×** | **91×** | Column subset |
-| **Table: row_slice** | **147×** | **162×** | Row range |
-| **Table: predicate_filter** | **57×** | **25×** | WHERE clause |
-| **GPU (CUDA) images** | **78×** | **3.0×** | tiny–large, all dtypes |
+Category ranges and the full exhaustive table live in
+[docs/benchmarks.md](docs/benchmarks.md#benchmark-category-summary)
+(CANFAR CUDA `exhaustive_cuda_20260717_042840`). Use the headline table above
+for this release’s absolute timings.
 
 ### Current deficits
 
@@ -188,7 +148,7 @@ cd torchfits
 pip install -e .
 ```
 
-Requires Python 3.10+, a C++17 compiler, CMake 3.21+, and PyTorch 2.0+.
+Requires Python 3.10+, a C++17 compiler, CMake 3.21+, and PyTorch 2.10.
 
 ## Quick Start
 
@@ -249,6 +209,16 @@ torchfits.write("output.fits", data, header=header, overwrite=True)
 torchfits.table.write("catalog_out.fits", table_dict, header=header, overwrite=True)
 ```
 
+### Shell (CLI)
+
+```bash
+torchfits info science.fits
+torchfits header science.fits --keyword OBJECT --json
+torchfits verify science.fits
+torchfits stats science.fits --hdu 0
+torchfits convert catalog.fits out.csv --to csv --hdu 1
+```
+
 ## Benchmarks
 
 torchfits is benchmarked across FITS image I/O (1D/2D/3D, all integer and
@@ -270,6 +240,7 @@ Published site: [astroai.github.io/torchfits](https://astroai.github.io/torchfit
 |---|---|
 | [Documentation site](https://astroai.github.io/torchfits/) | Browse all docs on GitHub Pages |
 | [API Reference](docs/api.md) | Full public API with signatures and examples |
+| [CLI](docs/cli.md) | `torchfits` command-line tools |
 | [Migration from Astropy](docs/migration_astropy.md) | Side-by-side workflow translation |
 | [Migration from fitsio](docs/migration_fitsio.md) | Side-by-side workflow translation |
 | [Dataset migration](docs/migration_datasets.md) | Removed `FITSDataset` → `torchfits.data` |

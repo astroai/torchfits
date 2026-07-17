@@ -11,6 +11,8 @@ from ._table.interop import (
     to_pandas,
     to_polars,
     to_polars_lazy,
+    write_csv,
+    write_ipc,
     write_parquet,
 )
 from ._table.cache import _close_all_cached_handles as clear_cache
@@ -55,5 +57,7 @@ __all__ = [
     "to_polars_lazy",
     "update_rows",
     "write",
+    "write_csv",
+    "write_ipc",
     "write_parquet",
 ]

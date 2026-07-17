@@ -7,6 +7,15 @@ prints results, and cleans up. Run the full smoke suite:
 pixi run python examples/test_examples.py
 ```
 
+Shell workflows (no Python script required):
+
+```bash
+torchfits info science.fits
+torchfits header science.fits --keyword OBJECT --json
+```
+
+See the [CLI guide](cli.md) for the full command set.
+
 ---
 
 ## Start here

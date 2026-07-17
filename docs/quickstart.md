@@ -9,11 +9,21 @@ pip install torchfits
 ```
 
 Pre-built wheels for Linux x86_64 and macOS arm64. No system CFITSIO needed — it's
-vendored. Requires Python 3.10+ and PyTorch 2.0+.
+vendored. Requires Python 3.10+ and **PyTorch 2.10** (ABI-matched wheels).
 
 !!! note "GPU support"
     For CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
     For MPS (Apple Silicon): the default PyTorch wheel includes MPS support.
+
+## Shell tools
+
+```bash
+torchfits info image.fits
+torchfits header image.fits --keyword BITPIX --json
+torchfits verify image.fits
+```
+
+Full command reference: [CLI guide](cli.md).
 
 ## Your First Read
 
@@ -134,5 +144,11 @@ read by name.
     Stretches, normalizers, spectral transforms, continuum estimators.
 
     [:octicons-arrow-right-24: Transforms](api-transforms.md)
+
+-   :material-console: __CLI__
+
+    Inspect, verify, cut out, and convert FITS from the shell.
+
+    [:octicons-arrow-right-24: CLI guide](cli.md)
 
 </div>

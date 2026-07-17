@@ -14,9 +14,8 @@ import math
 
 import torch
 
-from torchfits.transforms import (
-    _build_d2_diagonals,
-    _build_spline_basis,
+from torchfits.transforms.continuum import _build_d2_diagonals, _build_spline_basis
+from torchfits.transforms.helpers import (
     _flatten_dims,
     _median,
     _normalize_dims,

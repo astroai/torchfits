@@ -1,1 +1,34 @@
-{% extends "base.html" %}
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="tf-hero" aria-label="torchfits">
+    <div class="tf-hero__sky" aria-hidden="true"></div>
+    <div class="tf-hero__inner">
+      <img
+        class="tf-hero__brand"
+        src="{{ 'torchfits-logo-hero.png' | url }}"
+        alt="torchfits"
+        width="280"
+        height="90"
+      />
+      <p class="tf-hero__headline">FITS tensors for PyTorch</p>
+      <p class="tf-hero__lede">
+        Read images and tables straight into tensors — C++ engine, MEF-native CLI,
+        no NumPy glue.
+      </p>
+      <div class="tf-hero__actions">
+        <a class="tf-btn tf-btn--primary" href="{{ 'install/' | url }}">Install</a>
+        <a class="tf-btn tf-btn--ghost" href="{{ 'quickstart/' | url }}">Quick start</a>
+        <a class="tf-btn tf-btn--ghost" href="{{ 'cli/' | url }}">CLI</a>
+      </div>
+      <pre class="tf-hero__code" tabindex="0"><code>import torchfits
+tensor = torchfits.read_tensor("science.fits", device="cuda")
+table  = torchfits.table.read("catalog.fits", where="MAG &lt; 20")</code></pre>
+    </div>
+  </section>
+{% endblock %}
+
+{% block content %}
+  {{ super() }}
+{% endblock %}

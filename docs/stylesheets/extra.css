@@ -1,80 +1,338 @@
-/* ── torchfits docs custom styles ────────────────────────────── */
+/* ── torchfits docs ─────────────────────────────────────────── */
 
-/* Hero / landing page */
-.torchfits-hero {
+@import url("https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+:root {
+  --tf-navy: #0b1f3a;
+  --tf-navy-mid: #14345c;
+  --tf-blue: #2b7de9;
+  --tf-orange: #f18a1f;
+  --tf-ink: #132238;
+  --tf-muted: #5a6b7d;
+  --tf-paper: #f4f7fb;
+  --tf-line: rgba(11, 31, 58, 0.12);
+  --md-text-font: "Source Sans 3", "Segoe UI", sans-serif;
+  --md-code-font: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --tf-paper: #0d1520;
+  --tf-ink: #e8eef6;
+  --tf-muted: #9aabbd;
+  --tf-line: rgba(232, 238, 246, 0.14);
+}
+
+body,
+.md-typeset {
+  font-family: var(--md-text-font);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__topic,
+.tf-hero__headline {
+  font-family: "Space Grotesk", var(--md-text-font);
+  letter-spacing: -0.02em;
+}
+
+.md-header__button.md-logo img {
+  height: 1.7rem;
+}
+
+/* ── Landing hero ───────────────────────────────────────────── */
+
+.md-content[data-md-component="content"] .tf-hero + *,
+.tf-home .md-sidebar {
+  /* sidebars handled below on homepage */
+}
+
+.tf-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  color: var(--tf-ink);
+  background: #e9f0f8;
+  margin: 0;
+  padding: clamp(1.75rem, 4vw, 2.75rem) 1.25rem clamp(2rem, 4vw, 3rem);
+  border-bottom: 1px solid var(--tf-line);
+}
+
+.tf-hero__sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 70% 55% at 12% 0%, rgba(241, 138, 31, 0.22), transparent 55%),
+    radial-gradient(ellipse 65% 50% at 90% 15%, rgba(43, 125, 233, 0.28), transparent 55%),
+    radial-gradient(ellipse 90% 60% at 50% 100%, rgba(11, 31, 58, 0.08), transparent 55%),
+    linear-gradient(180deg, #f7fafc 0%, #e4eef8 55%, #d9e6f4 100%);
+  animation: tf-sky-drift 18s ease-in-out infinite alternate;
+}
+
+.tf-hero__sky::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.55;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 22%, var(--tf-navy), transparent),
+    radial-gradient(1px 1px at 28% 68%, var(--tf-blue), transparent),
+    radial-gradient(1.5px 1.5px at 61% 18%, var(--tf-navy), transparent),
+    radial-gradient(1px 1px at 78% 42%, var(--tf-orange), transparent),
+    radial-gradient(1px 1px at 88% 76%, var(--tf-navy), transparent),
+    radial-gradient(1.5px 1.5px at 42% 84%, var(--tf-blue), transparent),
+    radial-gradient(1px 1px at 8% 90%, var(--tf-navy), transparent);
+  animation: tf-twinkle 7s ease-in-out infinite alternate;
+}
+
+.tf-hero__inner {
+  max-width: 52rem;
+  margin: 0 auto;
   text-align: center;
-  padding: 2rem 1rem 1.5rem;
-  margin-bottom: 1rem;
-}
-.torchfits-hero h1 {
-  font-size: 2.4rem;
-  font-weight: 700;
-  margin-bottom: 0.3rem;
-}
-.torchfits-hero .tagline {
-  font-size: 1.15rem;
-  opacity: 0.85;
-  margin-bottom: 1.2rem;
-}
-.torchfits-hero .hero-code {
-  display: inline-block;
-  text-align: left;
-  background: var(--md-code-bg-color, #f5f5f5);
-  border: 1px solid var(--md-code-border-color, #ddd);
-  border-radius: 8px;
-  padding: 0.8rem 1.2rem;
-  font-size: 0.92rem;
-  margin-bottom: 1rem;
-}
-.torchfits-hero .hero-badges {
-  display: flex;
-  gap: 0.6rem;
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-bottom: 0.5rem;
-}
-.torchfits-hero .hero-badges img {
-  height: 20px;
+  opacity: 1;
+  animation: tf-rise 0.65s ease-out;
 }
 
-/* Grid cards */
-.grid.cards > ul > li {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+.tf-hero__brand {
+  display: block;
+  width: min(14rem, 55vw);
+  height: auto;
+  margin: 0 auto 0.85rem;
+  filter: drop-shadow(0 8px 18px rgba(11, 31, 58, 0.1));
 }
-.grid.cards > ul > li:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+
+.tf-hero__headline {
+  margin: 0 0 0.55rem;
+  font-size: clamp(1.65rem, 3.4vw, 2.35rem);
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--tf-navy);
+}
+
+.tf-hero__lede {
+  margin: 0 auto 1.35rem;
+  max-width: 34rem;
+  font-size: clamp(1.02rem, 1.8vw, 1.18rem);
+  line-height: 1.45;
+  color: var(--tf-muted);
+}
+
+.tf-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.tf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.55rem;
+  padding: 0.55rem 1.15rem;
+  border-radius: 0.35rem;
+  font-family: "Space Grotesk", var(--md-text-font);
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none !important;
+  transition: transform 0.18s ease, background 0.18s ease, color 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.tf-btn:hover {
+  transform: translateY(-1px);
+}
+
+.tf-btn--primary {
+  background: var(--tf-orange);
+  color: #1a1208 !important;
+}
+
+.tf-btn--primary:hover {
+  background: #ff9d35;
+}
+
+.tf-btn--ghost {
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--tf-navy) !important;
+  border: 1px solid rgba(11, 31, 58, 0.2);
+}
+
+.tf-btn--ghost:hover {
+  border-color: rgba(11, 31, 58, 0.45);
+  background: #fff;
+}
+
+.tf-hero__code {
+  display: block;
+  width: min(36rem, 100%);
+  margin: 0 auto;
+  text-align: left;
+  padding: 1rem 1.15rem;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(11, 31, 58, 0.14);
+  background: rgba(11, 31, 58, 0.94);
+  color: #d7e4f5;
+  font-family: var(--md-code-font);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  box-shadow: 0 18px 40px rgba(11, 31, 58, 0.18);
+}
+
+.tf-hero__code code {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  box-shadow: none;
+}
+
+@keyframes tf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tf-sky-drift {
+  from {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.04) translate3d(-1.2%, 0.8%, 0);
+  }
+}
+
+@keyframes tf-twinkle {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tf-hero__inner,
+  .tf-hero__sky,
+  .tf-hero__sky::after,
+  .tf-btn {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Homepage: full-bleed hero, no sidebars crowding the composition */
+body[data-md-url="/"] .md-main__inner,
+body[data-md-url="./"] .md-main__inner,
+.md-typeset:has(.tf-below) {
+  /* fallbacks below */
+}
+
+/* Hide sidebars when the landing template is active */
+.md-container:has(.tf-hero) > .md-main .md-sidebar {
+  display: none;
+}
+
+.md-container:has(.tf-hero) > .md-main .md-main__inner {
+  margin-top: 0;
+}
+
+.md-container:has(.tf-hero) > .md-main .md-content {
+  max-width: 52rem;
+  margin-inline: auto;
+}
+
+.md-container:has(.tf-hero) .md-header {
+  position: initial;
+  background: rgba(247, 250, 252, 0.92);
+  color: var(--tf-navy);
+  box-shadow: none;
+  backdrop-filter: blur(8px);
+}
+
+.md-container:has(.tf-hero) .md-header--shadow {
+  box-shadow: none;
+}
+
+.md-container:has(.tf-hero) .md-tabs {
+  background: rgba(228, 238, 248, 0.95);
+  color: var(--tf-navy);
+}
+
+/* ── Below-the-fold landing body ────────────────────────────── */
+
+.tf-below {
+  padding-top: 0.25rem;
+}
+
+.tf-below > h1:first-child {
+  display: none; /* brand lives in the hero */
+}
+
+.md-typeset .tf-paths {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.85rem;
+  margin: 1.25rem 0 1.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.md-typeset .tf-paths > li {
+  margin: 0;
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--tf-line);
+  border-radius: 0.4rem;
+  background: var(--tf-paper);
+}
+
+.md-typeset .tf-paths a {
+  font-family: "Space Grotesk", var(--md-text-font);
+  font-weight: 600;
+  color: var(--tf-navy);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tf-paths a {
+  color: #f0f5fb;
+}
+
+.md-typeset .tf-paths p {
+  margin: 0.35rem 0 0;
+  color: var(--tf-muted);
+  font-size: 0.92rem;
 }
 
 /* Speed table highlights */
 .speed-highlight {
   font-weight: 600;
-  color: var(--md-accent-fg-color, #1976d2);
+  color: var(--tf-blue);
 }
 
-/* API page section anchors */
-.api-section h2 {
-  border-bottom: 2px solid var(--md-primary-fg-color, #1976d2);
+.md-typeset h2 {
+  border-bottom: 2px solid color-mix(in srgb, var(--tf-blue) 45%, transparent);
   padding-bottom: 0.3rem;
 }
 
-/* Footer adjustments */
 .md-footer {
   font-size: 0.8rem;
 }
 
-/* Code blocks: slightly smaller font for long API examples */
 .md-typeset pre > code {
   font-size: 0.82rem;
 }
 
-/* Navigation: slightly tighter nav tabs */
-.md-header__button.md-logo img {
-  height: 1.6rem;
+.grid.cards > ul > li {
+  transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
-/* Feature icon alignment in cards */
-.grid.cards li .twemoji {
-  vertical-align: middle;
-  margin-right: 0.3rem;
+.grid.cards > ul > li:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--tf-orange) 55%, var(--tf-line));
 }

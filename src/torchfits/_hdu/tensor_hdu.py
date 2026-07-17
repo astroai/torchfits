@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any, Iterator, Optional, Tuple, cast
 
 from torch import Tensor
@@ -91,3 +92,14 @@ class TensorHDU:
     def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"
+
+    def _repr_html_(self) -> str:
+        name = html.escape(str(self.header.get("EXTNAME", "PRIMARY")))
+        shape = html.escape(self._get_shape_str())
+        dtype = html.escape(self._get_dtype_str())
+        return (
+            "<table>"
+            "<caption>TensorHDU</caption>"
+            "<thead><tr><th>Name</th><th>Shape</th><th>Dtype</th></tr></thead>"
+            f"<tbody><tr><td>{name}</td><td>{shape}</td><td>{dtype}</td></tr></tbody></table>"
+        )

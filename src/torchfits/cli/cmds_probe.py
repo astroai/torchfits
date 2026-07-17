@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import urllib.request
 from typing import Any
 
@@ -35,6 +36,46 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
 def _is_vos_path(path: str) -> bool:
     lowered = path.lower()
     return lowered.startswith("vos://") or lowered.startswith("vos:")
+
+
+def _probe_vos(path: str) -> dict[str, Any]:
+    """Header probe via optional ``vos`` client (CANFAR VOSpace)."""
+    # importlib: optional dep; avoids mypy import-not-found vs import-untyped flip-flop
+    try:
+        vos = importlib.import_module("vos")
+    except ImportError as exc:
+        raise UsageError(
+            "vos: probe requires the optional 'vos' package "
+            "(pip/pixi install vos); HTTP(S) probe needs no extra dep"
+        ) from exc
+    uri = path if "://" in path else path.replace("vos:", "vos://", 1)
+    try:
+        client = vos.Client()
+        with client.open(uri, mode="rb") as handle:
+            chunk = handle.read(_HEADER_BYTES)
+    except Exception as exc:
+        raise IoError(f"{path}: {exc}") from exc
+    if not chunk or len(chunk) < 2880:
+        raise IoError(f"{path}: could not read FITS header from VOSpace")
+    cards = _cards_map(chunk[:2880].decode("latin-1", errors="replace"))
+    record: dict[str, Any] = {
+        "file": path,
+        "hdu": 0,
+        "simple": cards.get("SIMPLE"),
+        "bitpix": cards.get("BITPIX"),
+        "naxis": cards.get("NAXIS"),
+        "source": "vos",
+    }
+    try:
+        naxis = int(cards.get("NAXIS", 0) or 0)
+    except (TypeError, ValueError):
+        naxis = 0
+    record["type"] = "IMAGE" if naxis > 0 else "UNKNOWN"
+    if naxis >= 1:
+        record["naxis1"] = cards.get("NAXIS1")
+    if naxis >= 2:
+        record["naxis2"] = cards.get("NAXIS2")
+    return record
 
 
 def _is_http_path(path: str) -> bool:
@@ -87,7 +128,8 @@ def run(args: argparse.Namespace) -> int:
             local_paths.append(path)
             continue
         if _is_vos_path(path):
-            raise UsageError("vos: remote probe is not implemented")
+            remote_records.append(_probe_vos(path))
+            continue
         if _is_http_path(path):
             remote_records.append(_probe_http(path))
             continue

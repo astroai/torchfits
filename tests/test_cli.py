@@ -117,3 +117,162 @@ def test_diff_detects_change(image_fits, tmp_path):
     result = _run_cli("diff", str(image_fits), str(other))
     assert result.returncode == 1, result.stderr
     assert result.stderr.strip()
+
+
+def test_convert_png(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert",
+        str(image_fits),
+        str(out),
+        "--to",
+        "png",
+        "--bands",
+        "0,0,0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.read_bytes()[:4] == b"\x89PNG"
+
+
+def test_convert_parquet(table_fits, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    out = tmp_path / "table.parquet"
+    result = _run_cli(
+        "convert",
+        str(table_fits),
+        str(out),
+        "--to",
+        "parquet",
+        "--hdu",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+    assert pq.read_table(str(out)).num_rows == 3
+
+
+def test_convert_csv_tsv_arrow(table_fits, tmp_path):
+    import pyarrow.csv as pacsv
+    import pyarrow.feather as feather
+
+    csv_out = tmp_path / "t.csv"
+    tsv_out = tmp_path / "t.tsv"
+    arrow_out = tmp_path / "t.arrow"
+    for path, fmt in ((csv_out, "csv"), (tsv_out, "tsv"), (arrow_out, "arrow")):
+        result = _run_cli(
+            "convert", str(table_fits), str(path), "--to", fmt, "--hdu", "1"
+        )
+        assert result.returncode == 0, result.stderr
+        assert path.is_file()
+    assert pacsv.read_csv(csv_out).num_rows == 3
+    assert (
+        pacsv.read_csv(
+            tsv_out, parse_options=pacsv.ParseOptions(delimiter="\t")
+        ).num_rows
+        == 3
+    )
+    assert feather.read_table(arrow_out).num_rows == 3
+
+
+@pytest.fixture
+def table_fits(tmp_path):
+    import numpy as np
+    from astropy.io import fits
+    from astropy.table import Table
+
+    path = tmp_path / "table.fits"
+    data = {
+        "ra": np.array([200.0, 201.0, 202.0], dtype=np.float64),
+        "dec": np.array([45.0, 46.0, 47.0], dtype=np.float64),
+        "flux": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+    }
+    fits.BinTableHDU(Table(data), name="CAT").writeto(str(path), overwrite=True)
+    return path
+
+
+def test_header_fitsort_table(image_fits):
+    result = _run_cli(
+        "header",
+        str(image_fits),
+        "--fitsort",
+        "--keyword",
+        "BITPIX",
+        "--keyword",
+        "NAXIS",
+        "--hdu",
+        "0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "BITPIX" in result.stdout
+    assert "NAXIS" in result.stdout
+
+
+def test_header_fitsort_json(image_fits):
+    result = _run_cli(
+        "header",
+        str(image_fits),
+        "--fitsort",
+        "--keyword",
+        "BITPIX",
+        "--hdu",
+        "0",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert int(payload[0]["BITPIX"]) == -32
+
+
+def test_invalid_hdu_is_usage_error(image_fits):
+    result = _run_cli("info", str(image_fits), "--hdu", "not-an-int")
+    assert result.returncode == 2, result.stderr
+
+
+def test_vos_probe_missing_package_message(monkeypatch):
+    import builtins
+
+    from torchfits.cli import cmds_probe
+    from torchfits.cli.common import UsageError
+
+    real_import = builtins.__import__
+
+    def _block_vos(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "vos" or name.startswith("vos."):
+            raise ImportError("vos blocked for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _block_vos)
+    with pytest.raises(UsageError, match="vos"):
+        cmds_probe._probe_vos("vos:example/file.fits")
+
+
+def test_vos_probe_bad_uri_is_io_error_when_vos_present():
+    result = _run_cli("probe", "vos:sfabbro/example.fits", "--json")
+    # vos may be installed (CANFAR lab) or missing; either way no traceback.
+    assert result.returncode in (2, 3), result.stderr
+    assert "vos" in result.stderr.lower() or "service" in result.stderr.lower()
+
+
+def test_convert_png_invalid_bands_count(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert", str(image_fits), str(out), "--to", "png", "--bands", "0,1"
+    )
+    assert result.returncode == 2, result.stderr
+    assert "bands" in result.stderr.lower()
+
+
+def test_convert_png_invalid_bands_non_integer(image_fits, tmp_path):
+    out = tmp_path / "rgb.png"
+    result = _run_cli(
+        "convert", str(image_fits), str(out), "--to", "png", "--bands", "a,b,c"
+    )
+    assert result.returncode == 2, result.stderr
+
+
+def test_fitsort_with_invalid_hdu(image_fits):
+    result = _run_cli(
+        "header", str(image_fits), "--fitsort", "--keyword", "BITPIX", "--hdu", "abc"
+    )
+    assert result.returncode == 2, result.stderr
+    assert "hdu" in result.stderr.lower() or "invalid" in result.stderr.lower()

@@ -10,9 +10,12 @@ Pre-built wheels for **Linux x86_64** and **macOS arm64**. No system
 libraries needed — CFITSIO is bundled. Other architectures build from
 source.
 
-**Requires:** Python 3.10+, PyTorch 2.0+
+**Requires:** Python 3.10+, **PyTorch 2.10** (wheels are ABI-matched to 2.10).
 
-**Next steps:** [Quick start](quickstart.md) or
+This also installs the `torchfits` command-line tools. Try
+`torchfits --help`, then see the [CLI guide](cli.md).
+
+**Next steps:** [Quick start](quickstart.md), [CLI](cli.md), or
 [I want to…](index.md#i-want-to)
 
 ---
@@ -25,7 +28,7 @@ source.
 - C++17 compiler (GCC 10+, Clang 14+, or MSVC 2019+)
 - [CMake](https://cmake.org/) 3.21+
 - [Ninja](https://ninja-build.org/) (recommended)
-- [PyTorch](https://pytorch.org/) 2.0+
+- [PyTorch](https://pytorch.org/) **2.10** (ABI-matched to the release wheels)
 - [NumPy](https://numpy.org/) 1.20+
 
 === "Linux"
@@ -123,6 +126,11 @@ tensor = torchfits.read_tensor("image.fits", device="cuda")
 import torchfits
 print(torchfits.__version__)
 _ = torchfits.read_tensor  # extension loaded
+```
+
+```bash
+torchfits --help
+torchfits info --help
 ```
 
 ---
