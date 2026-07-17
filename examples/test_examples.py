@@ -24,6 +24,9 @@ REQUIRED = [
     "example_table_recipes.py",
     "example_hyperspectral.py",
     "example_time_series.py",
+    "gallery_images.py",
+    "gallery_spectra.py",
+    "gallery_tables_lc.py",
 ]
 
 # Optional-deps examples: pass if they exit 0 or print a known skip message.

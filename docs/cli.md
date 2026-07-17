@@ -116,8 +116,11 @@ Archive *search* (CAOM / `astquery`-style queries) is out of scope.
 | `copy` | `fitscopy` / `imcopy` |
 | `arith` | `imarith` (constant operand) |
 | `compress` / `decompress` | `fpack` / `funpack` |
+| `transform` | `imfunction`-style stretches / named transforms |
 | `setkey` | `modhead`, `replacekey` |
 | `probe` | local `info` + remote header peek |
+
+Step-by-step shell recipes (HorseHead, Chandra events): [CLI recipes](cli-recipes.md).
 
 torchfits is FITS I/O oriented — it does not clone photometry, WCS, or
 source-detection pipelines.

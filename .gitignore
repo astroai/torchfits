@@ -74,3 +74,6 @@ venv/
 
 # uv (not used — pixi is the package manager)
 uv.lock
+
+# Example gallery figures (regenerated locally)
+examples/output/

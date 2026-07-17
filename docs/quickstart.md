@@ -23,7 +23,17 @@ torchfits header image.fits --keyword BITPIX --json
 torchfits verify image.fits
 ```
 
-Full command reference: [CLI guide](cli.md).
+Full command reference: [CLI guide](cli.md). Classic `imstat` /
+`imarith` recipes: [CLI recipes](cli-recipes.md).
+
+## Real data + a first figure
+
+```bash
+pixi run python examples/gallery_images.py   # HorseHead stretches → examples/output/
+pixi run python examples/gallery_spectra.py  # continuum normalize plots
+```
+
+Embedded gallery: [Transform gallery](examples-transforms.md).
 
 ## Your First Read
 

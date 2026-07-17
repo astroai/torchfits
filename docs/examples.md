@@ -1,40 +1,46 @@
 # Examples
 
-Runnable scripts under `examples/`. Each creates temporary FITS files,
-prints results, and cleans up. Run the full smoke suite:
+Runnable scripts under `examples/`. Each prints results (galleries also write
+PNGs to `examples/output/`). Smoke suite:
 
 ```bash
 pixi run python examples/test_examples.py
 ```
 
-Shell workflows (no Python script required):
-
-```bash
-torchfits info science.fits
-torchfits header science.fits --keyword OBJECT --json
-```
-
-See the [CLI guide](cli.md) for the full command set.
-
 ---
 
 ## Start here
 
-Read these in order on your first time through:
-
 | Step | Script | You learn |
 |:---:|---|---|
-| 1 | [`example_image.py`](../examples/example_image.py) | `read_tensor`, headers, `write_tensor` |
-| 2 | [`example_image_cutouts.py`](../examples/example_image_cutouts.py) | `read_subset`, `open_subset_reader` |
-| 3 | [`example_table.py`](../examples/example_table.py) | `table.read` + `where=`, `stream_table` |
-| 4 | [`example_image_dataset.py`](../examples/example_image_dataset.py) | `FitsImageDataset`, `make_loader`, cache warmup |
-| 5 | [`example_transforms.py`](../examples/example_transforms.py) | `torchfits.transforms` pipeline |
-| 6 | [`example_data_catalogs.py`](../examples/example_data_catalogs.py) | Table + cutout datasets |
-| 7 | [`example_time_series.py`](../examples/example_time_series.py) | Light curves: clip, phase-fold, smooth |
+| 1 | [`gallery_images.py`](../examples/gallery_images.py) | Real HorseHead + stretch/normalize **before/after** figures |
+| 2 | [`gallery_spectra.py`](../examples/gallery_spectra.py) | Continuum normalize/removal (specutils-shaped plots) |
+| 3 | [`example_image.py`](../examples/example_image.py) | `read_tensor`, headers, `write_tensor` |
+| 4 | [`example_table.py`](../examples/example_table.py) | `table.read` + `where=`, `stream_table` |
+| 5 | CLI recipes | [cli-recipes.md](cli-recipes.md) — `imstat` / `imarith` / fitsort analogues |
+
+Transform figure gallery (embedded PNGs): [examples-transforms.md](examples-transforms.md).
+
+### Real public FITS
+
+```bash
+pixi run python -c "from examples._sample_data import ensure_sample; print(ensure_sample('horsehead'))"
+```
+
+Cached under `~/.cache/torchfits/samples/` (`horsehead`, `chandra_events`,
+`sdss_spectrum`). CI sets `TORCHFITS_EXAMPLE_FAST=1` to skip downloads.
 
 ---
 
 ## By topic
+
+### Transform galleries (with plots)
+
+| Script | What it demonstrates |
+|---|---|
+| [`gallery_images.py`](../examples/gallery_images.py) | All image stretches/norms/clips + FITS header scale |
+| [`gallery_spectra.py`](../examples/gallery_spectra.py) | Continuum suite, Doppler, binning, BandMath |
+| [`gallery_tables_lc.py`](../examples/gallery_tables_lc.py) | `FITSScaleColumns`, `TNullToNan`, phase-fold LC |
 
 ### Arrays and tensors
 
@@ -69,6 +75,14 @@ Read these in order on your first time through:
 |---|---|
 | [`example_time_series.py`](../examples/example_time_series.py) | Exoplanet transit light curve, FITS table write/read, `AsymmetricSigmaClip`, `PhaseFold`, `SavitzkyGolayFilter` |
 
+### Shell (CLI)
+
+| Script | What it demonstrates |
+|---|---|
+| [`cli/imstat_imarith.sh`](../examples/cli/imstat_imarith.sh) | info/stats/arith/cutout/transform/png on HorseHead |
+
+See the [CLI guide](cli.md) and [CLI recipes](cli-recipes.md).
+
 ---
 
 ## Which dataset class?
@@ -78,18 +92,7 @@ Read these in order on your first time through:
 | Image files (paths list) | Any | `FitsImageDataset` (map) or `FitsImageIterableDataset` (many workers) |
 | One table HDU | Fits in RAM | `FitsTableDataset` |
 | One table HDU | Too large for RAM | `FitsTableIterableDataset` |
-| Fixed `(path, hdu, x, y, size)` cutouts | Any | `FitsCutoutDataset` |
+| Catalog + cutouts from images | Any | `FitsCutoutDataset` |
 
-Use `make_loader(dataset, ...)` for sensible `num_workers`, `pin_memory`,
-and optional cache warmup.
-
----
-
-## Optional dependencies
-
-Polars, DuckDB, and some interop paths need extra packages. Examples print a
-skip message and exit 0 when a dependency is missing:
-
-```bash
-pip install polars duckdb
-```
+Out of scope for these demos: WCS overlays, photometry, interactive GUIs
+(jdaviz). Static matplotlib PNGs only.
