@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import urllib.request
 from typing import Any
 
@@ -39,8 +40,9 @@ def _is_vos_path(path: str) -> bool:
 
 def _probe_vos(path: str) -> dict[str, Any]:
     """Header probe via optional ``vos`` client (CANFAR VOSpace)."""
+    # importlib: optional dep; avoids mypy import-not-found vs import-untyped flip-flop
     try:
-        from vos import Client  # type: ignore[import-untyped]
+        vos = importlib.import_module("vos")
     except ImportError as exc:
         raise UsageError(
             "vos: probe requires the optional 'vos' package "
@@ -48,7 +50,7 @@ def _probe_vos(path: str) -> dict[str, Any]:
         ) from exc
     uri = path if "://" in path else path.replace("vos:", "vos://", 1)
     try:
-        client = Client()
+        client = vos.Client()
         with client.open(uri, mode="rb") as handle:
             chunk = handle.read(_HEADER_BYTES)
     except Exception as exc:
