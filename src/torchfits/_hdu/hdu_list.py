@@ -10,6 +10,13 @@ from .table_hdu import TableHDU
 from .table_hdu_ref import TableHDURef
 
 
+class _HDUInfo:
+    __slots__ = ("index", "type", "header")
+    index: int
+    type: str
+    header: Any
+
+
 class HDUList:
     def __init__(
         self, hdus: Optional[List[Union[TensorHDU, TableHDU, TableHDURef]]] = None
@@ -48,12 +55,7 @@ class HDUList:
                     header_dict = cpp.read_header(handle, i)
                     hdu_type = cpp.get_hdu_type(handle, i)
 
-                    class Info:
-                        index: int
-                        type: str
-                        header: Any
-
-                    info = Info()
+                    info = _HDUInfo()
                     info.index = i
                     info.type = hdu_type
                     info.header = header_dict
