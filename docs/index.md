@@ -70,19 +70,17 @@ torchfits header image.fits --keyword OBJECT --json
 
 Numbers from the lab scorecard — methodology in [Benchmarks](benchmarks.md).
 
-## I want to…
+## Documentation
 
-| Goal | Go to |
+| Page | Contents |
 |---|---|
-| Read a FITS image as a tensor | [`read_tensor`](api-core-io.md#read_tensor) |
-| Inspect a file from the shell | [CLI](cli.md) |
-| Filter a table in C++ | [`table.read(..., where=...)`](api-tables.md#tableread) |
-| Build a DataLoader | [`FitsImageDataset`](api-data.md) |
-| Stream a huge table | [`FitsTableIterableDataset`](api-data.md#fitstableiterabledataset) |
-| Preprocess for a model | [`torchfits.transforms`](api-transforms.md) |
-| Migrate from Astropy | [Migration guide](migration_astropy.md) |
-| Migrate from fitsio | [Migration guide](migration_fitsio.md) |
-| Check what is supported | [Parity matrix](parity.md) |
+| [Install](install.md) | Wheels, source builds, GPU notes |
+| [Quick start](quickstart.md) | Images, tables, training stack |
+| [CLI](cli.md) | Shell commands and recipes |
+| [Examples](examples.md) | Runnable scripts |
+| [API reference](api.md) | Core I/O, tables, data, transforms |
+| [Migration](migration_astropy.md) | From Astropy / fitsio |
+| [Parity](parity.md) | Supported vs out of scope |
 
 ## Scope
 

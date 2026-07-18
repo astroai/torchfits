@@ -15,6 +15,7 @@ from .caches import (
     path_signature,
     set_cached_hdu_type,
 )
+from .paths import cfitsio_base_path
 
 
 def read_header_fast(file_handle: Any, hdu_index: int, fast_header: bool = True) -> Any:
@@ -119,7 +120,8 @@ def autodetect_hdu(path: str, handle_cache_capacity: int = 16) -> int:
 
 def open_hdulist(path: str, mode: str = "r") -> HDUList:
     """Open a FITS file for reading/writing."""
-    if mode == "r" and not os.path.exists(path):
+    check_path = cfitsio_base_path(path)
+    if mode == "r" and not os.path.exists(check_path):
         raise FileNotFoundError(f"FITS file not found: {path}")
 
     try:

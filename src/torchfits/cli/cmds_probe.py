@@ -13,8 +13,10 @@ from .common import (
     EXIT_OK,
     IoError,
     UsageError,
+    add_emit_format_args,
     emit_records,
     is_remote_path,
+    resolve_emit_format,
     resolve_paths,
 )
 
@@ -28,8 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
     parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -106,6 +107,7 @@ def _probe_http(url: str) -> dict[str, Any]:
         "simple": cards.get("SIMPLE"),
         "bitpix": cards.get("BITPIX"),
         "naxis": cards.get("NAXIS"),
+        "source": "http",
     }
     try:
         naxis = int(cards.get("NAXIS", 0) or 0)
@@ -139,11 +141,7 @@ def run(args: argparse.Namespace) -> int:
         raise UsageError("mixing local paths and remote URLs is not supported")
 
     if remote_records:
-        emit_records(remote_records, json_mode=args.json, jsonl=args.jsonl)
-        if not (args.json or args.jsonl):
-            for record in remote_records:
-                parts = [f"{key}={record[key]!r}" for key in sorted(record)]
-                print(" ".join(parts))
+        emit_records(remote_records, format=resolve_emit_format(args))
         return EXIT_OK
 
     args.paths = local_paths

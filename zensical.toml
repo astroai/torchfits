@@ -22,23 +22,24 @@ nav = [
   {"Home" = "index.md"},
   {"Getting Started" = [
     "install.md",
+    "compatibility.md",
     "quickstart.md",
+  ]},
+  {"User Guide" = [
     "cli.md",
     "cli-recipes.md",
+    "examples.md",
+    "examples-transforms.md",
+    "benchmarks.md",
+    "parity.md",
   ]},
-  {"Reference" = [
+  {"API Reference" = [
     "api.md",
     "api-core-io.md",
     "api-tables.md",
     "api-data.md",
     "api-transforms.md",
     "architecture.md",
-  ]},
-  {"Guides" = [
-    "examples.md",
-    "examples-transforms.md",
-    "benchmarks.md",
-    "parity.md",
   ]},
   {"Migration" = [
     "migration_astropy.md",
@@ -59,8 +60,6 @@ custom_dir = "overrides"
 logo = "torchfits-logo.png"
 favicon = "torchfits-logo.png"
 features = [
-  "navigation.tabs",
-  "navigation.tabs.sticky",
   "navigation.path",
   "navigation.top",
   "navigation.indexes",
@@ -103,8 +102,8 @@ generic = true
 alternate_style = true
 
 [project.markdown_extensions.pymdownx.emoji]
-emoji_index = "pymdownx.emoji.twemoji"
-emoji_generator = "pymdownx.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+emoji_generator = "zensical.extensions.emoji.to_svg"
 
 [project.markdown_extensions.attr_list]
 

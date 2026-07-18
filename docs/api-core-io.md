@@ -111,6 +111,13 @@ torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
 stamp = torchfits.read_subset("mosaic.fits", hdu=0, x1=0, y1=0, x2=256, y2=256)
 ```
 
+CFITSIO image sections on the path (1-based inclusive), e.g.
+`read_tensor("mosaic.fits[1:256,1:256]")`, are passed through to CFITSIO.
+Prefer `read_subset` / CLI `--box` for torchfits-native 0-based half-open
+windows. Do not stack a path section with `read_subset` coordinates.
+Binspec / complex CFITSIO filters are not a certified torchfits surface —
+use `table.read(..., where=)` for catalog predicates.
+
 ---
 
 ## `open_subset_reader()`
@@ -272,6 +279,11 @@ with torchfits.open("mef.fits") as hdul:
     data = sci.data            # DataView (lazy)
     header = sci.header        # Header (dict-like)
 ```
+
+Paths may include a CFITSIO **image section** (`file.fits[10:100,20:200]`);
+existence checks use the base path before `[`. Prefer `hdu=` / EXTNAME
+indexing over path HDU selectors (`file.fits[1]`) — those are not a certified
+torchfits `open` surface yet.
 
 !!! warning "mmap writes require flush"
     When writing via `open()` with mmap-backed HDUs, changes are held in

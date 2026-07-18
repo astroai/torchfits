@@ -1,6 +1,23 @@
 # Transforms
 
-Header-aware preprocessing transforms for FITS images, spectra, and tables.
+Header-aware preprocessing for FITS images, spectra, and tables.
+
+## When to use
+
+- High-dynamic-range **visualization** (arcsinh, zscale, log/sqrt stretches)
+- **Model input** scaling that you want reusable across a Dataset
+- FITS **BSCALE / null** hygiene (`FITSHeaderScale`, `TNullToNan`, column scale)
+
+## When not to
+
+- You need raw ADU / physical values as stored — use `read_tensor` / `table.read`
+- One-off arithmetic on a single tensor — plain PyTorch is enough
+- Catalog filtering — use `table.read(..., where=)` (C++ pushdown), not transforms
+
+Wire a pipeline into training with `FitsImageDataset(..., transform=pipeline)`
+or call it on a tensor from `read_tensor`. See [Data module](api-data.md) for
+when to introduce a Dataset / `make_loader`.
+
 All transforms implement the `FITSTransform` callable protocol
 (`forward` / `inverse` / `__call__`). They are **not**
 `torch.nn.Module` subclasses — use them as callables with

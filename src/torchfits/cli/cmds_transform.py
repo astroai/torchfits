@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 
 import torch
-import torchfits.transforms as tf_transforms
 
 import torchfits
 
@@ -24,6 +23,8 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
 
 
 def run(args: argparse.Namespace) -> int:
+    import torchfits.transforms as tf_transforms
+
     try:
         cls = getattr(tf_transforms, args.name, None)
         if cls is None or not callable(cls):

@@ -11,11 +11,12 @@ def test_file_checksum_roundtrip_and_corruption(tmp_path):
 
     torchfits.write(str(path), data, header={"FOO": 1}, overwrite=True)
 
-    # No keywords yet.
+    # No keywords yet — ok=True (not corrupt, just nothing to verify).
     out = torchfits.verify_checksums(str(path), hdu=0)
     assert out["datastatus"] == 0
     assert out["hdustatus"] == 0
-    assert out["ok"] is False
+    assert out["ok"] is True
+    assert out["status"] == "no_checksums"
 
     torchfits.write_checksums(str(path), hdu=0)
     out = torchfits.verify_checksums(str(path), hdu=0)

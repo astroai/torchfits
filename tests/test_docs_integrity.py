@@ -242,13 +242,53 @@ def test_api_md_core_io_signatures_match_live() -> None:
     assert callable(torchfits.read_subset)
 
 
+def test_docs_index_has_no_i_want_to() -> None:
+    text = (ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+    assert "I want to" not in text
+    assert "#i-want-to" not in text
+
+
 def test_docs_examples_reference_existing_scripts() -> None:
     text = (ROOT / "docs" / "examples.md").read_text(encoding="utf-8")
-    refs = re.findall(r"\]\(\.\./examples/([^)]+)\)", text)
+    refs = re.findall(r"\]\(published-examples/([^)#]+)\)", text)
+    # Directory index / generated README are not repo examples/
+    refs = [name for name in refs if name not in {"README.md", ""}]
     missing_scripts = [name for name in refs if not (ROOT / "examples" / name).exists()]
     assert not missing_scripts, (
         f"docs/examples.md references missing scripts: {missing_scripts}"
     )
+    transforms = (ROOT / "docs" / "examples-transforms.md").read_text(encoding="utf-8")
+    href_refs = re.findall(r"\]\(published-examples/([^)#]+)\)", transforms)
+    missing_href = [
+        name for name in href_refs if not (ROOT / "examples" / name).exists()
+    ]
+    assert not missing_href, (
+        f"docs/examples-transforms.md references missing scripts: {missing_href}"
+    )
+    gallery_pages = (
+        (ROOT / "docs" / "examples.md").read_text(encoding="utf-8") + "\n" + transforms
+    )
+    gallery_refs = re.findall(r"\]\(assets/gallery/([^)]+)\)", gallery_pages)
+    missing_png = [
+        name
+        for name in gallery_refs
+        if not (ROOT / "docs" / "assets" / "gallery" / name).exists()
+    ]
+    assert not missing_png, f"missing gallery assets: {missing_png}"
+
+
+def test_sync_docs_examples_script_copies_tree() -> None:
+    import subprocess
+
+    dest = ROOT / "docs" / "published-examples"
+    subprocess.run(
+        ["bash", str(ROOT / "scripts" / "sync_docs_examples.sh")],
+        check=True,
+        cwd=ROOT,
+    )
+    assert (dest / "gallery_images.py").is_file()
+    assert (dest / "cli" / "imstat_imarith.sh").is_file()
+    assert (dest / "README.md").is_file()
 
 
 def test_zensical_config_targets_existing_docs() -> None:

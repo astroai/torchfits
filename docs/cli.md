@@ -7,6 +7,13 @@ Inventory commands (`info`, `header`, `verify`, `stats`, `table`, `probe`) take
 paths on the command line or from stdin / `--stdin`. Mutation commands
 (`copy`, `cutout`, `arith`, …) take explicit input/output paths.
 
+### Process tax (cold start)
+
+Each CLI invocation pays a **PyTorch / extension import** (~0.8–1 s on typical
+laptops) before any FITS work. That dominates wall time versus gnuastro or
+raw CFITSIO tools for tiny files. Prefer the in-process Python API for tight
+loops; use the CLI for shell pipelines and one-shot inspection.
+
 ## Install and help
 
 ```bash
@@ -21,20 +28,22 @@ torchfits info --help
 torchfits info science.fits
 torchfits header science.fits --keyword OBJECT --json
 torchfits verify science.fits
-torchfits stats science.fits --hdu 0 --jsonl
+torchfits stats science.fits --hdu 0 --format jsonl
 torchfits table catalog.fits --hdu 1 --preview 5
 torchfits cutout science.fits cutout.fits --hdu 0 --box 100,100,256,256
+torchfits cutout 'science.fits[100:256,100:256]' cutout.fits
+torchfits convert catalog.fits out.parquet --hdu 1
+torchfits convert catalog.fits out.csv --hdu 1
+torchfits convert catalog.fits out.tsv --hdu 1
+torchfits convert catalog.fits out.arrow --hdu 1
 torchfits convert catalog.fits out.parquet --to parquet --hdu 1
-torchfits convert catalog.fits out.csv --to csv --hdu 1
-torchfits convert catalog.fits out.tsv --to tsv --hdu 1
-torchfits convert catalog.fits out.arrow --to arrow --hdu 1
-torchfits convert r.fits g.fits b.fits rgb.png --to png
+torchfits convert r.fits g.fits b.fits rgb.png
 ```
 
 Pipe paths into inventory commands:
 
 ```bash
-find . -name '*.fits' | torchfits info --stdin --jsonl
+find . -name '*.fits' | torchfits info --stdin --format jsonl
 ```
 
 ## Exit codes
@@ -71,6 +80,58 @@ find . -name '*.fits' | torchfits info --stdin --jsonl
 Most commands walk **all HDUs** by default. Narrow with `--hdu 0,1,2`.
 JSONL mode emits one record per `(file, hdu)`.
 
+### Output formats
+
+Inventory commands (`info`, `header`, `verify`, `stats`, `table`, `probe`)
+accept:
+
+| Flag | Meaning |
+|------|---------|
+| (default) | human text |
+| `--format json` / `--json` | JSON array |
+| `--format jsonl` / `--jsonl` | one JSON object per line |
+
+### `cutout`
+
+Two equivalent ways to extract a pixel box:
+
+- **`--box x1,y1,x2,y2`** — torchfits 0-based, half-open (Python slice end).
+- **CFITSIO image section** on the path — 1-based inclusive, e.g.
+  `torchfits cutout 'img.fits[10:100,20:200]' out.fits`.
+
+- Supported/smoke-tested: image pixel sections via path (cutout CLI / `read_tensor`).
+- Prefer torchfits APIs for the same jobs when available: `--box` / `read_subset`,
+  `hdu=` / EXTNAME indexing, `table.read(..., where=)`.
+- Not certified: path HDU selectors (`file.fits[1]` / `[EVENTS]` via `open`),
+  binspec/histogram filenames, complex column filters as a substitute for
+  `where=`, remote URL extended forms beyond existing `probe`, stacking
+  section+`--box`.
+
+### `verify`
+
+Checks `DATASUM` / `CHECKSUM` keywords for each HDU (CFITSIO `ffvcks`).
+
+Text output uses three labels:
+
+| Label | Meaning | Exit code |
+|-------|---------|-----------|
+| `OK (no checksum keywords)` | HDU has no `DATASUM`/`CHECKSUM` — nothing to verify | 0 |
+| `OK` | Checksums present and valid | 0 |
+| `FAIL` | Checksums present but incorrect (corrupt) | 4 |
+
+A file without checksum keywords is **not** a failure — it simply has nothing
+to verify. This matches `fitsverify` semantics (warnings, not errors, for
+missing keywords). Use `torchfits write_checksums(path, hdu=...)` to add
+`DATASUM`/`CHECKSUM` keywords before verification.
+
+```bash
+torchfits verify science.fits
+torchfits verify *.fits --format jsonl
+```
+
+JSON/JSONL output adds a `"status"` field (`"ok"`, `"no_checksums"`,
+`"fail"`) alongside `"ok"`, `"datastatus"`, and `"hdustatus"`.
+
 ### `header --fitsort`
 
 Print a keyword table across many files (same idea as qfits `dfits | fitsort`):
@@ -90,6 +151,9 @@ torchfits header *.fits --fitsort --keyword BITPIX --json
     (`pl.read_ipc`) and PyArrow.
 - **png** — Lupton asinh RGB preview from one cube (`--bands 0,1,2`) or three
   band files. Writes PNG with torch + stdlib only (no Pillow dependency).
+
+`--to` is optional when the output extension is unambiguous
+(`.parquet`, `.csv`, `.tsv`/`.tab`, `.arrow`/`.feather`/`.ipc`, `.png`).
 
 Defaults are for previews, not journal figures — retune stretch / Q per survey.
 
@@ -128,6 +192,6 @@ source-detection pipelines.
 ## Scripting notes
 
 - No prompts; stable exit codes.
-- Prefer `--json` / `--jsonl` for automation.
+- Prefer `--format json` / `jsonl` (or `--json` / `--jsonl`) for automation.
 - GPU tensors are staged through host memory before any FITS write (same as the
   Python API — not GPUDirect).

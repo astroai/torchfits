@@ -10,8 +10,10 @@ from .common import (
     EXIT_OK,
     EXIT_VERIFY_FAIL,
     IoError,
+    add_emit_format_args,
     emit_records,
     header_extname,
+    resolve_emit_format,
     resolve_paths,
     selected_hdu_indices,
 )
@@ -24,8 +26,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
     parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -43,6 +44,7 @@ def run(args: argparse.Namespace) -> int:
             result = torchfits.verify_checksums(path, hdu=index)
             header = torchfits.get_header(path, index)
             ok = bool(result.get("ok"))
+            status_str = str(result.get("status", "fail"))
             all_ok = all_ok and ok
             records.append(
                 {
@@ -50,17 +52,25 @@ def run(args: argparse.Namespace) -> int:
                     "hdu": index,
                     "name": header_extname(header, index),
                     "ok": ok,
+                    "status": status_str,
                     "datastatus": result.get("datastatus"),
                     "hdustatus": result.get("hdustatus"),
                 }
             )
-    if args.json or args.jsonl:
-        emit_records(records, json_mode=args.json, jsonl=args.jsonl)
-    else:
+    fmt = resolve_emit_format(args)
+    if fmt == "text":
         for record in records:
-            status = "ok" if record["ok"] else "FAIL"
+            status = record["status"]
+            if status == "no_checksums":
+                label = "OK (no checksum keywords)"
+            elif status == "ok":
+                label = "OK"
+            else:
+                label = "FAIL"
             print(
-                f"{record['file']}:{record['hdu']} {record['name']} {status} "
+                f"{record['file']}:{record['hdu']} {record['name']} {label} "
                 f"data={record['datastatus']} hdu={record['hdustatus']}"
             )
+    else:
+        emit_records(records, format=fmt)
     return EXIT_OK if all_ok else EXIT_VERIFY_FAIL

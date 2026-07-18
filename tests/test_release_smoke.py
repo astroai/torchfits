@@ -63,7 +63,7 @@ def test_release_smoke_table_read() -> None:
 
     try:
         torchfits.write(path, table, overwrite=True)
-        data = torchfits.read_table(path, hdu=1, columns=["RA", "ID"])
+        data = torchfits.table.read_torch(path, hdu=1, columns=["RA", "ID"])
         hdu = torchfits.TableHDU.from_fits(path, hdu_index=1)
 
         assert set(data.keys()) == {"RA", "ID"}

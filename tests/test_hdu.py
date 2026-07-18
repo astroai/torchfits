@@ -53,16 +53,16 @@ def test_tablehdu_from_fits(fits_file):
 
 
 def test_tablehdu_from_fits_uses_public_read_pipeline(fits_file, monkeypatch):
-    import torchfits
+    from torchfits import table
 
-    original = torchfits.read_table
+    original = table.read_torch
     calls = []
 
-    def traced_read_table(*args, **kwargs):
+    def traced_read_torch(*args, **kwargs):
         calls.append((args, kwargs))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(torchfits, "read_table", traced_read_table)
+    monkeypatch.setattr(table, "read_torch", traced_read_torch)
     table_hdu = TableHDU.from_fits(fits_file, hdu_index=1)
 
     assert table_hdu.num_rows == 3

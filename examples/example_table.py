@@ -2,7 +2,7 @@
 Example: FITS tables as dataframes.
 
 Primary path: ``table.read`` → Arrow (portable dataframe).
-Also: ``table.read_torch`` (tensor columns), ``table.read_polars`` (native DF).
+Also: ``table.read_torch`` (tensor columns), streaming, then mutations.
 """
 
 from __future__ import annotations
@@ -39,28 +39,19 @@ def main() -> None:
     try:
         _create_test_file(path)
 
-        # --- Primary: dataframe via Arrow (synonym: table.read_arrow) ---
+        # --- Primary: dataframe via Arrow ---
         arrow_df = torchfits.table.read(
             path,
             hdu=1,
             columns=["ra", "dec", "flux"],
             where="flux >= 2.0",
         )
-        print(f"table.read dataframe (where flux >= 2): {arrow_df.num_rows} rows")
+        print(f"table.read (where flux >= 2): {arrow_df.num_rows} rows")
         print(f"  flux values: {arrow_df.column('flux').to_pylist()}")
-        assert torchfits.table.read_arrow is torchfits.table.read
 
-        # --- Dataframe columns as tensors (root alias: read_table) ---
         tensors = torchfits.table.read_torch(path, hdu=1)
         print("read_torch columns:", list(tensors.keys()))
         print(f"  ra: {tensors['ra'].tolist()}")
-
-        subset = torchfits.read_table_rows(
-            path, hdu=1, start_row=1, num_rows=2, columns=["id", "flag"]
-        )
-        print(
-            f"read_table_rows id={subset['id'].tolist()}, flag={subset['flag'].tolist()}"
-        )
 
         chunks = list(
             torchfits.table.scan_torch(path, hdu=1, batch_size=2, columns=["id"])
@@ -70,14 +61,13 @@ def main() -> None:
             f"ids={[c['id'].tolist() for c in chunks]}"
         )
 
-        # --- Native Polars dataframe (optional dep) ---
         try:
             pl_df = torchfits.table.read_polars(path, hdu=1)
-            print(f"read_polars dataframe: {pl_df.shape[0]} rows, cols={pl_df.columns}")
+            print(f"read_polars: {pl_df.shape[0]} rows")
         except ImportError:
             print("read_polars skipped (polars not installed)")
 
-        # --- In-place mutations ---
+        # --- mutations ---
         torchfits.table.append_rows(
             path,
             {
@@ -89,16 +79,12 @@ def main() -> None:
             },
             hdu=1,
         )
-        print("\nAppended 1 row to FITS table.")
-
         torchfits.table.update_rows(
             path,
             {"flux": np.array([9.9, 9.9], dtype=np.float32)},
             row_slice=slice(1, 3),
             hdu=1,
         )
-        print("Updated flux for rows index 1 to 3.")
-
         torchfits.table.insert_column(
             path,
             "quality",
@@ -106,28 +92,21 @@ def main() -> None:
             hdu=1,
             format="I",
         )
-        print("Inserted new column 'quality'.")
-
         torchfits.table.rename_columns(path, {"ra": "right_ascension"}, hdu=1)
-        print("Renamed column 'ra' to 'right_ascension'.")
-
         torchfits.table.drop_columns(path, ["flag"], hdu=1)
-        print("Dropped column 'flag'.")
-
         modified = torchfits.table.read_torch(path, hdu=1)
-        print("Modified dataframe columns:", list(modified.keys()))
-        print(f"  right_ascension: {modified['right_ascension'].tolist()}")
-        print(f"  flux (updated): {modified['flux'].tolist()}")
-        print(f"  quality (inserted): {modified['quality'].tolist()}")
+        print("after mutations:", list(modified.keys()))
+        print(
+            f"  flux={modified['flux'].tolist()} quality={modified['quality'].tolist()}"
+        )
 
         out_path = path.replace(".fits", "_out.fits")
-        new_data = {
-            "ra": torch.tensor([300.0, 301.0], dtype=torch.float64),
-            "dec": torch.tensor([50.0, 51.0], dtype=torch.float64),
-        }
         torchfits.table.write(
             out_path,
-            new_data,
+            {
+                "ra": torch.tensor([300.0, 301.0], dtype=torch.float64),
+                "dec": torch.tensor([50.0, 51.0], dtype=torch.float64),
+            },
             header={"EXTNAME": "FILTERED"},
             overwrite=True,
         )

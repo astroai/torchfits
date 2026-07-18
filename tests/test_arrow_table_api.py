@@ -1180,3 +1180,80 @@ def test_to_duckdb_missing_dependency(monkeypatch):
         ImportError, match="duckdb is required for to_duckdb conversion"
     ):
         torchfits.table.to_duckdb({"ID": [1, 2, 3]})
+
+
+def test_row_slice_negative_stop_raises():
+    """Negative stop in row_slice must raise (total row count unknown at parse time)."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        with pytest.raises(ValueError, match="negative stop"):
+            torchfits.table.read(path, hdu=1, row_slice=slice(0, -1))
+        with pytest.raises(ValueError, match="negative stop"):
+            torchfits.table.read(path, hdu=1, row_slice=slice(1, -1))
+    finally:
+        os.unlink(path)
+
+
+def test_empty_where_preserves_schema():
+    """Empty WHERE result must preserve column names (no KeyError on column access)."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        table = torchfits.table.read(path, hdu=1, where="ID > 9999", backend="cpp")
+        assert table.num_rows == 0
+        assert set(table.column_names) == {"RA", "ID", "NAME"}
+        # Accessing a column must not raise KeyError.
+        assert table.column("ID").to_pylist() == []
+    finally:
+        os.unlink(path)
+
+
+def test_empty_where_torch_path_preserves_schema():
+    """Empty WHERE via the torch-tensor filter path must also preserve schema."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        table = torchfits.table.read(path, hdu=1, where="ID > 9999", backend="torch")
+        assert table.num_rows == 0
+        assert set(table.column_names) == {"RA", "ID", "NAME"}
+    finally:
+        os.unlink(path)
+
+
+def test_empty_where_with_projection_preserves_schema():
+    """Empty WHERE with column projection must preserve selected column names."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        table = torchfits.table.read(
+            path, hdu=1, columns=["ID", "RA"], where="ID > 9999", backend="cpp"
+        )
+        assert table.num_rows == 0
+        assert table.column_names == ["ID", "RA"]
+    finally:
+        os.unlink(path)
+
+
+def test_empty_row_slice_preserves_schema():
+    """row_slice selecting 0 rows must preserve column names (e.g. slice(0,0))."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        table = torchfits.table.read(path, hdu=1, row_slice=slice(0, 0), backend="cpp")
+        assert table.num_rows == 0
+        assert set(table.column_names) == {"RA", "ID", "NAME"}
+    finally:
+        os.unlink(path)
+
+
+def test_empty_rows_preserves_schema():
+    """Empty rows=[] must preserve column names."""
+    pytest.importorskip("pyarrow")
+    path = _make_table_file()
+    try:
+        table = torchfits.table.read(path, hdu=1, rows=[], backend="cpp")
+        assert table.num_rows == 0
+        assert set(table.column_names) == {"RA", "ID", "NAME"}
+    finally:
+        os.unlink(path)

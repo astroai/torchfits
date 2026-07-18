@@ -96,6 +96,7 @@ jobs:
       - name: Zensical build
         run: |
           pip install "zensical>=0.0.50,<0.0.51"
+          bash scripts/sync_docs_examples.sh
           zensical build --clean
 
   release-gate:

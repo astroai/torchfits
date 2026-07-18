@@ -1,7 +1,7 @@
 # Dataset API migration (0.7+)
 
 **Read this if** you used `torchfits.FITSDataset` or `IterableFITSDataset` before
-0.7.0. New code should start from [Examples → PyTorch training](examples.md#pytorch-training).
+0.7.0. New code should start from [Examples → Dataset + make_loader](examples.md#dataset-make_loader).
 
 Legacy classes were removed. Use `torchfits.data` instead.
 

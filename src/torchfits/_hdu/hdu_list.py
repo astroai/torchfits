@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, List, Optional, Type, Union
+
+from torchfits._io_engine.paths import cfitsio_base_path
 
 from .header import Header
 from .tensor_hdu import TensorHDU
@@ -26,9 +29,7 @@ class HDUList:
         if mode not in ["r", "w", "rw"]:
             raise ValueError("Mode must be 'r', 'w', or 'rw'")
 
-        import os
-
-        if mode == "r" and not os.path.exists(path):
+        if mode == "r" and not os.path.exists(cfitsio_base_path(path)):
             raise FileNotFoundError(f"FITS file not found: {path}")
 
         hdul = cls()

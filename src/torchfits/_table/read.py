@@ -52,6 +52,58 @@ def _row_slice_from_start_num(start_row: int, num_rows: int) -> Optional[slice]:
     return slice(start0, start0 + num_rows)
 
 
+def _empty_table_with_schema(
+    pa: Any,
+    path: str,
+    hdu: int,
+    columns: Optional[list[str]],
+    decode_bytes: bool,
+    include_fits_metadata: bool = False,
+) -> Any:
+    """Build an empty Arrow table preserving column names/types from the FITS header.
+
+    Falls back to null-typed columns when ``columns`` is set but the header
+    cannot be fully typed (VLA / unknown TFORM), or to ``pa.table({})`` when
+    neither schema nor column names are available.
+
+    When ``columns`` is provided, the returned table preserves the *requested*
+    column order, not the FITS file order.
+    """
+    header_schema = _schema_from_header(
+        path, hdu, columns, decode_bytes, include_fits_metadata
+    )
+    if header_schema is not None:
+        # Reorder fields to match the requested column order when specified.
+        if columns is not None:
+            ordered_fields = []
+            for name in columns:
+                idx = header_schema.get_field_index(name)
+                if idx >= 0:
+                    ordered_fields.append(header_schema.field(idx))
+            if ordered_fields:
+                ordered_schema = pa.schema(
+                    ordered_fields,
+                    metadata=header_schema.metadata,
+                )
+                return pa.Table.from_arrays(
+                    [pa.array([], type=f.type) for f in ordered_schema],
+                    schema=ordered_schema,
+                )
+        return pa.Table.from_arrays(
+            [pa.array([], type=field.type) for field in header_schema],
+            schema=header_schema,
+        )
+    # ponytail: VLA / unknown TFORM — keep requested names as null columns;
+    # upgrade path is a typed scan-based empty schema when VLA decode is cheap.
+    if columns:
+        null_schema = pa.schema([pa.field(name, pa.null()) for name in columns])
+        return pa.Table.from_arrays(
+            [pa.array([], type=pa.null()) for _ in columns],
+            schema=null_schema,
+        )
+    return pa.table({})
+
+
 @functools.lru_cache(maxsize=128)
 def _compile_where_to_simple_predicates(
     where: str,
@@ -202,7 +254,7 @@ def _try_torch_tensor_where_filter(
         names_out.append(name)
 
     if not arrays:
-        # Preserve projected schema for empty output when possible.
+        # Preserve projected schema for empty output.
         empty = []
         for name in output_cols:
             value = chunk.get(name)
@@ -218,7 +270,10 @@ def _try_torch_tensor_where_filter(
                     )
                 )
             else:
-                return pa.table({})
+                # Non-tensor column (string/bit) — fall back to header schema.
+                return _empty_table_with_schema(
+                    pa, path, hdu, output_cols, decode_bytes
+                )
         return pa.Table.from_arrays(empty, names=list(output_cols))
     return pa.Table.from_arrays(arrays, names=names_out)
 
@@ -639,7 +694,9 @@ def _read_table_from_scan_batches(
         )
     )
     if not batches:
-        return pa.table({})
+        return _empty_table_with_schema(
+            pa, path, hdu, columns, decode_bytes, include_fits_metadata
+        )
     return pa.Table.from_batches(batches)
 
 
@@ -757,7 +814,9 @@ def _try_cpp_where_pushdown(
                 names_out.append(name)
 
         if not arrays:
-            return pa.table({})
+            return _empty_table_with_schema(
+                pa, path, hdu, columns, decode_bytes, include_fits_metadata=False
+            )
         return pa.Table.from_arrays(arrays, names=names_out)
     except Exception:
         return None
@@ -1011,7 +1070,11 @@ def scan(
             path, hdu, columns, start_row, num_rows, batch_size, mmap
         )
     if chunk_iter is None or backend == "torch":
-        chunk_iter = torchfits.stream_table(
+        # Lazy import: table_streaming → hdu at module import time is cyclic.
+        from .._io_engine.table_streaming import stream_table as _engine_stream_table
+
+        chunk_iter = _engine_stream_table(
+            torchfits.get_header,
             path,
             hdu=hdu,
             columns=columns,
@@ -1126,12 +1189,17 @@ def read_torch(
 ) -> Any:
     """Read a FITS table as dataframe columns mapped to ``torch.Tensor`` values.
 
-    Root alias: :func:`torchfits.read_table`. For Arrow dataframes use
+    Root alias: :func:`torchfits.read_table` (deprecated). Prefer this
+    ``table.read_torch`` entry point for new code. For Arrow dataframes use
     :func:`read` / :func:`read_arrow`.
     """
-    from torchfits.io import read_table as _read_table
+    import torchfits
 
-    return _read_table(
+    # Lazy import: table_api path must not pull hdu during _table.read import.
+    from .._io_engine.table_api import read_table as _engine_read_table
+
+    return _engine_read_table(
+        torchfits.read,
         path,
         hdu=hdu,
         columns=columns,
@@ -1305,7 +1373,9 @@ def _read_cpp_table_chunk(
     start_row, num_rows = _normalize_row_slice(row_slice)
     if num_rows == 0:
         pa = _require_pyarrow()
-        return pa.table({})
+        return _empty_table_with_schema(
+            pa, path, hdu, columns, decode_bytes, include_fits_metadata
+        )
 
     if where is not None:
         where_rows = _resolve_rows_from_where_cpp(
@@ -1397,7 +1467,9 @@ def _read_cpp_table_chunk(
         rows_arr = np.asarray(rows, dtype=np.int64)
         if rows_arr.size == 0:
             pa = _require_pyarrow()
-            return pa.table({})
+            return _empty_table_with_schema(
+                pa, path, hdu, columns, decode_bytes, include_fits_metadata
+            )
         if np.any(rows_arr < 0):
             raise ValueError("rows must be non-negative (0-based)")
 
@@ -1454,7 +1526,9 @@ def _read_cpp_table_chunk(
 
     pa = _require_pyarrow()
     if not chunk:
-        return pa.table({})
+        return _empty_table_with_schema(
+            pa, path, hdu, columns, decode_bytes, include_fits_metadata
+        )
 
     batch = _chunk_to_record_batch(
         chunk,
@@ -1495,7 +1569,11 @@ def scan_torch(
             _hdr = None
         use_mmap = _can_use_mmap_row_path_for_full_read(path, hdu, columns, header=_hdr)
 
-    for chunk in torchfits.stream_table(
+    # Lazy import: table_streaming → hdu at module import time is cyclic.
+    from .._io_engine.table_streaming import stream_table as _engine_stream_table
+
+    for chunk in _engine_stream_table(
+        torchfits.get_header,
         path,
         hdu=hdu,
         columns=columns,

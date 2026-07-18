@@ -7,10 +7,12 @@ from typing import Any
 
 from .common import (
     EXIT_OK,
+    add_emit_format_args,
     emit_records,
     header_extname,
     hdu_type_name,
     iter_file_hdu_pairs,
+    resolve_emit_format,
     resolve_paths,
 )
 
@@ -22,8 +24,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
     parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -58,5 +59,5 @@ def run(args: argparse.Namespace) -> int:
         _info_record(path, index, hdu)
         for path, index, hdu in iter_file_hdu_pairs(paths, args.hdu)
     ]
-    emit_records(records, json_mode=args.json, jsonl=args.jsonl)
+    emit_records(records, format=resolve_emit_format(args))
     return EXIT_OK

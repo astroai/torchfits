@@ -72,9 +72,11 @@ def _run_example(name: str) -> tuple[bool, str]:
         return True, ""
 
     output = (result.stderr or "") + (result.stdout or "")
-    skip_markers = ("not installed", "skipping")
-    if any(marker in output.lower() for marker in skip_markers):
-        return True, "skipped (optional dependency missing)"
+    # Only OPTIONAL examples are allowed to skip on missing deps.
+    if name in OPTIONAL:
+        skip_markers = ("not installed", "skipping")
+        if any(marker in output.lower() for marker in skip_markers):
+            return True, "skipped (optional dependency missing)"
     return False, output[:1500]
 
 

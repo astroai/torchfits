@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install "zensical>=0.0.50,<0.0.51"
-      - run: zensical build --clean
+      - run: bash scripts/sync_docs_examples.sh && zensical build --clean
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

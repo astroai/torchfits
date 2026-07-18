@@ -11,12 +11,14 @@ libraries needed — CFITSIO is bundled. Other architectures build from
 source.
 
 **Requires:** Python 3.10+, **PyTorch 2.10** (wheels are ABI-matched to 2.10).
+See the [compatibility matrix](compatibility.md) for Python / PyTorch / Arrow
+and platform coverage.
 
 This also installs the `torchfits` command-line tools. Try
 `torchfits --help`, then see the [CLI guide](cli.md).
 
-**Next steps:** [Quick start](quickstart.md), [CLI](cli.md), or
-[I want to…](index.md#i-want-to)
+**Next steps:** [Quick start](quickstart.md), [CLI](cli.md),
+[Examples](examples.md), [API reference](api.md)
 
 ---
 

@@ -1,4 +1,5 @@
 import inspect
+import warnings
 
 import numpy as np
 
@@ -60,3 +61,26 @@ def test_where_public_surface_matches_table_predicate_semantics():
     np.testing.assert_array_equal(mask, np.array([False, False, True]))
     assert torchfits.where.parse_where_literal("42") == 42
     assert where.where_columns_from_ast(ast) == ["A", "B"]
+
+
+def test_root_table_helpers_emit_deprecation_warning():
+    path = "/nonexistent_torchfits_deprecation.fits"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        for call in (
+            lambda: torchfits.read_table(path),
+            lambda: next(torchfits.stream_table(path)),
+            lambda: torchfits.read_table_rows(path),
+        ):
+            try:
+                call()
+            except Exception:
+                pass
+        msgs = [
+            str(item.message)
+            for item in caught
+            if issubclass(item.category, DeprecationWarning)
+        ]
+    assert any("read_table is deprecated" in m for m in msgs)
+    assert any("stream_table is deprecated" in m for m in msgs)
+    assert any("read_table_rows is deprecated" in m for m in msgs)

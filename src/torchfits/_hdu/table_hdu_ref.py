@@ -220,7 +220,11 @@ class TableHDURef:
         if effective_mmap and self._is_ascii_table():
             effective_mmap = False
 
-        for chunk in torchfits.stream_table(
+        # Lazy import: table_streaming → hdu is cyclic at module import time.
+        from .._io_engine.table_streaming import stream_table as _engine_stream_table
+
+        for chunk in _engine_stream_table(
+            torchfits.get_header,
             path,
             hdu=hdu,
             columns=list(self._columns) if self._columns is not None else None,

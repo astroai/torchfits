@@ -11,9 +11,11 @@ import torchfits
 from .common import (
     EXIT_OK,
     IoError,
+    add_emit_format_args,
     emit_records,
     header_extname,
     hdu_type_name,
+    resolve_emit_format,
     resolve_paths,
     selected_hdu_indices,
 )
@@ -26,8 +28,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
     parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -64,5 +65,5 @@ def run(args: argparse.Namespace) -> int:
                     "mean": float(tensor.float().mean()),
                 }
             )
-    emit_records(records, json_mode=args.json, jsonl=args.jsonl)
+    emit_records(records, format=resolve_emit_format(args))
     return EXIT_OK

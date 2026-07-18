@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import torchfits
 from torchfits import table as tf_table
@@ -12,6 +13,16 @@ from .rgb import lupton_rgb, write_rgb_image
 
 _TABLE_FORMATS = ("parquet", "csv", "tsv", "arrow")
 _ALL_FORMATS = (*_TABLE_FORMATS, "png")
+_EXT_TO_FORMAT = {
+    ".parquet": "parquet",
+    ".csv": "csv",
+    ".tsv": "tsv",
+    ".tab": "tsv",
+    ".arrow": "arrow",
+    ".feather": "arrow",
+    ".ipc": "arrow",
+    ".png": "png",
+}
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -23,9 +34,9 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument("output", help="output path")
     parser.add_argument(
         "--to",
-        required=True,
         choices=_ALL_FORMATS,
-        help="parquet|csv|tsv|arrow (tables) or png (Lupton RGB)",
+        default=None,
+        help="output format (default: infer from output extension)",
     )
     parser.add_argument("--hdu", type=int, default=1, help="table HDU (default: 1)")
     parser.add_argument(
@@ -35,6 +46,19 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument("--q", type=float, default=8.0, help="Lupton Q parameter")
     parser.add_argument("--stretch", type=float, default=0.5, help="Lupton stretch")
     parser.set_defaults(func=run)
+
+
+def _infer_format(output: str, to: str | None) -> str:
+    if to is not None:
+        return to
+    suffix = Path(output).suffix.lower()
+    fmt = _EXT_TO_FORMAT.get(suffix)
+    if fmt is None:
+        raise UsageError(
+            "cannot infer convert format from output path; "
+            "pass --to parquet|csv|tsv|arrow|png"
+        )
+    return fmt
 
 
 def _band_indices(raw: str | None, num_inputs: int) -> list[int]:
@@ -53,12 +77,11 @@ def _band_indices(raw: str | None, num_inputs: int) -> list[int]:
     return indices
 
 
-def _convert_table(args: argparse.Namespace) -> int:
+def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     if len(args.inputs) != 1:
         raise UsageError("table convert accepts one input FITS file")
     path = args.inputs[0]
     hdu = args.hdu
-    fmt = args.to
     if fmt == "parquet":
         tf_table.write_parquet(args.output, path, hdu=hdu, stream=True)
     elif fmt == "csv":
@@ -94,8 +117,9 @@ def _convert_png(args: argparse.Namespace) -> int:
 
 def run(args: argparse.Namespace) -> int:
     try:
-        if args.to in _TABLE_FORMATS:
-            return _convert_table(args)
+        fmt = _infer_format(args.output, args.to)
+        if fmt in _TABLE_FORMATS:
+            return _convert_table(args, fmt)
         return _convert_png(args)
     except UsageError:
         raise

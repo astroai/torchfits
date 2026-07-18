@@ -532,9 +532,9 @@ class TableHDU:
             raise FileNotFoundError(f"FITS file not found: {file_path}")
 
         try:
-            import torchfits
+            from torchfits import table
 
-            tensor_dict, header = torchfits.read_table(
+            tensor_dict, header = table.read_torch(
                 file_path, hdu=hdu_index, return_header=True
             )
 

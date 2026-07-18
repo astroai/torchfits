@@ -10,9 +10,11 @@ import torchfits
 from .common import (
     EXIT_OK,
     UsageError,
+    add_emit_format_args,
     emit_records,
     header_extname,
     iter_file_hdu_pairs,
+    resolve_emit_format,
     resolve_paths,
 )
 
@@ -35,8 +37,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         action="store_true",
         help="print a table of selected keywords (qfits fitsort idiom)",
     )
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -115,11 +116,12 @@ def run(args: argparse.Namespace) -> int:
                 _card_records(path, index, header, keywords=keywords or None)
             )
 
-    if args.fitsort and not (args.json or args.jsonl):
+    fmt = resolve_emit_format(args)
+    if args.fitsort and fmt == "text":
         _print_fitsort_table(records, keywords)
         return EXIT_OK
 
-    if not (args.json or args.jsonl):
+    if fmt == "text":
         for record in records:
             comment = record.get("comment") or ""
             suffix = f" / {comment}" if comment else ""
@@ -129,5 +131,5 @@ def run(args: argparse.Namespace) -> int:
             )
         return EXIT_OK
 
-    emit_records(records, json_mode=args.json, jsonl=args.jsonl)
+    emit_records(records, format=fmt)
     return EXIT_OK

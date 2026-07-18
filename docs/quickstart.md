@@ -28,12 +28,12 @@ Full command reference: [CLI guide](cli.md). Classic `imstat` /
 
 ## Real data + a first figure
 
-```bash
-pixi run python examples/gallery_images.py   # HorseHead stretches → examples/output/
-pixi run python examples/gallery_spectra.py  # continuum normalize plots
-```
+Worked examples with printed output and plots: [Examples](examples.md).
+Transform before/after gallery: [Transform gallery](examples-transforms.md).
 
-Embedded gallery: [Transform gallery](examples-transforms.md).
+```bash
+pixi run python examples/gallery_images.py   # → examples/output/ (+ docs assets)
+```
 
 ## Your First Read
 
@@ -101,6 +101,21 @@ for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
     process(batch)  # batch: pyarrow.RecordBatch
 ```
 
+## Training stack
+
+Use the lowest layer that fits the job:
+
+| Layer | Use when | Skip when |
+|-------|----------|-----------|
+| `read_tensor` / `table.read` | One file, inspect, write | Multi-file shuffled epochs |
+| `torchfits.transforms` | Reusable stretch/norm/scale for viz or model input | You need raw stored values only |
+| `Fits*Dataset` | Many files/rows as a PyTorch Dataset | Single read or Arrow/Polars analysis |
+| `make_loader` | DataLoader with torchfits cache warm-up defaults | You already build `DataLoader` yourself |
+
+`make_loader` is not a separate data API — it wraps `torch.utils.data.DataLoader`
+with torchfits defaults (`optimize_cache`, pin_memory policy). Details:
+[Data module](api-data.md), [Transforms](api-transforms.md).
+
 ## PyTorch DataLoader
 
 ```python
@@ -139,36 +154,9 @@ read by name.
 
 ## What's Next?
 
-<div class="grid cards" markdown>
-
--   :material-image-multiple: __Core I/O Reference__
-
-    `read_tensor`, `read`, `read_subset`, `write_tensor`, headers, HDUs.
-
-    [:octicons-arrow-right-24: Core I/O](api-core-io.md)
-
--   :material-table-large: __Table Reference__
-
-    `table.read`, predicate pushdown, Polars/DuckDB interop, mutations.
-
-    [:octicons-arrow-right-24: Tables](api-tables.md)
-
--   :material-brain: __Datasets & DataLoaders__
-
-    `FitsImageDataset`, `FitsTableIterableDataset`, `make_loader`.
-
-    [:octicons-arrow-right-24: Data Module](api-data.md)
-
--   :material-axis-arrow: __Transforms__
-
-    Stretches, normalizers, spectral transforms, continuum estimators.
-
-    [:octicons-arrow-right-24: Transforms](api-transforms.md)
-
--   :material-console: __CLI__
-
-    Inspect, verify, cut out, and convert FITS from the shell.
-
-    [:octicons-arrow-right-24: CLI guide](cli.md)
-
-</div>
+- [Core I/O](api-core-io.md) — `read_tensor`, `read_subset`, writes, headers
+- [Tables](api-tables.md) — `table.read`, pushdown, Polars/DuckDB
+- [Data module](api-data.md) — Datasets and `make_loader`
+- [Transforms](api-transforms.md) — stretches, normalizers, spectral prep
+- [CLI](cli.md) — shell inspect / cutout / convert
+- [Examples](examples.md) — runnable scripts

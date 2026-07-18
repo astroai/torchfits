@@ -1,7 +1,17 @@
 # Data Module
 
-`torchfits.data` provides `torch.utils.data.Dataset` and `IterableDataset`
-implementations for FITS images and tables, plus a `make_loader` factory.
+`torchfits.data` provides PyTorch `Dataset` / `IterableDataset` classes for
+FITS images and tables, plus `make_loader` — a thin factory around
+`torch.utils.data.DataLoader` with torchfits cache warm-up defaults.
+
+**Not training?** Stay on [Core I/O](api-core-io.md) (`read_tensor`) or
+[Tables](api-tables.md) (`table.read`). Datasets exist for multi-sample epochs,
+shuffle, and worker parallelism — not for one-off reads.
+
+**Layering:** `read_tensor` / `table.read` → optional
+[`transforms`](api-transforms.md) → `Fits*Dataset` → `make_loader` → training
+loop. Pass a transform into the dataset when every sample needs the same
+preprocess; call transforms yourself when exploring a single file.
 
 ---
 
@@ -14,6 +24,7 @@ implementations for FITS images and tables, plus a `make_loader` factory.
 | One table HDU | Fits in RAM | `FitsTableDataset` | Row-indexed `dict[str, Tensor]` with predicate pushdown |
 | One table HDU | Too large for RAM | `FitsTableIterableDataset` | Constant-memory streaming via `table.scan` |
 | Fixed `(path, hdu, x, y, size)` cutouts | Any | `FitsCutoutDataset` | Patch training from a mosaic |
+| One-off inspect / write / Arrow analysis | — | Core I/O / Tables | No Dataset needed |
 
 ---
 
@@ -203,6 +214,11 @@ Accepts `(path, hdu, x, y, size)` or `(path, hdu, x1, y1, x2, y2)` tuples.
 ---
 
 ## `make_loader()`
+
+`make_loader` is **not** a separate data API. It constructs a
+`torch.utils.data.DataLoader` with torchfits-sensible defaults and optional
+cache warm-up. Build `DataLoader` yourself when you already control pin_memory /
+collate / cache policy.
 
 Wraps a dataset in a `DataLoader` with sensible defaults and optional cache
 warm-up.

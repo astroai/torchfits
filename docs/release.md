@@ -77,11 +77,13 @@ comparison target is listed in `docs/parity.md`.
 ## 7. Local artifact check (optional)
 
 ```bash
+bash scripts/clean_install_smoke.sh
+# or manually:
 pip wheel . --no-deps --no-build-isolation -w dist
 twine check dist/*
 ```
 
-Smoke-test the wheel in a fresh virtualenv.
+Smoke-test the wheel in a fresh virtualenv (the script does this).
 
 ## 8. Tag and push
 

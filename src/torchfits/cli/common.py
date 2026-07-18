@@ -1,4 +1,4 @@
-"""Shared CLI helpers: paths, HDU selection, JSON output, exit codes."""
+"""Shared CLI helpers: paths, HDU selection, structured output, exit codes."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ EXIT_IO = 3
 EXIT_VERIFY_FAIL = 4
 
 _REMOTE_PREFIXES = ("http://", "https://", "vos://", "vos:")
+_EMIT_FORMATS = ("text", "json", "jsonl")
 
 
 class CliError(Exception):
@@ -112,20 +113,52 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def add_emit_format_args(parser: Any) -> None:
+    """Add ``--format`` / ``--json`` / ``--jsonl`` to an inventory command."""
+    parser.add_argument(
+        "--format",
+        choices=_EMIT_FORMATS,
+        default=None,
+        help="output format: text (default), json, or jsonl",
+    )
+    parser.add_argument("--json", action="store_true", help="emit JSON array (alias)")
+    parser.add_argument(
+        "--jsonl", action="store_true", help="emit JSONL records (alias)"
+    )
+
+
+def resolve_emit_format(args: Any) -> str:
+    """Resolve structured-output format from ``--format`` / ``--json`` / ``--jsonl``."""
+    fmt = getattr(args, "format", None)
+    json_flag = bool(getattr(args, "json", False))
+    jsonl_flag = bool(getattr(args, "jsonl", False))
+    if json_flag and jsonl_flag:
+        raise UsageError("use only one of --json or --jsonl")
+    if jsonl_flag:
+        if fmt is not None and fmt != "jsonl":
+            raise UsageError("conflicting --format and --jsonl")
+        return "jsonl"
+    if json_flag:
+        if fmt is not None and fmt != "json":
+            raise UsageError("conflicting --format and --json")
+        return "json"
+    return fmt or "text"
+
+
 def emit_records(
     records: Iterable[dict[str, Any]],
     *,
-    json_mode: bool,
-    jsonl: bool,
+    format: str = "text",
     stream: TextIO | None = None,
 ) -> None:
+    """Emit inventory records as text, JSON, or JSONL."""
     out = stream or sys.stdout
     items = list(records)
-    if jsonl:
+    if format == "jsonl":
         for record in items:
             print(json.dumps(record, default=json_default), file=out)
         return
-    if json_mode:
+    if format == "json":
         print(json.dumps(items, default=json_default, indent=2), file=out)
         return
     for record in items:

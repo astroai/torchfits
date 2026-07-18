@@ -110,6 +110,11 @@ def _normalize_row_slice(
         raise ValueError("row_slice step must be 1 for FITS row streaming")
     if start < 0:
         raise ValueError("row_slice start must be >= 0")
+    if stop is not None and stop < 0:
+        raise ValueError(
+            "row_slice negative stop is not supported (total row count is "
+            "unknown at parse time); use a non-negative stop or None"
+        )
 
     start_row = start + 1
     if stop is None:

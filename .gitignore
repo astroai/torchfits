@@ -77,3 +77,6 @@ uv.lock
 
 # Example gallery figures (regenerated locally)
 examples/output/
+
+# Synced into docs/ at docs-build time (source of truth: examples/)
+docs/published-examples/

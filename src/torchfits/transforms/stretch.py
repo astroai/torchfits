@@ -27,7 +27,9 @@ class ArcsinhStretch(FITSTransform):
 
     def __init__(self, a: float = 1.0) -> None:
         self.a = float(a)
-        self._norm = math.asinh(self.a) if self.a > 0 else 1.0
+        if self.a <= 0:
+            raise ValueError(f"ArcsinhStretch 'a' must be > 0, got {self.a}")
+        self._norm = math.asinh(self.a)
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
@@ -64,6 +66,8 @@ class LogStretch(FITSTransform):
 
     def __init__(self, a: float = 1000.0, eps: float = 1e-9) -> None:
         self.a = float(a)
+        if self.a <= 0:
+            raise ValueError(f"LogStretch 'a' must be > 0, got {self.a}")
         self.eps = float(eps)
         self._norm = math.log10(1.0 + self.a)
 

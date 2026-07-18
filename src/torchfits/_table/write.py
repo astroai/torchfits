@@ -58,8 +58,7 @@ def write(
         _invalidate_path_caches(path)
         return
 
-    # TODO(1.0): widen io.write() header param to Header | dict[str, Any] | None
-    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)  # type: ignore[arg-type]
+    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)
 
 
 def _header_cards_to_mapping(header_cards: Any) -> dict[str, Any]:

@@ -100,7 +100,7 @@ def _write_header_cards_if_supported(
 def write(
     path: str | os.PathLike[str],
     data: Any,
-    header: Optional[Header] = None,
+    header: Optional[Header | Dict[str, Any]] = None,
     overwrite: bool = False,
     compress: Union[bool, str] = False,
 ) -> None:

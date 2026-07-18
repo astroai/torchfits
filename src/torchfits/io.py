@@ -7,10 +7,11 @@ controls. Arrow-native table APIs live in :mod:`torchfits.table`.
 
 from __future__ import annotations
 
+import atexit
 import logging as _stdlib_logging
 import os
 import sys
-import atexit
+import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -215,9 +216,17 @@ def read_table(
 ) -> Any:
     """Read a FITS table as dataframe columns mapped to tensors.
 
-    Root alias of :func:`torchfits.table.read_torch`. Prefer
-    ``table.read_torch`` in new code; use ``table.read`` for Arrow dataframes.
+    .. deprecated:: 1.0.0rc1
+        Prefer :func:`torchfits.table.read_torch` (tensors) or
+        :func:`torchfits.table.read` (Arrow). This root alias remains for
+        compatibility and emits :class:`DeprecationWarning`.
     """
+    warnings.warn(
+        "torchfits.read_table is deprecated; use torchfits.table.read_torch "
+        "(tensors) or torchfits.table.read (Arrow).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _read_table_impl(
         read,
         path,
@@ -280,7 +289,7 @@ def open(path: str, mode: str = "r") -> HDUList:
 def write(
     path: str | os.PathLike[str],
     data: Any,
-    header: Header | None = None,
+    header: Header | dict[str, Any] | None = None,
     overwrite: bool = False,
     compress: bool | str = False,
 ) -> None:
@@ -357,9 +366,15 @@ def stream_table(
 ) -> Any:
     """Stream FITS table rows as tensor-column chunks.
 
-    Prefer :func:`torchfits.table.scan_torch` in new code (``batch_size`` /
-    ``row_slice`` / ``device``). ``scan_torch`` builds on this streaming path.
+    .. deprecated:: 1.0.0rc1
+        Prefer :func:`torchfits.table.scan_torch` in new code. This root helper
+        remains for compatibility and emits :class:`DeprecationWarning`.
     """
+    warnings.warn(
+        "torchfits.stream_table is deprecated; use torchfits.table.scan_torch.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _stream_table_impl(
         get_header,
         file_path,
@@ -465,12 +480,24 @@ def read_table_rows(
     fast_header: bool = True,
     return_header: bool = False,
 ) -> Any:
-    """Read a contiguous range of rows from a FITS table HDU."""
+    """Read a contiguous range of rows from a FITS table HDU.
+
+    .. deprecated:: 1.0.0rc1
+        Prefer :func:`torchfits.table.read_torch` with ``start_row`` /
+        ``num_rows``. Emits :class:`DeprecationWarning`.
+    """
+    warnings.warn(
+        "torchfits.read_table_rows is deprecated; use torchfits.table.read_torch "
+        "with start_row/num_rows.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not isinstance(hdu, int) or hdu < 0:
         raise ValueError("hdu must be a non-negative integer")
     if num_rows <= 0:
         raise ValueError("num_rows must be > 0 for read_table_rows")
-    return read_table(
+    return _read_table_impl(
+        read,
         path,
         hdu=hdu,
         columns=columns,

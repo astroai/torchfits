@@ -432,6 +432,13 @@ class TestArcsinhStretch:
         restored = t.inverse(out)
         assert torch.allclose(restored, x, atol=1e-5)
 
+    def test_rejects_non_positive_a(self) -> None:
+        """ArcsinhStretch(a=0) and a<0 must raise ValueError (silent NaN otherwise)."""
+        with pytest.raises(ValueError, match="must be > 0"):
+            ArcsinhStretch(a=0.0)
+        with pytest.raises(ValueError, match="must be > 0"):
+            ArcsinhStretch(a=-1.0)
+
 
 class TestLogStretch:
     def test_roundtrip_identity(self) -> None:
@@ -456,6 +463,13 @@ class TestLogStretch:
         t = LogStretch()
         out = t.forward(x)
         assert out.dtype == torch.float32
+
+    def test_rejects_non_positive_a(self) -> None:
+        """LogStretch(a=0) and a<0 must raise ValueError (silent NaN otherwise)."""
+        with pytest.raises(ValueError, match="must be > 0"):
+            LogStretch(a=0.0)
+        with pytest.raises(ValueError, match="must be > 0"):
+            LogStretch(a=-1.0)
 
 
 class TestSqrtStretch:

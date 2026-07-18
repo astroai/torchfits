@@ -7,19 +7,22 @@ from typing import Any
 
 from torchfits import table as tf_table
 
+import json
+
+import torchfits
+
 from .common import (
     EXIT_OK,
     IoError,
+    add_emit_format_args,
     emit_records,
     header_extname,
     hdu_type_name,
     json_default,
+    resolve_emit_format,
     resolve_paths,
     selected_hdu_indices,
 )
-import json
-
-import torchfits
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -32,8 +35,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--hdu", help="comma-separated table HDU indices (default: all)"
     )
     parser.add_argument("--preview", type=int, default=5, help="preview row count")
-    parser.add_argument("--json", action="store_true", help="emit JSON array")
-    parser.add_argument("--jsonl", action="store_true", help="emit JSONL records")
+    add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -79,8 +81,9 @@ def run(args: argparse.Namespace) -> int:
                     records.append(record)
         except Exception as exc:
             raise IoError(f"{path}: {exc}") from exc
-    if args.json or args.jsonl:
-        emit_records(records, json_mode=args.json, jsonl=args.jsonl)
+    fmt = resolve_emit_format(args)
+    if fmt != "text":
+        emit_records(records, format=fmt)
         return EXIT_OK
     for record in records:
         print(

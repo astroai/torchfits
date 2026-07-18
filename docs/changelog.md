@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0rc1] — 2026-07-17
+
+Release candidate for the 1.0 API. Formal stamp:
+`docs/reviews/release-api-freeze-1.0.0rc1.md`. SemVer `1.0.0` waits for
+post-rc soak; do not treat this tag as the final 1.0.0 freeze.
+
+### Changed
+
+- **`verify` / `verify_checksums`: missing checksum keywords are success.**
+  Files without `DATASUM`/`CHECKSUM` now return `ok=True`,
+  `status="no_checksums"`, CLI text `OK (no checksum keywords)`, **exit 0**.
+  Previously CLI exited **4** (FAIL). Aligns with `fitsverify` (missing
+  keywords are not corruption). Scripts that treated any nonzero verify exit
+  as “bad file” must key off `status == "fail"` / exit 4 instead.
+
+- **Root table helpers deprecated.** `read_table`, `stream_table`, and
+  `read_table_rows` emit `DeprecationWarning`. Prefer `torchfits.table.read`
+  / `read_torch` / `scan_torch`.
+
+### Fixed
+
+- **`ArcsinhStretch` / `LogStretch`: validate `a > 0` in `__init__`.**
+  Previously `a=0` silently produced `NaN` (div-by-zero in `inverse` /
+  `forward`). Now raises `ValueError` with a clear message. (`transforms/stretch.py`)
+
+- **`_normalize_row_slice`: reject negative `stop` with `ValueError`.**
+  Previously `slice(0, -1)` silently returned 0 rows — the function cannot
+  resolve negative indices without knowing the total row count. Now raises
+  `ValueError` with an actionable message. (`_table/utils.py`)
+
+- **Empty `WHERE` / `row_slice` / `rows` results: preserve column schema.**
+  Previously all empty-result paths returned `pa.table({})`, losing all column
+  names/types and causing `KeyError` on valid queries (e.g. `where="ID > 9999"`
+  on a table with no matches). New `_empty_table_with_schema()` helper builds
+  typed empty tables from FITS header cards, preserving requested column
+  ordering. When header schema is unavailable but columns were requested,
+  returns null-typed empty columns instead of `{}`. (`_table/read.py`)
+
+- **`io.write()` header type: widen to `Header | dict[str, Any] | None`.**
+  Removed `TODO(1.0)` and `type:ignore[arg-type]` in `_table/write.py`. The
+  runtime already accepted dicts; only the type annotation was narrow.
+  (`io.py`, `_io_engine/write_api.py`, `_table/write.py`)
+
+- **Example runner: `REQUIRED` examples can no longer silently skip.**
+  Only `OPTIONAL` examples (e.g. `example_polars.py`) may skip on missing deps.
+  `REQUIRED` examples always surface failures. (`examples/test_examples.py`)
+
+### Added
+
+- `docs/cli.md`: `### verify` section (three labels, exit codes, fitsverify note);
+  CLI cold-start / process-tax note.
+- `docs/compatibility.md`: Python / PyTorch / Arrow / platform matrix.
+- `scripts/clean_install_smoke.sh`: local wheel → fresh venv install smoke.
+- `tests/test_http_probe_fixture.py`: Range HTTP replay for `probe`.
+- HTTP probe JSON records include `"source": "http"` (matches `vos` probe).
+- Tests: stretch `a<=0`, empty schema preservation, verify messaging contract,
+  deprecation warnings, HTTP probe fixture.
+
+### Benchmark evidence
+
+- Multi-host scorecard (from b1 same-day refresh, still current for rc1):
+  `exhaustive_mps_20260717_040150`, `exhaustive_cpu_20260717_040146`,
+  `exhaustive_cuda_20260717_042840`.
+- Local release-suite (`20260717_212321`, Mac MPS, mmap matrix, `--no-gpu`):
+  2,825 rows, 3 deficit rows, exit 0. No domain failures.
+
+### Validation
+
+848+ tests; mypy / ruff clean; docs integrity; examples runner REQUIRED green;
+`bash scripts/clean_install_smoke.sh`; HTTP probe fixture.
+
 ## [1.0b1] — 2026-07-17
 
 Beta freeze of the public FITS → tensor / dataframe story. Not a SemVer 1.0.0
@@ -596,7 +667,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0b1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc1...HEAD
+[1.0.0rc1]: https://github.com/astroai/torchfits/releases/tag/v1.0.0rc1
 [1.0b1]: https://github.com/astroai/torchfits/releases/tag/v1.0b1
 [0.9.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.9.0
 [0.7.0]: https://github.com/astroai/torchfits/compare/v0.6.0...v0.7.0

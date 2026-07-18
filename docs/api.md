@@ -21,8 +21,10 @@ model is a columnar dataframe.
 | Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like |
 
 `table.read_arrow` is an exact synonym of `table.read` (destination-qualified
-spelling). Root `read_table` is a compatibility alias of `table.read_torch`.
-Prefer `table.*` for dataframe workflows (`where=`, projection, Polars/Pandas).
+spelling). Root `read_table` / `stream_table` / `read_table_rows` are
+**deprecated** compatibility aliases of the `table.*` tensor helpers (emit
+`DeprecationWarning` since 1.0.0rc1). Prefer `table.*` for dataframe workflows
+(`where=`, projection, Polars/Pandas).
 
 ---
 
@@ -61,6 +63,9 @@ Compatibility helpers (same behavior, lower prominence): `table.read_arrow`
 
 ### ML Training
 
+Prefer raw I/O until you need epochs/shuffle/workers — see
+[Data module](api-data.md) and [Transforms](api-transforms.md#when-to-use).
+
 | Goal | Entry point | Reference |
 |---|---|---|
 | Image map-style dataset | `FitsImageDataset(paths, hdu=0, label_key=None)` | [Data](api-data.md#fitsimagedataset) |
@@ -68,7 +73,7 @@ Compatibility helpers (same behavior, lower prominence): `table.read_arrow`
 | Table map-style (fits in RAM) | `FitsTableDataset(path, hdu=1)` | [Data](api-data.md#fitstabledataset) |
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |
-| DataLoader with defaults | `make_loader(dataset, batch_size=32)` | [Data](api-data.md#make_loader) |
+| DataLoader + cache defaults | `make_loader(dataset, batch_size=32)` | [Data](api-data.md#make_loader) |
 | Image stretches, normalizers | `from torchfits.transforms import …` | [Transforms](api-transforms.md) |
 | Spectral preprocessing | `ContinuumNormalize`, `DopplerShift`, ... | [Transforms](api-transforms.md) |
 | Shell inspect / convert | `torchfits info|header|verify|…` | [CLI](cli.md) |

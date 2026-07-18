@@ -65,16 +65,63 @@ def test_header_keyword(image_fits):
 
 def test_verify_without_checksums(image_fits):
     result = _run_cli("verify", str(image_fits), "--json")
-    assert result.returncode == 4, result.stderr
+    # No checksum keywords → ok=True, exit 0 (not corrupt, just unverified).
+    assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload[0]["ok"] is False
+    assert payload[0]["ok"] is True
+    assert payload[0]["status"] == "no_checksums"
 
 
 def test_verify_after_write_checksums(image_fits):
     torchfits.write_checksums(str(image_fits), hdu=0)
     result = _run_cli("verify", str(image_fits))
     assert result.returncode == 0, result.stderr
-    assert "ok" in result.stdout
+    assert "OK" in result.stdout
+
+
+def test_verify_text_output_messaging_contract(tmp_path):
+    """Lock in the three verify text-output labels in text mode:
+
+    - "OK (no checksum keywords)" — file has no DATASUM/CHECKSUM keywords
+    - "OK"                       — checksums present and valid
+    - "FAIL"                     — checksums present but corrupt (exit 4)
+    """
+    path = tmp_path / "verify.fits"
+    data = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+    torchfits.write(str(path), data, header={"FOO": 1}, overwrite=True)
+
+    # 1. No checksum keywords → OK (no checksum keywords), exit 0.
+    result = _run_cli("verify", str(path))
+    assert result.returncode == 0, result.stderr
+    assert "OK (no checksum keywords)" in result.stdout
+    assert "FAIL" not in result.stdout
+
+    # 2. Write checksums → OK, exit 0.
+    torchfits.write_checksums(str(path), hdu=0)
+    result = _run_cli("verify", str(path))
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+    assert "no checksum keywords" not in result.stdout
+    assert "FAIL" not in result.stdout
+
+    # 3. Corrupt a non-structural header keyword (FOO) → CHECKSUM fails, exit 4.
+    # Changing a non-structural keyword alters header bytes without making
+    # the file unopenable, so CHECKSUM recomputation diverges from the stored value.
+    with open(path, "r+b") as f:
+        raw = f.read()
+        needle = b"FOO     ="
+        idx = raw.find(needle)
+        assert idx != -1, "FOO card not found"
+        card = bytearray(raw[idx : idx + 80])
+        one = card.find(b"1")
+        assert one != -1, "digit to corrupt not found in FOO card"
+        card[one : one + 1] = b"2"
+        f.seek(idx)
+        f.write(card)
+
+    result = _run_cli("verify", str(path))
+    assert result.returncode == 4, result.stderr
+    assert "FAIL" in result.stdout
 
 
 def test_copy_roundtrip(image_fits, tmp_path):
@@ -125,13 +172,75 @@ def test_convert_png(image_fits, tmp_path):
         "convert",
         str(image_fits),
         str(out),
-        "--to",
-        "png",
         "--bands",
         "0,0,0",
     )
     assert result.returncode == 0, result.stderr
     assert out.read_bytes()[:4] == b"\x89PNG"
+
+
+def test_convert_infers_format_from_extension(table_fits, tmp_path):
+    out = tmp_path / "table.parquet"
+    result = _run_cli("convert", str(table_fits), str(out), "--hdu", "1")
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+
+
+def test_convert_unknown_extension_needs_to(table_fits, tmp_path):
+    out = tmp_path / "table.dat"
+    result = _run_cli("convert", str(table_fits), str(out), "--hdu", "1")
+    assert result.returncode == 2, result.stderr
+    assert "--to" in result.stderr
+
+
+def test_info_jsonl_format(image_fits):
+    result = _run_cli("info", str(image_fits), "--format", "jsonl")
+    assert result.returncode == 0, result.stderr
+    line = result.stdout.strip().splitlines()[0]
+    payload = json.loads(line)
+    assert payload["type"] == "IMAGE"
+
+
+def test_cutout_box(image_fits, tmp_path):
+    out = tmp_path / "box.fits"
+    result = _run_cli(
+        "cutout", str(image_fits), str(out), "--box", "0,0,2,2", "--hdu", "0"
+    )
+    assert result.returncode == 0, result.stderr
+    cut = torchfits.read_tensor(str(out), hdu=0)
+    assert cut.shape == (2, 2)
+
+
+def test_cutout_cfitsio_section(image_fits, tmp_path):
+    out = tmp_path / "section.fits"
+    # CFITSIO 1-based inclusive [1:2,1:2] ≈ torchfits --box 0,0,2,2
+    sectioned = f"{image_fits}[1:2,1:2]"
+    result = _run_cli("cutout", sectioned, str(out), "--hdu", "0")
+    assert result.returncode == 0, result.stderr
+    cut = torchfits.read_tensor(str(out), hdu=0)
+    assert cut.shape == (2, 2)
+    expected = torchfits.read_subset(str(image_fits), 0, 0, 0, 2, 2)
+    assert torch.allclose(cut, expected)
+
+
+def test_cutout_rejects_section_and_box(image_fits, tmp_path):
+    out = tmp_path / "bad.fits"
+    result = _run_cli(
+        "cutout",
+        f"{image_fits}[1:2,1:2]",
+        str(out),
+        "--box",
+        "0,0,2,2",
+    )
+    assert result.returncode == 2, result.stderr
+
+
+def test_open_cfitsio_section_exists(image_fits):
+    sectioned = f"{image_fits}[1:2,1:2]"
+    with torchfits.open(sectioned) as hdul:
+        assert len(hdul) >= 1
+    tensor = torchfits.read_tensor(sectioned, hdu=0)
+    assert tensor.shape == (2, 2)
 
 
 def test_convert_parquet(table_fits, tmp_path):
