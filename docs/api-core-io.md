@@ -16,10 +16,10 @@ torchfits.read(path, hdu=0, device="cpu", mmap="auto", mode="auto",
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `path` | `str \| PathLike` | *(required)* | FITS file path |
-| `hdu` | `int \| str \| None` | `0` | HDU index, EXTNAME, or `None`/`"auto"` for autodetection |
+| `path` | `str` or `PathLike` | *(required)* | FITS file path |
+| `hdu` | `int` or `str` or `None` | `0` | HDU index, EXTNAME, or `None`/`"auto"` for autodetection |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
-| `mmap` | `bool \| str` | `"auto"` | `True`, `False`, or `"auto"` |
+| `mmap` | `bool` or `str` | `"auto"` | `True`, `False`, or `"auto"` |
 | `mode` | `str` | `"auto"` | `"auto"`, `"image"`, or `"table"` |
 | `return_header` | `bool` | `False` | Return `(data, Header)` tuple |
 
@@ -36,8 +36,8 @@ tuple if `return_header=True`.
     Use `read()` for quick exploration. Default `hdu=0` (primary). Pass
     `hdu=None` for first image/table autodetection. For explicit tensor reads,
     prefer `read_tensor()`. For dataframe workflows (predicate pushdown
-    `where=`, Arrow/Polars), prefer `table.read()` — root `read()` does not
-    accept `where=` and does **not** return Arrow.
+    `where=`, Arrow/Polars), use `table.read()`. Root `read()` returns tensor
+    columns for table HDUs and has no `where=` parameter.
 
 ```python
 # Image with header
@@ -62,7 +62,7 @@ torchfits.read_tensor(path, hdu=0, device="cpu", mmap=True, handle_cache=True,
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
-| `hdu` | `int` | `0` | Explicit integer HDU index (required) |
+| `hdu` | `int` or `str` | `0` | HDU index or EXTNAME (required) |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
 | `mmap` | `bool` | `True` | Memory-mapped reads (faster for repeated access) |
 | `handle_cache` | `bool` | `True` | Cache the open FITS handle |
@@ -100,7 +100,9 @@ cube = torchfits.read_tensor("cube.fits", hdu=0)
 
 ## `read_subset()`
 
-Read a rectangular pixel subset from an image HDU.
+Read a rectangular pixel subset from an image HDU. On **3D+ cubes**, the
+window applies to the trailing `(y, x)` axes; the leading depth axis is kept
+in full.
 
 ```python
 torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
@@ -109,7 +111,7 @@ torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
-| `hdu` | `int` | *(required)* | HDU index |
+| `hdu` | `int` or `str` | *(required)* | HDU index or EXTNAME |
 | `x1, y1, x2, y2` | `int` | *(required)* | Half-open pixel window `[x1,x2)×[y1,y2)` |
 
 **Returns:** `torch.Tensor`
@@ -135,6 +137,8 @@ file once; each call reads a region without re-opening.
 ```python
 torchfits.open_subset_reader(path, hdu=0, device="cpu")
 ```
+
+`hdu` accepts an integer index or EXTNAME string (same as `read_subset`).
 
 **Returns:** Context manager yielding a `SubsetReader`. Call `reader(x1, y1, x2, y2)` for each cutout.
 
@@ -162,7 +166,7 @@ torchfits.read_hdus(path, hdus, *, device="cpu", mmap=True, return_header=False)
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
-| `hdus` | `list[int \| str]` | *(required)* | HDU indices or EXTNAME strings |
+| `hdus` | `list[int` or `str]` | *(required)* | HDU indices or EXTNAME strings |
 | `device` | `str` | `"cpu"` | Target device |
 | `mmap` | `bool` | `True` | Memory-mapped reads |
 | `return_header` | `bool` | `False` | Return list of `(tensor, Header)` tuples |
@@ -191,7 +195,7 @@ torchfits.read_table(path, hdu=1, columns=None, start_row=1, num_rows=-1,
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
 | `hdu` | `int` | `1` | Table HDU index |
-| `columns` | `list[str] \| None` | `None` | Column names (None = all) |
+| `columns` | `list[str]` or `None` | `None` | Column names (None = all) |
 | `start_row` | `int` | `1` | First row (1-indexed) |
 | `num_rows` | `int` | `-1` | Number of rows (-1 = all) |
 | `device` | `str` | `"cpu"` | Target device |
@@ -338,11 +342,11 @@ torchfits.write(path, data, header=None, overwrite=False, compress=False)
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `path` | `str \| PathLike` | *(required)* | Output path |
-| `data` | `Tensor \| ndarray \| dict \| HDUList` | *(required)* | Data to write |
-| `header` | `dict \| Header \| None` | `None` | FITS header key-value pairs |
+| `path` | `str` or `PathLike` | *(required)* | Output path |
+| `data` | `Tensor` or `ndarray` or `dict` or `HDUList` | *(required)* | Data to write |
+| `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
-| `compress` | `bool \| str` | `False` | `True`, `"gzip"`, `"rice"`, etc. |
+| `compress` | `bool` or `str` | `False` | `True`, `"gzip"`, `"rice"`, etc. |
 
 ### `write_tensor()`
 
@@ -397,3 +401,21 @@ torchfits.cache.optimize_for_dataset(file_paths, avg_file_size_mb=10.0)
     before `DataLoader` epochs to warm handle caches. When using
     `make_loader(..., optimize_cache=True)` (the default), this happens
     automatically.
+
+### Disk cache directories
+
+Remote prefetch and example samples live under a base directory resolved
+once per process:
+
+| Variable | Default | Contents |
+|---|---|---|
+| `TORCHFITS_CACHE_DIR` | `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits` | Base for the two subdirs below |
+| `TORCHFITS_REMOTE_CACHE` | `<base>/remote` | HTTP(S) file materialization |
+| `TORCHFITS_SAMPLE_CACHE` | `<base>/samples` | `examples/` gallery downloads |
+
+These roots are independent of `get_cache_performance` / `clear_file_cache`
+above, which govern the in-process handle and metadata caches, not files on
+disk. Dataset classes accept `cache_dir=` to override the remote root
+per-instance; see [Data module](api-data.md#cache-how-and-when) for the
+Dataset/`make_loader` cache-warming path and when it no-ops (table datasets,
+single-file reads).

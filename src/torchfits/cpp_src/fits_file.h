@@ -91,6 +91,8 @@ private:
     int hdu_num_ = 0;
     long max_x_ = 0;
     long max_y_ = 0;
+    int naxis_ = 0;
+    std::vector<long> naxes_;
     torch::ScalarType dtype_ = torch::kFloat32;
     int datatype_ = TFLOAT;
     bool closed_ = false;

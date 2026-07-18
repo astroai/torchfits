@@ -64,6 +64,40 @@ def test_cache_root_xdg(tmp_path, monkeypatch):
     assert cache_root() == tmp_path / "xdg" / "torchfits"
 
 
+def test_resolve_local_path_waits_for_inflight_prefetch(tmp_path, monkeypatch):
+    """resolve_local_path must not race a concurrent prefetch for the same URL.
+
+    Regression: prefetch_urls() starts a background download for the
+    make_loader/Dataset "read ahead" window; resolve_local_path() used to
+    ignore that in-flight download and start a second, concurrent download
+    to the same temp file whenever the caller reached that file before the
+    prefetch finished (duplicate work, and a real corruption risk since both
+    downloads write the same ".partial" path).
+    """
+    import time
+    from unittest import mock
+
+    import torchfits.data.remote as remote
+
+    calls: list[str] = []
+
+    def _slow_download(url, dest):
+        calls.append(url)
+        time.sleep(0.3)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("data")
+        return dest
+
+    with mock.patch.object(remote, "_download", side_effect=_slow_download):
+        url = "https://example.test/warm-cache.fits"
+        remote.prefetch_urls([url], cache_dir=tmp_path)
+        time.sleep(0.05)  # let the prefetch thread start but not finish
+        remote.resolve_local_path(url, cache_dir=tmp_path)
+        time.sleep(0.5)
+
+    assert len(calls) == 1, f"expected exactly one download, got {len(calls)}"
+
+
 def test_remote_cache_path_stable(tmp_path, monkeypatch):
     from torchfits.data.remote import (
         cache_path_for_url,

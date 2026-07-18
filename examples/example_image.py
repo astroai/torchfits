@@ -3,13 +3,21 @@ Example: read and write FITS images with torchfits.
 """
 
 import os
+import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import torch
 from astropy.io import fits
 
-import torchfits
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from examples._sample_data import try_ensure_sample  # noqa: E402
+
+import torchfits  # noqa: E402
 
 
 def _create_test_file(path: str) -> None:
@@ -53,6 +61,17 @@ def main() -> None:
         os.unlink(out_path)
     finally:
         os.unlink(path)
+
+    # Real file, when cached (synthetic path above is the CI-stable primary demo)
+    horsehead = try_ensure_sample("horsehead")
+    if horsehead is not None:
+        real = torchfits.read_tensor(str(horsehead), hdu=0)
+        print(
+            f"horsehead (real sample): shape={real.shape}, "
+            f"min={real.min():.1f}, max={real.max():.1f}"
+        )
+    else:
+        print("horsehead sample not cached; skipping real-file demo")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,40 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0rc3] — 2026-07-18
+
+Third release candidate for collaborator soak.
+
+### Docs
+- Persona pass on user-facing pages: rc honesty, corrected migration threading
+  (private CFITSIO handles since rc2), API notes for EXTNAME / 3D `read_subset`,
+  cache vs disk-cache / `make_loader` layering.
+- Examples gallery: MaNGA LOGCUBE (`example_manga_logcube.py`), Lupton RGB from
+  real SDSS g/r/i (`example_lupton_rgb_sdss.py`, stdlib `bz2` inflate before
+  read), CFHT MegaCam MEF cutouts (`example_megacam_mef_cutouts.py`).
+- Fill API / cache / loader doc gaps: `TORCHFITS_CACHE_DIR` vs in-process handle
+  cache, when `optimize_cache` no-ops on table datasets, `make_loader` vs plain
+  `DataLoader`.
+
+### Agent / Jules
+- `AGENTS.md` + `JULES.md`: weekly Jules retarget to bug/perf-only deep passes;
+  ledger in `docs/jules-ledger.md`; out-of-scope cosmetic PRs.
+
+### Fixed
+- **String HDU / EXTNAME:** `read_tensor` and `read_subset` accept `hdu="EXTNAME"`
+  (e.g. `hdu="MYDATA"`). `hdu="auto"` still raises a clear `ValueError`.
+- **3D subset:** `read_subset` / `open_subset_reader` preserve the leading cube
+  axis; window applies to trailing `(y, x)` only.
+- **Zero-size cutout box:** a degenerate width or height keeps the other axis
+  length (no longer collapses both dims to 0).
+- **Table `where=` + TNULL:** filtered reads honor `apply_fits_nulls=True` so
+  sentinel nulls do not leak as real values.
+- **Remote prefetch race:** `resolve_local_path` waits on an in-flight prefetch
+  for the same URL instead of racing a second download onto the same `.partial`.
+- **Lupton RGB:** zero-size bands raise a clear error instead of a cryptic
+  `RuntimeError`.
+- **`.fits.bz2`:** clear `ValueError` when CFITSIO cannot read bzip2-compressed
+  paths (decompress first — see Lupton example).
 
 ### Docs site
 - GitHub Pages deploys **stable** (`/`, latest `v*` tag) and **edge**

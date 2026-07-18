@@ -6,6 +6,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _default_sample_cache() -> Path:
@@ -34,11 +35,38 @@ SAMPLES: dict[str, str] = {
         "https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/"
         "0751/spec-0751-52251-0160.fits"
     ),
+    "m13_blue_0001": "http://data.astropy.org/tutorials/FITS-images/M13_blue_0001.fits",
+    "m13_blue_0002": "http://data.astropy.org/tutorials/FITS-images/M13_blue_0002.fits",
+    "m13_blue_0003": "http://data.astropy.org/tutorials/FITS-images/M13_blue_0003.fits",
+    "m13_blue_0004": "http://data.astropy.org/tutorials/FITS-images/M13_blue_0004.fits",
+    "m13_blue_0005": "http://data.astropy.org/tutorials/FITS-images/M13_blue_0005.fits",
+    "fits_header_mef": "http://data.astropy.org/tutorials/FITS-Header/input_file.fits",
+    "sdss_lupton_g": "http://data.astropy.org/visualization/reprojected_sdss_g.fits.bz2",
+    "sdss_lupton_r": "http://data.astropy.org/visualization/reprojected_sdss_r.fits.bz2",
+    "sdss_lupton_i": "http://data.astropy.org/visualization/reprojected_sdss_i.fits.bz2",
+    "spitzer_example": "http://data.astropy.org/photometry/spitzer_example_image.fits",
+    "radio_cube_c14": "http://data.astropy.org/tutorials/FITS-cubes/reduced_TAN_C14.fits",
+    "manga_logcube": (
+        "https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1/7443/"
+        "stack/manga-7443-12703-LOGCUBE.fits.gz"
+    ),
 }
 
 
 class SampleUnavailable(RuntimeError):
     """Raised when network samples cannot be fetched (or FAST mode skips)."""
+
+
+def megacam_dir() -> Path:
+    """Local cache dir for CFHT MegaCam ``.fits.fz`` samples (see fetch script)."""
+    return Path(__file__).resolve().parents[1] / "benchmarks_data" / "cfht_megacam"
+
+
+def _dest_path(name: str) -> Path:
+    """Cache path for ``name``, preserving the URL's (possibly compound) suffix."""
+    url_name = Path(urlsplit(SAMPLES[name]).path).name
+    suffix = "".join(Path(url_name).suffixes) or ".fits"
+    return CACHE_DIR / f"{name}{suffix}"
 
 
 def _fast_mode() -> bool:
@@ -59,7 +87,7 @@ def ensure_sample(name: str, *, allow_download: bool | None = None) -> Path:
     if name not in SAMPLES:
         raise KeyError(f"unknown sample {name!r}; choose from {sorted(SAMPLES)}")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    dest = CACHE_DIR / f"{name}.fits"
+    dest = _dest_path(name)
     if dest.is_file() and dest.stat().st_size > 0:
         return dest
 
@@ -71,7 +99,7 @@ def ensure_sample(name: str, *, allow_download: bool | None = None) -> Path:
         )
 
     url = SAMPLES[name]
-    tmp = dest.with_suffix(".fits.partial")
+    tmp = dest.with_name(dest.name + ".partial")
     try:
         urllib.request.urlretrieve(url, tmp)  # noqa: S310 — fixed public URLs
         tmp.replace(dest)

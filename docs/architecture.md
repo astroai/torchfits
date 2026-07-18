@@ -2,6 +2,7 @@
 
 Internal design of torchfits for users who need to understand the C++/Python
 layering, I/O paths, caching, and threading model without reading source.
+Threading notes reflect **1.0.0rc2+** (private `fitsfile*` per concurrent read).
 
 ---
 

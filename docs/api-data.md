@@ -33,6 +33,15 @@ preprocess; call transforms yourself when exploring a single file.
 IVAR and mask are always **companion** tensors (or dict fields) — never mixed
 into flux channels. Pass `ivar_hdu=` / `mask_hdu=` (or table `ivar_column=`).
 
+**Dataset `transform=` signature:** each dataset calls `transform(payload)`
+with one positional argument — the full payload (a `Tensor`, or a
+`{"flux", "ivar"?, "mask"?}` dict when `ivar_hdu=` / `mask_hdu=` are set).
+There is no separate `mask=` kwarg at the Dataset boundary, even though
+`FITSTransform.forward(x, mask=None)` accepts one when you call a transform
+directly on a tensor. Write custom transforms to branch on dict vs tensor
+input if they need mask-aware Dataset wiring — see
+[custom transforms](api-transforms.md#writing-a-custom-transform).
+
 !!! tip "When to mmap"
     Good for large local IMAGE HDUs and repeated cutouts. Prefer
     `mmap=False` with multi-worker DataLoader on the same files if handle
@@ -47,6 +56,51 @@ into flux channels. Pass `ivar_hdu=` / `mask_hdu=` (or table `ivar_column=`).
     `cache_dir=` into Datasets / rely on `make_loader` prefetch. Point the
     root at scratch on shared HPC homes — no silent writes elsewhere under
     `$HOME`.
+
+---
+
+## Cache: how and when
+
+Two independent caches exist: the **disk cache** (remote downloads, example
+samples) and the **in-process handle/metadata cache** (`torchfits.cache`).
+Dataset training loops touch both; a single-file `read_tensor` call touches
+neither.
+
+**Disk cache roots:**
+
+| Variable | Root | Used by |
+|---|---|---|
+| `TORCHFITS_CACHE_DIR` | Base dir (default `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits`) | All disk cache subdirs |
+| `TORCHFITS_REMOTE_CACHE` | `<base>/remote` override | HTTP(S) Dataset prefetch materialization |
+| `TORCHFITS_SAMPLE_CACHE` | `<base>/samples` override | `examples/` gallery sample downloads |
+
+Datasets accept `cache_dir=` to override the remote materialization
+directory per-instance, taking priority over the environment variables for
+that Dataset only.
+
+**Handle/metadata cache:** `make_loader(ds, optimize_cache=True)` (default)
+calls `cache.optimize_for_dataset(ds.files, avg_file_size_mb=...)`, which
+sizes the C++ handle cache for the file count. This only fires when the
+dataset exposes a `files` list — every `Fits*Dataset` built on
+`FitsTensorDataset` (`FitsImageDataset`, `FitsCubeDataset`,
+`FitsSpectrumDataset`, `FitsTensorIterableDataset`, `FitsCutoutDataset`) has
+one. `FitsTableDataset` / `FitsTableIterableDataset` read one file through
+CFITSIO's own buffered path and do not expose `files`; `optimize_cache=True`
+is then a documented no-op, not an error.
+
+```python
+from torchfits import cache
+
+cache.get_cache_stats()   # hit rate, cpp cache size, config
+cache.clear_cache()       # drop Python + C++ I/O + table-handle caches
+```
+
+**When *not* to warm:** a single local file read (`read_tensor`, one-off
+`table.read`) opens and closes one handle — there is nothing to warm and
+`optimize_for_dataset` / `configure_for_environment` add overhead without
+benefit. Warm-up pays off once a loader iterates many files (remote
+prefetch, multi-worker `DataLoader`, repeated cutouts from a mosaic via
+`open_subset_reader`).
 
 ---
 
@@ -73,16 +127,16 @@ loader = make_loader(ds, batch_size=32, num_workers=4)
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `paths` | `str \| list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
-| `hdu` | `int \| str \| sequence` | `0` | Flux HDU(s); multi → channel stack |
+| `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int` or `str` or `sequence` | `0` | Flux HDU(s); multi → channel stack |
 | `ivar_hdu` / `mask_hdu` | same arity as `hdu` | `None` | Companion HDUs (not flux channels) |
-| `label_key` | `str \| None` | `None` | Header keyword for classification labels |
-| `labels` | `list[int] \| None` | `None` | Explicit per-file labels (overrides `label_key`) |
-| `transform` | `callable \| None` | `None` | Applied to each payload |
+| `label_key` | `str` or `None` | `None` | Header keyword for classification labels |
+| `labels` | `list[int]` or `None` | `None` | Explicit per-file labels (overrides `label_key`) |
+| `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
-| `mmap` | `bool \| str` | `True` | Memory-mapped reads |
+| `mmap` | `bool` or `str` | `True` | Memory-mapped reads |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dim for 2D |
-| `cache_dir` | `str \| Path \| None` | `None` | Override remote prefetch directory |
+| `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
 
 **Returns per item:** `(payload, label)` where payload is a `Tensor` or
 `{"flux", "ivar"?, "mask"?}`.
@@ -96,10 +150,28 @@ loader = make_loader(ds, batch_size=32, num_workers=4)
 
 ## `FitsImageDataset` / `FitsCubeDataset`
 
-Peers of the tensor reader:
+Subclasses of `FitsTensorDataset` — same constructor signature and returns,
+with two defaults changed:
 
 - **Image** — 2D; `add_channel_dim=True` by default; multi-band HDUs → `[C,H,W]`.
-- **Cube** — 3D+; optional `slice_index` on the leading axis.
+- **Cube** — 3D+; `add_channel_dim=False` by default; adds `slice_index`.
+
+```python
+from torchfits.data import FitsImageDataset, FitsCubeDataset
+
+images = FitsImageDataset("obs/*.fits", hdu=0, label_key="CLASS")
+cubes = FitsCubeDataset("cubes/*.fits", hdu=0, slice_index=None)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int` or `str` or `sequence` | `0` | Flux HDU(s); multi → channel stack |
+| `add_channel_dim` | `bool` | `True` (Image) / `False` (Cube) | Prepend channel dim for rank-2 payloads |
+| `slice_index` | `int` or `None` | `None` (`FitsCubeDataset` only) | Index the leading axis after read |
+| `ivar_hdu` / `mask_hdu` / `label_key` / `labels` / `transform` / `device` / `mmap` / `cache_dir` | — | see `FitsTensorDataset` | Passed through unchanged |
+
+**Returns per item:** same as `FitsTensorDataset` — `(payload, label)`.
 
 `FitsImageIterableDataset` stays first-class for loaders (same knobs as the
 tensor iterable, channel dim default on).
@@ -116,6 +188,30 @@ DESI-style 2D `[nspec, nwave]` via `row=`. Multi-arm (MOS B/R/Z) uses `layout=`:
 | `"dict"` (default) | Per-arm `{name: {flux, ivar?, mask?}}` (flat keys if one arm) |
 | `"stack"` | Flux `[C, nwave]` only if all arms share `nwave` |
 | `"concat"` | One 1D flux + parallel ivar/mask along wavelength |
+
+```python
+from torchfits.data import FitsSpectrumDataset
+
+ds = FitsSpectrumDataset(
+    "spectra/*.fits", hdu=["B", "R", "Z"], layout="dict",
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int` or `str` or `sequence` | `0` | IMAGE flux HDU(s), one per arm |
+| `ivar_hdu` / `mask_hdu` | same arity as `hdu` | `None` | Companion IMAGE HDUs per arm |
+| `column` | `str` or `None` | `None` | Table flux column (mutually exclusive with `hdu` image path) |
+| `ivar_column` | `str` or `None` | `None` | Table ivar column |
+| `row` | `int` or `None` | `None` | Row index into a DESI-style `[nspec, nwave]` HDU/column |
+| `layout` | `str` | `"dict"` | `"dict"`, `"stack"`, or `"concat"` |
+| `transform` | `callable` or `None` | `None` | Applied to the laid-out payload |
+| `device` | `str` | `"cpu"` | Torch device |
+| `mmap` | `bool` or `str` | `True` | Memory-mapped reads |
+| `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
+
+**Returns per item:** payload per `layout` (see table above) — no label.
 
 Synthetic DESI-shaped demo: `examples/desi_shaped_spectrum.py`.
 
@@ -140,15 +236,15 @@ ds = FitsTensorIterableDataset(
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `paths` | `str \| list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
-| `hdu` | `int \| str \| sequence` | `0` | Flux HDU(s) |
-| `transform` | `callable \| None` | `None` | Applied to each payload |
+| `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int` or `str` or `sequence` | `0` | Flux HDU(s) |
+| `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
-| `mmap` | `bool \| str` | `True` | Memory-mapped reads |
+| `mmap` | `bool` or `str` | `True` | Memory-mapped reads |
 | `shuffle` | `bool` | `False` | Shuffle file order per epoch |
 | `seed` | `int` | `0` | Base seed for shuffling |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
-| `cache_dir` | `str \| Path \| None` | `None` | Override remote prefetch directory |
+| `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
 
 **Returns per item:** payload (`Tensor` or flux/ivar/mask dict) — no label.
 
@@ -180,11 +276,11 @@ ds = FitsTableDataset(
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
 | `hdu` | `int` | `1` | Table HDU index |
-| `columns` | `list[str] \| None` | `None` | Column names (None = all) |
-| `where` | `str \| None` | `None` | SQL-like predicate for row filtering |
-| `transform` | `callable \| None` | `None` | Applied to each row dict |
+| `columns` | `list[str]` or `None` | `None` | Column names (None = all) |
+| `where` | `str` or `None` | `None` | SQL-like predicate for row filtering |
+| `transform` | `callable` or `None` | `None` | Applied to each row dict |
 | `device` | `str` | `"cpu"` | Torch device |
-| `mmap` | `bool \| str` | `"auto"` | Memory-mapped reads |
+| `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
 
 **Returns per item:** `dict[str, Tensor | Any]` — one row as a column-name-keyed dict.
 
@@ -217,12 +313,12 @@ ds = FitsTableIterableDataset(
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
 | `hdu` | `int` | `1` | Table HDU index |
-| `columns` | `list[str] \| None` | `None` | Column projection |
-| `where` | `str \| None` | `None` | SQL-like predicate |
+| `columns` | `list[str]` or `None` | `None` | Column projection |
+| `where` | `str` or `None` | `None` | SQL-like predicate |
 | `batch_size` | `int` | `65536` | Rows per internal scan batch |
-| `transform` | `callable \| None` | `None` | Applied to each row dict |
+| `transform` | `callable` or `None` | `None` | Applied to each row dict |
 | `device` | `str` | `"cpu"` | Torch device |
-| `mmap` | `bool \| str` | `"auto"` | Memory-mapped reads |
+| `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
 
 **Returns per item:** `dict[str, Tensor | Any]` — one row.
 
@@ -252,30 +348,25 @@ Accepts `(path, hdu, x, y, size)` or `(path, hdu, x1, y1, x2, y2)` tuples.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `cutouts` | `Sequence` | *(required)* | List of cutout specs |
-| `transform` | `callable \| None` | `None` | Applied to each cutout tensor |
+| `transform` | `callable` or `None` | `None` | Applied to each cutout tensor |
 | `device` | `str` | `"cpu"` | Torch device |
 | `add_channel_dim` | `bool` | `True` | Prepend channel dimension |
 
 **Returns per item:** `Tensor`
 
 !!! info "When to use"
-    Use for patch training from a mosaic. Each cutout is read independently
-    via `read_subset` using **pixel coordinates** — torchfits does not
-    interpret WCS, so you must supply pixel offsets directly. If most
-    cutouts come from the same file, consider `open_subset_reader`
-    directly for better performance.
+    Use for patch training from a mosaic. Each cutout uses **pixel coordinates**
+    supplied in the spec — torchfits has no WCS layer. If most cutouts share one
+    file, `open_subset_reader` avoids repeated handle opens.
 
 ---
 
 ## `make_loader()`
 
-`make_loader` is **not** a separate data API. It constructs a
-`torch.utils.data.DataLoader` with torchfits-sensible defaults and optional
-cache warm-up. Build `DataLoader` yourself when you already control pin_memory /
-collate / cache policy.
-
-Wraps a dataset in a `DataLoader` with sensible defaults and optional cache
-warm-up.
+Thin factory: `torch.utils.data.DataLoader(dataset, ...)` plus an optional
+call to `cache.optimize_for_dataset` before the loader is returned. Any
+`Dataset` — torchfits or plain PyTorch — works with either path; the two
+produce identical batches when `optimize_cache=False`.
 
 ```python
 from torchfits.data import make_loader
@@ -290,11 +381,27 @@ loader = make_loader(
 )
 ```
 
+**Build `DataLoader` yourself** when any of these apply:
+
+- You already have a `collate_fn`, `sampler`, or `batch_sampler` that
+  `make_loader`'s keyword surface doesn't expose directly (pass through
+  `**loader_kwargs`, but a hand-built call is clearer once you're combining
+  several).
+- Your dataset has no `files` attribute — `optimize_cache=True` is then a
+  silent no-op (see [Cache: how and when](#cache-how-and-when)); skip the
+  torchfits wrapper and set `optimize_cache=False` or call `DataLoader`
+  directly.
+- You manage handle-cache warm-up elsewhere (e.g. once per training run
+  rather than per loader construction).
+
+Side-by-side runnable comparison:
+`examples/example_make_loader_vs_dataloader.py`.
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `dataset` | `Dataset \| IterableDataset` | *(required)* | A torchfits dataset |
+| `dataset` | `Dataset` or `IterableDataset` | *(required)* | A torchfits dataset |
 | `batch_size` | `int` | `32` | Batch size |
-| `shuffle` | `bool \| None` | `None` | Auto: `True` for map-style, `False` for iterable |
+| `shuffle` | `bool` or `None` | `None` | Auto: `True` for map-style, `False` for iterable |
 | `num_workers` | `int` | `0` | Worker processes |
 | `pin_memory` | `bool` | `False` | Pin for GPU transfers |
 | `prefetch_factor` | `int` | `2` | Prefetch per worker |

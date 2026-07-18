@@ -9,7 +9,7 @@ from torch import Tensor
 def read_subset(
     get_cached_handle: Callable[[str, int], tuple[Any, bool]],
     path: str,
-    hdu: int,
+    hdu: int | str,
     x1: int,
     y1: int,
     x2: int,
@@ -17,6 +17,13 @@ def read_subset(
     handle_cache_capacity: int = 16,
 ) -> Tensor:
     """Read a rectangular subset of an image HDU."""
+    import torchfits._C as cpp
+
+    if isinstance(hdu, str):
+        if hasattr(cpp, "resolve_hdu_name_cached"):
+            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+        else:
+            raise ValueError("named HDUs require resolve_hdu_name_cached support")
     try:
         file_handle, cached = get_cached_handle(path, handle_cache_capacity)
         try:
@@ -34,15 +41,27 @@ def read_subset(
 class SubsetReader:
     """Persistent subset reader for repeated cutouts on one image HDU."""
 
-    def __init__(self, path: str, hdu: int = 0, device: str = "cpu"):
+    def __init__(self, path: str, hdu: int | str = 0, device: str = "cpu"):
         import torchfits._C as cpp
 
         if not isinstance(path, str):
             raise ValueError("path must be a string")
-        if not isinstance(hdu, int) or hdu < 0:
+        if path.lower().endswith(".bz2"):
+            raise ValueError(
+                "CFITSIO does not support .bz2 compression natively. Please decompress the file first."
+            )
+        if not isinstance(hdu, (int, str)):
+            raise ValueError("hdu must be an integer or string")
+        if isinstance(hdu, int) and hdu < 0:
             raise ValueError("hdu must be a non-negative integer")
         if device not in ["cpu", "cuda", "mps"] and not str(device).startswith("cuda:"):
             raise ValueError("device must be 'cpu', 'cuda', 'mps' or 'cuda:N'")
+
+        if isinstance(hdu, str):
+            if hasattr(cpp, "resolve_hdu_name_cached"):
+                hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+            else:
+                raise ValueError("named HDUs require resolve_hdu_name_cached support")
 
         self._reader = cpp.SubsetReader(path, int(hdu))
         self._device = device
@@ -79,6 +98,8 @@ class SubsetReader:
         self.close()
 
 
-def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu") -> SubsetReader:
+def open_subset_reader(
+    path: str, hdu: int | str = 0, device: str = "cpu"
+) -> SubsetReader:
     """Open a persistent cutout reader for repeated subsets on one HDU."""
     return SubsetReader(path=path, hdu=hdu, device=device)

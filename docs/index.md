@@ -69,17 +69,21 @@ torchfits header image.fits -k OBJECT -f json
 
 ## Why torchfits?
 
+torchfits is a **1.0.0rc** prerelease — see [Changelog](changelog.md) and
+[Benchmarks](benchmarks.md#performance-deficits) for scope and known lags.
+
 | | astropy / fitsio | torchfits |
 |---|---|---|
-| **Image read (16 MB, CPU)** | 16.67 ms | **3.85 ms** (4.3×) |
-| **Table read (100k rows)** | 6.74 ms | **95 μs** (70×) |
-| **Repeated cutouts (50×)** | 75.36 ms | **4.68 ms** (16×) |
+| **Image read (16 MB, CPU)** | 11.35 ms | **3.85 ms** (~3×) |
+| **Table read (100k rows, mixed)** | 98.48 ms | **5.65 ms** (~17×) |
+| **Repeated cutouts (50×)** | 269 ms | **13.6 ms** (~20× vs astropy; ~parity vs fitsio) |
 | **GPU placement** | manual `.to(device)` | `device="cuda"` |
 | **Table filtering** | Python mask | C++ pushdown |
 | **Training loop** | hand-rolled Dataset | `FitsImageDataset` + `make_loader` |
 | **Shell tooling** | fitsinfo / fitsheader / … | `torchfits` CLI |
 
-Numbers from the lab scorecard — methodology in [Benchmarks](benchmarks.md).
+Representative medians from `exhaustive_mps_20260718_180230` (MPS host;
+methodology and deficits in [Benchmarks](benchmarks.md)).
 
 Docs channels: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·
 [edge](https://astroai.github.io/torchfits/edge/) (`main` tip).

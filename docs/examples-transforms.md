@@ -69,8 +69,11 @@ visible differences.
 
 ## Spectra and continuum
 
-Synthetic spectra in `gallery_spectra.py` use strong absorption/emission
-lines so continuum remove vs normalize is obvious.
+`gallery_spectra.py` runs on the real SDSS DR16 fiber spectrum
+(`sdss_spectrum`, fetched via `bash scripts/fetch_example_samples.sh`) when
+cached, falling back to a synthetic spectrum with strong absorption/emission
+lines otherwise so continuum remove vs normalize stays visually obvious
+either way.
 
 ```python
 from torchfits.transforms import ContinuumNormalize, ContinuumRemoval, DopplerShift
@@ -112,9 +115,26 @@ smoothed = SavitzkyGolayFilter(window_length=11, polyorder=2)(flux)
 
 ![FITS scale columns](assets/gallery/table_fits_scale_columns.png)
 
-## CLI RGB demo
+## Lupton asinh RGB
 
-Three synthetic bands → Lupton RGB (not grayscale `--bands 0,0,0`):
+`lupton_rgb(i, r, g, Q=10.0, stretch=0.5)` on real reprojected SDSS g/r/i
+cutouts (Astropy's reddest-to-R convention). The samples ship as `.fits.bz2`;
+most CFITSIO builds don't decompress bzip2, so the example inflates each
+band to a temp `.fits` file with the stdlib `bz2` module before reading:
+
+```python
+from torchfits.transforms import lupton_rgb
+
+rgb = lupton_rgb(i, r, g, Q=10.0, stretch=0.5)
+```
+
+Script: [`example_lupton_rgb_sdss.py`](published-examples/example_lupton_rgb_sdss.py)
+(fetch samples via `bash scripts/fetch_example_samples.sh`).
+
+### CLI RGB demo
+
+Three synthetic bands → Lupton RGB (use distinct `--bands` values for a
+real color check without network samples):
 
 ![CLI RGB demo](assets/gallery/cli_rgb_demo.png)
 

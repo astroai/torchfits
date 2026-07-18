@@ -60,14 +60,15 @@ use `table.read_torch` for tensor columns. Namespace stays `table` (FITS name).
 
 | Metric | fitsio | torchfits |
 |--------|--------|-----------|
-| Large float32 image (16 MB, CPU) | 8.83 ms | 6.51 ms (**1.36× faster**) |
-| Same read @ CUDA | 11.30 ms | 9.00 ms (**1.26× faster**) |
-| Compressed Rice image (CPU) | 18.45 ms | 15.17 ms (**1.28× faster**) |
-| 50× repeated 100×100 cutouts (CPU) | 21.03 ms | 21.75 ms (**~parity**) |
-| Table read (100k rows, 8 cols) | 30.20 ms | 6.97 ms (**4.33× faster**) |
+| Large float32 image (16 MB, CPU) | 5.25 ms | 3.85 ms (**~1.4× faster**) |
+| Same read @ CUDA | 12.22 ms | 8.37 ms (**~1.5× faster**) |
+| Compressed Rice image (CPU) | 18.03 ms | 18.16 ms (**~parity**) |
+| 50× repeated 100×100 cutouts (CPU) | 18.16 ms | 13.60 ms (**~1.3× faster**) |
+| Table read (100k rows, 8 cols, mixed) | 31.45 ms | 5.65 ms (**~5.6× faster**) |
 
-*Benchmarks from `exhaustive_cuda_20260717_042840` (CANFAR staging, mmap on+off
-matrix, 0 TorchFits deficits). See [benchmarks.md](benchmarks.md) for methodology.*
+*Medians from `exhaustive_mps_20260718_180230` (lab MPS, mmap matrix). Linux CUDA
+(`exhaustive_cuda_20260717_042840`) showed **0** torchfits time deficits on that
+host; MPS and CPU still have listed lags — [Benchmarks](benchmarks.md#performance-deficits).*
 
 ## Key Behavioral Differences
 
@@ -76,7 +77,7 @@ matrix, 0 TorchFits deficits). See [benchmarks.md](benchmarks.md) for methodolog
   `mmap` toggle (`memmap=` is ignored). Long-lived `FITS` handles across
   `DataLoader` forks can still share CFITSIO state poorly — prefer reopen-per-
   worker or torchfits datasets.
-* **torchfits**: Use the `torchfits.data` datasets with `make_loader` for multi-worker loading. Map-style datasets are worker-safe (each worker reads independently); iterable datasets shard work per `worker_id`. To reduce lock contention on the shared handle/reader caches, call `torchfits.cache.optimize_for_dataset(paths)` (also invoked by `make_loader` when the dataset exposes a `files` attribute) or `torchfits.cache.configure_for_environment()` before training.
+* **torchfits**: Use `torchfits.data` datasets with `make_loader` for multi-worker loading. Map-style datasets are worker-safe (each worker reads independently); iterable datasets shard by `worker_id`. Since rc2, image/table reads use private CFITSIO handles per call — no shared-handle LRU across threads. Call `torchfits.cache.optimize_for_dataset(paths)` when the dataset exposes `files` (also invoked by `make_loader` by default) to size metadata caches before training.
 
 ### 2. Table Mutations
 * **fitsio**: In-place updates can corrupt FITS tables if not handled carefully, and do not invalidate read buffers automatically.

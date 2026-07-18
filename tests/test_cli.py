@@ -179,6 +179,21 @@ def test_convert_png(image_fits, tmp_path):
     assert out.read_bytes()[:4] == b"\x89PNG"
 
 
+def test_lupton_rgb_zero_size_input():
+    """lupton_rgb must not crash on a zero-size (e.g. degenerate cutout) band.
+
+    Regression: ``channels.max()`` on a 0-numel tensor raises
+    ``RuntimeError: Expected reduction dim to be specified``, so any
+    zero-width/zero-height cutout fed into ``convert ... --to png`` crashed
+    instead of producing an empty image.
+    """
+    from torchfits.transforms.rgb import lupton_rgb
+
+    r = g = b = torch.zeros(0, 5)
+    out = lupton_rgb(r, g, b)
+    assert out.shape == (0, 5, 3)
+
+
 def test_convert_infers_format_from_extension(table_fits, tmp_path):
     out = tmp_path / "table.parquet"
     result = _run_cli("convert", str(table_fits), str(out), "--hdu", "1")

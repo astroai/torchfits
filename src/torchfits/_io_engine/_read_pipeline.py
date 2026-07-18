@@ -183,6 +183,10 @@ def _validate_single_path_params(
     """Validate path/hdu/device/mmap/mode; return (force_image, force_table)."""
     if not isinstance(path, str):
         raise ValueError("Path must be a string or list of strings")
+    if path.lower().endswith(".bz2"):
+        raise ValueError(
+            "CFITSIO does not support .bz2 compression natively. Please decompress the file first."
+        )
     if isinstance(hdu, int) and hdu < 0:
         raise ValueError("HDU index must be a non-negative integer")
     if device not in ["cpu", "cuda", "mps"] and not device.startswith("cuda:"):
@@ -478,6 +482,11 @@ def _read_batch_paths(
     hdu = hdu_batch
 
     if mmap is not False:
+        for item_path in path:
+            if item_path.lower().endswith(".bz2"):
+                raise ValueError(
+                    "CFITSIO does not support .bz2 compression natively. Please decompress the file first."
+                )
         try:
             data_list = cpp_module.read_images_batch(list(path), hdu)
             if device != "cpu":

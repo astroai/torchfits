@@ -494,8 +494,18 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
     long max_x = naxes[0], max_y = naxes[1];
     if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
     if (x2 > max_x) x2 = max_x; if (y2 > max_y) y2 = max_y;
-    if (x2 <= x1 || y2 <= y1)
-        return torch::empty({0, 0}, torch::TensorOptions().dtype(torch::kFloat32));
+    if (x2 <= x1 || y2 <= y1) {
+        // Preserve whichever of width/height is non-degenerate instead of
+        // collapsing both to 0: e.g. a zero-width, full-height box should
+        // report shape (..., height, 0), not (..., 0, 0).
+        long empty_width = x2 > x1 ? x2 - x1 : 0;
+        long empty_height = y2 > y1 ? y2 - y1 : 0;
+        std::vector<int64_t> empty_shape;
+        for (int i = naxis - 1; i >= 2; --i) empty_shape.push_back(naxes[i]);
+        empty_shape.push_back(empty_height);
+        empty_shape.push_back(empty_width);
+        return torch::empty(empty_shape, torch::TensorOptions().dtype(torch::kFloat32));
+    }
     const auto& scale_info = get_scale_info(hdu_num, bitpix);
     bool scaled = scale_info.scaled;
     torch::ScalarType dtype;
@@ -513,10 +523,17 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
         }
     }
     long width = x2 - x1, height = y2 - y1;
-    auto tensor = torch::empty(std::vector<int64_t>{height, width}, torch::TensorOptions().dtype(dtype));
+    std::vector<int64_t> shape;
+    for (int i = naxis - 1; i >= 2; --i) shape.push_back(naxes[i]);
+    shape.push_back(height);
+    shape.push_back(width);
+    auto tensor = torch::empty(shape, torch::TensorOptions().dtype(dtype));
     std::vector<long> fpixel(naxis, 1), lpixel(naxis, 1), inc(naxis, 1);
     fpixel[0] = x1 + 1; fpixel[1] = y1 + 1;
     lpixel[0] = x2; lpixel[1] = y2;
+    for (int i = 2; i < naxis; ++i) {
+        lpixel[i] = naxes[i];
+    }
     int anynul = 0;
     fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
                      nullptr, tensor.data_ptr(), &anynul, &status);
@@ -813,6 +830,9 @@ void SubsetReader::init_from_hdu() {
     const int naxis = std::get<1>(info);
     const auto& naxes = std::get<2>(info);
     if (naxis < 2) throw std::runtime_error("SubsetReader requires at least 2D image HDU");
+    naxis_ = naxis;
+    naxes_.resize(naxis_);
+    for (int i = 0; i < naxis_; ++i) naxes_[i] = static_cast<long>(naxes[i]);
     max_x_ = static_cast<long>(naxes[0]);
     max_y_ = static_cast<long>(naxes[1]);
     const auto scale = file_.get_scale_info_for_hdu(hdu_num_);
@@ -845,15 +865,35 @@ torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     if (closed_) throw std::runtime_error("SubsetReader is closed");
     if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
     if (x2 > max_x_) x2 = max_x_; if (y2 > max_y_) y2 = max_y_;
-    if (x2 <= x1 || y2 <= y1)
-        return torch::empty({0, 0}, torch::TensorOptions().dtype(dtype_));
+    if (x2 <= x1 || y2 <= y1) {
+        // See FITSFile::read_subset: keep the non-degenerate dimension's
+        // extent instead of always reporting (..., 0, 0).
+        long empty_width = x2 > x1 ? x2 - x1 : 0;
+        long empty_height = y2 > y1 ? y2 - y1 : 0;
+        std::vector<int64_t> empty_shape;
+        for (int i = naxis_ - 1; i >= 2; --i) empty_shape.push_back(naxes_[i]);
+        empty_shape.push_back(empty_height);
+        empty_shape.push_back(empty_width);
+        return torch::empty(empty_shape, torch::TensorOptions().dtype(dtype_));
+    }
     long width = x2 - x1, height = y2 - y1;
-    auto tensor = torch::empty({height, width}, torch::TensorOptions().dtype(dtype_));
-    long fpixel[2] = {x1 + 1, y1 + 1};
-    long lpixel[2] = {x2, y2};
-    long inc[2] = {1, 1};
+    std::vector<int64_t> shape;
+    for (int i = naxis_ - 1; i >= 2; --i) shape.push_back(naxes_[i]);
+    shape.push_back(height);
+    shape.push_back(width);
+    auto tensor = torch::empty(shape, torch::TensorOptions().dtype(dtype_));
+    std::vector<long> fpixel(naxis_, 1);
+    std::vector<long> lpixel(naxis_, 1);
+    std::vector<long> inc(naxis_, 1);
+    fpixel[0] = x1 + 1;
+    fpixel[1] = y1 + 1;
+    lpixel[0] = x2;
+    lpixel[1] = y2;
+    for (int i = 2; i < naxis_; ++i) {
+        lpixel[i] = naxes_[i];
+    }
     int status = 0, anynul = 0;
-    fits_read_subset(file_.get_fptr(), datatype_, fpixel, lpixel, inc,
+    fits_read_subset(file_.get_fptr(), datatype_, fpixel.data(), lpixel.data(), inc.data(),
                      nullptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
         char err_text[31];

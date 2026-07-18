@@ -65,6 +65,15 @@ def resolve_local_path(
     dest = cache_path_for_url(path, cache_dir=cache_dir)
     if dest.is_file():
         return str(dest)
+    # If a background prefetch for this exact URL is already in flight, wait
+    # for it instead of racing a second concurrent download onto the same
+    # ".partial" temp file (which corrupts/duplicates the download).
+    with _prefetch_lock:
+        existing = _prefetch_threads.get(path)
+    if existing is not None and existing.is_alive():
+        existing.join()
+        if dest.is_file():
+            return str(dest)
     if not download:
         return str(dest)
     return str(_download(path, dest))

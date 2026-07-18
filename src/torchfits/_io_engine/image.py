@@ -33,13 +33,26 @@ def batch_to_device(
 
 
 def validate_read_image_args(
-    path: str, hdu: int, mmap: bool, handle_cache: bool, device: str
+    path: str, hdu: int | str, mmap: bool, handle_cache: bool, device: str
 ) -> None:
     """Validate arguments for low-level read_image."""
     if not isinstance(path, str) or not path:
         raise ValueError("path must be a non-empty string")
-    if not isinstance(hdu, int) or hdu < 0:
+    if path.lower().endswith(".bz2"):
+        raise ValueError(
+            "CFITSIO does not support .bz2 compression natively. Please decompress the file first."
+        )
+    if not isinstance(hdu, (int, str)):
+        raise ValueError("hdu must be an integer or string")
+    if isinstance(hdu, int) and hdu < 0:
         raise ValueError("hdu must be a non-negative integer")
+    if isinstance(hdu, str) and hdu.strip().lower() == "auto":
+        # "auto" is the autodetect sentinel accepted by read()/read_header();
+        # read_image()/read_tensor() require an explicit HDU index or name.
+        raise ValueError(
+            "read_tensor requires an explicit non-negative integer HDU index "
+            "or a named EXTNAME (got hdu='auto'); use read() for autodetection"
+        )
     if not isinstance(mmap, bool):
         raise ValueError("read_image requires explicit mmap=True/False")
     if not isinstance(handle_cache, bool):
@@ -71,7 +84,7 @@ def dispatch_read_image_cpp(
 
 def read_image(
     path: str,
-    hdu: int = 0,
+    hdu: int | str = 0,
     device: str = "cpu",
     mmap: bool = True,
     handle_cache: bool = True,
@@ -83,6 +96,12 @@ def read_image(
 ) -> Union[Tensor, Tuple[Tensor, Header]]:
     """Read image data through a direct low-level path."""
     validate_read_image_args(path, hdu, mmap, handle_cache, device)
+
+    if isinstance(hdu, str):
+        if hasattr(_cpp, "resolve_hdu_name_cached"):
+            hdu = int(_cpp.resolve_hdu_name_cached(path, hdu))
+        else:
+            raise ValueError("named HDUs require resolve_hdu_name_cached support")
 
     data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, handle_cache, raw_scale)
 

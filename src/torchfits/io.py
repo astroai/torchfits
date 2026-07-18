@@ -178,7 +178,7 @@ def read(
 
 def read_tensor(
     path: str,
-    hdu: int = 0,
+    hdu: int | str = 0,
     device: str = "cpu",
     mmap: bool = True,
     handle_cache: bool = True,
@@ -262,7 +262,7 @@ def read_hdus(
 
 def read_subset(
     path: str,
-    hdu: int,
+    hdu: int | str,
     x1: int,
     y1: int,
     x2: int,
@@ -279,7 +279,7 @@ def read_subset(
         return reader.read_subset(x1, y1, x2, y2)
 
 
-def open_subset_reader(path: str, hdu: int = 0, device: str = "cpu") -> Any:
+def open_subset_reader(path: str, hdu: int | str = 0, device: str = "cpu") -> Any:
     """Open a reusable subset reader for repeated cutout access on an image HDU."""
     return _open_subset_reader_impl(path, hdu=hdu, device=device)
 

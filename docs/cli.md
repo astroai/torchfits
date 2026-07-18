@@ -130,9 +130,9 @@ Two equivalent ways to extract a pixel box:
 
 ### `verify`
 
-Checks **`DATASUM` / `CHECKSUM` only** (CFITSIO `ffvcks`). This is a checksum
-subset of HEASARC `fitsverify`, **not** full structural fitsverify (mandatory
-keywords, XTENSION rules, etc.).
+Checks **`DATASUM` / `CHECKSUM` only** (CFITSIO `ffvcks`). Covers checksum
+keywords only; HEASARC `fitsverify` structural checks (mandatory keywords,
+XTENSION rules, etc.) are out of scope.
 
 Text output uses three labels:
 
@@ -142,9 +142,10 @@ Text output uses three labels:
 | `OK` | Checksums present and valid | 0 |
 | `FAIL` | Checksums present but incorrect (corrupt) | 4 |
 
-A file without checksum keywords is **not** a failure — it simply has nothing
-to verify (fitsverify-style warning, not an error). Use
-`torchfits write_checksums(path, hdu=...)` to add checksums before verification.
+Files without checksum keywords exit **0** with label
+`OK (no checksum keywords)` — there is nothing to verify (fitsverify-style
+warning, not corruption). Use `torchfits write_checksums(path, hdu=...)` to
+add checksums before verification.
 
 ```bash
 torchfits verify science.fits

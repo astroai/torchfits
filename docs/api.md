@@ -2,7 +2,7 @@
 
 `torchfits` covers FITS file I/O (IMAGE HDUs → tensors, tables → dataframes,
 headers, compression) and ML helpers (`torchfits.data`, `torchfits.transforms`).
-Sky-domain modelling is out of scope.
+Sky-domain modelling is out of scope. Current line: **1.0.0rc** (prerelease).
 
 **FITS images → tensors. FITS tables → dataframes** (Arrow by default;
 Polars/Pandas one call away; tensor columns when you train). In code the
@@ -68,8 +68,12 @@ Prefer raw I/O until you need epochs/shuffle/workers — see
 
 | Goal | Entry point | Reference |
 |---|---|---|
-| Image map-style dataset | `FitsTensorDataset(paths, hdu=0, label_key=None)` | [Data](api-data.md#fitstensordataset) |
-| Image iterable (multi-worker) | `FitsTensorIterableDataset(paths, shuffle=False)` | [Data](api-data.md#fitstensoriterabledataset) |
+| General N-D image, map-style | `FitsTensorDataset(paths, hdu=0, label_key=None)` | [Data](api-data.md#fitstensordataset) |
+| General N-D image, iterable (multi-worker) | `FitsTensorIterableDataset(paths, shuffle=False)` | [Data](api-data.md#fitstensoriterabledataset) |
+| 2D image peer | `FitsImageDataset(paths, hdu=0)` | [Data](api-data.md#fitsimagedataset-fitscubedataset) |
+| 3D+ cube peer | `FitsCubeDataset(paths, hdu=0, slice_index=None)` | [Data](api-data.md#fitsimagedataset-fitscubedataset) |
+| 2D image iterable peer | `FitsImageIterableDataset(paths, shuffle=False)` | [Data](api-data.md#fitstensoriterabledataset) |
+| 1D / multi-arm spectrum | `FitsSpectrumDataset(paths, hdu=0, layout="dict")` | [Data](api-data.md#fitsspectrumdataset) |
 | Table map-style (fits in RAM) | `FitsTableDataset(path, hdu=1)` | [Data](api-data.md#fitstabledataset) |
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |

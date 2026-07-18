@@ -4,6 +4,11 @@
 and FITS **table** I/O vs Astropy and fitsio. CPU↔GPU comparisons are published
 when hardware was available; GPU deficits are listed, not hidden.
 
+**Honesty:** torchfits is a **1.0.0rc** prerelease. Headline ratios below are
+lab medians from named scorecard runs — not guarantees on your filesystem,
+file mix, or PyTorch version. Check [Performance deficits](#performance-deficits)
+before assuming torchfits wins every case.
+
 ## How to read this page
 
 | If you want… | Jump to |
@@ -1017,6 +1022,9 @@ Cases where torchfits is **not** first in its comparison family (CPU and GPU). G
 | Linux x86_64 / CUDA | `exhaustive_cuda_20260717_042840` | 4079 | 0 | 730.7 | lab + mmap-matrix + GPU |
 <!-- BENCH_HOSTS_END -->
 
+RC2 CANFAR re-soak sessions (`exhaustive_*_20260718_1808*`) were still **Pending** at rc3 ship time; Linux rows above remain the Jul-17 soak IDs. MPS is `exhaustive_mps_20260718_180230`. ML loader: `ml_20260718_191908` (local macOS arm64). MegaCam cutouts: `20260718_124403` (local).
+
+
 Latest local quick benchmark evidence:
 
 <!-- BENCH_QUICK_BEGIN -->
@@ -1029,8 +1037,29 @@ Latest local quick benchmark evidence:
 ### ML DataLoader throughput
 
 <!-- BENCH_ML_BEGIN -->
-_Run `pixi run bench-ml` to populate ML loader throughput._
+Source: `docs/assets/bench/ml_20260718_191908/ml_results.csv` (device=cpu).
+
+| Case | Method | Median throughput |
+|---|---|---:|
+| ml_compressed_rice | `fitsio (comp)` | 406,509,087 pixels/s |
+| ml_compressed_rice | `torchfits (comp)` | 388,652,395 pixels/s |
+| ml_uncompressed | `fitsio + numpy` | 1,350,170,413 pixels/s |
+| ml_uncompressed | `torchfits` | 1,387,206,443 pixels/s |
 <!-- BENCH_ML_END -->
+
+### CFHT MegaCam MEF cutouts (local)
+
+<!-- BENCH_MEGACAM_BEGIN -->
+Source: `docs/assets/bench/20260718_124403/megacam_results.csv` (160 OK rows).
+
+| Method | Median throughput |
+|---|---:|
+| `fitsio_cached` | 31.3 MB/s |
+| `torchfits_cached` | 34.8 MB/s |
+| `torchfits_materialize` | 72.5 MB/s |
+| `torchfits_naive` | 31.1 MB/s |
+<!-- BENCH_MEGACAM_END -->
+
 
 Keep this page current with the latest tensor and table benchmark run before
 making performance claims.

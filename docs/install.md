@@ -1,5 +1,8 @@
 # Installation
 
+Latest PyPI tag is **1.0.0rc2** (prerelease). SemVer **1.0.0** waits for
+post-rc soak — treat rc wheels as API-stable, not a final stamp.
+
 torchfits needs **Python 3.10+** and **PyTorch ≥ 2.10**.
 
 - **PyPI wheels** are ABI-matched to **PyTorch 2.10.x** (Linux x86_64, macOS

@@ -114,6 +114,45 @@ def test_filter_compound(fits_file):
     assert ids.max() == 199
 
 
+def test_where_preserves_tnull_nulls(tmp_path):
+    """WHERE-filtered reads must still convert TNULL sentinels to Arrow null.
+
+    Regression: the CPP-pushdown and torch-tensor-mask fast paths taken for
+    simple WHERE predicates used to skip TNULL handling entirely, so a
+    nullable column read back through where= leaked its raw sentinel value
+    instead of Arrow null even with apply_fits_nulls=True (the default).
+    """
+    import torchfits.table as table
+
+    path = str(tmp_path / "nulls.fits")
+    n = 20
+    ids = np.arange(n, dtype=np.int32)
+    vals = np.arange(n, dtype=np.int32)
+    vals[3] = -999
+    vals[7] = -999
+    c1 = fits.Column(name="ID", format="J", array=ids)
+    c2 = fits.Column(name="VAL", format="J", array=vals, null=-999)
+    fits.BinTableHDU.from_columns([c1, c2]).writeto(path)
+
+    full = table.read(path, hdu=1, apply_fits_nulls=True)
+    assert full.column("VAL").null_count == 2
+
+    filtered = table.read(path, hdu=1, where="ID >= 0", apply_fits_nulls=True)
+    assert filtered.column("VAL").null_count == 2
+    assert filtered.column("VAL").to_pylist()[3] is None
+
+    # Projected columns (WHERE references a column outside the projection)
+    # go through the Arrow-filter fallback and must also preserve nulls.
+    projected = table.read(
+        path, hdu=1, columns=["VAL"], where="ID >= 0", apply_fits_nulls=True
+    )
+    assert projected.column("VAL").null_count == 2
+
+    # Explicit opt-out must still be honored.
+    disabled = table.read(path, hdu=1, where="ID >= 0", apply_fits_nulls=False)
+    assert disabled.column("VAL").null_count == 0
+
+
 def test_filter_short(fits_file):
     import torchfits.cpp
 

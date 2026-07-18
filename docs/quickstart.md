@@ -1,6 +1,7 @@
 # Quick Start
 
-Get up and running with torchfits in minutes.
+Get up and running with torchfits in minutes. Current PyPI line is **1.0.0rc**
+(prerelease); see [Changelog](changelog.md) for release notes.
 
 ## Install
 
@@ -109,9 +110,9 @@ Use the lowest layer that fits the job:
 | `Fits*Dataset` | Many files/rows as a PyTorch Dataset | Single read or Arrow/Polars analysis |
 | `make_loader` | DataLoader with torchfits cache warm-up defaults | You already build `DataLoader` yourself |
 
-`make_loader` is not a separate data API — it wraps `torch.utils.data.DataLoader`
-with torchfits defaults (`optimize_cache`, pin_memory policy). Details:
-[Data module](api-data.md), [Transforms](api-transforms.md).
+`make_loader` wraps `torch.utils.data.DataLoader` with torchfits defaults
+(`optimize_cache`, pin_memory policy). Details: [Data module](api-data.md),
+[Transforms](api-transforms.md).
 
 ## PyTorch DataLoader
 

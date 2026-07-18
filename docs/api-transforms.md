@@ -18,13 +18,13 @@ Wire a pipeline into training with `FitsTensorDataset(..., transform=pipeline)`
 or call it on a tensor from `read_tensor`. See [Data module](api-data.md) for
 when to introduce a Dataset / `make_loader`.
 
-!!! note "1.0 transform boundary"
+!!! note "1.0 transform boundary (rc)"
     **Core (kept):** stretches, zscale / robust norms, FITS BSCALE / null
     hygiene, basic continuum divide/subtract.
     **Advanced (frozen for 1.0):** ALS / alpha-shape / BandMath / PhaseFold /
-    wavelet and specialty continuum estimators stay in-tree but are not expanded
-    this release — candidates to move to torchsky later. Do not treat the
-    advanced set as a growing public surface mid-rc.
+    wavelet and specialty continuum estimators stay in-tree; no expansion this
+    rc cycle — candidates for torchsky later. Treat the advanced set as
+    stable-but-not-growing until 1.0.0 ships.
 
 !!! note "RGB"
     1.0 ships Lupton asinh RGB via `torchfits.transforms.lupton_rgb` (same as
@@ -662,6 +662,76 @@ original = pipeline.inverse(normalized)
 
 Base class for custom transforms. Override `forward()` and optionally
 `inverse()`. `__call__` delegates to `forward()`. Not an `nn.Module`.
+
+#### Writing a custom transform
+
+Subclass `FITSTransform`, implement `forward()` (and `inverse()` if the
+operation is invertible):
+
+```python
+import torch
+from torchfits.transforms import FITSTransform
+
+
+class ScaleOffset(FITSTransform):
+    """Affine transform: forward(x) = x * scale + offset."""
+
+    def __init__(self, scale: float, offset: float) -> None:
+        self.scale = scale
+        self.offset = offset
+
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return x * self.scale + self.offset
+
+    def inverse(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return (x - self.offset) / self.scale
+```
+
+Compose it with built-in transforms — `Compose` calls each child with the
+same tensor and `mask=` kwarg, and unwinds `inverse()` in reverse order:
+
+```python
+from torchfits.transforms import BackgroundSubtract, Compose
+
+xf = ScaleOffset(scale=2.0, offset=-10.0)
+pipeline = Compose([BackgroundSubtract(), xf])
+out = pipeline(image)
+restored = pipeline.inverse(out)
+```
+
+Wire it into a Dataset so every sample gets the same preprocessing:
+
+```python
+from torchfits.data import FitsImageDataset
+
+dataset = FitsImageDataset("images/*.fits", hdu=0, transform=xf)
+```
+
+!!! warning "Dict payloads vs tensor-only Compose"
+    `Compose` and the built-in transforms operate on a single tensor plus an
+    optional `mask=` kwarg. A Dataset payload is a plain `Tensor` only when
+    no `ivar_hdu=` / `mask_hdu=` was requested; otherwise it is a
+    `{"flux", "ivar"?, "mask"?}` dict, and the Dataset calls
+    `transform(payload)` with that dict as the single positional argument —
+    it does **not** unpack `mask` into a `mask=` kwarg for you (see
+    [Dataset `transform=` signature](api-data.md#choosing-a-dataset)). A
+    custom transform that must handle both cases branches on `isinstance(x,
+    dict)`:
+
+    ```python
+    def forward(self, x, mask=None):
+        if isinstance(x, dict):
+            flux = x["flux"] * self.scale + self.offset
+            return {**x, "flux": flux}
+        return x * self.scale + self.offset
+    ```
+
+Full runnable version, including the `FitsImageDataset` wiring above:
+`examples/example_custom_transform.py`.
 
 ### Helpers
 

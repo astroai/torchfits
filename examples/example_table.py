@@ -8,13 +8,21 @@ Also: ``table.read_torch`` (tensor columns), streaming, then mutations.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import torch
 from astropy.table import Table
 
-import torchfits
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from examples._sample_data import try_ensure_sample  # noqa: E402
+
+import torchfits  # noqa: E402
 
 
 def _create_test_file(path: str) -> None:
@@ -66,6 +74,16 @@ def main() -> None:
             print(f"read_polars: {pl_df.shape[0]} rows")
         except ImportError:
             print("read_polars skipped (polars not installed)")
+
+        # --- real file: filter a Chandra events table, when cached ---
+        chandra = try_ensure_sample("chandra_events")
+        if chandra is not None:
+            bright = torchfits.table.read(
+                str(chandra), hdu=1, columns=["energy"], where="energy > 5000"
+            )
+            print(f"chandra_events energy>5000eV: {bright.num_rows} rows")
+        else:
+            print("chandra_events sample not cached; skipping real-file filter demo")
 
         # --- mutations ---
         torchfits.table.append_rows(

@@ -33,11 +33,11 @@ torchfits.table.read(
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | FITS file path |
-| `hdu` | `int \| str` | `1` | Table HDU index or EXTNAME |
-| `columns` | `list[str] \| None` | `None` | Column projection (None = all) |
-| `row_slice` | `slice \| tuple[int,int] \| None` | `None` | Row range filter |
-| `rows` | `list[int] \| None` | `None` | Specific row indices |
-| `where` | `str \| None` | `None` | SQL-like predicate (pushed to C++) |
+| `hdu` | `int` or `str` | `1` | Table HDU index or EXTNAME |
+| `columns` | `list[str]` or `None` | `None` | Column projection (None = all) |
+| `row_slice` | `slice` or `tuple[int,int]` or `None` | `None` | Row range filter |
+| `rows` | `list[int]` or `None` | `None` | Specific row indices |
+| `where` | `str` or `None` | `None` | SQL-like predicate (pushed to C++) |
 | `batch_size` | `int` | `65536` | Internal read batch size |
 | `mmap` | `bool` | `True` | Memory-mapped reads |
 | `decode_bytes` | `bool` | `True` | Decode byte-string columns |
@@ -169,7 +169,7 @@ torchfits.table.write(path, data, *, schema=None, header=None,
 |---|---|---|---|
 | `path` | `str` | *(required)* | Output path |
 | `data` | `dict[str, array-like]` | *(required)* | Column name to values |
-| `header` | `dict \| None` | `None` | FITS header key-value pairs |
+| `header` | `dict` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
 
@@ -185,8 +185,8 @@ The `where=` parameter filters rows before data reaches Python. Filtering
 happens in C++ for most table sizes.
 
 !!! warning
-    Root `torchfits.read()` does **not** accept `where=`. Always use
-    `torchfits.table.read()` or `torchfits.table.scan()` for filtered reads.
+    Filtered catalog reads: `torchfits.table.read()` or `torchfits.table.scan()`.
+    Root `torchfits.read()` has no `where=` parameter.
 
 **Supported operators:**
 

@@ -177,6 +177,7 @@ def _try_torch_tensor_where_filter(
     encoding: str,
     strip: bool,
     header: Any | None,
+    apply_fits_nulls: bool = False,
 ) -> Any | None:
     """Buffered/mmap tensor read + torch mask + Arrow for simple numeric WHERE.
 
@@ -239,6 +240,12 @@ def _try_torch_tensor_where_filter(
     if mask is None:
         return None
 
+    tnull_map = (
+        fits_schema.column_tnull_map(header)
+        if apply_fits_nulls and header is not None
+        else {}
+    )
+
     arrays = []
     names_out = []
     for name in output_cols:
@@ -248,7 +255,13 @@ def _try_torch_tensor_where_filter(
         filtered = value[mask]
         arrays.append(
             _tensor_to_arrow_array(
-                pa, filtered, decode_bytes, encoding, strip, fits_tform=None
+                pa,
+                filtered,
+                decode_bytes,
+                encoding,
+                strip,
+                null_sentinel=tnull_map.get(name),
+                fits_tform=None,
             )
         )
         names_out.append(name)
@@ -266,6 +279,7 @@ def _try_torch_tensor_where_filter(
                         decode_bytes,
                         encoding,
                         strip,
+                        null_sentinel=tnull_map.get(name),
                         fits_tform=None,
                     )
                 )
@@ -760,6 +774,7 @@ def _try_cpp_where_pushdown(
     encoding: str,
     strip: bool,
     header: Any = None,
+    apply_fits_nulls: bool = False,
 ) -> Any | None:
     import torchfits._C as cpp
 
@@ -795,6 +810,11 @@ def _try_cpp_where_pushdown(
                         break
             if needs_tforms:
                 pushdown_tforms = _column_tforms_for_decode(path, hdu, set(target_cols))
+        tnull_map = (
+            fits_schema.column_tnull_map(header)
+            if apply_fits_nulls and header is not None
+            else {}
+        )
         arrays = []
         names_out = []
         for name in target_cols:
@@ -808,6 +828,7 @@ def _try_cpp_where_pushdown(
                     decode_bytes,
                     encoding,
                     strip,
+                    null_sentinel=tnull_map.get(name),
                     fits_tform=pushdown_tforms.get(name) if pushdown_tforms else None,
                 )
                 arrays.append(arr)
@@ -880,6 +901,7 @@ def _read_table_with_where(
             encoding=encoding,
             strip=strip,
             header=hdr if header_ok else None,
+            apply_fits_nulls=apply_fits_nulls,
         )
         if pushed is not None:
             return pushed
@@ -897,6 +919,7 @@ def _read_table_with_where(
         encoding=encoding,
         strip=strip,
         header=hdr if header_ok else None,
+        apply_fits_nulls=apply_fits_nulls,
     )
     if torch_filtered is not None:
         return torch_filtered

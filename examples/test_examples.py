@@ -27,6 +27,14 @@ REQUIRED = [
     "gallery_images.py",
     "gallery_spectra.py",
     "gallery_tables_lc.py",
+    "example_m13_stack.py",
+    "example_mef_header.py",
+    "example_cutout_wcs_write.py",
+    "example_lupton_rgb_sdss.py",
+    "example_manga_logcube.py",
+    "example_megacam_mef_cutouts.py",
+    "example_custom_transform.py",
+    "example_make_loader_vs_dataloader.py",
 ]
 
 # Optional-deps examples: pass if they exit 0 or print a known skip message.

@@ -38,9 +38,10 @@ def lupton_rgb(
         ),
         dim=-1,
     )
-    peak = float(channels.max().item())
-    if peak > 0:
-        channels = channels / peak
+    if channels.numel() > 0:
+        peak = float(channels.max().item())
+        if peak > 0:
+            channels = channels / peak
     return torch.clamp(channels, 0.0, 1.0)
 
 

@@ -122,7 +122,7 @@ Tune `--q` / `--stretch` for contrast. Gallery asset:
 | `hselect` / `fitsort` | `header --keyword-table` |
 | `imfunction` | `transform --name …` |
 | `fitsinfo` | `info` |
-| `fitsverify` (checksums) | `verify` (checksum subset only) |
+| `fitsverify` (checksums) | `verify` (checksum keywords only; missing keywords = OK) |
 | `fpack` / `funpack` | `compress` / `decompress` |
 | `astconvertt` / STILTS `tpipe` | `convert` (+ `--where` / `--columns`) |
 

@@ -5,9 +5,11 @@ forward-looking only.
 
 ## Current focus (pre-1.0)
 
-Ship SemVer **1.0.0** after soak on the `1.0.0rc*` line. `v1.0.0rc2` lands
-the CFITSIO shared-handle concurrency fix and the leftover API/docs/CLI wave;
-do not treat rc tags as final 1.0.0.
+Ship SemVer **1.0.0** after soak on the `1.0.0rc*` line. **rc2** landed the
+CFITSIO per-read handle fix and the leftover API/docs/CLI wave; **rc3** targets
+Astropy-parity examples, docs gaps (API / cache / loader), and small I/O
+correctness fixes. rc tags are API-stable previews — SemVer `1.0.0` still waits
+for post-rc soak.
 
 ## Parity tiers
 
