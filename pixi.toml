@@ -68,7 +68,7 @@ duckdb = ">=1.5.4,<2"
 dev = "pip install -e . --no-build-isolation"
 build = "pixi build"
 test = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/"
-release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_scale_on_device.py tests/test_data.py tests/test_transforms.py tests/test_transforms_e2e.py tests/test_api.py tests/test_arrow_table_api.py tests/test_security.py tests/test_release_smoke.py tests/test_cli.py tests/test_public_boundary.py tests/test_http_probe_fixture.py -q"
+release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_scale_on_device.py tests/test_data.py tests/test_transforms.py tests/test_transforms_e2e.py tests/test_api.py tests/test_arrow_table_api.py tests/test_security.py tests/test_release_smoke.py tests/test_cli.py tests/test_public_boundary.py tests/test_http_probe_fixture.py -q && pixi run docs-contract && pixi run docs-links"
 lint = "ruff check . && ruff format ."
 preflight-push = "ruff check . && ruff format --check . && mypy src/torchfits && python -m compileall -q src/torchfits tests"
 ci-local = "bash scripts/ci_local.sh"
@@ -78,6 +78,9 @@ pre-commit = "pre-commit run --all-files"
 docs-build = "bash scripts/sync_docs_examples.sh && zensical build --clean"
 docs-build-pages = "bash scripts/build_docs_pages.sh --root-from-head"
 docs-serve = "zensical serve"
+docs-contract = "bash scripts/sync_docs_examples.sh && zensical build --clean && pytest tests/test_docs_integrity.py tests/test_package_isolation.py -q"
+# Assumes site/ already exists (docs-contract or docs-build ran first).
+docs-links = "pixi run python scripts/check_docs_links.py"
 
 # Core benchmarks (essential)
 # After a fresh clone, run:  pixi run bench-install

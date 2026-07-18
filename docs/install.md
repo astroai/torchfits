@@ -57,8 +57,9 @@ prefetch defaults match CPU vs CUDA vs MPS.
 
 **Disk cache** (HTTP remotes + example samples only): default
 `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits`. Override with
-`TORCHFITS_CACHE_DIR` (or `TORCHFITS_REMOTE_CACHE` / `TORCHFITS_SAMPLE_CACHE`).
-This is separate from the in-memory handle/`configure_for_environment` path.
+`TORCHFITS_CACHE_DIR` — see [Environment variables](architecture.md#environment-variables)
+for the full list. This is separate from the in-memory handle/
+`configure_for_environment` path.
 
 !!! tip "Verify accelerator"
     ```python

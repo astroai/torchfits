@@ -176,19 +176,56 @@ def test_api_md_env_var_table_matches_source() -> None:
     # Rows in Environment variables Markdown tables: | `TORCHFITS_...` | ...
     documented = set(re.findall(r"\|\s*`?(TORCHFITS_[A-Z0-9_]+)`?\s*\|", docs_text))
     source_envs: set[str] = set()
-    for path in (ROOT / "src").rglob("*"):
-        if path.suffix not in {".py", ".cpp", ".h", ".hpp", ".cc", ".cu"}:
-            continue
-        if not path.is_file():
-            continue
-        source_envs.update(
-            re.findall(
-                r"TORCHFITS_[A-Z0-9_]+",
-                path.read_text(encoding="utf-8", errors="ignore"),
+    # examples/ is included because docs (e.g. TORCHFITS_EXAMPLE_FAST) may
+    # legitimately document example-harness-only vars alongside src/ ones.
+    for base in (ROOT / "src", ROOT / "examples"):
+        for path in base.rglob("*"):
+            if path.suffix not in {".py", ".cpp", ".h", ".hpp", ".cc", ".cu"}:
+                continue
+            if not path.is_file():
+                continue
+            source_envs.update(
+                re.findall(
+                    r"TORCHFITS_[A-Z0-9_]+",
+                    path.read_text(encoding="utf-8", errors="ignore"),
+                )
             )
-        )
     missing = sorted(documented - source_envs)
     assert not missing, f"api.md env table documents missing vars: {missing}"
+
+
+def test_architecture_md_env_tables_cover_every_source_getenv() -> None:
+    """Every TORCHFITS_* var actually read via getenv/os.environ in
+    src/torchfits (Python + cpp_src) must appear in docs/architecture.md's
+    env tables. Complements test_api_md_env_var_table_matches_source, which
+    only checks the reverse (no phantom vars documented)."""
+    src_root = ROOT / "src" / "torchfits"
+    py_pattern = re.compile(
+        r"os\.(?:environ\.get|getenv)\(\s*[\"'](TORCHFITS_[A-Z0-9_]+)[\"']"
+    )
+    cpp_pattern = re.compile(
+        r"(?:std::getenv|env_flag_default_true|env_nonnegative_int)\(\s*\"(TORCHFITS_[A-Z0-9_]+)\""
+    )
+    found: set[str] = set()
+    for path in src_root.rglob("*"):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if path.suffix == ".py":
+            found.update(py_pattern.findall(text))
+        elif path.suffix in {".h", ".hpp", ".cc", ".cpp", ".cu"}:
+            found.update(cpp_pattern.findall(text))
+
+    # TORCHFITS_TORCH_ABI is a compile-time CMake macro, not a getenv() read.
+    found.discard("TORCHFITS_TORCH_ABI")
+
+    arch_text = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"\|\s*`(TORCHFITS_[A-Z0-9_]+)`\s*\|", arch_text))
+
+    missing = sorted(found - documented)
+    assert not missing, (
+        f"docs/architecture.md env tables are missing vars read by src/torchfits: {missing}"
+    )
 
 
 def test_api_md_core_io_signatures_match_live() -> None:
@@ -256,16 +293,19 @@ def test_docs_examples_reference_existing_scripts() -> None:
         f"docs/examples.md references missing scripts: {missing_scripts}"
     )
     transforms = (ROOT / "docs" / "examples-transforms.md").read_text(encoding="utf-8")
-    href_refs = re.findall(r"\]\(published-examples/([^)#]+)\)", transforms)
-    missing_href = [
-        name for name in href_refs if not (ROOT / "examples" / name).exists()
-    ]
-    assert not missing_href, (
-        f"docs/examples-transforms.md references missing scripts: {missing_href}"
-    )
-    gallery_pages = (
-        (ROOT / "docs" / "examples.md").read_text(encoding="utf-8") + "\n" + transforms
-    )
+    ml_page = (ROOT / "docs" / "examples-ml.md").read_text(encoding="utf-8")
+    for label, page in (
+        ("examples-transforms.md", transforms),
+        ("examples-ml.md", ml_page),
+    ):
+        href_refs = re.findall(r"\]\(published-examples/([^)#]+)\)", page)
+        missing_href = [
+            name for name in href_refs if not (ROOT / "examples" / name).exists()
+        ]
+        assert not missing_href, (
+            f"docs/{label} references missing scripts: {missing_href}"
+        )
+    gallery_pages = text + "\n" + transforms + "\n" + ml_page
     gallery_refs = re.findall(r"\]\(assets/gallery/([^)]+)\)", gallery_pages)
     missing_png = [
         name
@@ -273,6 +313,27 @@ def test_docs_examples_reference_existing_scripts() -> None:
         if not (ROOT / "docs" / "assets" / "gallery" / name).exists()
     ]
     assert not missing_png, f"missing gallery assets: {missing_png}"
+
+    # RGB science figures must not be near-black (regression for lupton /peak crush).
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        return
+    for name in (
+        "lupton_rgb_sdss.png",
+        "megapipe_cutout_collage.png",
+        "ml_gz_class_grid.png",
+    ):
+        path = ROOT / "docs" / "assets" / "gallery" / name
+        if not path.is_file():
+            continue
+        arr = np.asarray(Image.open(path), dtype=np.float64)
+        luma = arr[..., :3].mean(axis=-1) if arr.ndim == 3 else arr
+        assert float(luma.mean()) >= 8.0, f"{name} mean too dark: {luma.mean()}"
+        assert float(np.percentile(luma, 90)) >= 25.0, (
+            f"{name} p90 too dark: {np.percentile(luma, 90)}"
+        )
 
 
 def test_sync_docs_examples_script_copies_tree() -> None:

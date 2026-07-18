@@ -5,6 +5,28 @@ All notable changes to torchfits are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Docs/examples polish (no SemVer bump).
+
+### Fixed
+- **`lupton_rgb`:** Astropy-parity Lupton asinh mapping (per-pixel peak clip).
+  The previous field-wide `/max` crush turned midtones near-black whenever one
+  star saturated — gallery PNGs looked empty.
+
+### Docs
+- Slim transform gallery; real Lupton RGB figure; fixed Doppler (`z=`) docs snippet.
+- User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 FITS labels + Legacy Survey
+  FITS cutouts training demo; MegaPipe mosaic collage + honest subprocess timing.
+- Canonical `TORCHFITS_*` env tables in [architecture](architecture.md); slimmed
+  duplicates elsewhere.
+- `release-gate` runs `docs-contract` (example sync + zensical build) and
+  `docs-links` (internal hyperlink crawl of `site/`).
+
+### Examples
+- `example_ml_galaxyzoo_legacy.py`, `example_megapipe_cutout_collage.py`,
+  `scripts/fetch_cfht_megapipe_sample.sh`.
+
 ## [1.0.0rc3] — 2026-07-18
 
 Third release candidate for collaborator soak.

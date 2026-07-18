@@ -32,6 +32,7 @@ into `~/.cache/torchfits/samples/` (or CFHT MegaCam data into
 bash scripts/fetch_example_samples.sh              # astropy tutorial samples
 bash scripts/fetch_example_samples.sh --with-manga  # + ~200MB MaNGA LOGCUBE
 bash scripts/fetch_cfht_megacam_sample.sh           # CFHT MegaCam MEF (CADC)
+bash scripts/fetch_cfht_megapipe_sample.sh          # CFHTLS MegaPipe mosaics (~5.3 GB)
 ```
 
 `TORCHFITS_EXAMPLE_FAST=1` (set in CI) skips downloads and uses synthetic
@@ -49,6 +50,8 @@ fallbacks or a clean `SKIP:` exit where no fallback exists.
 | SDSS DR16 spectrum | `sdss_spectrum` | [`gallery_spectra.py`](published-examples/gallery_spectra.py) |
 | SDSS MaNGA DR17 LOGCUBE | `manga_logcube` | [`example_manga_logcube.py`](published-examples/example_manga_logcube.py) |
 | CFHT MegaCam (CADC) | MEF `.fits.fz` exposures | [`example_megacam_mef_cutouts.py`](published-examples/example_megacam_mef_cutouts.py) |
+| Galaxy Zoo 1 + Legacy Survey cutouts | `galaxy_zoo1_table2` + LS FITS stamps | [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py) |
+| CFHT MegaPipe D1 IQ mosaics | `benchmarks_data/cfht_megapipe/` | [`example_megapipe_cutout_collage.py`](published-examples/example_megapipe_cutout_collage.py) |
 
 ---
 
@@ -133,57 +136,24 @@ Stretch / normalize for viz or model input. Skip when you need raw stored values
 from torchfits.transforms import ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize
 
 pipeline = Compose([BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()])
-out = pipeline(image)
+out = pipeline(tensor)
 restored = pipeline.inverse(out)
 ```
 
-```text
-raw min/max ≈ 620 / 5100
-pipeline min/max = 0.0000 / 1.0000
-```
-
-![Arcsinh](assets/gallery/image_arcsinh.png)
-
-![ZScale](assets/gallery/image_zscale.png)
-
 ![Compose pipeline](assets/gallery/image_compose_pipeline.png)
 
-More figures: [Transform gallery](examples-transforms.md).
+Full gallery (continuum, Lupton RGB, LC): [Transform gallery](examples-transforms.md).
 Script: [`example_transforms.py`](published-examples/example_transforms.py).
-
-Writing your own reversible transform and wiring it into a `Dataset`:
-[`example_custom_transform.py`](published-examples/example_custom_transform.py)
-— worked walkthrough in
-[Transforms reference](api-transforms.md#writing-a-custom-transform).
+Custom subclass: [`example_custom_transform.py`](published-examples/example_custom_transform.py).
 
 ---
 
-## Dataset + make_loader
+## Datasets / training
 
-Use a Dataset for many files / epochs. `make_loader` is `DataLoader` with
-torchfits cache warm-up defaults.
+User Guide walkthrough (Galaxy Zoo + Legacy Survey FITS cutouts, MegaPipe
+collage, `make_loader` vs `DataLoader`): [ML with FITS](examples-ml.md).
 
-```python
-from torchfits.data import FitsImageDataset, make_loader
-
-ds = FitsImageDataset("observations/*.fits", hdu=0, label_key="LABEL")
-loader = make_loader(ds, batch_size=3, num_workers=0)
-
-images, labels = next(iter(loader))
-print(images.shape, labels.tolist())
-```
-
-```text
-torch.Size([3, 1, 32, 32]) [0, 0, 0]
-```
-
-Scripts: [`example_image_dataset.py`](published-examples/example_image_dataset.py),
-[`example_data_catalogs.py`](published-examples/example_data_catalogs.py).
-
-`make_loader` vs a hand-built `torch.utils.data.DataLoader` on the same
-dataset, and when `optimize_cache=True` warms nothing (no `.files`
-attribute): [`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py)
-— see [Data module](api-data.md#make_loader).
+API reference: [Data module](api-data.md).
 
 ---
 
@@ -239,6 +209,8 @@ Recipes: [CLI recipes](cli-recipes.md). Shell demo:
 | [`example_time_series.py`](published-examples/example_time_series.py) | phase fold, sigma clip |
 | [`example_custom_transform.py`](published-examples/example_custom_transform.py) | subclassing `FITSTransform`, `Compose`, Dataset wiring |
 | [`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py) | `make_loader` vs plain `DataLoader` |
+| [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py) | GZ1 labels + Legacy Survey FITS cutouts → Dataset → tiny CNN ([ML guide](examples-ml.md)) |
+| [`example_megapipe_cutout_collage.py`](published-examples/example_megapipe_cutout_collage.py) | MegaPipe mosaic cutouts + Lupton collage + timing ([ML guide](examples-ml.md)) |
 
 ### Figure generators
 

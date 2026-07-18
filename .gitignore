@@ -16,9 +16,7 @@ verify_fix.py
 
 # Build
 site/
-site_edge/
-site_stable/
-site_pages/
+site_*/
 zensical.pages.toml
 build/
 dist/

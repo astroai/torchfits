@@ -289,20 +289,85 @@ prefix) is stripped.
 
 ## Environment variables
 
+This is the canonical list. `docs/api-data.md`, `docs/api-core-io.md`, and
+`docs/install.md` link here rather than repeating rows — `tests/test_docs_integrity.py`
+enforces that every `TORCHFITS_*` variable actually read by `src/torchfits`
+(Python + `cpp_src`) is documented in one of the tables below.
+
+### User-facing
+
+Variables a typical caller sets to point caching at a different disk location.
+
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row reads |
 | `TORCHFITS_CACHE_DIR` | `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits` | Disk cache root (remotes + samples) |
 | `TORCHFITS_REMOTE_CACHE` | `{CACHE_DIR}/remote` | HTTP Dataset prefetch directory |
 | `TORCHFITS_SAMPLE_CACHE` | `{CACHE_DIR}/samples` | Example/gallery sample downloads |
-| `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based validation for residual UnifiedCache bookkeeping |
+
+### Expert
+
+Performance-tuning knobs. Safe to leave at defaults; documented for people
+profiling or working around a specific bottleneck.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TORCHFITS_CFITSIO_CACHE_FILES` | `32` | CFITSIO open-file cache slots (set together with `_CACHE_MB`) |
+| `TORCHFITS_CFITSIO_CACHE_MB` | `256` | CFITSIO open-file cache size in MB |
+| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row table reads |
+| `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based validation for residual UnifiedCache bookkeeping (`0` for pure throughput) |
 | `TORCHFITS_CACHE_VALIDATE_INTERVAL_MS` | `1000` | UnifiedCache validation interval |
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable SharedReadMeta validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
-| `TORCHFITS_COLD_NOMMAP` | `0` | Force non-mmap reads |
-| `TORCHFITS_COLD_NOCACHE` | `0` | Disable caching |
-| `TORCHFITS_DEBUG_SCALE` | `0` | Debug scaling output |
 | `TORCHFITS_XOR_PARALLEL_MIN_BYTES` | `262144` | Threshold for parallel sign-bit XOR |
+| `TORCHFITS_VLA_HEAP_PREAD` | `0` (off) | Contiguous-heap single-`pread` fast path for VLA table columns; off by default until THEAP/offset edge cases are fully proven vs CFITSIO |
+
+### Debug / bench-only
+
+Not for production use — they exist to reproduce bugs or force a code path
+during benchmarking.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TORCHFITS_DEBUG_SCALE` | `0` | Print which BSCALE/BZERO branch `_read_pipeline` took |
+| `TORCHFITS_COLD_NOMMAP` | `0` | Force non-mmap image reads |
+| `TORCHFITS_COLD_NOCACHE` | `0` | Disable the in-process handle/metadata cache |
+| `TORCHFITS_EXAMPLE_FAST` | unset | `examples/` sample-data helper: skip network downloads and fail fast instead (used by CI, `examples/test_examples.py`) |
+
+### Build / docs / bench-only
+
+Not part of the runtime env-var surface; only relevant when building the C++
+extension, generating docs, or running the internal benchmark/CANFAR
+harnesses. Not enforced by the docs-completeness test above.
+
+- **CMake** (`-DTORCHFITS_...=` at build time): `TORCHFITS_PGO`,
+  `TORCHFITS_FINITE_MATH_ONLY`, `TORCHFITS_USE_VENDORED_CFITSIO`,
+  `TORCHFITS_AUTO_VENDOR_DEPS`, `TORCHFITS_NIOBUF`, `TORCHFITS_MINDIRECT`.
+- **Docs build** (`scripts/build_docs_pages.sh`): `TORCHFITS_DOCS_OUT`,
+  `TORCHFITS_DOCS_URL`.
+- **Benchmarks** (`scripts/bench_*.sh`): `TORCHFITS_BENCH_ENV`,
+  `TORCHFITS_BENCH_GIT`, `TORCHFITS_BENCH_LOG_REDIRECTED`,
+  `TORCHFITS_BENCH_MODE`, `TORCHFITS_BENCH_RUN_DIR`, `TORCHFITS_BENCH_RUN_ID`.
+- **CANFAR GPU bench launcher** (`scripts/*canfar*.sh`): `TORCHFITS_CANFAR_CPU`,
+  `TORCHFITS_CANFAR_EXISTING_SESSION`, `TORCHFITS_CANFAR_FOREGROUND`,
+  `TORCHFITS_CANFAR_GPU`, `TORCHFITS_CANFAR_IMAGE`,
+  `TORCHFITS_CANFAR_MAX_WAIT_SECS`, `TORCHFITS_CANFAR_MEMORY`,
+  `TORCHFITS_CANFAR_NAME`, `TORCHFITS_CANFAR_POLLER`,
+  `TORCHFITS_CANFAR_POLL_SECS`.
+
+`TORCHFITS_TORCH_ABI` is a compile-time C++ macro (set by CMake from the
+PyTorch build version), not an environment variable — see
+[PyTorch ABI compatibility](#pytorch-abi-compatibility) below.
+
+!!! note "Audit finding: `TORCHFITS_COMPRESSED_PARALLEL*`"
+    `tests/test_compression.py` sets `TORCHFITS_COMPRESSED_PARALLEL`,
+    `TORCHFITS_COMPRESSED_PARALLEL_MIN_PIXELS`, and
+    `TORCHFITS_COMPRESSED_PARALLEL_HCOMPRESS` via `monkeypatch.setenv`, but no
+    `getenv`/`os.environ` read of these names exists anywhere under `src/`.
+    They are not documented here because they do not currently gate any
+    behavior — the tests pass because parallel and serial RICE/HCOMPRESS
+    decompression already produce identical output, not because the env
+    vars flip a code path. Flagged for a follow-up to either wire them up or
+    drop the dead assertions from the test.
 
 ---
 

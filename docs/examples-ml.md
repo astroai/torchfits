@@ -1,0 +1,135 @@
+# ML with FITS
+
+User Guide for `torchfits.data`: choose a Dataset, preprocess with
+`torchfits.transforms`, load with `make_loader`, train a small model.
+API details stay in the [Data module](api-data.md) reference.
+
+`make_loader` is a thin factory around `torch.utils.data.DataLoader` plus
+optional cache warm-up when the dataset exposes `.files`. Build a
+`DataLoader` yourself when you already control `collate_fn` /
+`persistent_workers`. See
+[`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py).
+
+---
+
+## End-to-end: Galaxy Zoo morphology (real FITS)
+
+Adapted from the usual Galaxy Zoo + imaging cutout pattern (labels in a
+FITS table; postage stamps as FITS — not HDF5).
+
+| Step | Source |
+|---|---|
+| Labels | [Galaxy Zoo 1 DR table2](https://data.galaxyzoo.org/) FITS (`RA`/`DEC`, `SPIRAL`/`ELLIPTICAL`/`UNCERTAIN`) |
+| Images | [Legacy Survey `fits-cutout`](https://www.legacysurvey.org/viewer/fits-cutout) `bands=grz`, `size=64` |
+
+```bash
+bash scripts/fetch_example_samples.sh   # caches GalaxyZoo1_DR_table2.fits
+# first run also downloads ~200 Legacy Survey cutouts (~10–20 MB)
+pixi run python examples/example_ml_galaxyzoo_legacy.py
+# copy examples/output/ml_gz_class_grid.png → docs/assets/gallery/ when refreshing
+```
+
+```python
+from torchfits.data import FitsImageDataset, make_loader
+from torchfits.transforms import (
+    ArcsinhStretch,
+    BackgroundSubtract,
+    Compose,
+    ZScaleNormalize,
+)
+
+# labels from GZ1 FITS; paths from Legacy Survey fits-cutout downloads.
+# The example prepends NanToZero for off-footprint NaNs before this Compose.
+pipeline = Compose(
+    [BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()]
+)
+dataset = FitsImageDataset(paths, hdu=0, labels=labels, transform=pipeline)
+loader = make_loader(dataset, batch_size=16, num_workers=0, optimize_cache=False)
+
+for images, batch_labels in loader:
+    logits = model(images)  # TinyCNN in the example script
+    ...
+```
+Flow:
+
+1. `table.read` the GZ1 catalog; keep `UNCERTAIN == 0` and spiral or elliptical.
+2. Download LS FITS cutouts into `~/.cache/torchfits/samples/gz_legacy_cutouts/`.
+3. `FitsImageDataset` + `Compose([NanToZero, BackgroundSubtract, ArcsinhStretch, ZScaleNormalize])`.
+4. `make_loader(..., batch_size=16)`.
+5. One epoch of a tiny CNN on CPU; print loss / accuracy.
+
+![Lupton RGB sample of Legacy Survey cutouts](assets/gallery/ml_gz_class_grid.png)
+
+Script: [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py).
+Under `TORCHFITS_EXAMPLE_FAST=1` the script skips (exit 0) when cutouts are
+not cached.
+
+---
+
+## Survey mosaic cutouts: CFHT MegaPipe
+
+Public CFHTLS D1 IQ MegaPipe stacks (~20k×21k, ~1.74 GB/band) plus a
+SExtractor catalog with **pixel** `X_IMAGE`/`Y_IMAGE` (no WCS required for
+torchfits cutouts).
+
+```bash
+bash scripts/fetch_cfht_megapipe_sample.sh   # ~5.3 GB once
+# optional: MEGAPIPE_N_CUTOUTS=50 for a quick local smoke
+pixi run python examples/example_megapipe_cutout_collage.py
+# copy examples/output/megapipe_cutout_collage.png → docs/assets/gallery/ when refreshing
+```
+
+The example:
+
+1. Selects 64 gallery stamps with `MAG_AUTO ∈ [17, 22]` (pretty galaxies — not
+   saturated stars that wash out Lupton).
+2. Reads matching G/R/I windows with `open_subset_reader`.
+3. Builds Lupton RGB (`Q=8`, `stretch=5`) and writes a full-resolution 8×8
+   collage (512×512, no thumbnail crush).
+4. Times 1000 random 64×64 boxes — **one subprocess per backend** so an earlier
+   reader cannot silently warm the OS page cache for the next.
+
+Indicative single-pass timing on this machine (1000×64×64, G band; not a
+benchmark median — page cache may still retain the mosaic across processes):
+
+| Backend | Wall | ms/cutout |
+|---|---:|---:|
+| `torchfits.read_subset` | 4.15 s | 4.15 |
+| `torchfits.open_subset_reader` | 0.79 s | 0.79 |
+| fitsio | 0.20 s | 0.20 |
+| astropy (`memmap`) | 0.17 s | 0.17 |
+
+Takeaway: prefer `open_subset_reader` over repeated `read_subset` (~5× here).
+For tiny windows on an already-cached mosaic, fitsio/astropy memmap slices are
+also competitive — do not claim a false “27× vs fitsio” from an in-process
+timing loop.
+
+![MegaPipe gri cutout collage](assets/gallery/megapipe_cutout_collage.png)
+
+Script: [`example_megapipe_cutout_collage.py`](published-examples/example_megapipe_cutout_collage.py).
+
+---
+
+## Choosing a Dataset
+
+| Class | Use when |
+|---|---|
+| `FitsImageDataset` | 2D IMAGE HDUs / multi-band stacks as `[C,H,W]` |
+| `FitsCubeDataset` | 3D+ cubes with optional `slice_index` |
+| `FitsSpectrumDataset` | 1D spectra or DESI-style multi-arm layouts |
+| `FitsTableDataset` | Catalog rows as features / labels |
+| `FitsCutoutDataset` | Many pixel windows from one or more mosaics |
+| `Fits*IterableDataset` | 100k+ files; streaming without `__len__` shuffle |
+
+Full signatures: [Data module](api-data.md).
+
+---
+
+## Related scripts
+
+| Script | Role |
+|---|---|
+| [`example_image_dataset.py`](published-examples/example_image_dataset.py) | Minimal `FitsImageDataset` + `make_loader` |
+| [`example_data_catalogs.py`](published-examples/example_data_catalogs.py) | Table + cutout datasets |
+| [`example_custom_transform.py`](published-examples/example_custom_transform.py) | Subclass `FITSTransform` |
+| [`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py) | Warm-up vs plain `DataLoader` |

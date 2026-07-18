@@ -405,13 +405,9 @@ torchfits.cache.optimize_for_dataset(file_paths, avg_file_size_mb=10.0)
 ### Disk cache directories
 
 Remote prefetch and example samples live under a base directory resolved
-once per process:
-
-| Variable | Default | Contents |
-|---|---|---|
-| `TORCHFITS_CACHE_DIR` | `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits` | Base for the two subdirs below |
-| `TORCHFITS_REMOTE_CACHE` | `<base>/remote` | HTTP(S) file materialization |
-| `TORCHFITS_SAMPLE_CACHE` | `<base>/samples` | `examples/` gallery downloads |
+once per process: `TORCHFITS_CACHE_DIR` / `TORCHFITS_REMOTE_CACHE` /
+`TORCHFITS_SAMPLE_CACHE` — see the User-facing table in
+[Environment variables](architecture.md#environment-variables) for defaults.
 
 These roots are independent of `get_cache_performance` / `clear_file_cache`
 above, which govern the in-process handle and metadata caches, not files on

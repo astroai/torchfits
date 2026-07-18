@@ -66,13 +66,9 @@ samples) and the **in-process handle/metadata cache** (`torchfits.cache`).
 Dataset training loops touch both; a single-file `read_tensor` call touches
 neither.
 
-**Disk cache roots:**
-
-| Variable | Root | Used by |
-|---|---|---|
-| `TORCHFITS_CACHE_DIR` | Base dir (default `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits`) | All disk cache subdirs |
-| `TORCHFITS_REMOTE_CACHE` | `<base>/remote` override | HTTP(S) Dataset prefetch materialization |
-| `TORCHFITS_SAMPLE_CACHE` | `<base>/samples` override | `examples/` gallery sample downloads |
+**Disk cache roots:** `TORCHFITS_CACHE_DIR` / `TORCHFITS_REMOTE_CACHE` /
+`TORCHFITS_SAMPLE_CACHE` — see the User-facing table in
+[Environment variables](architecture.md#environment-variables) for defaults.
 
 Datasets accept `cache_dir=` to override the remote materialization
 directory per-instance, taking priority over the environment variables for

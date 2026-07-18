@@ -35,12 +35,21 @@ REQUIRED = [
     "example_megacam_mef_cutouts.py",
     "example_custom_transform.py",
     "example_make_loader_vs_dataloader.py",
+    "example_megapipe_cutout_collage.py",
+    "example_ml_galaxyzoo_legacy.py",
 ]
 
 # Optional-deps examples: pass if they exit 0 or print a known skip message.
 OPTIONAL = [
     "example_polars.py",
 ]
+
+# Per-example timeout overrides (seconds); default is 180.
+TIMEOUTS = {
+    "example_table_recipes.py": 120,
+    # Downloads up to GZ_N individual cutouts over HTTP on a cold cache.
+    "example_ml_galaxyzoo_legacy.py": 300,
+}
 
 
 def _python_cmd() -> list[str]:
@@ -64,7 +73,7 @@ def _run_example(name: str) -> tuple[bool, str]:
     if not os.path.exists(path):
         return False, f"file not found: {path}"
 
-    timeout = 120 if name == "example_table_recipes.py" else 180
+    timeout = TIMEOUTS.get(name, 180)
     env = os.environ.copy()
     if os.environ.get("GITHUB_ACTIONS"):
         env["TORCHFITS_EXAMPLE_FAST"] = "1"

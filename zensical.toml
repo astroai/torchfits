@@ -30,6 +30,7 @@ nav = [
     "cli-recipes.md",
     "examples.md",
     "examples-transforms.md",
+    "examples-ml.md",
     "benchmarks.md",
     "parity.md",
   ]},

@@ -180,18 +180,55 @@ def test_convert_png(image_fits, tmp_path):
 
 
 def test_lupton_rgb_zero_size_input():
-    """lupton_rgb must not crash on a zero-size (e.g. degenerate cutout) band.
-
-    Regression: ``channels.max()`` on a 0-numel tensor raises
-    ``RuntimeError: Expected reduction dim to be specified``, so any
-    zero-width/zero-height cutout fed into ``convert ... --to png`` crashed
-    instead of producing an empty image.
-    """
+    """lupton_rgb must not crash on a zero-size (e.g. degenerate cutout) band."""
     from torchfits.transforms.rgb import lupton_rgb
 
     r = g = b = torch.zeros(0, 5)
     out = lupton_rgb(r, g, b)
     assert out.shape == (0, 5, 3)
+
+
+def test_lupton_rgb_preserves_midtones_with_bright_star():
+    """Field-wide /peak normalisation crushed midtones to near-black.
+
+    One saturated star must not force the rest of the field toward zero;
+    Astropy-style mapping uses per-pixel peak clip only when max(R,G,B) > 1.
+    """
+    from torchfits.transforms.rgb import lupton_rgb
+
+    h, w = 32, 32
+    r = g = b = torch.full((h, w), 5.0)
+    r = r.clone()
+    r[0, 0] = 1.0e6  # saturated star
+    out = lupton_rgb(r, g, b, Q=8.0, stretch=0.5)
+    mid = float(out[16, 16].mean())
+    star = float(out[0, 0].max())
+    assert star == pytest.approx(1.0, abs=1e-6)
+    assert mid > 0.05, f"midtones crushed: {mid}"
+
+
+def test_lupton_rgb_astropy_parity():
+    """Match Astropy ``make_lupton_rgb`` float mapping (LuptonAsinhStretch)."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("astropy")
+    from astropy.visualization import make_lupton_rgb
+    from torchfits.transforms.rgb import lupton_rgb
+
+    torch.manual_seed(0)
+    r = torch.rand(24, 24) * 40.0
+    g = torch.rand(24, 24) * 40.0
+    b = torch.rand(24, 24) * 40.0
+    ours = lupton_rgb(r, g, b, Q=8.0, stretch=0.5).numpy()
+    ref = make_lupton_rgb(
+        r.numpy(),
+        g.numpy(),
+        b.numpy(),
+        Q=8.0,
+        stretch=0.5,
+        output_dtype=np.float64,
+    )
+    err = float(np.abs(ours - ref).max())
+    assert err < 1e-6, f"max abs err vs Astropy={err}"
 
 
 def test_convert_infers_format_from_extension(table_fits, tmp_path):

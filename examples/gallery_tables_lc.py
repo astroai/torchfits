@@ -99,7 +99,10 @@ def _demo_lightcurve() -> None:
         )
     )
 
-    folded = PhaseFold(period=period, n_bins=80)(flux.clone())
+    # PhaseFold treats the last axis as sample index (not wall time).
+    # Map the physical period (5.0 in `time` units) onto sample spacing.
+    period_samples = float(n) * (period / float(time[-1] - time[0]))
+    folded = PhaseFold(period=period_samples, n_bins=80)(flux.clone())
     phase_axis = torch.linspace(0.0, 1.0, folded.shape[-1])
     _log(
         save_lightcurve_before_after(

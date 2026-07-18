@@ -1,8 +1,15 @@
-"""Minimal Lupton+ (2004) asinh RGB using torch only."""
+"""Minimal Lupton+ (2004) asinh RGB using torch only.
+
+Matches Astropy's ``make_lupton_rgb`` / ``RGBImageMappingLupton`` path:
+stretch intensity with ``LuptonAsinhStretch``, colour = band * f(I)/I, then
+per-pixel peak clip when max(R,G,B) > 1. Never divide by the field-wide max
+(that crushed midtones to near-black whenever one star saturated).
+"""
 
 from __future__ import annotations
 
 import binascii
+import math
 import struct
 import zlib
 from typing import Any
@@ -19,29 +26,44 @@ def lupton_rgb(
     stretch: float = 0.5,
     minimum: float = 0.0,
 ) -> torch.Tensor:
-    """Return float RGB tensor with shape (H, W, 3) in [0, 1]."""
-    red = torch.as_tensor(r, dtype=torch.float64)
-    green = torch.as_tensor(g, dtype=torch.float64)
-    blue = torch.as_tensor(b, dtype=torch.float64)
+    """Return float RGB tensor with shape ``(H, W, 3)`` in ``[0, 1]``.
+
+    Parameters follow Astropy's Lupton asinh convention. ``stretch`` is the
+    linear intensity scale (smaller → brighter preview); Astropy's default is
+    ``5``, while ``0.5`` suits typical survey cutout previews.
+    """
+    if Q < 0:
+        raise ValueError(f"Q must be non-negative, got {Q}")
+    if stretch <= 0:
+        raise ValueError(f"stretch must be > 0, got {stretch}")
+
+    # Match Astropy's Q floor for near-zero softening.
+    q = float(Q)
+    if abs(q) < 1.0 / 2**23:
+        q = 0.1
+
+    red = torch.as_tensor(r, dtype=torch.float64) - float(minimum)
+    green = torch.as_tensor(g, dtype=torch.float64) - float(minimum)
+    blue = torch.as_tensor(b, dtype=torch.float64) - float(minimum)
     intensity = (red + green + blue) / 3.0
-    floor = torch.clamp(intensity, min=minimum)
-    f_intensity = torch.asinh(Q * floor)
-    f_intensity = torch.where(
-        f_intensity > 0, f_intensity, torch.ones_like(f_intensity)
+
+    # LuptonAsinhStretch: asinh(Q*I/stretch) * (frac / asinh(frac*Q)), frac=0.1
+    soften = q / float(stretch)
+    frac = 0.1
+    slope = frac / math.asinh(frac * q)
+    f_intensity = torch.asinh(intensity * soften) * slope
+    fac = torch.where(
+        intensity > 0,
+        f_intensity / intensity,
+        torch.zeros_like(intensity),
     )
-    ir = torch.pow(floor, stretch)
-    channels = torch.stack(
-        (
-            torch.asinh(Q * red) / f_intensity * ir,
-            torch.asinh(Q * green) / f_intensity * ir,
-            torch.asinh(Q * blue) / f_intensity * ir,
-        ),
-        dim=-1,
-    )
+    channels = torch.stack((red * fac, green * fac, blue * fac), dim=-1)
+    channels = torch.clamp(channels, min=0.0)
+
+    # Per-pixel peak clip (not field-wide). Preserves colour on bright stars.
     if channels.numel() > 0:
-        peak = float(channels.max().item())
-        if peak > 0:
-            channels = channels / peak
+        peak = channels.amax(dim=-1, keepdim=True)
+        channels = torch.where(peak > 1.0, channels / peak, channels)
     return torch.clamp(channels, 0.0, 1.0)
 
 

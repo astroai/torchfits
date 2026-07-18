@@ -25,6 +25,7 @@ SAMPLES=(
   "sdss_lupton_i:http://data.astropy.org/visualization/reprojected_sdss_i.fits.bz2"
   "spitzer_example:http://data.astropy.org/photometry/spitzer_example_image.fits"
   "radio_cube_c14:http://data.astropy.org/tutorials/FITS-cubes/reduced_TAN_C14.fits"
+  "galaxy_zoo1_table2:https://galaxy-zoo-1.s3.amazonaws.com/GalaxyZoo1_DR_table2.fits"
 )
 if [[ $WITH_MANGA -eq 1 ]]; then
   SAMPLES+=("manga_logcube:https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1/7443/stack/manga-7443-12703-LOGCUBE.fits.gz")

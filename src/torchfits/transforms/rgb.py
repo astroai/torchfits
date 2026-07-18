@@ -18,8 +18,8 @@ def lupton_rgb(
 ) -> Any:
     """Lupton+ (2004) asinh RGB → float tensor ``(H, W, 3)`` in ``[0, 1]``.
 
-    Thin wrapper around the CLI preview helper. Tune ``Q`` / ``stretch`` /
-    ``minimum`` per survey. Additional multi-band stretches are deferred to
-    1.1.
+    Astropy-parity mapping (per-pixel peak clip; never field-wide ``/max``).
+    Tune ``Q`` / ``stretch`` / ``minimum`` per survey — smaller ``stretch``
+    brightens the preview (Astropy's default stretch is ``5``).
     """
     return _lupton_rgb(r, g, b, Q=Q, stretch=stretch, minimum=minimum)

@@ -50,6 +50,9 @@ SAMPLES: dict[str, str] = {
         "https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1/7443/"
         "stack/manga-7443-12703-LOGCUBE.fits.gz"
     ),
+    "galaxy_zoo1_table2": (
+        "https://galaxy-zoo-1.s3.amazonaws.com/GalaxyZoo1_DR_table2.fits"
+    ),
 }
 
 
@@ -60,6 +63,16 @@ class SampleUnavailable(RuntimeError):
 def megacam_dir() -> Path:
     """Local cache dir for CFHT MegaCam ``.fits.fz`` samples (see fetch script)."""
     return Path(__file__).resolve().parents[1] / "benchmarks_data" / "cfht_megacam"
+
+
+def megapipe_dir() -> Path:
+    """Local cache dir for CFHTLS-Deep D1 MegaPipe mosaics/catalog (see fetch script)."""
+    return Path(__file__).resolve().parents[1] / "benchmarks_data" / "cfht_megapipe"
+
+
+def gz_legacy_cutouts_dir() -> Path:
+    """Cache dir for Legacy Survey grz cutouts keyed to Galaxy Zoo 1 rows."""
+    return CACHE_DIR / "gz_legacy_cutouts"
 
 
 def _dest_path(name: str) -> Path:

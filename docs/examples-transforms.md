@@ -1,87 +1,69 @@
 # Transform gallery
 
-Before/after figures from the gallery scripts. API formulas:
-[Transforms reference](api-transforms.md). Short Compose demo:
+Curated before/after figures. Full API:
+[Transforms reference](api-transforms.md). Compose smoke test:
 [`example_transforms.py`](published-examples/example_transforms.py).
 
 ```bash
 pixi run python examples/gallery_images.py
 pixi run python examples/gallery_spectra.py
 pixi run python examples/gallery_tables_lc.py
-# copy selected PNGs into docs/assets/gallery/ when refreshing the site
+# copy only the allowlisted PNGs below into docs/assets/gallery/
 ```
 
-Public samples download once into `~/.cache/torchfits/samples/`.
-`TORCHFITS_EXAMPLE_FAST=1` uses synthetic fallbacks when the cache is empty.
+**Gallery PNG allowlist** (copy from `examples/output/` when refreshing):
 
-Use a **tensor** variable from `read_tensor` (IMAGE HDU payload), not an
-undefined `image` name.
+- `image_compose_pipeline.png`
+- `spectrum_continuum_normalize.png`, `spectrum_continuum_removal.png`, `spectrum_doppler_shift.png`
+- `lightcurve_sigma_clip.png`, `lightcurve_savgol_folded.png`
+- `table_fits_scale_columns.png`
+- `lupton_rgb_sdss.png` (from `example_lupton_rgb_sdss.py`)
+
+Public samples: `bash scripts/fetch_example_samples.sh`.
+`TORCHFITS_EXAMPLE_FAST=1` uses synthetic fallbacks for the gallery scripts
+when the cache is empty; `example_lupton_rgb_sdss.py` skips cleanly instead.
 
 ---
 
-## Tensors (HorseHead)
+## Image pipeline (Compose)
 
-Astropy-style open → stretch / normalize → inspect.
+HorseHead alone has limited stretch contrast; the useful story is a
+**Compose** of background → arcsinh → zscale:
 
 ```python
 import torchfits
 from torchfits.transforms import (
     ArcsinhStretch,
-    ZScaleNormalize,
-    Compose,
     BackgroundSubtract,
+    Compose,
+    ZScaleNormalize,
 )
 
 tensor = torchfits.read_tensor("horsehead.fits", hdu=0)
-arcsinh = ArcsinhStretch(a=0.1)(tensor)
-zscale = ZScaleNormalize()(tensor)
 pipeline = Compose(
     [BackgroundSubtract(), ArcsinhStretch(a=0.1), ZScaleNormalize()]
 )
 out = pipeline(tensor)
 ```
 
-![Arcsinh stretch](assets/gallery/image_arcsinh.png)
-
-![Log stretch](assets/gallery/image_log.png)
-
-![Sqrt stretch](assets/gallery/image_sqrt.png)
-
-![ZScale normalize](assets/gallery/image_zscale.png)
-
-![Robust normalize](assets/gallery/image_robust.png)
-
-![Background subtract](assets/gallery/image_background.png)
-
-![Sigma clip](assets/gallery/image_sigma_clip.png)
-
-![FITS header BSCALE/BZERO](assets/gallery/image_fits_header_scale.png)
-
 ![Compose: background → arcsinh → zscale](assets/gallery/image_compose_pipeline.png)
 
-![Cutout from HorseHead](assets/gallery/image_cutout.png)
-
-Stretches that look identical on a flat field are expected — HorseHead has
-limited dynamic range in some panels; prefer Arcsinh / Log / ZScale for
-visible differences.
+Script: [`example_transforms.py`](published-examples/example_transforms.py).
+Cutouts live under [Examples → Cutout](examples.md#cutout), not here.
 
 ---
 
 ## Spectra and continuum
 
-`gallery_spectra.py` runs on the real SDSS DR16 fiber spectrum
-(`sdss_spectrum`, fetched via `bash scripts/fetch_example_samples.sh`) when
-cached, falling back to a synthetic spectrum with strong absorption/emission
-lines otherwise so continuum remove vs normalize stays visually obvious
-either way.
+`gallery_spectra.py` uses the real SDSS DR16 fiber (`sdss_spectrum`) when
+cached, else a synthetic spectrum with strong lines.
 
 ```python
 from torchfits.transforms import ContinuumNormalize, ContinuumRemoval, DopplerShift
 
-# flux: 1D tensor; wave: wavelength grid (Angstrom)
 normed = ContinuumNormalize()(flux)
 residual = ContinuumRemoval()(flux)
-shifted = DopplerShift(velocity_kms=100.0)(flux, wavelength=wave)
+shifted = DopplerShift(z=0.05)(flux)
 ```
 
 ![Continuum normalize](assets/gallery/spectrum_continuum_normalize.png)
@@ -89,14 +71,6 @@ shifted = DopplerShift(velocity_kms=100.0)(flux, wavelength=wave)
 ![Continuum removal](assets/gallery/spectrum_continuum_removal.png)
 
 ![Doppler shift](assets/gallery/spectrum_doppler_shift.png)
-
-![Savitzky–Golay continuum](assets/gallery/spectrum_savitzky_golay.png)
-
-![Spectral binning](assets/gallery/spectrum_spectral_binning.png)
-
-![Wavelet decompose](assets/gallery/spectrum_wavelet.png)
-
-![BandMath NDVI-like](assets/gallery/spectrum_bandmath_ndvi.png)
 
 ---
 
@@ -115,29 +89,24 @@ smoothed = SavitzkyGolayFilter(window_length=11, polyorder=2)(flux)
 
 ![FITS scale columns](assets/gallery/table_fits_scale_columns.png)
 
-## Lupton asinh RGB
+---
 
-`lupton_rgb(i, r, g, Q=10.0, stretch=0.5)` on real reprojected SDSS g/r/i
-cutouts (Astropy's reddest-to-R convention). The samples ship as `.fits.bz2`;
-most CFITSIO builds don't decompress bzip2, so the example inflates each
-band to a temp `.fits` file with the stdlib `bz2` module before reading:
+## Lupton asinh RGB (real SDSS)
+
+`lupton_rgb` matches Astropy's Lupton asinh mapping (per-pixel peak clip —
+never a field-wide `/max`, which crushed midtones to near-black). On this
+reprojected SDSS g/r/i sample the object fluxes are faint, so the gallery
+uses `Q=8, stretch=0.15` (Astropy's default stretch is `5`; tutorials often
+use `0.5`). Reddest band → R:
 
 ```python
 from torchfits.transforms import lupton_rgb
 
-rgb = lupton_rgb(i, r, g, Q=10.0, stretch=0.5)
+rgb = lupton_rgb(i, r, g, Q=8.0, stretch=0.15)
 ```
 
-Script: [`example_lupton_rgb_sdss.py`](published-examples/example_lupton_rgb_sdss.py)
-(fetch samples via `bash scripts/fetch_example_samples.sh`).
+![Lupton RGB from SDSS g/r/i](assets/gallery/lupton_rgb_sdss.png)
 
-### CLI RGB demo
+Script: [`example_lupton_rgb_sdss.py`](published-examples/example_lupton_rgb_sdss.py).
 
-Three synthetic bands → Lupton RGB (use distinct `--bands` values for a
-real color check without network samples):
-
-![CLI RGB demo](assets/gallery/cli_rgb_demo.png)
-
-```bash
-pixi run python examples/cli/make_rgb_demo.py docs/assets/gallery
-```
+CLI synthetic RGB (no network) is under [CLI recipes](cli-recipes.md).

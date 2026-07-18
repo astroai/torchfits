@@ -27,7 +27,8 @@ Full command reference: [CLI guide](cli.md). Job-first shell recipes:
 ## Real data + a first figure
 
 Worked examples with printed output and plots: [Examples](examples.md).
-Transform before/after gallery: [Transform gallery](examples-transforms.md).
+Transform gallery: [Transform gallery](examples-transforms.md).
+Datasets / training loops: [ML with FITS](examples-ml.md).
 
 ```bash
 pixi run python examples/gallery_images.py   # → examples/output/ (+ docs assets)
@@ -154,7 +155,8 @@ read by name.
 
 - [Core I/O](api-core-io.md) — `read_tensor`, `read_subset`, writes, headers
 - [Tables](api-tables.md) — `table.read`, pushdown, Polars/DuckDB
-- [Data module](api-data.md) — Datasets and `make_loader`
+- [ML with FITS](examples-ml.md) — Datasets, `make_loader`, Galaxy Zoo + MegaPipe examples
+- [Data module](api-data.md) — Dataset / loader API reference
 - [Transforms](api-transforms.md) — stretches, normalizers, spectral prep
 - [CLI](cli.md) — shell inspect / cutout / convert
 - [Examples](examples.md) — runnable scripts
