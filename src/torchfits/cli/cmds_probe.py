@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import ipaddress
+import socket
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -88,7 +91,27 @@ def _cards_map(header_text: str) -> dict[str, Any]:
     return {key: value for key, value, _comment in fast_parse_header_cards(header_text)}
 
 
+def _validate_safe_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise IoError(f"Invalid URL: {url}")
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except Exception as exc:
+        raise IoError(f"DNS resolution failed for {hostname}") from exc
+    for family, _, _, _, sockaddr in addr_info:
+        ip = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                raise IoError(f"Access to restricted IP address {ip} is not allowed")
+        except ValueError:
+            pass
+
+
 def _probe_http(url: str) -> dict[str, Any]:
+    _validate_safe_url(url)
     request = urllib.request.Request(
         url,
         headers={"Range": f"bytes=0-{_HEADER_BYTES - 1}"},

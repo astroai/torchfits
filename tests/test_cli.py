@@ -385,3 +385,10 @@ def test_fitsort_with_invalid_hdu(image_fits):
     )
     assert result.returncode == 2, result.stderr
     assert "hdu" in result.stderr.lower() or "invalid" in result.stderr.lower()
+
+
+def test_probe_ssrf():
+    for restricted_ip in ("127.0.0.1", "192.168.1.1", "169.254.169.254", "[::1]", "localhost"):
+        result = _run_cli("probe", f"http://{restricted_ip}/test.fits", "--json")
+        assert result.returncode != 0
+        assert "restricted IP address" in result.stderr
