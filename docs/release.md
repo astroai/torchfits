@@ -121,6 +121,9 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
 - [ ] `pip install torchfits==X.Y.Z` works in a fresh environment.
 - [ ] `import torchfits; print(torchfits.__version__)` shows correct version.
 - [ ] `torchfits.read(...)` runs without import errors.
-- [ ] [Stable docs](https://astroai.github.io/torchfits/) load (latest tag via `docs.yml`).
-- [ ] [Edge docs](https://astroai.github.io/torchfits/edge/) load (tip of `main`; use for pre-release doc debugging).
+- [ ] [Stable docs](https://astroai.github.io/torchfits/) load (latest `v*` tag,
+      built when `main` runs `docs.yml` after the release push).
+- [ ] [Edge docs](https://astroai.github.io/torchfits/edge/) load (tip of `main`).
+  Docs deploy only from `main` (not from the tag event) so Pages protection and
+  concurrency do not cancel the post-release publish.
 - [ ] Changelog and release notes links resolve.

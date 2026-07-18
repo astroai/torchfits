@@ -4,8 +4,10 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+  # Do not deploy from tags: github-pages env only allows `main`, and a tag
+  # push would cancel the concurrent main deploy (see /edge/ 404 after rc2).
+  # Stable docs are still built from the latest v* tag via build_docs_pages.sh
+  # whenever main runs after a release.
   workflow_dispatch:
 
 permissions:

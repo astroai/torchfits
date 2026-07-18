@@ -153,16 +153,31 @@ else
   git worktree remove --force "$WORK"
 fi
 
-echo "==> building edge docs from HEAD → $OUT/edge/"
-build_tree "$ROOT" "${SITE_URL_BASE}/edge/" "site_edge" "torchfits (edge)" "edge" "$OUT/edge"
+echo "==> building edge docs from tip of main → $OUT/edge/"
+EDGE_SRC="$ROOT"
+EDGE_WORK=""
+# Prefer origin/main for /edge/ so a detached tag checkout cannot publish the
+# tagged tree as "edge" (stable already comes from LATEST_TAG).
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+    EDGE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/torchfits-docs-edge.XXXXXX")"
+    git worktree add --detach "$EDGE_WORK" origin/main
+    EDGE_SRC="$EDGE_WORK"
+    echo "    (using origin/main at $(git -C "$EDGE_WORK" rev-parse --short HEAD))"
+  fi
+fi
+build_tree "$EDGE_SRC" "${SITE_URL_BASE}/edge/" "site_edge" "torchfits (edge)" "edge" "$OUT/edge"
+EDGE_SHA="$(git -C "$EDGE_SRC" rev-parse --short HEAD)"
+if [[ -n "$EDGE_WORK" ]]; then
+  git worktree remove --force "$EDGE_WORK"
+fi
 
 python3 - <<PY
 from pathlib import Path
 import datetime
-import subprocess
 
 out = Path("$OUT")
-sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+sha = "$EDGE_SHA"
 tag = "$LATEST_TAG" or "none"
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 (out / "edge" / "EDGE_BUILD.txt").write_text(
