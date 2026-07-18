@@ -113,9 +113,60 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
-def add_emit_format_args(parser: Any) -> None:
-    """Add ``--format`` / ``--json`` / ``--jsonl`` to an inventory command."""
+def add_hdu_arg(
+    parser: Any,
+    *,
+    default: Any = None,
+    type: Any = None,
+    help: str = "comma-separated HDU indices (default: all)",
+) -> None:
+    """Add ``-e`` / ``--hdu`` (``-e`` avoids clashing with ``-h`` help)."""
+    kwargs: dict[str, Any] = {"help": help}
+    if default is not None:
+        kwargs["default"] = default
+    if type is not None:
+        kwargs["type"] = type
+    parser.add_argument("-e", "--hdu", **kwargs)
+
+
+def add_out_arg(parser: Any, *, help: str = "output path") -> None:
+    """Add ``-o`` / ``--out`` plus optional positional ``output`` alias."""
+    parser.add_argument("-o", "--out", default=None, help=help)
     parser.add_argument(
+        "output",
+        nargs="?",
+        default=None,
+        help=f"{help} (positional alias of -o/--out)",
+    )
+
+
+def resolve_out_path(args: Any) -> str:
+    """Resolve ``-o`` / ``--out`` vs positional ``output`` (same path required)."""
+    flag = getattr(args, "out", None)
+    positional = getattr(args, "output", None)
+    if flag and positional and flag != positional:
+        raise UsageError("conflicting output paths: use either -o/--out or positional")
+    out = flag or positional
+    if not out:
+        raise UsageError("output path required (-o/--out or positional)")
+    return str(out)
+
+
+def add_keyword_arg(parser: Any, **kwargs: Any) -> None:
+    """Add ``-k`` / ``--keyword`` (append by default)."""
+    kwargs.setdefault("action", "append")
+    kwargs.setdefault("dest", "keywords")
+    kwargs.setdefault(
+        "help",
+        "filter to keyword(s); repeat for multiple",
+    )
+    parser.add_argument("-k", "--keyword", **kwargs)
+
+
+def add_emit_format_args(parser: Any) -> None:
+    """Add ``-f`` / ``--format`` / ``--json`` / ``--jsonl`` to an inventory command."""
+    parser.add_argument(
+        "-f",
         "--format",
         choices=_EMIT_FORMATS,
         default=None,

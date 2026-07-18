@@ -38,12 +38,13 @@ def _log(path: Path | None) -> None:
 
 
 def _synthetic_spectrum(n: int = 1024) -> tuple[torch.Tensor, torch.Tensor]:
+    # Strong continuum slope + deep lines so before/after panels differ clearly.
     wave = torch.linspace(4000.0, 7000.0, n)
-    continuum = 1.0 + 0.15 * torch.sin((wave - 4000) / 800)
-    lines = -0.4 * torch.exp(-0.5 * ((wave - 4861) / 8) ** 2)
-    lines = lines - 0.55 * torch.exp(-0.5 * ((wave - 6563) / 10) ** 2)
-    lines = lines + 0.25 * torch.exp(-0.5 * ((wave - 5007) / 6) ** 2)
-    flux = continuum * (1.0 + lines) + 0.01 * torch.randn(n)
+    continuum = 0.4 + 1.2 * ((wave - 4000.0) / 3000.0) ** 1.3
+    lines = -0.85 * torch.exp(-0.5 * ((wave - 4861) / 6) ** 2)
+    lines = lines - 0.95 * torch.exp(-0.5 * ((wave - 6563) / 8) ** 2)
+    lines = lines + 0.55 * torch.exp(-0.5 * ((wave - 5007) / 5) ** 2)
+    flux = continuum * (1.0 + lines) + 0.015 * torch.randn(n)
     return wave, flux.float()
 
 

@@ -15,13 +15,13 @@ pixi run python examples/test_examples.py
 
 ---
 
-## Read an image
+## Read a tensor (IMAGE HDU)
 
 ```python
 import torchfits
 
 tensor = torchfits.read_tensor("image.fits", hdu=0)
-header = torchfits.get_header("image.fits", hdu=0)
+header = torchfits.read_header("image.fits", hdu=0)
 print(tensor.shape, tensor.dtype)
 print(header["OBJECT"], header["BITPIX"])
 ```

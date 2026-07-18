@@ -536,11 +536,50 @@ inline std::string sanitize_fits_string(const std::string& input) {
 }
 
 inline std::string sanitize_fits_key(const std::string& input) {
+    // Preserve long / hierarchical keywords (spaces allowed). Short FITS
+    // keywords stay [A-Z0-9_-] only, uppercased.
+    std::string raw = input;
+    while (!raw.empty() && (raw.front() == ' ' || raw.front() == '\t')) {
+        raw.erase(raw.begin());
+    }
+    while (!raw.empty() && (raw.back() == ' ' || raw.back() == '\t')) {
+        raw.pop_back();
+    }
+    std::string upper;
+    upper.reserve(raw.size());
+    for (unsigned char c : raw) {
+        upper.push_back(static_cast<char>(std::toupper(c)));
+    }
+    // CFITSIO adds the HIERARCH token itself for long keys — strip a leading
+    // "HIERARCH " so we do not double-prefix.
+    if (upper.rfind("HIERARCH ", 0) == 0) {
+        raw = raw.substr(9);
+        while (!raw.empty() && raw.front() == ' ') {
+            raw.erase(raw.begin());
+        }
+        upper = upper.substr(9);
+        while (!upper.empty() && upper.front() == ' ') {
+            upper.erase(upper.begin());
+        }
+    }
+
+    const bool allow_spaces = raw.size() > 8 || raw.find(' ') != std::string::npos;
     std::string output;
-    output.reserve(input.length());
-    for (char c : input) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') {
-            output.push_back(std::toupper(static_cast<unsigned char>(c)));
+    output.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.' ||
+            (allow_spaces && c == ' ')) {
+            output.push_back(
+                allow_spaces ? static_cast<char>(c)
+                             : static_cast<char>(std::toupper(c)));
+        }
+    }
+    if (allow_spaces && !output.empty()) {
+        // Uppercase alphanumeric runs but keep spaces (ESO-style keys).
+        for (char& c : output) {
+            if (std::isalpha(static_cast<unsigned char>(c))) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
         }
     }
     return output.empty() ? "UNKNOWN" : output;

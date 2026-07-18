@@ -149,7 +149,7 @@ class UnsignedConvention:
         if self.target_dtype == torch.uint32:
             return (data.to(torch.int64) + self.offset).to(torch.uint32)
         if self.target_dtype == torch.int8:
-            return (data.to(torch.int16) - 128).to(torch.int8)
+            return (data.to(torch.int16) + self.offset).to(torch.int8)
         return data.to(torch.int64).add_(self.offset).to(dtype=self.target_dtype)
 
     def to_storage(self, data: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
@@ -165,8 +165,8 @@ class UnsignedConvention:
             raw = (data.to(torch.int64) - self.offset).to(torch.int32)
             return raw, {"BSCALE": 1.0, "BZERO": float(self.offset)}
         if self.target_dtype == torch.int8:
-            raw = (data.to(torch.int16) + 128).to(torch.uint8)
-            return raw, {"BSCALE": 1.0, "BZERO": -128.0}
+            raw = (data.to(torch.int16) - self.offset).to(torch.uint8)
+            return raw, {"BSCALE": 1.0, "BZERO": float(self.offset)}
         msg = f"UnsignedConvention has no storage mapping for {self.target_dtype}"
         raise TypeError(msg)
 

@@ -1,0 +1,1 @@
+run_id,domain,family,case_id,case_label,operation,mmap_target,host,torchfits_method,torchfits_time_s,torchfits_peak_rss_mb,best_library,best_method,best_time_s,best_peak_rss_mb,lag_ratio,pct_behind,n_points,perceived_impact

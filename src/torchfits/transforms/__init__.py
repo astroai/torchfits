@@ -48,6 +48,7 @@ from .spectral import (
     SpectralBinning,
 )
 from .stretch import ArcsinhStretch, LogStretch, SqrtStretch
+from .rgb import lupton_rgb
 
 __all__ = [
     "FITSTransform",
@@ -55,6 +56,7 @@ __all__ = [
     "ArcsinhStretch",
     "LogStretch",
     "SqrtStretch",
+    "lupton_rgb",
     "ZScaleNormalize",
     "RobustNormalize",
     "BackgroundSubtract",

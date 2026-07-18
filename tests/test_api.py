@@ -202,13 +202,13 @@ class TestMainAPI:
         finally:
             os.unlink(filepath)
 
-    def test_get_header_by_extname(self):
-        """get_header should resolve named HDUs via EXTNAME."""
+    def test_read_header_by_extname(self):
+        """read_header should resolve named HDUs via EXTNAME."""
         filepath, _expected_data, extname = self.create_test_fits_with_named_ext(
             extname="SCI_EXT"
         )
         try:
-            hdr = torchfits.get_header(filepath, hdu=extname)
+            hdr = torchfits.read_header(filepath, hdu=extname)
             assert hdr.get("EXTNAME") == extname
         finally:
             os.unlink(filepath)
@@ -316,7 +316,7 @@ class TestMainAPI:
                 assert result.shape == expected_shapes[i]
 
             # Test batch info
-            info = torchfits.get_batch_info(files)
+            info = torchfits.read_batch_info(files)
             assert info["num_files"] == 3
             assert info["valid_files"] == 3
 

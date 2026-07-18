@@ -148,42 +148,17 @@ def path_signature(path: str) -> tuple[int, int, int] | None:
 
 
 def get_cached_handle(path: str, handle_cache_capacity: int) -> tuple[Any, bool]:
-    """Return an open CFITSIO handle, reusing a small Python-side LRU when enabled."""
+    """Open a fresh, privately-owned CFITSIO handle for this call.
+
+    Per-path handle caching was removed: sharing one ``fitsfile*`` across threads
+    corrupts CFITSIO's position state (§4 Option A). ``cached`` is always ``False``
+    so every caller closes the handle it received. ``handle_cache_capacity`` is
+    accepted for signature compatibility but no longer used.
+    """
     import torchfits._C as cpp
 
-    if handle_cache_capacity <= 0:
-        return cpp.open_fits_file(path, "r"), False
-
-    cur_sig = path_signature(path)
-    handle = file_handle_cache.get(path)
-    if handle is not None:
-        prev_sig = file_handle_sig_cache.get(path)
-        if cur_sig is not None and prev_sig is not None and prev_sig != cur_sig:
-            try:
-                handle.close()
-            except Exception:
-                pass
-            file_handle_cache.pop(path, None)
-            file_handle_sig_cache.pop(path, None)
-            handle = None
-        else:
-            file_handle_cache.move_to_end(path)
-            file_handle_sig_cache.move_to_end(path)
-
-    if handle is None:
-        handle = cpp.open_fits_file(path, "r")
-        file_handle_cache[path] = handle
-        file_handle_sig_cache[path] = cur_sig
-
-    while len(file_handle_cache) > handle_cache_capacity:
-        old_path, old_handle = file_handle_cache.popitem(last=False)
-        file_handle_sig_cache.pop(old_path, None)
-        try:
-            old_handle.close()
-        except Exception:
-            pass
-
-    return handle, True
+    del handle_cache_capacity
+    return cpp.open_fits_file(path, "r"), False
 
 
 def get_cached_hdu_type(path: str, hdu: int) -> str | None:

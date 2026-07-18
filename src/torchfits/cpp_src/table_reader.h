@@ -24,6 +24,7 @@
 #include "torch_compat.h"
 #include "hardware.h"
 #include "cache.h"
+#include "fits_detail.h"
 #include "table_types.h"
 #include "security.h"
 
@@ -32,24 +33,35 @@ namespace nb = nanobind;
 namespace torchfits {
 class TableReader {
 public:
-    TableReader(const std::string& filename, int hdu_num = 1) : filename_(filename), hdu_num_(hdu_num), use_cache_(true) {
+    TableReader(const std::string& filename, int hdu_num = 1) : filename_(filename), hdu_num_(hdu_num), use_cache_(false), owns_fptr_(true) {
         torchfits::check_fits_filename_security(filename);
         target_hdu_ = hdu_num + 1;  // CFITSIO 1-based absolute HDU
-        fptr_ = torchfits::get_or_open_cached(filename);
-        if (!fptr_) {
+        // Private per-instance handle (CFITSIO §4 Option A): never share one
+        // fitsfile* across threads for reads.
+        int status = torchfits::detail::open_fits_readonly(&fptr_, filename);
+        if (status != 0 || !fptr_) {
             throw std::runtime_error("Failed to open FITS file");
         }
 
-        int status = 0;
-        fits_movabs_hdu(fptr_, target_hdu_, nullptr, &status);
-        if (status != 0) {
-            throw std::runtime_error("Failed to move to table HDU");
+        // If HDU move or analysis fails, the destructor will not run (the object
+        // is not fully constructed), so close the handle we opened before
+        // rethrowing to avoid leaking the fitsfile*.
+        try {
+            status = 0;
+            fits_movabs_hdu(fptr_, target_hdu_, nullptr, &status);
+            if (status != 0) {
+                throw std::runtime_error("Failed to move to table HDU");
+            }
+            analyze_table();
+        } catch (...) {
+            int close_status = 0;
+            fits_close_file(fptr_, &close_status);
+            fptr_ = nullptr;
+            throw;
         }
-
-        analyze_table();
     }
 
-    TableReader(fitsfile* fptr, int hdu_num = 1) : fptr_(fptr), hdu_num_(hdu_num), use_cache_(false) {
+    TableReader(fitsfile* fptr, int hdu_num = 1) : fptr_(fptr), hdu_num_(hdu_num), use_cache_(false), owns_fptr_(false) {
         int status = 0;
         target_hdu_ = hdu_num + 1;
         fits_movabs_hdu(fptr_, target_hdu_, nullptr, &status);
@@ -68,8 +80,11 @@ public:
 
     ~TableReader() {
         if (fptr_) {
-            if (use_cache_) {
-                torchfits::release_cached(filename_);
+            if (owns_fptr_) {
+                int status = 0;
+                fits_close_file(fptr_, &status);
+            } else if (use_cache_) {
+                torchfits::release_cached(filename_);  // legacy path, unused
             }
         }
     }
@@ -136,24 +151,6 @@ public:
                  fprintf(stderr, "Warning: Failed to get column %d info: %s\n", i, err_msg);
                  #endif
                  continue;
-            }
-
-            // Map typecode to FITSColumnType
-            // ... (rest of logic needs to be updated to use typecode)
-
-            // Wait, I need to replace the existing logic block.
-            // The existing logic uses tform from fits_get_bcolparms.
-            // I should rewrite the loop body to use fits_get_coltype.
-
-
-            if (col_status != 0) {
-                // Skip problematic columns but log the issue
-                #ifdef DEBUG_TABLE
-                char err_msg[81];
-                fits_get_errstatus(col_status, err_msg);
-                fprintf(stderr, "Warning: Failed to get column %d info: %s\n", i, err_msg);
-                #endif
-                continue;
             }
 
             col.repeat = (int)repeat_long;
@@ -2278,6 +2275,7 @@ private:
     int hdu_num_;
     int target_hdu_ = 1;
     bool use_cache_ = false;
+    bool owns_fptr_ = false;
     long nrows_;
     int ncols_;
     long row_width_bytes_ = 0;

@@ -2,8 +2,7 @@
 
 Provides :class:`torch.utils.data.Dataset` and
 :class:`~torch.utils.data.IterableDataset` implementations that wrap
-``read_tensor`` and ``read_table``, plus a ``fits_collate_fn`` and
-``make_loader`` helper.
+``read_tensor`` / ``table.read``, plus ``fits_collate_fn`` and ``make_loader``.
 
 Basic usage::
 
@@ -14,211 +13,25 @@ Basic usage::
     for images, labels in loader:
         ...
 
-See [API Reference — Data Module](api.md#data-module) for multi-worker setup and
-cache tuning.
+See [API Reference — Data Module](api.md#data-module).
 """
 
 from __future__ import annotations
 
-import glob as _glob
 from typing import Any, Callable, Iterator, Sequence
 
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
-
-# ---------------------------------------------------------------------------
-# FitsImageDataset — file-list image dataset with label-from-header
-# ---------------------------------------------------------------------------
-
-
-class FitsImageDataset(Dataset[Any]):
-    """Map-style dataset that reads FITS images via ``read_tensor``.
-
-    Each ``__getitem__`` returns ``(image, label)`` where *image* is a
-    ``torch.Tensor`` and *label* is extracted from a FITS header keyword
-    (or a user-supplied list).
-
-    Parameters
-    ----------
-    paths : str or list[str]
-        File path, glob pattern, or list of file paths.
-    hdu : int
-        HDU index to read (default 0).
-    label_key : str or None
-        Header keyword to extract as the integer label.  When *None*, you
-        must supply *labels* explicitly.
-    labels : list[int] or None
-        Explicit per-file labels (same length as the resolved file list).
-        Overrides *label_key*.
-    transform : callable or None
-        Optional transform applied to the image tensor before returning.
-    device : str
-        Torch device for the read tensor (default ``"cpu"``).
-    mmap : bool or str
-        Mmap policy passed to ``read_tensor`` (default ``True``).
-    add_channel_dim : bool
-        If True, 2D images are unsqueezed to ``[1, H, W]`` (default True).
-    """
-
-    def __init__(
-        self,
-        paths: str | list[str],
-        hdu: int = 0,
-        label_key: str | None = None,
-        labels: list[int] | None = None,
-        transform: Callable[..., Any] | None = None,
-        device: str = "cpu",
-        mmap: bool | str = True,
-        add_channel_dim: bool = True,
-    ) -> None:
-        if isinstance(paths, str):
-            paths = sorted(_glob.glob(paths)) or [paths]
-        self.files = list(paths)
-        self.hdu = hdu
-        self.transform = transform
-        self.device = device
-        self.mmap = mmap
-        self.add_channel_dim = add_channel_dim
-
-        if labels is not None:
-            if len(labels) != len(self.files):
-                raise ValueError(
-                    f"labels length {len(labels)} != files length {len(self.files)}"
-                )
-            self._labels = list(labels)
-        elif label_key is not None:
-            from torchfits import get_header
-
-            self._labels = [
-                int(get_header(f, hdu=self.hdu)[label_key]) for f in self.files
-            ]
-        else:
-            self._labels = [0] * len(self.files)
-
-    def __len__(self) -> int:
-        return len(self.files)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        from torchfits import read
-
-        image = read(
-            self.files[idx],
-            hdu=self.hdu,
-            mode="image",
-            device=self.device,
-            mmap=self.mmap,
-        )
-        if self.add_channel_dim and image.ndim == 2:
-            image = image.unsqueeze(0)
-        if self.transform is not None:
-            image = self.transform(image)
-        label = torch.tensor(self._labels[idx], dtype=torch.long)
-        return image, label
-
-    def __repr__(self) -> str:
-        return (
-            f"FitsImageDataset(n={len(self.files)}, hdu={self.hdu}, "
-            f"device={self.device!r})"
-        )
-
-
-# ---------------------------------------------------------------------------
-# FitsImageIterableDataset — sharded for multi-worker DataLoader
-# ---------------------------------------------------------------------------
-
-
-class FitsImageIterableDataset(IterableDataset[Any]):
-    """Iterable dataset for sharded multi-worker image loading.
-
-    Each worker processes a deterministic subset of the file list so every
-    sample is seen exactly once per epoch regardless of ``num_workers``.
-
-    Parameters
-    ----------
-    paths : str or list[str]
-        File path, glob pattern, or list of file paths.
-    hdu : int
-        HDU index to read (default 0).
-    transform : callable or None
-        Optional transform applied to the image tensor.
-    device : str
-        Torch device.
-    mmap : bool or str
-        Mmap policy.
-    shuffle : bool
-        Shuffle file order per epoch (uses epoch-based seed).
-    seed : int
-        Base seed for shuffling.
-    add_channel_dim : bool
-        If True, 2D images are unsqueezed to ``[1, H, W]``.
-    """
-
-    def __init__(
-        self,
-        paths: str | list[str],
-        hdu: int = 0,
-        transform: Callable[..., Any] | None = None,
-        device: str = "cpu",
-        mmap: bool | str = True,
-        shuffle: bool = False,
-        seed: int = 0,
-        add_channel_dim: bool = True,
-    ) -> None:
-        if isinstance(paths, str):
-            paths = sorted(_glob.glob(paths)) or [paths]
-        self.files = list(paths)
-        self.hdu = hdu
-        self.transform = transform
-        self.device = device
-        self.mmap = mmap
-        self.shuffle = shuffle
-        self.seed = seed
-        self.add_channel_dim = add_channel_dim
-
-    def __iter__(self) -> Iterator[torch.Tensor]:
-        from torchfits import read
-
-        worker_info = torch.utils.data.get_worker_info()
-
-        if worker_info is None:
-            indices = list(range(len(self.files)))
-        else:
-            total = len(self.files)
-            num_workers = worker_info.num_workers
-            worker_id = worker_info.id
-            per_worker = total // num_workers
-            remainder = total % num_workers
-            start = worker_id * per_worker + min(worker_id, remainder)
-            size = per_worker + (1 if worker_id < remainder else 0)
-            indices = list(range(start, start + size))
-
-        if self.shuffle:
-            g = torch.Generator()
-            g.manual_seed(self.seed)
-            perm = torch.randperm(len(indices), generator=g).tolist()
-            indices = [indices[i] for i in perm]
-
-        for idx in indices:
-            image = read(
-                self.files[idx],
-                hdu=self.hdu,
-                mode="image",
-                device=self.device,
-                mmap=self.mmap,
-            )
-            if self.add_channel_dim and image.ndim == 2:
-                image = image.unsqueeze(0)
-            if self.transform is not None:
-                image = self.transform(image)
-            yield image
-
-    def __repr__(self) -> str:
-        return (
-            f"FitsImageIterableDataset(n={len(self.files)}, hdu={self.hdu}, "
-            f"device={self.device!r})"
-        )
-
+from .datasets import (
+    FitsCubeDataset,
+    FitsImageDataset,
+    FitsImageIterableDataset,
+    FitsSpectrumDataset,
+    FitsTensorDataset,
+    FitsTensorIterableDataset,
+)
+from .remote import is_http_url, prefetch_urls, resolve_local_path
 
 # ---------------------------------------------------------------------------
 # FitsTableDataset — row-indexable table catalog
@@ -261,7 +74,7 @@ class FitsTableDataset(Dataset[Any]):
         device: str = "cpu",
         mmap: bool | str = "auto",
     ) -> None:
-        self.path = path
+        self.path = resolve_local_path(path)
         self.hdu = hdu
         self.columns = columns
         self.where = where
@@ -457,7 +270,7 @@ class FitsTableIterableDataset(IterableDataset[Any]):
         device: str = "cpu",
         mmap: bool | str = "auto",
     ) -> None:
-        self.path = path
+        self.path = resolve_local_path(path)
         self.hdu = hdu
         self.columns = columns
         self.where = where
@@ -575,6 +388,7 @@ class FitsCutoutDataset(Dataset[Any]):
         from torchfits import read_subset
 
         path, hdu, x1, y1, x2, y2 = self.cutouts[idx]
+        path = resolve_local_path(path)
         image = read_subset(path, hdu, x1, y1, x2, y2)
         if self.device != "cpu":
             image = image.to(self.device)
@@ -707,7 +521,12 @@ def make_loader(
         if file_list:
             from torchfits.cache import optimize_for_dataset
 
-            optimize_for_dataset(file_list, avg_file_size_mb=avg_file_size_mb)
+            cache_dir = getattr(dataset, "cache_dir", None)
+            remote = [p for p in file_list if is_http_url(str(p))]
+            if remote:
+                prefetch_urls(remote, cache_dir=cache_dir)
+            local = [resolve_local_path(str(p), cache_dir=cache_dir) for p in file_list]
+            optimize_for_dataset(local, avg_file_size_mb=avg_file_size_mb)
 
     return DataLoader(
         dataset,
@@ -724,8 +543,12 @@ def make_loader(
 
 __all__ = [
     "CutoutSpec",
+    "FitsTensorDataset",
+    "FitsTensorIterableDataset",
     "FitsImageDataset",
     "FitsImageIterableDataset",
+    "FitsCubeDataset",
+    "FitsSpectrumDataset",
     "FitsTableDataset",
     "FitsTableIterableDataset",
     "FitsCutoutDataset",

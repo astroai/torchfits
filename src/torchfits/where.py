@@ -22,6 +22,11 @@ def evaluate_where(ast: tuple[Any, ...], data: Mapping[str, Any]) -> np.ndarray:
 
     The ``numpy`` import is lazy to avoid a mandatory dependency at
     the package level (torchfits itself only requires PyTorch).
+
+    Null checks: use ``isnull`` / ``notnull`` in the where grammar (or
+    ``table.read(..., where=)``, which uses Arrow ``pc.is_null``). Comparing
+    with ``== NULL`` / ``!= NULL`` on numeric arrays is rejected — FITS nulls
+    are TNULLn / NaN, not Python ``None``.
     """
     import numpy as np
 
@@ -44,6 +49,14 @@ def evaluate_where(ast: tuple[Any, ...], data: Mapping[str, Any]) -> np.ndarray:
     if kind == "cmp":
         _, _, operator, literal = ast
         if literal is None:
+            if np.issubdtype(values.dtype, np.number) or np.issubdtype(
+                values.dtype, np.bool_
+            ):
+                raise ValueError(
+                    "COL == NULL / != NULL is not supported on numeric arrays "
+                    "(FITS uses TNULLn / NaN). Use isnull/notnull, or "
+                    "table.read(..., where=) for FITS-native null handling."
+                )
             if operator == "==":
                 return np.asarray([value is None for value in values], dtype=bool)
             if operator == "!=":

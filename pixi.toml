@@ -8,7 +8,7 @@ platforms = ["osx-arm64", "linux-64"]
 
 [package]
 name = "torchfits"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = ["Seb Fabbro <sebfabbro@gmail.com>"]
 
@@ -76,6 +76,7 @@ ci-local-fast = "CI_LOCAL_FAST=1 bash scripts/ci_local.sh"
 setup-hooks = "pre-commit install"
 pre-commit = "pre-commit run --all-files"
 docs-build = "bash scripts/sync_docs_examples.sh && zensical build --clean"
+docs-build-pages = "bash scripts/build_docs_pages.sh --root-from-head"
 docs-serve = "zensical serve"
 
 # Core benchmarks (essential)
@@ -106,6 +107,8 @@ bench-cache = "pixi run -e bench bench-install && pixi run -e bench python bench
 bench-deficit-focus = "bash scripts/bench_deficit_focus.sh"
 # Pure-C CFITSIO (vendored) microbench + torchfits/fitsio peers on same fixtures
 bench-cfitsio-direct = "bash scripts/bench_cfitsio_direct.sh"
+bench-megacam = "pixi run -e bench-all bench-install && pixi run -e bench-all python benchmarks/bench_megacam_cutouts.py"
+bench-ml = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_ml_loader.py --output benchmarks_results/ml_$(date -u +%Y%m%d_%H%M%S)/ml_results.csv --run-id ml_$(date -u +%Y%m%d_%H%M%S)"
 
 # Render the bench-all CSV into the I/O Transport x Backend markdown section
 # of docs/benchmarks.md. Pass --csv after --, e.g.:

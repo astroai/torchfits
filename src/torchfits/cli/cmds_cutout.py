@@ -8,7 +8,7 @@ import torchfits
 
 from torchfits._io_engine.paths import has_cfitsio_filter
 
-from .common import EXIT_OK, UsageError
+from .common import EXIT_OK, UsageError, add_hdu_arg, add_out_arg, resolve_out_path
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -17,8 +17,8 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "input",
         help="input FITS image path (optional CFITSIO section, e.g. img.fits[10:100,20:200])",
     )
-    parser.add_argument("output", help="output FITS path")
-    parser.add_argument("--hdu", type=int, default=0, help="source HDU index")
+    add_out_arg(parser, help="output FITS path")
+    add_hdu_arg(parser, type=int, default=0, help="source HDU index")
     parser.add_argument(
         "--box",
         default=None,
@@ -40,6 +40,7 @@ def _parse_box(raw: str) -> tuple[int, int, int, int]:
 
 
 def run(args: argparse.Namespace) -> int:
+    output = resolve_out_path(args)
     sectioned = has_cfitsio_filter(args.input)
     if sectioned and args.box is not None:
         raise UsageError(
@@ -57,6 +58,6 @@ def run(args: argparse.Namespace) -> int:
     else:
         x1, y1, x2, y2 = _parse_box(args.box)
         tensor = torchfits.read_subset(args.input, args.hdu, x1, y1, x2, y2)
-    header = torchfits.get_header(args.input, args.hdu)
-    torchfits.write_tensor(args.output, tensor, header=header, overwrite=True)
+    header = torchfits.read_header(args.input, args.hdu)
+    torchfits.write_tensor(output, tensor, header=header, overwrite=True)
     return EXIT_OK

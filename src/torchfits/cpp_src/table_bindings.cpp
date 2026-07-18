@@ -100,7 +100,6 @@ void bind_table(nb::module_& m) {
             return table_result_to_python(result_map, true);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
-        .def_prop_ro("num_rows", &torchfits::TableReader::get_num_rows)
         .def_prop_ro("num_cols", &torchfits::TableReader::get_num_cols);
 
     m.def("write_fits_table", [](const std::string& filename, nb::dict tensor_dict, nb::dict header, bool overwrite,

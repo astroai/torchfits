@@ -1,0 +1,167 @@
+"""Remote prefetch cache + Dataset peer taxonomy smoke checks."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+from astropy.io import fits
+
+
+@pytest.fixture
+def image_fits(tmp_path):
+    path = tmp_path / "img.fits"
+    fits.PrimaryHDU(np.arange(16, dtype=np.float32).reshape(4, 4)).writeto(
+        str(path), overwrite=True
+    )
+    return path
+
+
+@pytest.fixture
+def spectrum_1d_fits(tmp_path):
+    path = tmp_path / "spec1d.fits"
+    fits.PrimaryHDU(np.linspace(0, 1, 32, dtype=np.float32)).writeto(
+        str(path), overwrite=True
+    )
+    return path
+
+
+@pytest.fixture
+def desi_shaped_fits(tmp_path):
+    """Tiny DESI-like MEF: B/R arms with unequal nwave + IVAR companions."""
+    path = tmp_path / "spectra-fake.fits"
+    hdus = [fits.PrimaryHDU()]
+    for name, nwave in (
+        ("B_FLUX", 10),
+        ("B_IVAR", 10),
+        ("R_FLUX", 12),
+        ("R_IVAR", 12),
+    ):
+        data = np.arange(3 * nwave, dtype=np.float32).reshape(3, nwave)
+        hdus.append(fits.ImageHDU(data, name=name))
+    fits.HDUList(hdus).writeto(str(path), overwrite=True)
+    return path
+
+
+def test_cache_root_env_override(tmp_path, monkeypatch):
+    from torchfits.cache import cache_root, remote_cache_root, sample_cache_root
+
+    root = tmp_path / "tf-cache"
+    monkeypatch.setenv("TORCHFITS_CACHE_DIR", str(root))
+    monkeypatch.delenv("TORCHFITS_REMOTE_CACHE", raising=False)
+    monkeypatch.delenv("TORCHFITS_SAMPLE_CACHE", raising=False)
+    assert cache_root() == root
+    assert remote_cache_root() == root / "remote"
+    assert sample_cache_root() == root / "samples"
+
+
+def test_cache_root_xdg(tmp_path, monkeypatch):
+    from torchfits.cache import cache_root
+
+    monkeypatch.delenv("TORCHFITS_CACHE_DIR", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert cache_root() == tmp_path / "xdg" / "torchfits"
+
+
+def test_remote_cache_path_stable(tmp_path, monkeypatch):
+    from torchfits.data.remote import (
+        cache_path_for_url,
+        is_http_url,
+        resolve_local_path,
+    )
+
+    monkeypatch.setenv("TORCHFITS_REMOTE_CACHE", str(tmp_path))
+    url = "https://example.edu/data/sample.fits"
+    assert is_http_url(url)
+    a = cache_path_for_url(url)
+    b = cache_path_for_url(url)
+    assert a == b
+    assert a.parent == tmp_path
+    assert Path(resolve_local_path(url, download=False)) == a
+
+
+def test_fits_tensor_dataset_local(image_fits):
+    from torchfits.data import FitsCubeDataset, FitsTensorDataset
+
+    ds = FitsTensorDataset([str(image_fits)], labels=[1], add_channel_dim=True)
+    image, label = ds[0]
+    assert image.ndim == 3
+    assert int(label) == 1
+
+    cube = FitsCubeDataset([str(image_fits)], labels=[0])
+    t, _ = cube[0]
+    assert t.ndim >= 2
+
+
+def test_fits_spectrum_1d(spectrum_1d_fits):
+    from torchfits.data import FitsSpectrumDataset
+
+    spec = FitsSpectrumDataset([str(spectrum_1d_fits)])
+    payload = spec[0]
+    assert payload["flux"].ndim == 1
+    assert payload["flux"].shape[0] == 32
+
+
+def test_fits_image_dataset_peer(image_fits):
+    from torchfits.data import FitsImageDataset
+
+    ds = FitsImageDataset([str(image_fits)], labels=[0])
+    assert "FitsImageDataset" in repr(ds)
+    image, _ = ds[0]
+    assert image.ndim == 3
+
+
+def test_desi_shaped_spectrum_layouts(desi_shaped_fits):
+    from torchfits.data import FitsSpectrumDataset
+
+    path = str(desi_shaped_fits)
+    arms = FitsSpectrumDataset(
+        [path],
+        hdu=["B_FLUX", "R_FLUX"],
+        ivar_hdu=["B_IVAR", "R_IVAR"],
+        row=1,
+        layout="dict",
+    )[0]
+    assert set(arms) == {"B_FLUX", "R_FLUX"}
+    assert arms["B_FLUX"]["flux"].shape == (10,)
+    assert arms["R_FLUX"]["ivar"].shape == (12,)
+
+    concat = FitsSpectrumDataset(
+        [path],
+        hdu=["B_FLUX", "R_FLUX"],
+        ivar_hdu=["B_IVAR", "R_IVAR"],
+        row=0,
+        layout="concat",
+    )[0]
+    assert concat["flux"].shape == (22,)
+    assert concat["ivar"].shape == (22,)
+
+    with pytest.raises(ValueError, match="equal nwave"):
+        _ = FitsSpectrumDataset(
+            [path],
+            hdu=["B_FLUX", "R_FLUX"],
+            row=0,
+            layout="stack",
+        )[0]
+
+
+def test_multi_hdu_flux_ivar_companions(tmp_path):
+    from torchfits.data import FitsImageDataset
+
+    path = tmp_path / "bands.fits"
+    hdus = [fits.PrimaryHDU()]
+    for name in ("G", "R", "G_IVAR", "R_IVAR"):
+        hdus.append(fits.ImageHDU(np.ones((4, 4), dtype=np.float32), name=name))
+    fits.HDUList(hdus).writeto(str(path), overwrite=True)
+
+    payload, _ = FitsImageDataset(
+        [str(path)],
+        hdu=["G", "R"],
+        ivar_hdu=["G_IVAR", "R_IVAR"],
+        labels=[0],
+        add_channel_dim=False,
+    )[0]
+    assert isinstance(payload, dict)
+    assert payload["flux"].shape == (2, 4, 4)
+    assert payload["ivar"].shape == (2, 4, 4)

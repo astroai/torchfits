@@ -145,6 +145,77 @@ def _emit_image_jobs(
             ]
         )
 
+    # Rice compressed repeated cutouts (same API path MegaCam pays: fits_read_subset).
+    rice = files.get("compressed_rice_1")
+    if rice is not None:
+        py_hdu = 1
+        with fitsio.FITS(str(rice)) as f:
+            header = f[py_hdu].read_header()
+            naxis1 = int(header.get("ZNAXIS1") or header.get("NAXIS1") or 0)
+            naxis2 = int(header.get("ZNAXIS2") or header.get("NAXIS2") or 0)
+        if naxis1 >= 32 and naxis2 >= 32:
+            cutout_size = min(64, naxis1 // 4, naxis2 // 4)
+            coords_rng = np.random.default_rng(7)
+            coords_path = coords_dir / "compressed_rice_cutout_rep_coords.txt"
+            lines = []
+            for _ in range(40):
+                x1 = int(coords_rng.integers(0, max(1, naxis1 - cutout_size)))
+                y1 = int(coords_rng.integers(0, max(1, naxis2 - cutout_size)))
+                lines.append(f"{x1} {y1} {cutout_size} {cutout_size}")
+            coords_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            jobs.append(
+                [
+                    f"compressed_rice_1_cutout_rep_40x_{cutout_size}x{cutout_size}",
+                    "cutout_rep",
+                    str(rice),
+                    str(coords_path),
+                    str(_cfitsio_hdu(py_hdu)),
+                ]
+            )
+
+    # Optional real MegaCam .fz (when fetched) — first file, first image HDU.
+    megacam_dir = ROOT / "benchmarks_data" / "cfht_megacam"
+    if megacam_dir.is_dir():
+        megacam_files = sorted(
+            p
+            for p in megacam_dir.iterdir()
+            if p.is_file()
+            and p.name.lower().endswith((".fits", ".fits.fz", ".fits.gz"))
+        )
+        if megacam_files:
+            megacam = megacam_files[0]
+            with fitsio.FITS(str(megacam)) as handle:
+                hdu_idx = None
+                naxis1 = naxis2 = 0
+                for idx in range(len(handle)):
+                    header = handle[idx].read_header()
+                    z1 = int(header.get("ZNAXIS1", 0) or 0)
+                    z2 = int(header.get("ZNAXIS2", 0) or 0)
+                    n1 = z1 or int(header.get("NAXIS1", 0) or 0)
+                    n2 = z2 or int(header.get("NAXIS2", 0) or 0)
+                    if n1 >= 16 and n2 >= 16:
+                        hdu_idx, naxis1, naxis2 = idx, n1, n2
+                        break
+            if hdu_idx is not None:
+                cutout_size = min(256, naxis1 // 4, naxis2 // 4)
+                coords_rng = np.random.default_rng(hdu_idx + len(megacam.name))
+                coords_path = coords_dir / "megacam_cutout_rep_coords.txt"
+                lines = []
+                for _ in range(40):
+                    x1 = int(coords_rng.integers(0, max(1, naxis1 - cutout_size)))
+                    y1 = int(coords_rng.integers(0, max(1, naxis2 - cutout_size)))
+                    lines.append(f"{x1} {y1} {cutout_size} {cutout_size}")
+                coords_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                jobs.append(
+                    [
+                        f"megacam_{megacam.stem}_hdu{hdu_idx}_cutout_rep",
+                        "cutout_rep",
+                        str(megacam),
+                        str(coords_path),
+                        str(_cfitsio_hdu(hdu_idx)),
+                    ]
+                )
+
     if "multi_mef_10ext" in files:
         jobs.append(
             [
@@ -171,6 +242,7 @@ def _emit_table_jobs(cases: list[dict], jobs: list[list[str]]) -> None:
         slice_n = min(10_000, max(100, nrows // 10))
 
         jobs.append([name, "table_read", path])
+        jobs.append([name, "table_header", path])
         jobs.append([name, "table_proj", path, str(proj_n)])
         jobs.append([name, "table_slice", path, str(slice_start), str(slice_n)])
         jobs.append([name, "table_scan", path, num_col])

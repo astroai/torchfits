@@ -6,7 +6,7 @@ import argparse
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError
+from .common import EXIT_OK, IoError, UsageError, add_out_arg, resolve_out_path
 
 
 def add_compress_parser(
@@ -14,7 +14,7 @@ def add_compress_parser(
 ) -> None:
     parser = subparsers.add_parser("compress", help="write tile-compressed FITS")
     parser.add_argument("input", help="input FITS path")
-    parser.add_argument("output", help="output FITS path")
+    add_out_arg(parser, help="output FITS path")
     parser.set_defaults(func=run_compress)
 
 
@@ -23,7 +23,7 @@ def add_decompress_parser(
 ) -> None:
     parser = subparsers.add_parser("decompress", help="write uncompressed FITS")
     parser.add_argument("input", help="input FITS path")
-    parser.add_argument("output", help="output FITS path")
+    add_out_arg(parser, help="output FITS path")
     parser.set_defaults(func=run_decompress)
 
 
@@ -39,8 +39,8 @@ def _rewrite(input_path: str, output_path: str, *, compress: bool) -> int:
 
 
 def run_compress(args: argparse.Namespace) -> int:
-    return _rewrite(args.input, args.output, compress=True)
+    return _rewrite(args.input, resolve_out_path(args), compress=True)
 
 
 def run_decompress(args: argparse.Namespace) -> int:
-    return _rewrite(args.input, args.output, compress=False)
+    return _rewrite(args.input, resolve_out_path(args), compress=False)

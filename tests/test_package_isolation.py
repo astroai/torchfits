@@ -21,8 +21,12 @@ def test_native_torch_abi_range_is_consistent() -> None:
     )
     pixi = tomllib.loads((REPO_ROOT / "pixi.toml").read_text(encoding="utf-8"))
 
-    assert "torch>=2.10,<2.11" in pyproject["build-system"]["requires"]
-    assert "torch>=2.10,<2.11" in pyproject["project"]["dependencies"]
+    # Pip metadata allows torch>=2.10 (source builds against the installed minor).
+    assert "torch>=2.10" in pyproject["build-system"]["requires"]
+    assert "torch>=2.10" in pyproject["project"]["dependencies"]
+    assert "torch>=2.10,<2.11" not in pyproject["build-system"]["requires"]
+    assert "torch>=2.10,<2.11" not in pyproject["project"]["dependencies"]
+    # Dev pixi / published wheels stay on the 2.10 ABI lane.
     for section in ("build-dependencies", "host-dependencies", "run-dependencies"):
         assert pixi["package"][section]["pytorch"] == ">=2.10,<2.11"
     assert pixi["dependencies"]["pytorch"] == ">=2.10,<2.11"
@@ -40,8 +44,15 @@ def test_native_torch_abi_range_is_consistent() -> None:
     cmake = (PACKAGE_ROOT / "cpp_src" / "CMakeLists.txt").read_text(encoding="utf-8")
     bindings = (PACKAGE_ROOT / "cpp_src" / "bindings.cpp").read_text(encoding="utf-8")
     assert "TORCHFITS_BUILD_TORCH_VERSION" in cmake
-    assert 'TORCHFITS_TORCH_ABI="2.10"' in cmake
+    assert 'TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI}"' in cmake
     assert "matching_abi" in bindings
+
+    # [dev] covers test + bench + examples deps (no ipykernel).
+    dev = set(pyproject["project"]["optional-dependencies"]["dev"])
+    assert "ipykernel" not in dev
+    assert any(x.startswith("pytest") for x in dev)
+    assert any(x.startswith("astropy") for x in dev)
+    assert any(x.startswith("matplotlib") for x in dev)
 
 
 def test_native_extension_rejects_mismatched_torch_runtime() -> None:

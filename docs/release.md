@@ -55,7 +55,7 @@ Regenerate the I/O transport table:
 pixi run bench-table-render -- --csv benchmarks_results/<run-id>/results.csv
 ```
 
-Scheduled CI: `.github/workflows/bench-report.yml` (weekly + manual).
+Manual benchmark refresh: `.github/workflows/bench-report.yml` (`workflow_dispatch` only).
 
 Repository: https://github.com/astroai/torchfits.
 
@@ -121,5 +121,6 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
 - [ ] `pip install torchfits==X.Y.Z` works in a fresh environment.
 - [ ] `import torchfits; print(torchfits.__version__)` shows correct version.
 - [ ] `torchfits.read(...)` runs without import errors.
-- [ ] [Documentation site](https://astroai.github.io/torchfits/) loads (GitHub Pages deploy from `docs.yml` on `main`).
+- [ ] [Stable docs](https://astroai.github.io/torchfits/) load (latest tag via `docs.yml`).
+- [ ] [Edge docs](https://astroai.github.io/torchfits/edge/) load (tip of `main`; use for pre-release doc debugging).
 - [ ] Changelog and release notes links resolve.

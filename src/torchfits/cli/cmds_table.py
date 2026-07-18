@@ -15,6 +15,7 @@ from .common import (
     EXIT_OK,
     IoError,
     add_emit_format_args,
+    add_hdu_arg,
     emit_records,
     header_extname,
     hdu_type_name,
@@ -31,10 +32,16 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument(
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
+    add_hdu_arg(parser, help="comma-separated table HDU indices (default: all)")
     parser.add_argument(
-        "--hdu", help="comma-separated table HDU indices (default: all)"
+        "-n",
+        "--rows",
+        "--preview",
+        type=int,
+        default=5,
+        dest="preview",
+        help="preview row count (-n/--rows; --preview is an alias)",
     )
-    parser.add_argument("--preview", type=int, default=5, help="preview row count")
     add_emit_format_args(parser)
     parser.set_defaults(func=run)
 

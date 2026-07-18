@@ -40,7 +40,6 @@ def test_docs_reference_existing_local_files() -> None:
         "docs/install.md",
         "docs/parity.md",
         "docs/roadmap.md",
-        "docs/migration_datasets.md",
         "docs/migration_fitsio.md",
         "docs/migration_astropy.md",
         "examples/example_image.py",
@@ -149,7 +148,6 @@ def test_docs_do_not_advertise_unimplemented_worker_handle_env() -> None:
         ROOT / "docs" / "index.md",
         ROOT / "docs" / "migration_astropy.md",
         ROOT / "docs" / "migration_fitsio.md",
-        ROOT / "docs" / "migration_datasets.md",
     ]
     # Allowed: honesty notes that the feature does not exist.
     # Forbidden: documentation that tells users to set / rely on it.

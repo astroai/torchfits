@@ -16,6 +16,10 @@ verify_fix.py
 
 # Build
 site/
+site_edge/
+site_stable/
+site_pages/
+zensical.pages.toml
 build/
 dist/
 wheelhouse/
@@ -31,6 +35,7 @@ extern/cfitsio/
 
 # Data
 *.fits
+benchmarks_data/
 examples/data_*/
 
 # Logs / local benchmark output
@@ -80,3 +85,4 @@ examples/output/
 
 # Synced into docs/ at docs-build time (source of truth: examples/)
 docs/published-examples/
+docs/assets/gallery/_rgb_demo/

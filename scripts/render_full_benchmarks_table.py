@@ -11,6 +11,17 @@ from collections import defaultdict
 from typing import Dict, List
 
 
+_TABLE_CASE_PREFIXES = (
+    "narrow_",
+    "mixed_",
+    "wide_",
+    "varlen_",
+    "typed_",
+    "ascii_",
+    "compressed_table",
+)
+
+
 def load_csv(csv_path: Path) -> List[Dict[str, str]]:
     if not csv_path.exists():
         return []
@@ -29,9 +40,38 @@ def format_time(val: float | None) -> str:
         return f"{val:.3f} s"
 
 
+def _cfitsio_domain(case_id: str, operation: str) -> str:
+    if any(case_id.startswith(p) for p in _TABLE_CASE_PREFIXES):
+        return "fitstable"
+    if operation in {"projection", "row_slice", "scan_count", "predicate_filter"}:
+        return "fitstable"
+    return "fits"
+
+
+def _load_cfitsio_times(results_dir: Path) -> dict[tuple[str, str, str], float]:
+    """Map (domain, case_id, operation) -> median cfitsio_direct time."""
+    csv_path = results_dir / "cfitsio_direct.csv"
+    if not csv_path.is_file():
+        return {}
+    grouped: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    for row in load_csv(csv_path):
+        if row.get("status") != "OK":
+            continue
+        case_id = row.get("case_id", "")
+        operation = row.get("operation", "")
+        try:
+            t = float(row.get("time_s", "0"))
+        except ValueError:
+            continue
+        domain = _cfitsio_domain(case_id, operation)
+        grouped[(domain, case_id, operation)].append(t)
+    return {k: min(v) for k, v in grouped.items()}
+
+
 def render_full_table(results_dir: Path) -> str:
     results_rows = load_csv(results_dir / "results.csv")
     fitstable_rows = load_csv(results_dir / "fitstable_results.csv")
+    cfitsio_times = _load_cfitsio_times(results_dir)
 
     all_rows = results_rows + fitstable_rows
 
@@ -96,6 +136,11 @@ def render_full_table(results_dir: Path) -> str:
         }:
             grouped[key]["fitsio"] = time_s
 
+        case_name = case_id.split("::")[0]
+        cf_key = (domain, case_name, operation)
+        if cf_key in cfitsio_times:
+            grouped[key]["cfitsio"] = cfitsio_times[cf_key]
+
     # Sort key order: domain desc (fits first, fitstable next), then case_id
     sorted_keys = sorted(
         grouped.keys(),
@@ -105,10 +150,13 @@ def render_full_table(results_dir: Path) -> str:
     lines = [
         "## Exhaustive Benchmark Results",
         "",
-        "The complete, un-cherrypicked list of all measured benchmark configurations.",
+        "The complete, un-cherrypicked list of all measured configurations. "
+        "Empty cells mean that method was not run for the case (for example "
+        "`torchfits_specialized` is only used for open-once / subset-reader paths). "
+        "Domain `tensor` = IMAGE HDU payloads (1D–4D); `table` = binary/ASCII tables.",
         "",
-        "| Domain | Benchmark Case | Operation | Size | Device | mmap | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Speedup vs Astropy | Speedup vs fitsio |",
-        "|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|",
+        "| Domain | Benchmark Case | Operation | Size | Device | mmap | torchfits | torchfits (specialized) | astropy (via torch) | fitsio (via torch) | cfitsio (direct) | Speedup vs Astropy | Speedup vs fitsio |",
+        "|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     for key in sorted_keys:
@@ -119,6 +167,7 @@ def render_full_table(results_dir: Path) -> str:
         tf_pers = times.get("tf_pers")
         astropy = times.get("astropy")
         fitsio = times.get("fitsio")
+        cfitsio = times.get("cfitsio")
 
         # Determine reference/fastest torchfits time
         tf_list = [t for t in (tf, tf_pers) if t is not None]
@@ -138,6 +187,7 @@ def render_full_table(results_dir: Path) -> str:
         tf_pers_str = format_time(tf_pers)
         astropy_str = format_time(astropy)
         fitsio_str = format_time(fitsio)
+        cfitsio_str = format_time(cfitsio)
 
         # Clean case name (remove suffix operation)
         case_name = case_id.split("::")[0]
@@ -145,8 +195,13 @@ def render_full_table(results_dir: Path) -> str:
         # Size representation
         size_str = f"{size_mb:.2f} MB" if size_mb > 0.05 else f"{size_mb * 1024:.1f} KB"
 
+        domain_label = (
+            "tensor"
+            if domain == "fits"
+            else ("table" if domain == "fitstable" else domain)
+        )
         lines.append(
-            f"| {domain} | {case_name} | {operation} | {size_str} | {device} | {mmap_target} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
+            f"| {domain_label} | {case_name} | {operation} | {size_str} | {device} | {mmap_target} | **{tf_str}** | {tf_pers_str} | {astropy_str} | {fitsio_str} | {cfitsio_str} | **{astropy_win}** | **{fitsio_win}** |"
         )
 
     lines.append("")

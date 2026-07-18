@@ -433,8 +433,8 @@ class TestCaching:
                 os.unlink(path)
             torchfits.clear_file_cache()
 
-    def test_get_header_auto_matches_detected_hdu(self):
-        """`get_header(..., hdu='auto')` should return the detected payload header."""
+    def test_read_header_auto_matches_detected_hdu(self):
+        """`read_header(..., hdu='auto')` should return the detected payload header."""
         with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as f:
             from astropy.io import fits
 
@@ -445,7 +445,7 @@ class TestCaching:
             path = f.name
 
         try:
-            header = torchfits.get_header(path, hdu="auto")
+            header = torchfits.read_header(path, hdu="auto")
             assert int(header.get("NAXIS", 0)) == 2
             assert int(header.get("NAXIS1", 0)) > 0
             assert int(header.get("NAXIS2", 0)) > 0

@@ -1,8 +1,7 @@
 # CLI recipes
 
-Shell workflows inspired by IRAF / CFITSIO / astropy FITS tutorials.
-Samples come from `examples/_sample_data.py` (cached under
-`~/.cache/torchfits/samples/`).
+Shell workflows for common FITS jobs. Samples come from
+`examples/_sample_data.py` (cached under `~/.cache/torchfits/samples/`).
 
 ```bash
 pixi run python -c "from examples._sample_data import ensure_sample; print(ensure_sample('horsehead'))"
@@ -15,45 +14,49 @@ Or run the bundled script:
 bash examples/cli/imstat_imarith.sh
 ```
 
+Flags: every option is on `torchfits <cmd> --help` — see also [CLI guide](cli.md).
+
 ---
 
-## Image inventory and stats (`imstat` / `fitsinfo`)
+## Image inventory and stats
 
 ```bash
 torchfits info "$HH"
-torchfits stats "$HH" --hdu 0
-torchfits header "$HH" --keyword OBJECT --keyword BITPIX
+torchfits stats "$HH" -e 0
+torchfits header "$HH" -k OBJECT -k BITPIX
 ```
 
-## Header edit (`hedit` / `modhead`)
+## Header edit
 
 ```bash
 torchfits copy "$HH" /tmp/hh_edit.fits
-torchfits setkey /tmp/hh_edit.fits --key OBJECT --value HORSEHEAD
-torchfits header /tmp/hh_edit.fits --keyword OBJECT
+torchfits setkey /tmp/hh_edit.fits -k OBJECT --value HORSEHEAD
+torchfits setkey /tmp/hh_edit.fits -k "ESO DET CHIP1 ID" --value "42"
+torchfits setkey /tmp/hh_edit.fits --rename OBJECT=TARGET
+torchfits header /tmp/hh_edit.fits -k TARGET
 ```
 
-## Multi-file keyword table (`dfits | fitsort`)
+## Multi-file keyword table
 
 ```bash
-torchfits header "$HH" /tmp/hh_edit.fits --fitsort --keyword OBJECT --keyword NAXIS1
+torchfits header "$HH" /tmp/hh_edit.fits --keyword-table -k OBJECT -k NAXIS1
 ```
 
-## Constant arith (`imarith`)
+## Constant image arithmetic
 
 ```bash
 torchfits arith "$HH" --op add --value 100 --out /tmp/hh_plus.fits
-torchfits stats /tmp/hh_plus.fits --hdu 0
+torchfits stats /tmp/hh_plus.fits -e 0
 ```
 
-## Cutout / copy (`imcopy` section)
+## Cutout / copy
 
 ```bash
-torchfits cutout "$HH" /tmp/hh_cut.fits --hdu 0 --box 100,100,256,256
+torchfits cutout "$HH" /tmp/hh_cut.fits -e 0 --box 100,100,256,256
 torchfits copy "$HH" /tmp/hh_copy.fits
 ```
 
-## Stretch via transform (`imfunction`-ish)
+## Stretch via transform
 
 Default constructors only (no kwargs on the CLI):
 
@@ -66,7 +69,7 @@ torchfits transform "$HH" --name ZScaleNormalize --out /tmp/hh_z.fits
 Continuum / Doppler with parameters → Python gallery
 ([Transform gallery](examples-transforms.md)).
 
-## Compression (`fpack` / `funpack`)
+## Compression
 
 ```bash
 torchfits compress "$HH" /tmp/hh_packed.fits
@@ -79,26 +82,36 @@ torchfits decompress /tmp/hh_packed.fits /tmp/hh_unpacked.fits
 torchfits verify "$HH"
 ```
 
-## Tables (`astconvertt` / `tablist`)
+## Tables and filter+export
 
 ```bash
 pixi run python -c "from examples._sample_data import ensure_sample; print(ensure_sample('chandra_events'))"
 export EV=~/.cache/torchfits/samples/chandra_events.fits
 torchfits info "$EV"
-torchfits table "$EV" --hdu 1 --preview 5
-torchfits convert "$EV" /tmp/events.parquet --to parquet --hdu 1
-torchfits convert "$EV" /tmp/events.csv --to csv --hdu 1
+torchfits table "$EV" -e 1 --preview 5
+torchfits convert "$EV" /tmp/events.parquet --to parquet -e 1
+torchfits convert "$EV" /tmp/events.csv --to csv -e 1
+# STILTS-like filter+export (predicate = table.read where=)
+torchfits convert "$EV" -o /tmp/bright.parquet -e 1 -w "energy > 500" -c time,energy
 ```
 
-## Static RGB preview (Imviz-style export)
+## Color RGB preview (3 bands)
+
+HorseHead is single-band — a grayscale `--bands 0,0,0` export is only a
+smoke test. For a real Lupton RGB:
 
 ```bash
-torchfits convert "$HH" /tmp/hh.png --to png --bands 0,0,0
+pixi run python examples/cli/make_rgb_demo.py /tmp
+torchfits convert /tmp/_rgb_demo/r.fits /tmp/_rgb_demo/g.fits /tmp/_rgb_demo/b.fits \
+  /tmp/rgb_demo.png --to png --q 6 --stretch 0.4
 ```
+
+Tune `--q` / `--stretch` for contrast. Gallery asset:
+`docs/assets/gallery/cli_rgb_demo.png`.
 
 ---
 
-## Familiar-tool map (extended)
+## Familiar-tool map
 
 | Classic | torchfits |
 |---------|-----------|
@@ -106,11 +119,11 @@ torchfits convert "$HH" /tmp/hh.png --to png --bands 0,0,0
 | `imarith` (constant) | `arith` |
 | `imcopy` | `copy` / `cutout` |
 | `imheader` / `hedit` | `header` / `setkey` |
-| `hselect` / `fitsort` | `header --fitsort` |
+| `hselect` / `fitsort` | `header --keyword-table` |
 | `imfunction` | `transform --name …` |
 | `fitsinfo` | `info` |
-| `fitsverify` | `verify` |
+| `fitsverify` (checksums) | `verify` (checksum subset only) |
 | `fpack` / `funpack` | `compress` / `decompress` |
-| `astconvertt` | `convert --to parquet\|csv\|tsv\|arrow` |
+| `astconvertt` / STILTS `tpipe` | `convert` (+ `--where` / `--columns`) |
 
 Full flags: [CLI guide](cli.md).

@@ -211,12 +211,10 @@ happens in C++ for most table sizes.
 
 ### Environment Tuning
 
-| Variable | Default | Effect |
-|---|---|---|
-| `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Set `0` to disable LRU handle cache |
-| `TORCHFITS_TABLE_HANDLE_CACHE_SIZE` | `8` | Handle LRU capacity |
-| `TORCHFITS_TABLE_READER_CACHE` | `1` | Set `0` to disable `TableReader` cache |
-| `TORCHFITS_TABLE_READER_CACHE_SIZE` | `8` | `TableReader` LRU capacity |
+Table reads open a **private** CFITSIO handle per call (no cross-thread handle
+LRU). Shared metadata (`SharedReadMeta`) and disk cache roots are controlled by
+the global `TORCHFITS_*` variables documented in `architecture.md` /
+`api-core-io.md`.
 
 ---
 

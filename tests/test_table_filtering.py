@@ -31,10 +31,7 @@ def fits_file(tmp_path):
 def test_filter_lt(fits_file):
     import torchfits.cpp
 
-    # MAG < 50.0. linspace(0,100,1000) means values are 0.0, 0.1, ... 99.9.
-    # < 50.0 should be indices 0 to 499 (500 items).
-    # 500th item is 50.0 approx.
-
+    # MAG < 50.0. linspace(0,100,1000): i * 100/999 < 50 => i <= 499 (500 rows).
     filters = [("MAG", "<", 50.0)]
     cols = ["ID", "MAG"]
 
@@ -46,10 +43,9 @@ def test_filter_lt(fits_file):
     ids = data["ID"]
     mags = data["MAG"]
 
-    assert len(ids) == 500  # approximately
-    # Exact check
+    assert len(ids) == 500
     assert (mags < 50.0).all()
-    assert len(mags) > 490 and len(mags) < 510
+    assert len(mags) == 500
 
 
 def test_filter_gt(fits_file):
@@ -73,14 +69,13 @@ def test_table_read_integration(fits_file):
     # MAG < 50.0 should use fast path
 
     t = torchfits.table.read(fits_file, where="MAG < 50.0")
-    assert len(t) == 500  # approx
+    assert len(t) == 500
     mags = t["MAG"].to_numpy()
     assert (mags < 50.0).all()
 
-    # Test fallback for OR (should work via slow path)
+    # OR falls back to slow path: MAG < 10 (100 rows) OR MAG > 90 (100 rows)
     t_slow = torchfits.table.read(fits_file, where="MAG < 10.0 OR MAG > 90.0")
-    # 0..10 (approx 100) + 90..100 (approx 100) = 200
-    assert len(t_slow) > 180 and len(t_slow) < 220
+    assert len(t_slow) == 200
     mags_slow = t_slow["MAG"].to_numpy()
     assert ((mags_slow < 10.0) | (mags_slow > 90.0)).all()
 
@@ -88,11 +83,12 @@ def test_table_read_integration(fits_file):
 def test_table_read_where_torch_backend(fits_file):
     import torchfits
 
+    # MAG > 10 AND MAG < 20: indices 100..199 -> 100 rows
     t = torchfits.table.read(
         fits_file, where="MAG > 10.0 AND MAG < 20.0", backend="torch"
     )
     mags = t["MAG"].to_numpy()
-    assert len(t) > 90 and len(t) < 110
+    assert len(t) == 100
     assert ((mags > 10.0) & (mags < 20.0)).all()
 
 

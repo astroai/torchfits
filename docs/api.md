@@ -1,8 +1,8 @@
 # API Reference
 
-`torchfits` covers FITS file I/O (images, tables, headers, compression) and
-ML helpers (`torchfits.data`, `torchfits.transforms`). Sky-domain modelling
-(WCS, coordinates, simulation) is out of scope.
+`torchfits` covers FITS file I/O (IMAGE HDUs → tensors, tables → dataframes,
+headers, compression) and ML helpers (`torchfits.data`, `torchfits.transforms`).
+Sky-domain modelling is out of scope.
 
 **FITS images → tensors. FITS tables → dataframes** (Arrow by default;
 Polars/Pandas one call away; tensor columns when you train). In code the
@@ -40,7 +40,7 @@ spelling). Root `read_table` / `stream_table` / `read_table_rows` are
 | Repeated cutouts from one file | `open_subset_reader(path, hdu=0)` | [Core I/O](api-core-io.md#open_subset_reader) |
 | Multiple HDUs at once | `read_hdus(path, hdus=[0, 1, 2])` | [Core I/O](api-core-io.md#read_hdus) |
 | Write a tensor | `write_tensor(path, tensor, header=None, overwrite=False)` | [Core I/O](api-core-io.md#write_tensor) |
-| Read header only | `get_header(path, hdu=0)` | [Core I/O](api-core-io.md#get_header) |
+| Read header only | `read_header(path, hdu=0)` | [Core I/O](api-core-io.md#read_header) |
 | Multi-HDU context manager | `open(path, mode="r")` | [Core I/O](api-core-io.md#open) |
 | Batch-read many files | `read_batch(file_paths, hdu=0)` | [Core I/O](api-core-io.md#read_batch) |
 
@@ -68,8 +68,8 @@ Prefer raw I/O until you need epochs/shuffle/workers — see
 
 | Goal | Entry point | Reference |
 |---|---|---|
-| Image map-style dataset | `FitsImageDataset(paths, hdu=0, label_key=None)` | [Data](api-data.md#fitsimagedataset) |
-| Image iterable (multi-worker) | `FitsImageIterableDataset(paths, shuffle=False)` | [Data](api-data.md#fitsimageiterabledataset) |
+| Image map-style dataset | `FitsTensorDataset(paths, hdu=0, label_key=None)` | [Data](api-data.md#fitstensordataset) |
+| Image iterable (multi-worker) | `FitsTensorIterableDataset(paths, shuffle=False)` | [Data](api-data.md#fitstensoriterabledataset) |
 | Table map-style (fits in RAM) | `FitsTableDataset(path, hdu=1)` | [Data](api-data.md#fitstabledataset) |
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |
@@ -87,7 +87,7 @@ Prefer raw I/O until you need epochs/shuffle/workers — see
 | [CLI](cli.md) | `torchfits` command-line tools, exit codes, MEF defaults |
 | [Core I/O](api-core-io.md) | `read`, `read_tensor`, `read_subset`, `read_hdus`, `write_tensor`, `write`, `open`, headers, HDU mutation, checksums, batch reads, cache |
 | [Tables](api-tables.md) | FITS tables as dataframes: `table.read` / `read_torch` / `read_polars`, mutations, interop |
-| [Data](api-data.md) | `FitsImageDataset`, `FitsImageIterableDataset`, `FitsTableDataset`, `FitsTableIterableDataset`, `FitsCutoutDataset`, `make_loader`, worker sharding |
+| [Data](api-data.md) | `FitsTensorDataset`, `FitsTensorIterableDataset`, `FitsCubeDataset`, `FitsSpectrumDataset`, table/cutout datasets, `make_loader`, remote prefetch |
 | [Transforms](api-transforms.md) | Transform classes (callable protocol, not `nn.Module`) with verified math, parameters, invertibility, and when-to-use guidance |
 | [Architecture](architecture.md) | C++/Python layering, I/O paths, caching, threading, CFITSIO mapping, environment variables |
 
@@ -144,5 +144,4 @@ Transforms are not re-exported at the package root. Import them from
 - VLA columns use buffered I/O; mmap reads and in-place updates are not supported.
 - Scaled table columns do not support mmap updates; use the buffered path.
 - Non-CPU tensors are copied to host before FITS writes.
-- Compressed writes accept tensor image payloads; dict payloads must contain tensor image data.
-- `torchfits` intentionally does not expose WCS, sphere, or domain modelling APIs.
+- Compressed writes accept tensor IMAGE-HDU payloads; dict payloads must contain tensor data.

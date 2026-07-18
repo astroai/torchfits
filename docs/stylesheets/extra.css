@@ -37,7 +37,27 @@ body,
 }
 
 .md-header__button.md-logo img {
-  height: 1.7rem;
+  height: 1.85rem;
+  width: auto;
+}
+
+/* Edge docs channel banner (overrides/main.html announce block) */
+.tf-edge-banner {
+  display: block;
+  width: 100%;
+  padding: 0.55rem 1rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #132238;
+  background: linear-gradient(90deg, #ffe8c2, #ffd18a);
+  border-bottom: 1px solid rgba(11, 31, 58, 0.12);
+}
+.tf-edge-banner a {
+  color: #14345c;
+  font-weight: 600;
+}
+[data-md-color-scheme="slate"] .tf-edge-banner {
+  color: #0d1520;
 }
 
 /* ── Landing hero ───────────────────────────────────────────── */

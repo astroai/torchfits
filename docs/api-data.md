@@ -19,84 +19,138 @@ preprocess; call transforms yourself when exploring a single file.
 
 | Your data | Catalog size | Use | Why |
 |---|---|---|---|
-| Image files (paths list) | Any | `FitsImageDataset` (map) | Random access, shuffle, simple training loops |
-| Image files (paths list) | Any, many workers | `FitsImageIterableDataset` | Deterministic sharding, no duplication across workers |
+| General N-D IMAGE (any rank) | Any | `FitsTensorDataset` (map) | Umbrella / escape hatch; multi-HDU flux channels |
+| General N-D IMAGE, many workers | Any | `FitsTensorIterableDataset` | Deterministic sharding |
+| 2D images / multi-band | Any | `FitsImageDataset` | Peer; multi-band HDUs → `[C,H,W]` |
+| 3D+ cubes | Any | `FitsCubeDataset` | Peer; optional `slice_index` |
+| 1D / multi-arm spectra | Any | `FitsSpectrumDataset` | Peer; `layout=` dict/stack/concat; DESI `row=` |
 | One table HDU | Fits in RAM | `FitsTableDataset` | Row-indexed `dict[str, Tensor]` with predicate pushdown |
 | One table HDU | Too large for RAM | `FitsTableIterableDataset` | Constant-memory streaming via `table.scan` |
 | Fixed `(path, hdu, x, y, size)` cutouts | Any | `FitsCutoutDataset` | Patch training from a mosaic |
 | One-off inspect / write / Arrow analysis | — | Core I/O / Tables | No Dataset needed |
 
+**Channel semantics:** flux bands / arms / CCDs stack as tensor channels.
+IVAR and mask are always **companion** tensors (or dict fields) — never mixed
+into flux channels. Pass `ivar_hdu=` / `mask_hdu=` (or table `ivar_column=`).
+
+!!! tip "When to mmap"
+    Good for large local IMAGE HDUs and repeated cutouts. Prefer
+    `mmap=False` with multi-worker DataLoader on the same files if handle
+    contention appears; also prefer non-mmap on cold network FS and VLA /
+    scaled tables.
+
+!!! tip "Disk cache (remotes + samples only)"
+    Dataset HTTP(S) prefetch and example samples write under
+    `TORCHFITS_CACHE_DIR` (default `$XDG_CACHE_HOME/torchfits` or
+    `~/.cache/torchfits`). Subdirs: `remote/`, `samples/`. Override with
+    `TORCHFITS_REMOTE_CACHE` / `TORCHFITS_SAMPLE_CACHE`, or pass
+    `cache_dir=` into Datasets / rely on `make_loader` prefetch. Point the
+    root at scratch on shared HPC homes — no silent writes elsewhere under
+    `$HOME`.
+
 ---
 
-## `FitsImageDataset`
+## `FitsTensorDataset`
 
-Map-style dataset for image catalogs. Reads one tensor per `__getitem__` call.
+Map-style **general N-D** IMAGE reader (any rank). Multi-HDU `hdu=[…]` stacks
+**flux** on dim 0; optional `ivar_hdu` / `mask_hdu` return companion tensors.
 
 ```python
-from torchfits.data import FitsImageDataset, make_loader
+from torchfits.data import FitsTensorDataset, make_loader
 
-ds = FitsImageDataset(
+ds = FitsTensorDataset(
     "observations/*.fits",
     hdu=0,
     label_key="CLASS",        # header keyword → int label
     transform=None,            # optional callable
     device="cpu",
     mmap=True,
-    add_channel_dim=True,      # [H, W] → [1, H, W]
+    add_channel_dim=False,     # Tensor default: leave rank alone
+    cache_dir=None,            # optional remote materialization dir
 )
 loader = make_loader(ds, batch_size=32, num_workers=4)
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `paths` | `str \| list[str]` | *(required)* | File paths or glob pattern |
-| `hdu` | `int` | `0` | HDU index to read |
+| `paths` | `str \| list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int \| str \| sequence` | `0` | Flux HDU(s); multi → channel stack |
+| `ivar_hdu` / `mask_hdu` | same arity as `hdu` | `None` | Companion HDUs (not flux channels) |
 | `label_key` | `str \| None` | `None` | Header keyword for classification labels |
 | `labels` | `list[int] \| None` | `None` | Explicit per-file labels (overrides `label_key`) |
-| `transform` | `callable \| None` | `None` | Applied to each image tensor |
+| `transform` | `callable \| None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool \| str` | `True` | Memory-mapped reads |
-| `add_channel_dim` | `bool` | `True` | Prepend channel dimension for 2D images |
+| `add_channel_dim` | `bool` | `False` | Prepend channel dim for 2D |
+| `cache_dir` | `str \| Path \| None` | `None` | Override remote prefetch directory |
 
-**Returns per item:** `(image: Tensor, label: Tensor)`
+**Returns per item:** `(payload, label)` where payload is a `Tensor` or
+`{"flux", "ivar"?, "mask"?}`.
 
 !!! info "When to use"
-    Use `FitsImageDataset` for small-to-medium image catalogs where the file
-    list fits in memory. Each worker reads independently — no GIL contention.
-    For very large catalogs (100k+ files), prefer `FitsImageIterableDataset`
-    which shards file indices deterministically.
+    Use `FitsTensorDataset` when rank/layout is unknown or non-2D. Prefer
+    `FitsImageDataset` / `FitsCubeDataset` / `FitsSpectrumDataset` for those
+    shapes. For 100k+ files, prefer `FitsTensorIterableDataset`.
 
 ---
 
-## `FitsImageIterableDataset`
+## `FitsImageDataset` / `FitsCubeDataset`
 
-Iterable dataset for multi-worker sharded image loading. Each worker processes
+Peers of the tensor reader:
+
+- **Image** — 2D; `add_channel_dim=True` by default; multi-band HDUs → `[C,H,W]`.
+- **Cube** — 3D+; optional `slice_index` on the leading axis.
+
+`FitsImageIterableDataset` stays first-class for loaders (same knobs as the
+tensor iterable, channel dim default on).
+
+---
+
+## `FitsSpectrumDataset`
+
+1D spectra (IMAGE `NAXIS=1` or table `column=` + optional `ivar_column=`), plus
+DESI-style 2D `[nspec, nwave]` via `row=`. Multi-arm (MOS B/R/Z) uses `layout=`:
+
+| `layout` | Behavior |
+|---|---|
+| `"dict"` (default) | Per-arm `{name: {flux, ivar?, mask?}}` (flat keys if one arm) |
+| `"stack"` | Flux `[C, nwave]` only if all arms share `nwave` |
+| `"concat"` | One 1D flux + parallel ivar/mask along wavelength |
+
+Synthetic DESI-shaped demo: `examples/desi_shaped_spectrum.py`.
+
+---
+
+## `FitsTensorIterableDataset`
+
+Iterable dataset for multi-worker sharded tensor loading. Each worker processes
 a deterministic subset — every file is seen exactly once per epoch.
 
 ```python
-from torchfits.data import FitsImageIterableDataset
+from torchfits.data import FitsTensorIterableDataset
 
-ds = FitsImageIterableDataset(
+ds = FitsTensorIterableDataset(
     "observations/*.fits",
     hdu=0,
     shuffle=True,
     seed=42,
-    add_channel_dim=True,
+    add_channel_dim=False,
 )
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `paths` | `str \| list[str]` | *(required)* | File paths or glob pattern |
-| `hdu` | `int` | `0` | HDU index |
-| `transform` | `callable \| None` | `None` | Applied to each image tensor |
+| `paths` | `str \| list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
+| `hdu` | `int \| str \| sequence` | `0` | Flux HDU(s) |
+| `transform` | `callable \| None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool \| str` | `True` | Memory-mapped reads |
 | `shuffle` | `bool` | `False` | Shuffle file order per epoch |
 | `seed` | `int` | `0` | Base seed for shuffling |
-| `add_channel_dim` | `bool` | `True` | Prepend channel dimension |
+| `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
+| `cache_dir` | `str \| Path \| None` | `None` | Override remote prefetch directory |
 
-**Returns per item:** `Tensor` (no label — use this for self-supervised or when labels come from elsewhere).
+**Returns per item:** payload (`Tensor` or flux/ivar/mask dict) — no label.
 
 !!! info "When to use"
     Use when you have many files and want deterministic multi-worker loading

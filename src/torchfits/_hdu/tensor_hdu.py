@@ -97,9 +97,35 @@ class TensorHDU:
         name = html.escape(str(self.header.get("EXTNAME", "PRIMARY")))
         shape = html.escape(self._get_shape_str())
         dtype = html.escape(self._get_dtype_str())
+        container_style = (
+            "max-height: 400px; overflow: auto; "
+            "border: 1px solid rgba(128, 128, 128, 0.3); margin-bottom: 1em;"
+        )
+        table_style = "border-collapse: collapse; width: 100%; margin: 0;"
+        th_col_style = (
+            "text-align: left; padding: 8px; position: sticky; top: 0; "
+            "background-color: var(--theme-ui-colors-background, white); "
+            "border-bottom: 2px solid rgba(128, 128, 128, 0.3); z-index: 1;"
+        )
+        th_row_style = (
+            "font-weight: normal; text-align: left; padding: 8px; "
+            "border-bottom: 1px solid rgba(128, 128, 128, 0.2);"
+        )
+        td_style = (
+            "text-align: left; padding: 8px; "
+            "border-bottom: 1px solid rgba(128, 128, 128, 0.2);"
+        )
         return (
-            "<table>"
-            "<caption>TensorHDU</caption>"
-            "<thead><tr><th>Name</th><th>Shape</th><th>Dtype</th></tr></thead>"
-            f"<tbody><tr><td>{name}</td><td>{shape}</td><td>{dtype}</td></tr></tbody></table>"
+            f'<div tabindex="0" aria-label="TensorHDU" style=\'{container_style}\'>'
+            f"<table style='{table_style}'>"
+            f"<thead><tr>"
+            f"<th scope=\"col\" style='{th_col_style}'>Name</th>"
+            f"<th scope=\"col\" style='{th_col_style}'>Shape</th>"
+            f"<th scope=\"col\" style='{th_col_style}'>Dtype</th>"
+            f"</tr></thead>"
+            f"<tbody><tr>"
+            f"<th scope=\"row\" style='{th_row_style}'>{name}</th>"
+            f"<td style='{td_style}'>{shape}</td>"
+            f"<td style='{td_style}'>{dtype}</td>"
+            f"</tr></tbody></table></div>"
         )

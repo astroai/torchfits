@@ -5,9 +5,18 @@ Compares torchfits vs fitsio for high-throughput image loading while reporting
 repeat-based results and minimizing order bias.
 """
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import argparse
+import json
 import os
 import shutil
+import socket
 import tempfile
 import time
 from statistics import mean, median
@@ -18,6 +27,10 @@ import numpy as np
 import torch
 import torchfits
 from torch.utils.data import DataLoader, Dataset
+
+from benchmarks.bench_contract import RESULT_COLUMNS, write_csv
+
+_BENCH_HOST = socket.gethostname()
 
 
 def create_synthetic_dataset(
@@ -212,6 +225,64 @@ def run_comparison(
     return out
 
 
+def _results_rows(
+    *,
+    run_id: str,
+    title: str,
+    slug: str,
+    out: Dict[str, List[float]],
+    device: str,
+    n_files: int,
+    shape: Tuple[int, int],
+    filepaths: List[str] | None = None,
+) -> List[dict]:
+    rows: List[dict] = []
+    compressed = "comp" in slug
+    if filepaths:
+        size_mb = sum(os.path.getsize(p) for p in filepaths) / (1024.0 * 1024.0)
+    else:
+        size_mb = (n_files * shape[0] * shape[1] * 4) / (1024.0 * 1024.0)
+    for method, values in out.items():
+        if not values:
+            continue
+        med = float(median(values))
+        rows.append(
+            {
+                "run_id": run_id,
+                "domain": "ml",
+                "suite": "ml_loader",
+                "case_id": slug,
+                "case_label": title,
+                "operation": "dataloader_throughput",
+                "family": "smart",
+                "library": "torchfits" if method.startswith("torchfits") else "fitsio",
+                "method": method,
+                "mode": "smart",
+                "status": "OK",
+                "skip_reason": None,
+                "comparable": True,
+                "mmap_target": "n/a",
+                "host": _BENCH_HOST,
+                "time_s": None,
+                "peak_rss_mb": None,
+                "peak_cuda_alloc_mb": None,
+                "throughput": med,
+                "unit": "pixels/s",
+                "size_mb": size_mb,
+                "n_points": n_files,
+                "metadata": json.dumps(
+                    {
+                        "device": device,
+                        "compressed": compressed,
+                        "shape": list(shape),
+                        "n_files": n_files,
+                    }
+                ),
+            }
+        )
+    return rows
+
+
 def parse_shape(value: str) -> Tuple[int, int]:
     parts = [p.strip() for p in value.split(",")]
     if len(parts) != 2:
@@ -242,6 +313,10 @@ def run_benchmark() -> None:
     )
     parser.add_argument("--no-warm-cache", dest="warm_cache", action="store_false")
     parser.set_defaults(warm_cache=True)
+    parser.add_argument(
+        "--output", type=Path, default=None, help="Write ml_results.csv"
+    )
+    parser.add_argument("--run-id", type=str, default="", help="Run id for CSV rows")
     args = parser.parse_args()
 
     shape = parse_shape(args.shape)
@@ -259,10 +334,13 @@ def run_benchmark() -> None:
         f"epochs={args.epochs} repeats={args.repeats} warm_cache={args.warm_cache}"
     )
 
+    run_id = args.run_id or time.strftime("%Y%m%d_%H%M%S")
+    csv_rows: List[dict] = []
+
     tmp_dir = ""
     try:
         tmp_dir, filepaths = create_synthetic_dataset(args.n_files, shape)
-        run_comparison(
+        out = run_comparison(
             title="benchmark 1: uncompressed fits",
             methods={
                 "torchfits": lambda: TorchFitsDataset(
@@ -284,6 +362,18 @@ def run_benchmark() -> None:
             device=device,
             n_epochs=args.epochs,
         )
+        csv_rows.extend(
+            _results_rows(
+                run_id=run_id,
+                title="uncompressed fits",
+                slug="ml_uncompressed",
+                out=out,
+                device=device,
+                n_files=args.n_files,
+                shape=shape,
+                filepaths=filepaths,
+            )
+        )
     finally:
         if tmp_dir and os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
@@ -291,19 +381,17 @@ def run_benchmark() -> None:
     tmp_dir_comp = ""
     try:
         tmp_dir_comp, filepaths_comp = create_compressed_dataset(args.n_files, shape)
-        run_comparison(
+        out_comp = run_comparison(
             title="benchmark 2: compressed fits (rice)",
             methods={
-                # For compressed images, keep auto HDU detection to model user-facing defaults.
                 "torchfits (comp)": lambda: TorchFitsDataset(
                     filepaths_comp,
-                    hdu="auto",
+                    hdu=1,
                     mmap="auto",
                     cache_capacity=0,
                     handle_cache_capacity=64,
                     scale_on_device=True,
                 ),
-                # Explicit ext=1 is the payload HDU for these generated compressed files.
                 "fitsio (comp)": lambda: FitsioDataset(filepaths_comp, ext=1),
             },
             filepaths=filepaths_comp,
@@ -315,9 +403,26 @@ def run_benchmark() -> None:
             device=device,
             n_epochs=args.epochs,
         )
+        csv_rows.extend(
+            _results_rows(
+                run_id=run_id,
+                title="compressed fits (rice)",
+                slug="ml_compressed_rice",
+                out=out_comp,
+                device=device,
+                n_files=args.n_files,
+                shape=shape,
+                filepaths=filepaths_comp,
+            )
+        )
     finally:
         if tmp_dir_comp and os.path.exists(tmp_dir_comp):
             shutil.rmtree(tmp_dir_comp)
+
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        write_csv(args.output, csv_rows, RESULT_COLUMNS)
+        print(f"Wrote {len(csv_rows)} ML rows to {args.output}")
 
 
 if __name__ == "__main__":

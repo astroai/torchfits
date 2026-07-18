@@ -7,21 +7,16 @@ layering, I/O paths, caching, and threading model without reading source.
 
 ## Layer structure
 
-```
-┌─────────────────────────────────────────────────┐
-│  Python API  (torchfits.read, table.read, ...)  │
-├─────────────────────────────────────────────────┤
-│  _io_engine  (dispatch, caching, pipeline)      │
-├─────────────────────────────────────────────────┤
-│  torchfits._C  (nanobind C++ extension)         │
-│    ├── fits_bindings.cpp   (image / header I/O) │
-│    ├── table_bindings.cpp  (table I/O)          │
-│    ├── cache.cpp           (handle cache)       │
-│    └── fits_detail.h       (read strategies)    │
-├─────────────────────────────────────────────────┤
-│  Vendored CFITSIO  (extern/cfitsio/)            │
-│  Raw fd pread/mmap  (bypasses CFITSIO for data) │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  py["Python API<br/>read / table.read / Dataset"]
+  eng["_io_engine<br/>dispatch · cache · pipeline"]
+  ext["torchfits._C<br/>nanobind extension"]
+  cfitsio["Vendored CFITSIO"]
+  raw["Raw fd pread / mmap"]
+  py --> eng --> ext
+  ext --> cfitsio
+  ext --> raw
 ```
 
 `io.py` is a thin re-export layer. All real work happens in `_io_engine/`
@@ -34,6 +29,15 @@ nanobind; it vendors CFITSIO statically.
 ## Image read paths
 
 Three distinct paths, selected automatically:
+
+```mermaid
+flowchart LR
+  call["read_tensor / read"] --> decide{"uncompressed<br/>and mmap?"}
+  decide -->|yes| mmap["mmap fast path<br/>fd + byte-swap"]
+  decide -->|no| cfitsio["CFITSIO fallback<br/>fits_read_img"]
+  mmap --> tensor["torch.Tensor"]
+  cfitsio --> tensor
+```
 
 ### 1. mmap fast path (default for uncompressed images)
 
@@ -111,22 +115,26 @@ The Python layer (`where.py`) parses the SQL-like `where=` string into
 
 Three tiers, all in-process:
 
-### L0 — Handle cache (`UnifiedCache`)
+### L0 — Per-read `fitsfile*` (CFITSIO R2)
 
-LRU cache of open `fitsfile*` handles with reference counting. Validates
-staleness via `stat()` (mtime/size/inode) at configurable intervals. Default
-capacity: 100 files. Controlled by:
+Concurrent reads **do not** share one `fitsfile*` across threads. Each image /
+table / subset / HDU-name resolution opens a private handle (`fits_open_diskfile`
+/ `fits_open_file`) and closes it when the call (or owning `FITSFile` /
+`TableReader`) finishes. That matches CFITSIO User's Guide §2.4 rule R2
+(same file, independent handles). The old cross-thread LRU of borrowed
+`fitsfile*` pointers was removed for correctness under multi-worker DataLoaders
+and multi-HDU concurrent reads.
 
-| Env var | Default | Description |
-|---|---|---|
-| `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based validation |
-| `TORCHFITS_CACHE_VALIDATE_INTERVAL_MS` | `1000` | Validation interval |
+`UnifiedCache` / `get_or_open_cached` remain available for invalidate/clear
+bookkeeping but are **not** on the concurrent read hot path.
 
 ### L1 — SharedReadMeta
 
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
 resolution, raw fd. Validated via `stat()`. Lives in a global map protected
-by per-entry mutexes. Avoids repeated `open()` + header parsing for hot files.
+by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
+and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
+repeated header probing for hot files without sharing CFITSIO CHDU state.
 
 | Env var | Default | Description |
 |---|---|---|
@@ -150,6 +158,20 @@ Every major I/O operation (`read_full`, `read_fits_table`,
 CFITSIO/raw-fd call and re-acquires before returning to Python. Safe for
 multi-worker DataLoader usage.
 
+```mermaid
+flowchart LR
+  remote["Remote URL"] --> prefetch["Prefetch cache<br/>TORCHFITS_CACHE_DIR/remote"]
+  prefetch --> worker["DataLoader worker"]
+  worker --> train["Train step"]
+  prefetch -.->|overlap| train
+  local["Local paths"] --> worker
+```
+
+HTTP(S) paths on Dataset classes download into the remote cache
+(`TORCHFITS_CACHE_DIR` / `TORCHFITS_REMOTE_CACHE`, or `cache_dir=` on the
+Dataset). `make_loader(..., optimize_cache=True)` can start prefetch for URLs
+in `dataset.files`.
+
 ### Batch image reads
 
 `read_images_batch` spawns one `std::thread` per file (after the first).
@@ -162,10 +184,11 @@ All mmap byte-swapping and table column decoding use `at::parallel_for`
 (PyTorch's intra-op thread pool). Threshold for parallel sign-bit XOR:
 256 KB (`TORCHFITS_XOR_PARALLEL_MIN_BYTES`).
 
-### Handle cache thread safety
+### Handle / metadata thread safety
 
-`UnifiedCache` uses `std::mutex`. `SharedReadMeta` uses per-entry
-`std::mutex`. Thread-local `LocalHduMeta` avoids cross-thread contention.
+Each concurrent read owns a private `fitsfile*`. `SharedReadMeta` uses
+per-entry `std::mutex`. Thread-local `LocalHduMeta` avoids cross-thread
+contention on hot image metadata.
 
 ---
 
@@ -213,6 +236,25 @@ All mmap byte-swapping and table column decoding use `at::parallel_for`
 `fits_get_hduaddrll` — data offset for raw fd reads,
 `fits_set_bscale`, `fits_free_memory`
 
+### Not used: `fits_iterate_data` / CFITSIO `where` / `select_rows`
+
+CFITSIO's iterator (`fits_iterate_data`) streams chunks into a C callback for
+whole-image / whole-table scans. torchfits needs **random-access** cutouts
+(`fits_read_subset`), full-plane tensors for PyTorch, and Arrow/table pushdown
+with our own chunking (`table.scan`). The iterator does not replace those
+paths and would add a callback ABI without helping DataLoader or subset
+readers — so it is neither wrapped nor benchmarked. Prefer extending
+`fits_read_subset` / open-once `SubsetReader` (and cfitsio-direct `cutout_rep`)
+for cutout work, and our table scanners for catalogs.
+
+Likewise, `fits_calculator` / `fits_select_rows` / `fits_find_first_row` are
+unused on purpose: torchfits implements its own `where=` grammar and
+predicate pushdown (`TableFilter`, mmap-filtered column reads, Arrow
+`pc` ops) so projection + compact gather land directly in tensors/Arrow
+buffers instead of writing a filtered copy HDU.
+
+Vendored CFITSIO is pinned in `extern/VERSIONS.txt` (currently **4.6.4**).
+
 ---
 
 ## Data type mapping
@@ -248,13 +290,12 @@ prefix) is stripped.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_TABLE_HANDLE_CACHE` | `1` | Set `0` to disable table handle LRU |
-| `TORCHFITS_TABLE_HANDLE_CACHE_SIZE` | `8` | Table handle LRU capacity |
-| `TORCHFITS_TABLE_READER_CACHE` | `1` | Set `0` to disable TableReader LRU |
-| `TORCHFITS_TABLE_READER_CACHE_SIZE` | `8` | TableReader LRU capacity |
 | `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row reads |
-| `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based handle cache validation |
-| `TORCHFITS_CACHE_VALIDATE_INTERVAL_MS` | `1000` | Handle cache validation interval |
+| `TORCHFITS_CACHE_DIR` | `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits` | Disk cache root (remotes + samples) |
+| `TORCHFITS_REMOTE_CACHE` | `{CACHE_DIR}/remote` | HTTP Dataset prefetch directory |
+| `TORCHFITS_SAMPLE_CACHE` | `{CACHE_DIR}/samples` | Example/gallery sample downloads |
+| `TORCHFITS_CACHE_VALIDATE` | `1` | Enable stat()-based validation for residual UnifiedCache bookkeeping |
+| `TORCHFITS_CACHE_VALIDATE_INTERVAL_MS` | `1000` | UnifiedCache validation interval |
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable SharedReadMeta validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
 | `TORCHFITS_COLD_NOMMAP` | `0` | Force non-mmap reads |

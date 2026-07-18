@@ -21,6 +21,19 @@ fitsfile* get_or_open_cached(const std::string& filepath);
 void release_cached(const std::string& filepath);
 void invalidate_cached(const std::string& filepath);
 
+// Contract: every successful get_or_open_cached() must be paired with
+// release_cached() (directly or via FitsHandleGuard{cached=true}). A missing
+// release permanently pins the handle in the LRU (refcount never returns to 0).
+//
+// NOTE (CFITSIO §4 Option A): get_or_open_cached() is NO LONGER used on the
+// concurrent read hot paths. Sharing one cached fitsfile* across threads is not
+// thread-safe (each handle has a single current-HDU cursor and internal I/O
+// buffer). Read paths (read_full_cached, resolve_hdu_name_cached, FITSFile
+// read-mode ctor, TableReader) now open a private per-call handle and close it
+// on exit. The shared caches are SharedReadMeta (image/scale/compression/name
+// metadata) and the shared raw fd — see fits_detail.h. This API is retained for
+// any residual callers and for invalidate_cached()/clear_file_cache().
+
 // RAII guard for fitsfile* handles.  Two modes:
 //   cached=false (default) — calls fits_close_file on destruction
 //   cached=true           — calls release_cached(path) on destruction

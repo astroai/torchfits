@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs site
+- GitHub Pages deploys **stable** (`/`, latest `v*` tag) and **edge**
+  (`/edge/`, tip of `main`) from `docs.yml` — use edge to debug docs without a
+  SemVer release. Docs “stable” may be an rc tag; PyPI non-prerelease can lag.
+
+## [1.0.0rc2] — 2026-07-18
+
+Second release candidate on the 1.0 line. CFITSIO concurrent-read correctness,
+leftover API/docs/CLI, and audit cleanup. SemVer `1.0.0` still waits for soak.
+
+### Install / compatibility
+- Runtime / build metadata: `torch>=2.10` (wheels and pixi stay on the 2.10 ABI
+  lane). Source builds embed the detected torch major.minor as the ABI tag.
+- Docs: wheels vs source, unified GPU/accelerator install, `configure_for_environment`
+  called once at import. Dropped `ipykernel` from `[dev]`.
+- Disk cache root: `TORCHFITS_CACHE_DIR` (default XDG / `~/.cache/torchfits`);
+  remotes and samples as subdirs; Dataset / `make_loader` honor `cache_dir=`.
+
+### CLI
+- Short options: `-e`/`--hdu`, `-f`/`--format`, `-o`/`--out`, `-w`/`--where`,
+  `-c`/`--columns`, `-n`/`--rows`, `-k`/`--keyword` (and setkey `-k`/`--key`).
+- `header --keyword-table` (deprecated alias `--fitsort`).
+- `convert --where` / `--columns` filter+export; optional FITS table out.
+- `probe --header-bytes` (alias `--bytes`) / `--timeout`.
+- `probe` SSRF guard: blocks private/loopback/link-local/reserved addresses via
+  `getaddrinfo` (all records) and re-validates every HTTP redirect hop.
+
+### API / ML
+- `read` / `read_header` default `hdu=0` (`hdu=None` still autodetection).
+- Dataset peers: `FitsTensorDataset` (general N-D), `FitsImageDataset`,
+  `FitsCubeDataset`, `FitsSpectrumDataset` (multi-arm `layout=`, IVAR companions).
+- HTTP(S) remote prefetch under the configurable cache root.
+- mmap guidance for DataLoader / network FS.
+- Lift `_HDUInfo` / `_TableWriteProxy` to module scope with `__slots__`.
+- HDU `_repr_html_` uses `scope=col` / `scope=row` for accessibility.
+- Individual HDU HTML reprs: keyboard-focusable container + theme-aware borders
+  (aligned with HDUList/Header).
+
+### Correctness / bindings
+- Concurrent reads open a **private** `fitsfile*` per call (CFITSIO R2); no
+  shared-handle LRU across threads. SharedReadMeta + shared raw `fd` remain.
+- Python table/subset paths no longer share one cpp handle across threads.
+- Table writes ensure C-contiguous buffers (signed-stride safe) before
+  `fits_write_col`; image writes force contiguous host tensors before
+  `fits_write_img`.
+- `write_table_hdu` uses RAII `vector<string>` for `fits_create_tbl` name/ttype
+  pointers (no mid-throw `char**` leak).
+- `evaluate_where` rejects `== NULL` / `!= NULL` on numeric arrays; prefer
+  `isnull` / `notnull` or `table.read(..., where=)`.
+- Remove duplicate `num_rows` binding; clean dead `analyze_table` comments.
+- `append_rows` / `insert_rows` best-effort rollback via `fits_delete_rows` after
+  a failed post-insert write.
+- FITS header integer keys use `PyLong_Check` + overflow-checked `TLONGLONG`.
+- Empty-primary MEF compressed write HDU indexing fixed.
+- Jules integrations: probe SSRF (#216), hoist inner classes (#214), HDU HTML a11y
+  (#213/#219).
+
+### Benchmarks / tests
+- ML loader: on-disk `size_mb` for compressed cases; pin compressed torchfits to
+  `hdu=1` (matches fitsio `ext=1`); missing numeric CSV fields use `None`.
+- GPU transports: pass `quick=` into table `_build_cases`.
+- Table filter tests assert exact fixture row counts.
+- Concurrent same-file image/table read smoke tests.
+- Scorecard: new local MPS run `exhaustive_mps_20260718_180230`; Linux CPU/CUDA
+  hosts remain the rc1 soak runs until CANFAR is re-driven against this tag.
+
+### Docs / transforms
+- Mermaid diagrams in architecture (zensical superfences).
+- Architecture: per-read handles, deliberate skip of CFITSIO iterator/`where`.
+- Roadmap: CFITSIO 1.1 leftovers + permanent design choices from the audit.
+- Advanced transforms frozen for 1.0; Lupton RGB wrapper in `transforms.lupton_rgb`;
+  richer multi-band RGB deferred to 1.1.
+- MegaCam cutout bench: ZNAXIS-aware HDU discovery; peer fitsio ranking;
+  materialize-once baseline; payload-based throughput (not whole-file MB/s).
+- Docs landing: lean browse grid; nav uses mark-only logo (`torchfits-logo-mark.png`).
+- Vendored CFITSIO docs pin **4.6.4**; note `fits_iterate_data` intentionally unused.
+- cfitsio-direct: Rice + optional MegaCam `cutout_rep` jobs.
+
 ## [1.0.0rc1] — 2026-07-17
 
 Release candidate for the 1.0 API. Formal stamp:
@@ -667,7 +745,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc2...HEAD
+[1.0.0rc2]: https://github.com/astroai/torchfits/compare/v1.0.0rc1...v1.0.0rc2
 [1.0.0rc1]: https://github.com/astroai/torchfits/releases/tag/v1.0.0rc1
 [1.0b1]: https://github.com/astroai/torchfits/releases/tag/v1.0b1
 [0.9.0]: https://github.com/astroai/torchfits/compare/v0.7.0...v0.9.0

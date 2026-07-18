@@ -9,7 +9,7 @@ import torch
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError
+from .common import EXIT_OK, IoError, UsageError, add_hdu_arg
 
 _OPS: dict[str, Callable[[torch.Tensor, float], torch.Tensor]] = {
     "add": lambda t, v: t + v,
@@ -26,8 +26,8 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--op", required=True, choices=tuple(_OPS), help="arithmetic op"
     )
     parser.add_argument("--value", required=True, type=float, help="scalar operand")
-    parser.add_argument("--hdu", type=int, default=0, help="source HDU index")
-    parser.add_argument("--out", required=True, help="output FITS path")
+    add_hdu_arg(parser, type=int, default=0, help="source HDU index")
+    parser.add_argument("-o", "--out", required=True, help="output FITS path")
     parser.set_defaults(func=run)
 
 
@@ -38,7 +38,7 @@ def run(args: argparse.Namespace) -> int:
             raise IoError(
                 f"{args.input}:{args.hdu} read_tensor did not return a tensor"
             )
-        header = torchfits.get_header(args.input, args.hdu)
+        header = torchfits.read_header(args.input, args.hdu)
         result = _OPS[args.op](tensor, args.value)
         torchfits.write_tensor(args.out, result, header=header, overwrite=True)
     except UsageError:

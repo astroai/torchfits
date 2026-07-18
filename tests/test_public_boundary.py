@@ -30,6 +30,7 @@ def test_table_destination_readers_are_public():
     assert table.read_arrow is table.read
     assert callable(table.read_torch)
     assert callable(torchfits.read_table)
+    assert callable(torchfits.read_header)
 
 
 def test_torch_frame_is_not_part_of_the_fits_hdu_surface():
@@ -71,6 +72,8 @@ def test_root_table_helpers_emit_deprecation_warning():
             lambda: torchfits.read_table(path),
             lambda: next(torchfits.stream_table(path)),
             lambda: torchfits.read_table_rows(path),
+            lambda: torchfits.get_header(path),
+            lambda: torchfits.get_batch_info([path]),
         ):
             try:
                 call()
@@ -84,3 +87,5 @@ def test_root_table_helpers_emit_deprecation_warning():
     assert any("read_table is deprecated" in m for m in msgs)
     assert any("stream_table is deprecated" in m for m in msgs)
     assert any("read_table_rows is deprecated" in m for m in msgs)
+    assert any("get_header is deprecated" in m for m in msgs)
+    assert any("get_batch_info is deprecated" in m for m in msgs)

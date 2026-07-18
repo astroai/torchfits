@@ -121,6 +121,12 @@ Include benchmark evidence in PRs that touch performance-sensitive paths.
 - `docs/parity.md`: compatibility matrix. Update if support status changes.
 - `docs/changelog.md`: release notes, [Keep a Changelog](https://keepachangelog.com/) format.
 - `docs/benchmarks.md`: benchmark methodology and results.
+- Published site: **stable** = latest `v*` tag at
+  [astroai.github.io/torchfits](https://astroai.github.io/torchfits/);
+  **edge** = tip of `main` at
+  [astroai.github.io/torchfits/edge](https://astroai.github.io/torchfits/edge/)
+  (no SemVer release required). Local dual tree:
+  `pixi run docs-build-pages` or `bash scripts/build_docs_pages.sh`.
 
 ## PR guidelines
 

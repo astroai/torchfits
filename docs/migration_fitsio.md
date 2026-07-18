@@ -13,7 +13,7 @@ where fitsio still wins on narrow table predicates.
 | Read image as tensor | `torch.from_numpy(fitsio.read(path))` | `torchfits.read_tensor(path, hdu=0)` |
 | Read image with mmap | *(fitsio has no mmap mode; use slice reads)* | `torchfits.read_tensor(path, hdu=0, mmap=True)` |
 | Read image to GPU | `torch.from_numpy(fitsio.read(path)).cuda()` | `torchfits.read_tensor(path, hdu=0, device="cuda")` |
-| Read header | `fitsio.read_header(path)` | `torchfits.get_header(path, hdu=0)` |
+| Read header | `fitsio.read_header(path)` | `torchfits.read_header(path, hdu=0)` |
 
 ## Reading a table (dataframe path)
 

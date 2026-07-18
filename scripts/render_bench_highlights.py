@@ -17,7 +17,7 @@ TARGET_CASES = [
         "large_float32_2d::read_full",
         "read_full",
         "CPU",
-        "Large Image Read (Float32 2D, 16.0 MB)",
+        "Large tensor read (Float32 2D, 16.0 MB)",
     ),
     (
         "fits",
@@ -25,7 +25,7 @@ TARGET_CASES = [
         "large_float32_2d::read_full_gpu",
         "read_full",
         "CUDA",
-        "Large Image Read (Float32 2D @ CUDA)",
+        "Large tensor read (Float32 2D @ CUDA)",
     ),
     (
         "fits",
@@ -33,7 +33,7 @@ TARGET_CASES = [
         "compressed_rice_1::read_full",
         "read_full",
         "CPU",
-        "Compressed Image Read (Rice, 1.1 MB)",
+        "Compressed tensor read (Rice, 1.1 MB)",
     ),
     (
         "fits",
@@ -41,7 +41,7 @@ TARGET_CASES = [
         "compressed_rice_1::read_full_gpu",
         "read_full",
         "CUDA",
-        "Compressed Image Read (Rice @ CUDA)",
+        "Compressed tensor read (Rice @ CUDA)",
     ),
     (
         "fits",
@@ -49,7 +49,7 @@ TARGET_CASES = [
         "repeated_cutouts_50x_100x100::repeated_cutouts_50x_100x100",
         "repeated_cutouts_50x_100x100",
         "CPU",
-        "Repeated Cutouts (50x 100x100)",
+        "Repeated cutouts (50x 100x100)",
     ),
     (
         "fits",
@@ -57,7 +57,7 @@ TARGET_CASES = [
         "repeated_cutouts_50x_100x100_gpu::repeated_cutouts_50x_100x100",
         "repeated_cutouts_50x_100x100",
         "CUDA",
-        "Repeated Cutouts (50x 100x100 @ CUDA)",
+        "Repeated cutouts (50x 100x100 @ CUDA)",
     ),
     (
         "fitstable",
@@ -65,7 +65,7 @@ TARGET_CASES = [
         "mixed_100000::read_full",
         "read_full",
         "CPU",
-        "Table Read (100k rows, 8 cols, mixed)",
+        "Table read (100k rows, 8 cols, mixed)",
     ),
     (
         "fitstable",
@@ -73,7 +73,7 @@ TARGET_CASES = [
         "varlen_100000::read_full",
         "read_full",
         "CPU",
-        "Varlen Table Read (100k rows, 3 cols)",
+        "Varlen table read (100k rows, 3 cols)",
     ),
 ]
 
@@ -109,10 +109,12 @@ def render_highlights(results_dir: Path) -> str:
     lines = [
         "## Performance Highlights",
         "",
-        "The following table showcases median wall-clock execution times of key representative FITS benchmarks.",
-        "In almost all core I/O paths, `torchfits` is significantly faster than standard astronomical tools, with extra performance wins from persistent handle caches and direct-to-device transfers.",
+        "The following table showcases median wall-clock times for key FITS "
+        "tensor and table cases. The **specialized** column is "
+        "`torchfits_specialized` (open-once / subset-reader paths); it is "
+        "empty when that path was not measured.",
         "",
-        "| Benchmark Case | Device | torchfits | torchfits (persistent) | astropy (via torch) | fitsio (via torch) | Win vs Astropy | Win vs fitsio |",
+        "| Benchmark Case | Device | torchfits | torchfits (specialized) | astropy (via torch) | fitsio (via torch) | Win vs Astropy | Win vs fitsio |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
 

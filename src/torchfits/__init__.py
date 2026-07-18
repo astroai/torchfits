@@ -14,7 +14,7 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "1.0.0rc1"
+__version__ = "1.0.0rc2"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -31,6 +31,7 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "write": ("torchfits.io", "write"),
     "open": ("torchfits.io", "open"),
     "get_header": ("torchfits.io", "get_header"),
+    "read_header": ("torchfits.io", "read_header"),
     "read_tensor": ("torchfits.io", "read_tensor"),
     "read_table": ("torchfits.io", "read_table"),
     "read_hdus": ("torchfits.io", "read_hdus"),
@@ -38,6 +39,7 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "open_subset_reader": ("torchfits.io", "open_subset_reader"),
     "read_batch": ("torchfits.io", "read_batch"),
     "get_batch_info": ("torchfits.io", "get_batch_info"),
+    "read_batch_info": ("torchfits.io", "read_batch_info"),
     "get_cache_performance": ("torchfits.io", "get_cache_performance"),
     "read_table_rows": ("torchfits.io", "read_table_rows"),
     "stream_table": ("torchfits.io", "stream_table"),
@@ -68,6 +70,7 @@ __all__ = tuple(
         "write",
         "open",
         "get_header",
+        "read_header",
         "read_tensor",
         "read_table",
         "read_hdus",
@@ -81,6 +84,7 @@ __all__ = tuple(
         "TableHDURef",
         "read_batch",
         "get_batch_info",
+        "read_batch_info",
         "get_cache_performance",
         "read_table_rows",
         "stream_table",
@@ -189,8 +193,10 @@ if TYPE_CHECKING:
     from .io import clear_file_cache as clear_file_cache
     from .io import delete_hdu as delete_hdu
     from .io import get_batch_info as get_batch_info
+    from .io import read_batch_info as read_batch_info
     from .io import get_cache_performance as get_cache_performance
     from .io import get_header as get_header
+    from .io import read_header as read_header
     from .io import insert_hdu as insert_hdu
     from .io import open as open
     from .io import open_subset_reader as open_subset_reader

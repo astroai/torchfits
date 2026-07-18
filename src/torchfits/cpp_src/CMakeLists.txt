@@ -145,12 +145,24 @@ execute_process(
     OUTPUT_VARIABLE TORCHFITS_BUILD_TORCH_VERSION
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
-if(NOT TORCHFITS_BUILD_TORCH_VERSION MATCHES "^2\\.10([.+]|$)")
+# Require PyTorch >= 2.10; embed major.minor as the ABI tag for the runtime check.
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)" _torch_mm "${TORCHFITS_BUILD_TORCH_VERSION}")
+if(NOT _torch_mm)
     message(FATAL_ERROR
-        "torchfits 0.9.1 requires PyTorch 2.10.x at build time; found ${TORCHFITS_BUILD_TORCH_VERSION}. "
-        "Install 'torch>=2.10,<2.11' before using --no-build-isolation."
+        "Could not parse PyTorch version '${TORCHFITS_BUILD_TORCH_VERSION}'. "
+        "Install torch>=2.10 before building torchfits from source."
     )
 endif()
+set(TORCHFITS_TORCH_ABI_MAJOR "${CMAKE_MATCH_1}")
+set(TORCHFITS_TORCH_ABI_MINOR "${CMAKE_MATCH_2}")
+set(TORCHFITS_TORCH_ABI "${TORCHFITS_TORCH_ABI_MAJOR}.${TORCHFITS_TORCH_ABI_MINOR}")
+if(TORCHFITS_TORCH_ABI_MAJOR LESS 2 OR (TORCHFITS_TORCH_ABI_MAJOR EQUAL 2 AND TORCHFITS_TORCH_ABI_MINOR LESS 10))
+    message(FATAL_ERROR
+        "torchfits requires PyTorch >= 2.10 at build time; found ${TORCHFITS_BUILD_TORCH_VERSION}. "
+        "Pre-install a matching torch, then build with --no-build-isolation."
+    )
+endif()
+message(STATUS "torchfits: building against PyTorch ${TORCHFITS_BUILD_TORCH_VERSION} (ABI ${TORCHFITS_TORCH_ABI})")
 list(APPEND CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
 
 # CUDA-enabled PyTorch only: cuda.cmake expects CUDA::nvrtc before extension targets link. Conda
@@ -495,7 +507,7 @@ if(DLPACK_INCLUDE_DIR)
     target_include_directories(_C PRIVATE ${DLPACK_INCLUDE_DIR})
 endif()
 target_compile_definitions(_C PRIVATE HAS_CFITSIO)
-target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="2.10")
+target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI}")
 
 
 # Compiler flags

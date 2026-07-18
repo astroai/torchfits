@@ -61,25 +61,21 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
     check_fits_filename_security(filename_);
     int status = 0;
     if (mode == 0) {
-        fptr_ = get_or_open_cached(filename_);
-        use_cache_ = true;
-        if (!fptr_) status = 1;
+        // Private per-instance handle (CFITSIO §4 Option A): no shared CHDU.
+        status = detail::open_fits_readonly(&fptr_, filename_);
+        use_cache_ = false;  // close() calls fits_close_file
     } else {
         fits_create_file(&fptr_, filename, &status);
         use_cache_ = false;
     }
-    if (status != 0) throw std::runtime_error("Could not open FITS file: " + filename_);
+    if (status != 0 || !fptr_) throw std::runtime_error("Could not open FITS file: " + filename_);
     cached_ = false;
     if (mode == 0) shared_meta_ = detail::get_shared_meta_for_path(filename_);
     const bool has_extension = filename_.find('[') != std::string::npos;
     if (!has_extension) {
+        // Private handle owns its own CHDU — do not seed from shared_meta_.
         start_hdu_ = 1;
         current_hdu_ = -1;
-        if (shared_meta_) {
-            std::lock_guard<std::mutex> lock(shared_meta_->mutex);
-            // Shared fptr remembers its HDU across one-shot wrappers.
-            current_hdu_ = shared_meta_->current_fits_hdu;
-        }
     } else {
         fits_get_hdu_num(fptr_, &start_hdu_);
         current_hdu_ = start_hdu_;
@@ -615,8 +611,17 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                 } else if (nb::isinstance<nb::str>(item.second)) {
                     std::string val = detail::sanitize_fits_string(nb::cast<std::string>(item.second));
                     fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                } else if (nb::isinstance<int>(item.second)) {
-                    long long val = nb::cast<long long>(item.second);
+                } else if (PyLong_Check(item.second.ptr())) {
+                    int overflow = 0;
+                    long long val = PyLong_AsLongLongAndOverflow(
+                        item.second.ptr(), &overflow
+                    );
+                    if (overflow != 0 || PyErr_Occurred()) {
+                        PyErr_Clear();
+                        throw std::runtime_error(
+                            "FITS header integer out of long long range: " + key
+                        );
+                    }
                     fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
                 } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
                     double val = nb::cast<double>(item.second);
@@ -670,8 +675,17 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             } else if (nb::isinstance<nb::str>(item.second)) {
                     std::string val = detail::sanitize_fits_string(nb::cast<std::string>(item.second));
                     fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-            } else if (nb::isinstance<int>(item.second)) {
-                    long long val = nb::cast<long long>(item.second);
+            } else if (PyLong_Check(item.second.ptr())) {
+                    int overflow = 0;
+                    long long val = PyLong_AsLongLongAndOverflow(
+                        item.second.ptr(), &overflow
+                    );
+                    if (overflow != 0 || PyErr_Occurred()) {
+                        PyErr_Clear();
+                        throw std::runtime_error(
+                            "FITS header integer out of long long range: " + key
+                        );
+                    }
                     fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
             } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
                     double val = nb::cast<double>(item.second);

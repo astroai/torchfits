@@ -1,6 +1,7 @@
 # torchfits
 
-[![PyPI](https://img.shields.io/pypi/v/torchfits)](https://pypi.org/project/torchfits/)
+[![PyPI stable](https://img.shields.io/pypi/v/torchfits)](https://pypi.org/project/torchfits/)
+[![GitHub release](https://img.shields.io/github/v/release/astroai/torchfits?include_prereleases&label=latest%20release)](https://github.com/astroai/torchfits/releases)
 [![CI](https://github.com/astroai/torchfits/actions/workflows/ci.yml/badge.svg)](https://github.com/astroai/torchfits/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -10,8 +11,10 @@ A multi-threaded C++ engine (vendored CFITSIO) handles images, tables, headers,
 compression, and MEF files. Optional datasets, transforms, and a `torchfits`
 CLI sit on top.
 
-Current release: **1.0b1**. Docs:
-[astroai.github.io/torchfits](https://astroai.github.io/torchfits/).
+**PyPI stable:** 0.9.x · **Current pre-release:** 1.0.0rc1.
+Docs: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag, may be an
+rc) · [edge](https://astroai.github.io/torchfits/edge/) (`main` tip). The docs
+“stable” channel is **not** the same as the latest non-prerelease on PyPI.
 
 ## Install
 

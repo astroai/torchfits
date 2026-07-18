@@ -268,5 +268,30 @@ class TestCompressionPerformance:
                 os.unlink(f.name)
 
 
+def test_compress_empty_primary_mef_roundtrip():
+    """Compressing a MEF with an empty primary must not shift output HDU indices."""
+    from astropy.io import fits
+
+    a = np.arange(64, dtype=np.float32).reshape(8, 8)
+    b = np.arange(48, dtype=np.float32).reshape(6, 8)
+    src = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    src.close()
+    dst = src.name.replace(".fits", "_c.fits")
+    fits.HDUList(
+        [fits.PrimaryHDU(), fits.ImageHDU(a, name="A"), fits.ImageHDU(b, name="B")]
+    ).writeto(src.name, overwrite=True)
+    try:
+        with torchfits.open(src.name) as hdul:
+            torchfits.write(dst, hdul, overwrite=True, compress=True)
+        with torchfits.open(dst) as out:
+            assert len(out) == 3
+            assert np.allclose(out[1].to_tensor("cpu").numpy(), a)
+            assert np.allclose(out[2].to_tensor("cpu").numpy(), b)
+    finally:
+        for p in (src.name, dst):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

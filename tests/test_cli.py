@@ -299,16 +299,16 @@ def table_fits(tmp_path):
     return path
 
 
-def test_header_fitsort_table(image_fits):
+def test_header_keyword_table(image_fits):
     result = _run_cli(
         "header",
         str(image_fits),
-        "--fitsort",
-        "--keyword",
+        "--keyword-table",
+        "-k",
         "BITPIX",
-        "--keyword",
+        "-k",
         "NAXIS",
-        "--hdu",
+        "-e",
         "0",
     )
     assert result.returncode == 0, result.stderr
@@ -316,7 +316,7 @@ def test_header_fitsort_table(image_fits):
     assert "NAXIS" in result.stdout
 
 
-def test_header_fitsort_json(image_fits):
+def test_header_fitsort_alias_still_works(image_fits):
     result = _run_cli(
         "header",
         str(image_fits),
@@ -332,8 +332,85 @@ def test_header_fitsort_json(image_fits):
     assert int(payload[0]["BITPIX"]) == -32
 
 
+def test_header_keyword_table_json(image_fits):
+    result = _run_cli(
+        "header",
+        str(image_fits),
+        "--keyword-table",
+        "-k",
+        "BITPIX",
+        "-e",
+        "0",
+        "-f",
+        "json",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert int(payload[0]["BITPIX"]) == -32
+
+
+def test_info_short_format(image_fits):
+    result = _run_cli("info", str(image_fits), "-f", "jsonl")
+    assert result.returncode == 0, result.stderr
+    assert "hdu" in result.stdout
+
+
+def test_convert_where_filter(table_fits, tmp_path):
+    out = tmp_path / "bright.parquet"
+    result = _run_cli(
+        "convert",
+        str(table_fits),
+        str(out),
+        "-e",
+        "1",
+        "--where",
+        "flux > 1.5",
+        "--columns",
+        "ra,dec,flux",
+    )
+    assert result.returncode == 0, result.stderr
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(out)
+    assert table.num_rows == 2
+    assert table.column_names == ["ra", "dec", "flux"]
+
+
+def test_convert_short_flags(table_fits, tmp_path):
+    out = tmp_path / "short.parquet"
+    result = _run_cli(
+        "convert",
+        str(table_fits),
+        "-o",
+        str(out),
+        "-e",
+        "1",
+        "-w",
+        "flux > 1.5",
+        "-c",
+        "ra,dec,flux",
+    )
+    assert result.returncode == 0, result.stderr
+    import pyarrow.parquet as pq
+
+    assert pq.read_table(out).num_rows == 2
+
+
+def test_copy_dash_o(image_fits, tmp_path):
+    out = tmp_path / "via_o.fits"
+    result = _run_cli("copy", str(image_fits), "-o", str(out))
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+
+
+def test_probe_header_bytes_help():
+    result = _run_cli("probe", "--help")
+    assert result.returncode == 0
+    assert "--header-bytes" in result.stdout
+
+
 def test_invalid_hdu_is_usage_error(image_fits):
-    result = _run_cli("info", str(image_fits), "--hdu", "not-an-int")
+    result = _run_cli("info", str(image_fits), "-e", "not-an-int")
     assert result.returncode == 2, result.stderr
 
 
@@ -352,7 +429,7 @@ def test_vos_probe_missing_package_message(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _block_vos)
     with pytest.raises(UsageError, match="vos"):
-        cmds_probe._probe_vos("vos:example/file.fits")
+        cmds_probe._probe_vos("vos:example/file.fits", header_bytes=5760)
 
 
 def test_vos_probe_bad_uri_is_io_error_when_vos_present():
@@ -381,7 +458,60 @@ def test_convert_png_invalid_bands_non_integer(image_fits, tmp_path):
 
 def test_fitsort_with_invalid_hdu(image_fits):
     result = _run_cli(
-        "header", str(image_fits), "--fitsort", "--keyword", "BITPIX", "--hdu", "abc"
+        "header",
+        str(image_fits),
+        "--keyword-table",
+        "-k",
+        "BITPIX",
+        "-e",
+        "abc",
     )
     assert result.returncode == 2, result.stderr
     assert "hdu" in result.stderr.lower() or "invalid" in result.stderr.lower()
+
+
+def test_setkey_hierarch_and_rename(image_fits, tmp_path):
+    out = tmp_path / "keyed.fits"
+    result = _run_cli("copy", str(image_fits), str(out))
+    assert result.returncode == 0, result.stderr
+    result = _run_cli(
+        "setkey",
+        str(out),
+        "--key",
+        "ESO DET CHIP1 ID",
+        "--value",
+        "42",
+    )
+    assert result.returncode == 0, result.stderr
+    hdr = torchfits.read_header(str(out), 0)
+    # HIERARCH cards may surface as key="HIERARCH" with the long name in the value.
+    blob = " ".join(f"{k}={v}" for k, v in hdr.items()).upper()
+    assert "CHIP1" in blob
+    result = _run_cli(
+        "setkey",
+        str(out),
+        "--key",
+        "OBJECT",
+        "--value",
+        "DEMO",
+    )
+    assert result.returncode == 0, result.stderr
+    result = _run_cli("setkey", str(out), "--rename", "OBJECT=TARGET")
+    assert result.returncode == 0, result.stderr
+    hdr = torchfits.read_header(str(out), 0)
+    assert "TARGET" in hdr
+    assert hdr["TARGET"] == "DEMO"
+
+
+def test_http_probe_blocks_internal_ssrf():
+    result = _run_cli("probe", "http://127.0.0.1:8000/latest/meta-data/")
+    assert result.returncode == 3
+    assert "access to internal or private networks is blocked" in result.stderr
+
+    result = _run_cli("probe", "http://localhost:8080/")
+    assert result.returncode == 3
+    assert "access to internal or private networks is blocked" in result.stderr
+
+    result = _run_cli("probe", "http://169.254.169.254/")
+    assert result.returncode == 3
+    assert "access to internal or private networks is blocked" in result.stderr

@@ -282,6 +282,7 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     gpu_only = bool(getattr(args, "gpu_only", False))
     had_failure = False
+    write_rows_added = False
 
     for use_mmap in mmap_settings:
         mmap_label = "on" if use_mmap else "off"
@@ -320,6 +321,29 @@ def main() -> int:
                         mmap_target=mmap_label,
                     )
                 )
+
+        if (
+            "fits" in scopes
+            and not gpu_only
+            and not write_rows_added
+            and use_mmap == mmap_settings[-1]
+        ):
+            try:
+                from benchmarks.bench_fits_write import run_write_compress_rows
+
+                write_rows = run_write_compress_rows(
+                    run_id=run_id,
+                    output_dir=run_dir,
+                    profile=args.profile,
+                    runs=1 if args.quick else None,
+                    warmup=0 if args.quick else None,
+                )
+                rows.extend(write_rows)
+                write_rows_added = True
+                print(f"Added {len(write_rows)} write-compress rows", flush=True)
+            except Exception as exc:
+                had_failure = True
+                print(f"[bench-all][fits-write] failed: {exc}", flush=True)
 
         if "fitstable" in scopes and not gpu_only:
             try:

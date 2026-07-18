@@ -577,6 +577,109 @@ def run_gpu_transport_rows(
                     }
                 )
 
+        # 4. Table GPU vs CPU — medium mixed catalog via table.read_torch
+        if op_rx is None or op_rx.search("read_full"):
+            from benchmarks.bench_fitstable_io import _build_cases
+
+            table_root = Path(tempfile.mkdtemp(prefix="torchfits_bench_gpu_table_"))
+            try:
+                cases = _build_cases(table_root, quick=quick)
+                case = next(
+                    (c for c in cases if c.get("name") == "mixed_100000"),
+                    None,
+                )
+                if case is None and cases:
+                    case = max(cases, key=lambda c: int(c.get("nrows", 0)))
+                if case is not None:
+                    path = case["path"]
+                    nrows = int(case["nrows"])
+                    size_mb = float(case["size_mb"])
+                    case_id = f"{case['name']}::read_full_table_gpu"
+                    print(
+                        f"[bench-gpu] fitstable case={case['name']} nrows={nrows} "
+                        f"device={device} runs={iterations}",
+                        flush=True,
+                    )
+
+                    def read_cpu() -> dict[str, Any]:
+                        return torchfits.table.read_torch(
+                            str(path), hdu=1, device="cpu", mmap=use_mmap
+                        )
+
+                    def read_gpu() -> dict[str, Any]:
+                        return torchfits.table.read_torch(
+                            str(path), hdu=1, device=device, mmap=use_mmap
+                        )
+
+                    table_methods = [
+                        (
+                            "torchfits",
+                            "torchfits_table_cpu",
+                            "smart",
+                            "smart",
+                            read_cpu,
+                            "cpu",
+                            "disk\u2192CPU",
+                        ),
+                        (
+                            "torchfits",
+                            "torchfits_table_device",
+                            "smart",
+                            "smart",
+                            read_gpu,
+                            device,
+                            transport,
+                        ),
+                    ]
+                    for (
+                        library,
+                        method,
+                        family,
+                        mode,
+                        fn,
+                        dev_label,
+                        io_t,
+                    ) in table_methods:
+                        sync_dev = device if dev_label != "cpu" else "cpu"
+                        t, peak_rss, peak_cuda = _median_time(
+                            fn, warmup, iterations, sync_dev
+                        )
+                        if t is None:
+                            continue
+                        rows.append(
+                            {
+                                "run_id": run_id,
+                                "domain": "fitstable",
+                                "suite": "fitstable_gpu",
+                                "case_id": case_id,
+                                "case_label": f"{case['name']} [read_full @ {dev_label}]",
+                                "operation": "read_full",
+                                "family": family,
+                                "library": library,
+                                "method": method,
+                                "mode": mode,
+                                "status": "OK",
+                                "skip_reason": "",
+                                "comparable": True,
+                                "mmap_target": mmap_target,
+                                "host": _BENCH_HOST,
+                                "time_s": t,
+                                "peak_rss_mb": peak_rss,
+                                "peak_cuda_alloc_mb": peak_cuda,
+                                "throughput": (nrows / t) if t else None,
+                                "unit": "rows/s",
+                                "size_mb": size_mb,
+                                "n_points": nrows,
+                                "metadata": json.dumps(
+                                    {"device": dev_label, "io_transport": io_t}
+                                ),
+                            }
+                        )
+            finally:
+                import shutil
+
+                shutil.rmtree(table_root, ignore_errors=True)
+
         return rows
     finally:
         suite.cleanup()

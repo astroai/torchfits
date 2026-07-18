@@ -23,6 +23,25 @@ def _make_basic_table_file() -> str:
     return handle.name
 
 
+def test_table_write_negative_stride_column_roundtrip():
+    """A reversed (negative-stride) column must be copied correctly on write."""
+    base = np.arange(1, 6, dtype=np.int32)  # [1, 2, 3, 4, 5]
+    ids = base[::-1]  # negative-stride view: [5, 4, 3, 2, 1]
+    vals = base.astype(np.float32)[::-1]
+    assert ids.strides[0] < 0 and vals.strides[0] < 0
+    handle = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    handle.close()
+    try:
+        torchfits.write(handle.name, {"ID": ids, "VAL": vals}, overwrite=True)
+        with torchfits.open(handle.name) as hdul:
+            out_ids = hdul[1]["ID"].squeeze(-1).tolist()
+            out_vals = hdul[1]["VAL"].squeeze(-1).numpy()
+        assert out_ids == [5, 4, 3, 2, 1]
+        assert np.allclose(out_vals, [5.0, 4.0, 3.0, 2.0, 1.0], atol=1e-6)
+    finally:
+        os.unlink(handle.name)
+
+
 def test_table_append_update_rename_drop():
     path = _make_basic_table_file()
     try:
@@ -454,5 +473,24 @@ def test_replace_column_preserves_metadata_contract():
             assert str(table.header.get("TFORM2", "")).upper().startswith("I")
             assert table.header.get("TUNIT2") == "adu"
             assert int(table.header.get("TNULL2")) == -999
+    finally:
+        os.unlink(path.name)
+
+
+def test_table_write_noncontiguous_numeric_roundtrip():
+    """A7: non-C-contiguous column views must still write correctly."""
+    path = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    path.close()
+    try:
+        col = np.arange(10, dtype=np.float32)[::2]
+        assert not col.flags["C_CONTIGUOUS"]
+        torchfits.table.write(
+            path.name,
+            data={"VAL": col},
+            overwrite=True,
+        )
+        with torchfits.open(path.name) as hdul:
+            got = hdul[1]["VAL"].squeeze(-1).detach().cpu().numpy()
+        np.testing.assert_array_equal(got, col)
     finally:
         os.unlink(path.name)

@@ -4,14 +4,14 @@
 requires = [
     "scikit-build-core>=0.11.6",
     "nanobind>=2.10.2",
-    "torch>=2.10,<2.11",
+    "torch>=2.10",
     "numpy>=1.20.0"
 ]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "torchfits"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = [{ name = "Seb Fabbro", email = "sebfabbro@gmail.com" }]
 readme = "README.md"
@@ -35,7 +35,7 @@ requires-python = ">=3.10"
 # These are automatically managed by pixi for conda packages
 # but needed here for PyPI compatibility
 dependencies = [
-    "torch>=2.10,<2.11",
+    "torch>=2.10",
     "numpy>=1.20.0",  # Core numerical operations
     "pyarrow>=5.0",   # Table I/O (Arrow interchange)
 ]
@@ -57,7 +57,10 @@ dev = [
     "pytest-cov>=2.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
-    "ipykernel",
+    "astropy>=5.0",
+    "fitsio>=1.1",
+    "pandas>=1.0",
+    "matplotlib>=3.0",
     "tomli>=2.0; python_version < '3.11'",
 ]
 bench = [

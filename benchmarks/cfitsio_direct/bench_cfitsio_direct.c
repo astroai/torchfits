@@ -13,6 +13,7 @@
  *   table_slice   fits_read_col row window (firstrow, nelements)
  *   table_scan    fits_get_num_rows only (header count; no column I/O)
  *   table_pred    fits_read_col one column + compact kept values (value > 0)
+ *   table_header  fits_get_hdrspace + fits_read_keyn on first table HDU
  *
  * Job TSV columns (tab-separated, # comments allowed):
  *   case_id  op  path  a  b  c  d  e
@@ -48,6 +49,7 @@ typedef enum {
   OP_TABLE_SLICE,
   OP_TABLE_SCAN,
   OP_TABLE_PRED,
+  OP_TABLE_HEADER,
   OP_UNKNOWN
 } op_t;
 
@@ -118,6 +120,9 @@ static op_t parse_op(const char *s) {
   if (strcmp(s, "table_pred") == 0 || strcmp(s, "predicate_filter") == 0) {
     return OP_TABLE_PRED;
   }
+  if (strcmp(s, "table_header") == 0 || strcmp(s, "header_read") == 0) {
+    return OP_TABLE_HEADER;
+  }
   return OP_UNKNOWN;
 }
 
@@ -143,6 +148,8 @@ static const char *op_out_name(const job_t *j) {
       return "scan_count";
     case OP_TABLE_PRED:
       return "predicate_filter";
+    case OP_TABLE_HEADER:
+      return "header_read";
     default:
       return "unknown";
   }
@@ -1129,6 +1136,9 @@ static int run_job_once(const job_t *job, int *status) {
       rc = move_first_table(fptr, status) ||
            do_table_pred(fptr, job->a[0] ? job->a : "flux", status);
       break;
+    case OP_TABLE_HEADER:
+      rc = move_first_table(fptr, status) || do_header_read(fptr, status);
+      break;
     default:
       *status = BAD_OPTION;
       rc = *status;
@@ -1348,6 +1358,9 @@ int main(int argc, char **argv) {
         break;
       case OP_TABLE_PRED:
         api = "fits_read_col+compact";
+        break;
+      case OP_TABLE_HEADER:
+        api = "fits_read_keyn";
         break;
       default:
         break;

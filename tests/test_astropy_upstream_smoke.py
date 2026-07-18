@@ -34,14 +34,14 @@ def test_astropy_image_hdulist_header_and_scaled_workflows_match_torchfits(
         rtol=0.0,
         atol=0.0,
     )
-    primary_header = torchfits.get_header(mef_path.as_posix(), hdu=0)
+    primary_header = torchfits.read_header(mef_path.as_posix(), hdu=0)
     assert primary_header["OBJECT"] == "TORCHFITS"
     assert primary_header["EXPTIME"] == 12.5
     assert "seconds" in primary_header.comments("EXPTIME")
     assert "created by astropy" in primary_header.get_history()
     assert "common FITS header workflow" in primary_header.get_comment()
 
-    sci_header = torchfits.get_header(mef_path.as_posix(), hdu="SCI")
+    sci_header = torchfits.read_header(mef_path.as_posix(), hdu="SCI")
     assert sci_header["EXTNAME"] == "SCI"
     assert sci_header["BUNIT"] == "adu"
 

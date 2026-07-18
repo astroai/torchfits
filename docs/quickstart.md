@@ -9,11 +9,8 @@ pip install torchfits
 ```
 
 Pre-built wheels for Linux x86_64 and macOS arm64. No system CFITSIO needed — it's
-vendored. Requires Python 3.10+ and **PyTorch 2.10** (ABI-matched wheels).
-
-!!! note "GPU support"
-    For CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
-    For MPS (Apple Silicon): the default PyTorch wheel includes MPS support.
+vendored. Requires Python 3.10+ and **PyTorch 2.10** (ABI-matched wheels). For
+other torch minors or CUDA/MPS install details, see [Installation](install.md).
 
 ## Shell tools
 
@@ -23,8 +20,8 @@ torchfits header image.fits --keyword BITPIX --json
 torchfits verify image.fits
 ```
 
-Full command reference: [CLI guide](cli.md). Classic `imstat` /
-`imarith` recipes: [CLI recipes](cli-recipes.md).
+Full command reference: [CLI guide](cli.md). Job-first shell recipes:
+[CLI recipes](cli-recipes.md).
 
 ## Real data + a first figure
 

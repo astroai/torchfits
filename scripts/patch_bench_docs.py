@@ -33,24 +33,38 @@ def _replace_block(text: str, begin: str, end: str, body: str) -> str:
 
 
 def _host_label(csv_path: Path) -> str:
-    hosts: set[str] = set()
+    """OS / arch / accelerator — never raw hostname."""
     devices: set[str] = set()
     with csv_path.open(newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
-            h = (row.get("host") or "").strip()
-            if h:
-                hosts.add(h)
             md = row.get("metadata") or ""
             m = re.search(r"['\"]device['\"]\s*:\s*['\"]([^'\"]+)['\"]", md)
             if m:
-                devices.add(m.group(1))
+                devices.add(m.group(1).lower())
             elif "cuda" in md.lower():
                 devices.add("cuda")
             elif "mps" in md.lower():
                 devices.add("mps")
-    host = ", ".join(sorted(hosts)) if hosts else csv_path.parent.name
-    device = ", ".join(sorted(devices)) if devices else "cpu"
-    return f"{host} / {device}"
+            name = (csv_path.parent.name or "").lower()
+            if "cuda" in name:
+                devices.add("cuda")
+            elif "mps" in name:
+                devices.add("mps")
+            elif "cpu" in name:
+                devices.add("cpu")
+    device = "cpu"
+    if "cuda" in devices:
+        device = "cuda"
+    elif "mps" in devices:
+        device = "mps"
+    name = (csv_path.parent.name or "").lower()
+    if "mps" in name or device == "mps":
+        return "macOS arm64 / MPS"
+    if "cuda" in name or device == "cuda":
+        return "Linux x86_64 / CUDA"
+    if "cpu" in name or device == "cpu":
+        return "Linux x86_64 / CPU"
+    return f"host / {device.upper()}"
 
 
 def _median_rss(csv_path: Path) -> str:
@@ -67,7 +81,7 @@ def _median_rss(csv_path: Path) -> str:
     if not vals:
         return "-"
     vals.sort()
-    return f"{vals[len(vals) // 2]:.0f}"
+    return f"{vals[len(vals) // 2]:.1f}"
 
 
 def _run_stats(run_id: str, csv_path: Path, deficits_path: Path) -> dict[str, str]:
@@ -100,16 +114,6 @@ def _run_stats(run_id: str, csv_path: Path, deficits_path: Path) -> dict[str, st
         "median_rss_mb": _median_rss(csv_path),
         "notes": " + ".join(notes),
     }
-
-
-def _snapshot_rows(runs: list[dict[str, str]]) -> str:
-    lines = []
-    for r in runs:
-        lines.append(
-            f"| `{r['run_id']}` | {r['host']} | fits + fitstable (lab) | "
-            f"{r['rows']} | {r['deficits']} | {r['median_rss_mb']} | {r['notes']} |"
-        )
-    return "\n".join(lines) + "\n"
 
 
 def _hosts_table(runs: list[dict[str, str]]) -> str:
@@ -204,6 +208,12 @@ def main() -> int:
         "render_full_benchmarks_table.py", "--results-dir", str(primary_dir)
     )
     quick = _render("render_bench_quick.py", "--quick-dir", str(args.quick_dir))
+    ml_csv = primary_dir / "ml_results.csv"
+    ml = (
+        _render("render_bench_ml.py", "--csv", str(ml_csv))
+        if ml_csv.is_file()
+        else "_Run `pixi run bench-ml` to populate ML loader throughput._\n"
+    )
     if deficits.startswith("## Performance deficits"):
         deficits = deficits.split("\n", 2)[-1] if "\n\n" in deficits else ""
         if deficits.startswith("\n"):
@@ -218,7 +228,6 @@ def main() -> int:
             full_table = full_table[1:]
 
     stats = [_run_stats(rid, csv_p, def_p) for rid, csv_p, def_p in resolved]
-    snapshot = _snapshot_rows(stats)
     hosts = _hosts_table(stats)
 
     text = args.docs.read_text(encoding="utf-8")
@@ -240,9 +249,6 @@ def main() -> int:
     text = _replace_block(
         text, "<!-- BENCH_DEFICITS_BEGIN -->", "<!-- BENCH_DEFICITS_END -->", deficits
     )
-    text = _replace_block(
-        text, "<!-- BENCH_SNAPSHOT_BEGIN -->", "<!-- BENCH_SNAPSHOT_END -->", snapshot
-    )
     if "<!-- BENCH_HOSTS_BEGIN -->" in text:
         text = _replace_block(
             text, "<!-- BENCH_HOSTS_BEGIN -->", "<!-- BENCH_HOSTS_END -->", hosts
@@ -250,6 +256,10 @@ def main() -> int:
     text = _replace_block(
         text, "<!-- BENCH_QUICK_BEGIN -->", "<!-- BENCH_QUICK_END -->", quick
     )
+    if "<!-- BENCH_ML_BEGIN -->" in text:
+        text = _replace_block(
+            text, "<!-- BENCH_ML_BEGIN -->", "<!-- BENCH_ML_END -->", ml
+        )
     args.docs.write_text(text, encoding="utf-8")
     concat_deficits.unlink(missing_ok=True)
     return 0

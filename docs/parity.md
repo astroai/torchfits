@@ -14,7 +14,7 @@ Status values:
 
 | Area | Status | Comparator / source | Evidence |
 |---|---:|---|---|
-| FITS image read/write | Supported | `astropy.io.fits`, `fitsio`, CFITSIO backend | `tests/test_api.py`, `tests/test_writing.py`, `tests/test_astropy_upstream_smoke.py`, `tests/test_fitsio_upstream_smoke.py` |
+| FITS IMAGE HDU → tensor read/write | Supported | `astropy.io.fits`, `fitsio`, CFITSIO backend | `tests/test_api.py`, `tests/test_writing.py`, `tests/test_astropy_upstream_smoke.py`, `tests/test_fitsio_upstream_smoke.py` |
 | Multi-extension FITS files | Supported | `astropy.io.fits` HDUList workflows | `tests/test_hdu.py`, `tests/test_astropy_upstream_smoke.py` |
 | FITS headers and cards | Supported | Astropy/fitsio header reads and torchfits `Header` | `tests/test_header_parser.py`, `tests/test_complex_header.py`, `tests/test_astropy_upstream_smoke.py`, `tests/test_fitsio_upstream_smoke.py` |
 | Checksums | Supported | fitsio/CFITSIO checksum workflows | `tests/test_checksum.py`, `tests/test_fitsio_upstream_smoke.py`, `tests/test_astropy_upstream_smoke.py` |
@@ -41,9 +41,6 @@ Status values:
 | Full Astropy API parity | Out of scope | Astropy package surface | torchfits targets common FITS I/O workflows only |
 | Full fitsio API parity | Out of scope | fitsio package surface | torchfits targets common FITS I/O workflows only |
 | Full CFITSIO API parity | Out of scope | CFITSIO C API | torchfits exposes selected PyTorch-native behavior only |
-
-Sky-domain packages (WCS, HEALPix, sphere geometry, simulation orchestration)
-are outside torchfits.
 
 ## Why full parity is not claimed
 
@@ -77,6 +74,5 @@ columns.
 
 ## Benchmark scope
 
-Benchmarks compare FITS image I/O and FITS table I/O against
-`astropy.io.fits` and `fitsio`. WCS, sphere, HEALPix, and sky-domain benchmark
-suites are not torchfits benchmarks.
+Benchmarks compare FITS **tensor** I/O (IMAGE HDUs, 1D–4D) and FITS **table**
+I/O against `astropy.io.fits` and `fitsio`.

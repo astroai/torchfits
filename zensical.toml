@@ -44,7 +44,6 @@ nav = [
   {"Migration" = [
     "migration_astropy.md",
     "migration_fitsio.md",
-    "migration_datasets.md",
   ]},
   {"Project" = [
     "changelog.md",
@@ -57,8 +56,8 @@ nav = [
 [project.theme]
 name = "material"
 custom_dir = "overrides"
-logo = "torchfits-logo.png"
-favicon = "torchfits-logo.png"
+logo = "torchfits-logo-mark.png"
+favicon = "torchfits-logo-mark.png"
 features = [
   "navigation.path",
   "navigation.top",
@@ -97,6 +96,9 @@ generic = true
 [project.markdown_extensions.pymdownx.details]
 
 [project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" }
+]
 
 [project.markdown_extensions.pymdownx.tabbed]
 alternate_style = true

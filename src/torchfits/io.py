@@ -131,7 +131,7 @@ def _resolve_image_mmap(
 
 def read(
     path: Any,
-    hdu: Any = None,
+    hdu: Any = 0,
     device: str = "cpu",
     mmap: bool | str = "auto",
     mode: str = "auto",
@@ -143,6 +143,9 @@ def read(
 
     Returns a ``torch.Tensor`` (images) or ``dict[str, torch.Tensor]``
     (tables as column tensors), optionally with the FITS header.
+
+    Default ``hdu=0`` (primary). Pass ``hdu=None`` or ``hdu="auto"`` to
+    autodetect the first image/table payload HDU.
 
     For dataframe workflows (Arrow / ``where=`` / Polars), prefer
     :func:`torchfits.table.read` or :func:`torchfits.table.read_polars`.
@@ -186,7 +189,7 @@ def read_tensor(
     fallback_get_header: Any = None,
 ) -> Any:
     """Read an N-dimensional array directly to a PyTorch Tensor."""
-    fallback = fallback_get_header if fallback_get_header is not None else get_header
+    fallback = fallback_get_header if fallback_get_header is not None else read_header
     return _read_image_impl(
         path=path,
         hdu=hdu,
@@ -345,9 +348,27 @@ def delete_hdu(
     return _delete_hdu_impl(path, hdu, compress=compress)
 
 
-def get_header(path: str, hdu: Any = None) -> Any:
-    """Read the FITS header for the given HDU as a Header dict-like object."""
+def read_header(path: str, hdu: Any = 0) -> Any:
+    """Read the FITS header for the given HDU as a Header dict-like object.
+
+    Default ``hdu=0``. Pass ``hdu=None`` or ``hdu="auto"`` to autodetect.
+    """
     return _get_header_impl(path, hdu, autodetect_hdu=_autodetect_hdu_impl)
+
+
+def get_header(path: str, hdu: Any = 0) -> Any:
+    """Read the FITS header for the given HDU as a Header dict-like object.
+
+    .. deprecated:: 1.0.0rc1
+        Prefer :func:`read_header`. This alias remains for compatibility and
+        emits :class:`DeprecationWarning`.
+    """
+    warnings.warn(
+        "torchfits.get_header is deprecated; use torchfits.read_header.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return read_header(path, hdu)
 
 
 def _write_header_cards_if_supported(*args: Any, **kwargs: Any) -> None:
@@ -376,7 +397,7 @@ def stream_table(
         stacklevel=2,
     )
     return _stream_table_impl(
-        get_header,
+        read_header,
         file_path,
         hdu=hdu,
         columns=columns,
@@ -407,9 +428,24 @@ def read_batch(
     )
 
 
-def get_batch_info(file_paths: list[str]) -> Any:
+def read_batch_info(file_paths: list[str]) -> Any:
     """Inspect shape and dtype consistency across files for batched reading."""
     return _get_batch_info_impl(file_paths)
+
+
+def get_batch_info(file_paths: list[str]) -> Any:
+    """Inspect shape and dtype consistency across files for batched reading.
+
+    .. deprecated:: 1.0.0rc1
+        Prefer :func:`read_batch_info`. This alias remains for compatibility and
+        emits :class:`DeprecationWarning`.
+    """
+    warnings.warn(
+        "torchfits.get_batch_info is deprecated; use torchfits.read_batch_info.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return read_batch_info(file_paths)
 
 
 def get_cache_performance() -> Any:
@@ -524,6 +560,8 @@ __all__ = [
     "get_batch_info",
     "get_cache_performance",
     "get_header",
+    "read_batch_info",
+    "read_header",
     "insert_hdu",
     "open",
     "open_subset_reader",

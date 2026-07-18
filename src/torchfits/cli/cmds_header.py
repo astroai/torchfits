@@ -1,4 +1,4 @@
-"""``torchfits header`` — dump FITS header cards or fitsort-style tables."""
+"""``torchfits header`` — dump FITS header cards or keyword tables."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from .common import (
     EXIT_OK,
     UsageError,
     add_emit_format_args,
+    add_hdu_arg,
+    add_keyword_arg,
     emit_records,
     header_extname,
     iter_file_hdu_pairs,
@@ -25,17 +27,17 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument(
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
-    parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
-    parser.add_argument(
-        "--keyword",
-        action="append",
-        dest="keywords",
-        help="filter to keyword(s); repeat for multiple; required with --fitsort",
+    add_hdu_arg(parser)
+    add_keyword_arg(
+        parser,
+        help="filter to keyword(s); repeat for multiple; required with --keyword-table",
     )
     parser.add_argument(
+        "--keyword-table",
         "--fitsort",
         action="store_true",
-        help="print a table of selected keywords (qfits fitsort idiom)",
+        dest="keyword_table",
+        help="print a table of selected keywords (--fitsort is a deprecated alias)",
     )
     add_emit_format_args(parser)
     parser.set_defaults(func=run)
@@ -67,7 +69,7 @@ def _card_records(
     ]
 
 
-def _fitsort_record(
+def _keyword_table_record(
     path: str, index: int, header: Any, *, keywords: list[str]
 ) -> dict[str, Any]:
     lookup = _header_lookup(header)
@@ -81,7 +83,7 @@ def _fitsort_record(
     return record
 
 
-def _print_fitsort_table(records: list[dict[str, Any]], keywords: list[str]) -> None:
+def _print_keyword_table(records: list[dict[str, Any]], keywords: list[str]) -> None:
     keys = ["file", "hdu", "name", *[key.upper() for key in keywords]]
     widths = {key: len(key) for key in keys}
     rows: list[dict[str, str]] = []
@@ -101,24 +103,26 @@ def _print_fitsort_table(records: list[dict[str, Any]], keywords: list[str]) -> 
 def run(args: argparse.Namespace) -> int:
     paths = resolve_paths(args.paths, use_stdin=args.stdin)
     keywords = list(args.keywords or [])
-    if args.fitsort and not keywords:
-        raise UsageError("--fitsort requires at least one --keyword")
+    if args.keyword_table and not keywords:
+        raise UsageError("--keyword-table requires at least one --keyword")
 
     records: list[dict[str, Any]] = []
     for path, index, hdu in iter_file_hdu_pairs(paths, args.hdu):
         header = (
-            hdu.header if hasattr(hdu, "header") else torchfits.get_header(path, index)
+            hdu.header if hasattr(hdu, "header") else torchfits.read_header(path, index)
         )
-        if args.fitsort:
-            records.append(_fitsort_record(path, index, header, keywords=keywords))
+        if args.keyword_table:
+            records.append(
+                _keyword_table_record(path, index, header, keywords=keywords)
+            )
         else:
             records.extend(
                 _card_records(path, index, header, keywords=keywords or None)
             )
 
     fmt = resolve_emit_format(args)
-    if args.fitsort and fmt == "text":
-        _print_fitsort_table(records, keywords)
+    if args.keyword_table and fmt == "text":
+        _print_keyword_table(records, keywords)
         return EXIT_OK
 
     if fmt == "text":

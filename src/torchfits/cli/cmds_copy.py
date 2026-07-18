@@ -6,20 +6,21 @@ import argparse
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError
+from .common import EXIT_OK, IoError, UsageError, add_out_arg, resolve_out_path
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser("copy", help="copy FITS file(s) preserving HDUs")
     parser.add_argument("input", help="input FITS path")
-    parser.add_argument("output", help="output FITS path")
+    add_out_arg(parser, help="output FITS path")
     parser.set_defaults(func=run)
 
 
 def run(args: argparse.Namespace) -> int:
+    output = resolve_out_path(args)
     try:
         with torchfits.open(args.input) as hdul:
-            hdul.write(args.output, overwrite=True)
+            hdul.write(output, overwrite=True)
     except UsageError:
         raise
     except Exception as exc:

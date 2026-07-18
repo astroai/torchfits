@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <cstdint>
+#include <cstring>
 #include <ATen/Parallel.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -63,24 +64,22 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
         return file.read_tensor(hdu_num, use_mmap);
     }
 
-    fitsfile* fptr = get_or_open_cached(path);
-    if (!fptr) {
+    // Private per-call handle (CFITSIO §4 Option A): never share one fitsfile*
+    // across threads. SharedReadMeta + shared raw fd remain the shared caches.
+    fitsfile* fptr = nullptr;
+    int open_status = d::open_fits_readonly(&fptr, path);
+    if (open_status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
     }
     FitsHandleGuard guard;
-    guard.path = path;
     guard.fptr = fptr;
-    guard.cached = true;
+    guard.cached = false;  // fits_close_file on exit
 
     int status = 0;
     const int target_hdu = hdu_num + 1;
-    int current_hdu = 0;
-    fits_get_hdu_num(fptr, &current_hdu);
-    if (current_hdu != target_hdu) {
-        fits_movabs_hdu(fptr, target_hdu, nullptr, &status);
-        if (status != 0) {
-            throw std::runtime_error("Could not move to HDU");
-        }
+    fits_movabs_hdu(fptr, target_hdu, nullptr, &status);
+    if (status != 0) {
+        throw std::runtime_error("Could not move to HDU");
     }
 
     auto meta = d::get_shared_meta_for_path(path);
@@ -114,7 +113,7 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
     };
     static thread_local std::unordered_map<LocalKey, LocalHduMeta, LocalKeyHash> tl_cache;
 
-    LocalKey key{meta ? meta->uid : 0, hdu_num};
+    LocalKey key{meta->uid, hdu_num};
     LocalHduMeta* local = nullptr;
     {
         auto it = tl_cache.find(key);
@@ -330,14 +329,14 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
         }
     }
 
-    fitsfile* fptr = get_or_open_cached(path);
-    if (!fptr) {
+    fitsfile* fptr = nullptr;
+    int open_status = d::open_fits_readonly(&fptr, path);
+    if (open_status != 0 || !fptr) {
         throw std::runtime_error("Could not open FITS file: " + path);
     }
     FitsHandleGuard guard;
-    guard.path = path;
     guard.fptr = fptr;
-    guard.cached = true;
+    guard.cached = false;  // fits_close_file on exit
 
     int status = 0;
     fits_movnam_hdu(
@@ -813,6 +812,72 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
 // ---------------------------------------------------------------------------
 // write_table_hdu
 // ---------------------------------------------------------------------------
+
+namespace {
+
+bool ndarray_is_c_contiguous(const nb::ndarray<>& t) {
+    // Signed math: a negative stride must compare unequal to a positive
+    // expected stride, never wrap to a huge size_t that looks contiguous.
+    std::ptrdiff_t expect = 1;
+    for (size_t d = t.ndim(); d-- > 0;) {
+        const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(t.shape(d));
+        if (n <= 1) {
+            continue;
+        }
+        if (static_cast<std::ptrdiff_t>(t.stride(d)) != expect) {
+            return false;
+        }
+        expect *= n;
+    }
+    return true;
+}
+
+void* ensure_c_contiguous_ndarray(
+    nb::ndarray<>& t, long nelements, std::vector<uint8_t>& buf
+) {
+    const size_t item = (static_cast<size_t>(t.dtype().bits) + 7) / 8;
+    if (ndarray_is_c_contiguous(t)) {
+        return t.data();
+    }
+    buf.resize(static_cast<size_t>(nelements) * item);
+    auto* dst = buf.data();
+    const auto* base = static_cast<const uint8_t*>(t.data());
+    // Strides are signed byte offsets: negative strides address earlier bytes,
+    // so use ptrdiff_t (never size_t) to avoid reading out of bounds.
+    if (t.ndim() == 1) {
+        const std::ptrdiff_t s0 =
+            static_cast<std::ptrdiff_t>(t.stride(0)) * static_cast<std::ptrdiff_t>(item);
+        for (long i = 0; i < nelements; ++i) {
+            std::memcpy(dst + static_cast<size_t>(i) * item,
+                        base + static_cast<std::ptrdiff_t>(i) * s0, item);
+        }
+        return dst;
+    }
+    if (t.ndim() == 2) {
+        const size_t n0 = static_cast<size_t>(t.shape(0));
+        const size_t n1 = static_cast<size_t>(t.shape(1));
+        const std::ptrdiff_t s0 =
+            static_cast<std::ptrdiff_t>(t.stride(0)) * static_cast<std::ptrdiff_t>(item);
+        const std::ptrdiff_t s1 =
+            static_cast<std::ptrdiff_t>(t.stride(1)) * static_cast<std::ptrdiff_t>(item);
+        size_t out = 0;
+        for (size_t i0 = 0; i0 < n0; ++i0) {
+            for (size_t i1 = 0; i1 < n1; ++i1) {
+                std::memcpy(dst + out * item,
+                            base + static_cast<std::ptrdiff_t>(i0) * s0
+                                 + static_cast<std::ptrdiff_t>(i1) * s1, item);
+                ++out;
+            }
+        }
+        return dst;
+    }
+    throw std::runtime_error(
+        "non-contiguous table column with ndim>2; call contiguous() before write"
+    );
+}
+
+}  // namespace
+
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii) {
     struct ColumnWriteInfo {
         std::string name;
@@ -1140,38 +1205,27 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     }
 
     int num_cols = static_cast<int>(columns.size());
-    char** ttype = new char*[num_cols];
-    char** tform = new char*[num_cols];
-    char** tunit = new char*[num_cols];
+    std::vector<std::string> ttype_store(static_cast<size_t>(num_cols));
+    std::vector<std::string> tform_store(static_cast<size_t>(num_cols));
+    std::vector<std::string> tunit_store(static_cast<size_t>(num_cols));
+    std::vector<char*> ttype(static_cast<size_t>(num_cols));
+    std::vector<char*> tform(static_cast<size_t>(num_cols));
+    std::vector<char*> tunit(static_cast<size_t>(num_cols));
 
     for (int i = 0; i < num_cols; ++i) {
         const auto& col = columns[i];
-        ttype[i] = new char[col.name.length() + 1];
-        strncpy(ttype[i], col.name.c_str(), col.name.length());
-        ttype[i][col.name.length()] = '\0';
-
-        tform[i] = new char[col.tform.length() + 1];
-        strncpy(tform[i], col.tform.c_str(), col.tform.length());
-        tform[i][col.tform.length()] = '\0';
-
-        const std::string unit = col.tunit;
-        tunit[i] = new char[unit.length() + 1];
-        strncpy(tunit[i], unit.c_str(), unit.length());
-        tunit[i][unit.length()] = '\0';
+        ttype_store[static_cast<size_t>(i)] = col.name;
+        tform_store[static_cast<size_t>(i)] = col.tform;
+        tunit_store[static_cast<size_t>(i)] = col.tunit;
+        ttype[static_cast<size_t>(i)] = ttype_store[static_cast<size_t>(i)].data();
+        tform[static_cast<size_t>(i)] = tform_store[static_cast<size_t>(i)].data();
+        tunit[static_cast<size_t>(i)] = tunit_store[static_cast<size_t>(i)].data();
     }
 
     fits_create_tbl(fptr, is_ascii ? ASCII_TBL : BINARY_TBL, num_rows, num_cols,
-                    ttype, tform, tunit, "Table", &status);
+                    ttype.data(), tform.data(), tunit.data(), "Table", &status);
 
     if (status != 0) {
-        for (int j = 0; j < num_cols; j++) {
-            delete[] ttype[j];
-            delete[] tform[j];
-            delete[] tunit[j];
-        }
-        delete[] ttype;
-        delete[] tform;
-        delete[] tunit;
         throw std::runtime_error("Failed to create table");
     }
 
@@ -1242,7 +1296,10 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 }
                 fits_write_col(fptr, col.datatype, i + 1, 1, 1, nelements, logical.data(), &status);
             } else {
-                fits_write_col(fptr, col.datatype, i + 1, 1, 1, nelements, tensor.data(), &status);
+                nb::ndarray<> tensor = col.fixed;
+                std::vector<uint8_t> contig_buf;
+                void* data_ptr = ensure_c_contiguous_ndarray(tensor, nelements, contig_buf);
+                fits_write_col(fptr, col.datatype, i + 1, 1, 1, nelements, data_ptr, &status);
             }
         }
     }
@@ -1257,8 +1314,13 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             std::string val = nb::cast<std::string>(item.second);
             val = d::sanitize_fits_string(val);
             fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &status);
-        } else if (nb::isinstance<int>(item.second)) {
-            long long val = nb::cast<long long>(item.second);
+        } else if (PyLong_Check(item.second.ptr())) {
+            int overflow = 0;
+            long long val = PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
+            if (overflow != 0 || PyErr_Occurred()) {
+                PyErr_Clear();
+                throw std::runtime_error("FITS header integer out of long long range: " + key);
+            }
             fits_update_key(fptr, TLONGLONG, key.c_str(), &val, nullptr, &status);
         } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
             double val = nb::cast<double>(item.second);
@@ -1293,15 +1355,6 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             fits_update_key(fptr, TSTRING, ("TDIM" + std::to_string(i + 1)).c_str(), (void*)tdim.c_str(), nullptr, &status);
         }
     }
-
-    for (int j = 0; j < num_cols; j++) {
-        delete[] ttype[j];
-        delete[] tform[j];
-        delete[] tunit[j];
-    }
-    delete[] ttype;
-    delete[] tform;
-    delete[] tunit;
 
     if (status != 0) {
         throw std::runtime_error("Failed to write table data");
@@ -1864,8 +1917,13 @@ void bind_fits(nb::module_& m) {
             } else if (nb::isinstance<bool>(value)) {
                 int val = nb::cast<bool>(value) ? 1 : 0;
                 fits_update_key(fptr, TLOGICAL, key.c_str(), &val, comment_ptr, &key_status);
-            } else if (nb::isinstance<int>(value)) {
-                long long val = nb::cast<long long>(value);
+            } else if (PyLong_Check(value.ptr())) {
+                int overflow = 0;
+                long long val = PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
+                if (overflow != 0 || PyErr_Occurred()) {
+                    PyErr_Clear();
+                    throw std::runtime_error("FITS header integer out of long long range: " + key);
+                }
                 fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment_ptr, &key_status);
             } else if (nb::isinstance<float>(value) || nb::isinstance<double>(value)) {
                 double val = nb::cast<double>(value);

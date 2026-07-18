@@ -12,6 +12,7 @@ from .common import (
     EXIT_OK,
     IoError,
     add_emit_format_args,
+    add_hdu_arg,
     emit_records,
     header_extname,
     hdu_type_name,
@@ -27,7 +28,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument(
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
-    parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
+    add_hdu_arg(parser)
     add_emit_format_args(parser)
     parser.set_defaults(func=run)
 

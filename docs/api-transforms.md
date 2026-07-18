@@ -14,9 +14,21 @@ Header-aware preprocessing for FITS images, spectra, and tables.
 - One-off arithmetic on a single tensor — plain PyTorch is enough
 - Catalog filtering — use `table.read(..., where=)` (C++ pushdown), not transforms
 
-Wire a pipeline into training with `FitsImageDataset(..., transform=pipeline)`
+Wire a pipeline into training with `FitsTensorDataset(..., transform=pipeline)`
 or call it on a tensor from `read_tensor`. See [Data module](api-data.md) for
 when to introduce a Dataset / `make_loader`.
+
+!!! note "1.0 transform boundary"
+    **Core (kept):** stretches, zscale / robust norms, FITS BSCALE / null
+    hygiene, basic continuum divide/subtract.
+    **Advanced (frozen for 1.0):** ALS / alpha-shape / BandMath / PhaseFold /
+    wavelet and specialty continuum estimators stay in-tree but are not expanded
+    this release — candidates to move to torchsky later. Do not treat the
+    advanced set as a growing public surface mid-rc.
+
+!!! note "RGB"
+    1.0 ships Lupton asinh RGB via `torchfits.transforms.lupton_rgb` (same as
+    `torchfits convert … --to png`). Richer multi-band variants → **1.1**.
 
 All transforms implement the `FITSTransform` callable protocol
 (`forward` / `inverse` / `__call__`). They are **not**

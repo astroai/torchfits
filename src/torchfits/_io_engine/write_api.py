@@ -31,10 +31,15 @@ def _invalidate_path_caches(path: str) -> None:
 
 
 def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
-    """Move image tensors to CPU for CFITSIO-backed writes (GPU tensors are not supported)."""
+    """Move image tensors to CPU and make them contiguous for CFITSIO writes.
+
+    ``fits_write_img`` consumes ``nelements`` contiguous elements, so a sliced,
+    transposed, or negative-stride view must be materialized first (torch handles
+    any ndim, unlike the C++ 1D/2D copy helper). GPU tensors are unsupported.
+    """
     if tensor.device.type != "cpu":
-        return tensor.detach().cpu()
-    return tensor
+        tensor = tensor.detach().cpu()
+    return tensor.contiguous()
 
 
 def _merge_fits_write_header(
@@ -75,6 +80,26 @@ def _image_hdu_dict_for_fits_write(
     if header or extra_header:
         hdu_dict["header"] = _merge_fits_write_header(header, extra_header)
     return hdu_dict
+
+
+def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
+    """True for a leading empty primary HDU the compressed writer re-creates itself.
+
+    The compressed writer always emits its own empty primary at HDU 0, so a
+    leading ``NAXIS=0`` primary in the input must be skipped both when writing and
+    when replaying per-HDU header cards; otherwise the output HDU indices shift by
+    one and header-card replay runs off the end ("Could not move to HDU").
+    """
+    if idx != 0:
+        return False
+    hdr = getattr(hdu, "header", {}) or {}
+    try:
+        naxis = int(hdr.get("NAXIS", -1))
+    except Exception:
+        naxis = -1
+    if naxis != 0:
+        return False
+    return not str(hdr.get("XTENSION", "")).strip().upper()
 
 
 def _write_header_cards_if_supported(
@@ -201,10 +226,14 @@ def write(
             _write_hdus_with_optional_compression(
                 path, compressed_hdus, compress=compress
             )
-            for out_hdu, item_hdu in enumerate(compressed_hdus, start=1):
+            out_hdu = 1
+            for idx, item_hdu in enumerate(compressed_hdus):
+                if _is_skippable_empty_primary(idx, item_hdu):
+                    continue
                 _write_header_cards_if_supported(
                     path, out_hdu, getattr(item_hdu, "header", None)
                 )
+                out_hdu += 1
             return
 
         if isinstance(data, HDUList):
@@ -728,20 +757,23 @@ def _sanitize_table_header_for_write(
     return out
 
 
+class _TableWriteProxy:
+    __slots__ = ("_raw_data", "header", "_schema")
+
+    def __init__(
+        self,
+        raw_data: Any,
+        header: Header,
+        schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        self._raw_data = raw_data
+        self.header = header
+        self._schema = schema
+
+
 def _write_hdus_uncompressed(path: str, hdus: List[Any], overwrite: bool) -> None:
     """Write an HDU sequence through the uncompressed C++ writer."""
     import torchfits._C as cpp
-
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
 
     payload: List[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007
@@ -796,17 +828,6 @@ def _write_hdus_with_optional_compression(
 
     import torchfits._C as cpp
 
-    class _TableWriteProxy:
-        def __init__(
-            self,
-            raw_data: Any,
-            header: Header,
-            schema: Optional[Dict[str, Dict[str, Any]]] = None,
-        ):
-            self._raw_data = raw_data
-            self.header = header
-            self._schema = schema
-
     payload: list[Any] = []
     for idx, hdu in enumerate(hdus):  # noqa: B007
         if isinstance(hdu, TableHDURef):
@@ -841,17 +862,8 @@ def _write_hdus_with_optional_compression(
 
         # A compressed FITS file uses an empty primary HDU followed by compressed
         # image extensions; skip this placeholder to avoid duplicating it.
-        naxis_value = getattr(hdu, "header", {}).get("NAXIS", -1)
-        try:
-            naxis = int(naxis_value)
-        except Exception:
-            naxis = -1
-        if idx == 0 and naxis == 0:
-            xtension = (
-                str(getattr(hdu, "header", {}).get("XTENSION", "")).strip().upper()
-            )
-            if not xtension:
-                continue
+        if _is_skippable_empty_primary(idx, hdu):
+            continue
 
         hdu_dict = _image_hdu_dict_for_fits_write(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)

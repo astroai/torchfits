@@ -8,7 +8,7 @@ import torch
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError
+from .common import EXIT_OK, IoError, UsageError, add_hdu_arg
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -17,8 +17,8 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     parser.add_argument("input", help="input FITS image path")
     parser.add_argument("--name", required=True, help="transform class name")
-    parser.add_argument("--hdu", type=int, default=0, help="source HDU index")
-    parser.add_argument("--out", required=True, help="output FITS path")
+    add_hdu_arg(parser, type=int, default=0, help="source HDU index")
+    parser.add_argument("-o", "--out", required=True, help="output FITS path")
     parser.set_defaults(func=run)
 
 
@@ -38,7 +38,7 @@ def run(args: argparse.Namespace) -> int:
         # Stretches/norms use float ops; integer HDUs must be promoted first.
         if not tensor.is_floating_point():
             tensor = tensor.float()
-        header = torchfits.get_header(args.input, args.hdu)
+        header = torchfits.read_header(args.input, args.hdu)
         result = transform(tensor)
         if not isinstance(result, torch.Tensor):
             raise IoError(f"{args.name} did not return a tensor")

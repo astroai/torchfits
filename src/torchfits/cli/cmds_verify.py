@@ -11,6 +11,7 @@ from .common import (
     EXIT_VERIFY_FAIL,
     IoError,
     add_emit_format_args,
+    add_hdu_arg,
     emit_records,
     header_extname,
     resolve_emit_format,
@@ -25,7 +26,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument(
         "--stdin", action="store_true", help="read paths from stdin (one per line)"
     )
-    parser.add_argument("--hdu", help="comma-separated HDU indices (default: all)")
+    add_hdu_arg(parser)
     add_emit_format_args(parser)
     parser.set_defaults(func=run)
 
@@ -42,7 +43,7 @@ def run(args: argparse.Namespace) -> int:
             raise IoError(f"{path}: {exc}") from exc
         for index in indices:
             result = torchfits.verify_checksums(path, hdu=index)
-            header = torchfits.get_header(path, index)
+            header = torchfits.read_header(path, index)
             ok = bool(result.get("ok"))
             status_str = str(result.get("status", "fail"))
             all_ok = all_ok and ok

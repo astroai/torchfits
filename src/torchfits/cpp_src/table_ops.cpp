@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
@@ -17,6 +18,83 @@
 #include "fits_rw.h"
 
 namespace nb = nanobind;
+
+namespace {
+
+bool ndarray_is_c_contiguous(const nb::ndarray<>& t) {
+    // Signed math: a negative stride must compare unequal to a positive
+    // expected stride, never wrap to a huge size_t that looks contiguous.
+    std::ptrdiff_t expect = 1;
+    for (size_t d = t.ndim(); d-- > 0;) {
+        const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(t.shape(d));
+        if (n <= 1) {
+            continue;
+        }
+        if (static_cast<std::ptrdiff_t>(t.stride(d)) != expect) {
+            return false;
+        }
+        expect *= n;
+    }
+    return true;
+}
+
+void* ensure_c_contiguous_ndarray(
+    nb::ndarray<>& t, long nelements, std::vector<uint8_t>& buf
+) {
+    const size_t item = (static_cast<size_t>(t.dtype().bits) + 7) / 8;
+    if (ndarray_is_c_contiguous(t)) {
+        return t.data();
+    }
+    buf.resize(static_cast<size_t>(nelements) * item);
+    auto* dst = buf.data();
+    const auto* base = static_cast<const uint8_t*>(t.data());
+    // Strides are signed byte offsets: negative strides address earlier bytes,
+    // so use ptrdiff_t (never size_t) to avoid reading out of bounds.
+    if (t.ndim() == 1) {
+        const std::ptrdiff_t s0 =
+            static_cast<std::ptrdiff_t>(t.stride(0)) * static_cast<std::ptrdiff_t>(item);
+        for (long i = 0; i < nelements; ++i) {
+            std::memcpy(
+                dst + static_cast<size_t>(i) * item,
+                base + static_cast<std::ptrdiff_t>(i) * s0,
+                item
+            );
+        }
+        return dst;
+    }
+    if (t.ndim() == 2) {
+        const size_t n0 = static_cast<size_t>(t.shape(0));
+        const size_t n1 = static_cast<size_t>(t.shape(1));
+        const std::ptrdiff_t s0 =
+            static_cast<std::ptrdiff_t>(t.stride(0)) * static_cast<std::ptrdiff_t>(item);
+        const std::ptrdiff_t s1 =
+            static_cast<std::ptrdiff_t>(t.stride(1)) * static_cast<std::ptrdiff_t>(item);
+        size_t out = 0;
+        for (size_t i0 = 0; i0 < n0; ++i0) {
+            for (size_t i1 = 0; i1 < n1; ++i1) {
+                std::memcpy(
+                    dst + out * item,
+                    base + static_cast<std::ptrdiff_t>(i0) * s0
+                         + static_cast<std::ptrdiff_t>(i1) * s1,
+                    item
+                );
+                ++out;
+            }
+        }
+        return dst;
+    }
+    throw std::runtime_error(
+        "non-contiguous table column with ndim>2; call contiguous() before write"
+    );
+}
+
+void rollback_inserted_rows(fitsfile* fptr, long start_row, long num_rows) {
+    int st = 0;
+    fits_delete_rows(fptr, start_row, num_rows, &st);
+    fits_close_file(fptr, &st);
+}
+
+}  // namespace
 
 void* open_table_reader(const char* filename, int hdu_num) {
     try {
@@ -130,6 +208,7 @@ long infer_num_rows_from_payload(nb::dict tensor_dict) {
 
 // forward decl: used by insert_rows below
 void update_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long start_row, long num_rows);
+void delete_rows(const char* filename, int hdu_num, long start_row, long num_rows);
 
 void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
     fitsfile* fptr;
@@ -160,13 +239,17 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
     start_row++;
 
     fits_insert_rows(fptr, start_row -1, num_rows, &status);
+    if (status != 0) {
+        fits_close_file(fptr, &status);
+        throw std::runtime_error("Failed to insert rows for append_rows");
+    }
 
     for (auto item : tensor_dict) {
         std::string col_name = nb::cast<std::string>(item.first);
         int colnum = 0;
         fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(col_name.c_str()), &colnum, &status);
         if (status != 0) {
-            fits_close_file(fptr, &status);
+            rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Column not found for append_rows: " + col_name);
         }
 
@@ -176,7 +259,7 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         long width = 0;
         fits_get_coltype(fptr, colnum, &typecode, &repeat, &width, &col_status);
         if (col_status != 0) {
-            fits_close_file(fptr, &status);
+            rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Failed to get column type for append_rows: " + col_name);
         }
 
@@ -184,37 +267,40 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             int base_type = -typecode;
             nb::handle obj = item.second;
             if (!(nb::isinstance<nb::list>(obj) || nb::isinstance<nb::tuple>(obj))) {
-                fits_close_file(fptr, &status);
+                rollback_inserted_rows(fptr, start_row, num_rows);
                 throw std::runtime_error("append_rows VLA column expects list/tuple for " + col_name);
             }
 
             nb::sequence seq = nb::cast<nb::sequence>(obj);
             long seq_len = static_cast<long>(nb::len(seq));
             if (seq_len != num_rows) {
-                fits_close_file(fptr, &status);
+                rollback_inserted_rows(fptr, start_row, num_rows);
                 throw std::runtime_error("append_rows column length mismatch for " + col_name);
             }
 
             for (long row = 0; row < num_rows; ++row) {
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
                 if (arr.ndim() > 1) {
-                    fits_close_file(fptr, &status);
+                    rollback_inserted_rows(fptr, start_row, num_rows);
                     throw std::runtime_error("append_rows VLA rows must be 1D for " + col_name);
                 }
                 long nelements = static_cast<long>(arr.size());
-                void* data_ptr = arr.size() ? arr.data() : nullptr;
+                std::vector<uint8_t> contig_buf;
+                void* data_ptr = nelements
+                    ? ensure_c_contiguous_ndarray(arr, nelements, contig_buf)
+                    : nullptr;
                 std::vector<unsigned char> logical;
 
                 if (base_type == TLOGICAL && nelements > 0) {
                     nb::dlpack::dtype dt = arr.dtype();
                     logical.resize(static_cast<size_t>(nelements));
                     if (dt.code == (uint8_t)nb::dlpack::dtype_code::Bool && dt.bits == 8) {
-                        const bool* src = static_cast<const bool*>(arr.data());
+                        const bool* src = static_cast<const bool*>(data_ptr);
                         for (long idx = 0; idx < nelements; ++idx) {
                             logical[static_cast<size_t>(idx)] = src[idx] ? 1 : 0;
                         }
                     } else {
-                        const uint8_t* src = static_cast<const uint8_t*>(arr.data());
+                        const uint8_t* src = static_cast<const uint8_t*>(data_ptr);
                         for (long idx = 0; idx < nelements; ++idx) {
                             logical[static_cast<size_t>(idx)] = src[idx] ? 1 : 0;
                         }
@@ -245,12 +331,12 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             } else if (nb::isinstance<nb::str>(obj) || nb::isinstance<nb::bytes>(obj)) {
                 values.push_back(nb::cast<std::string>(obj));
             } else {
-                fits_close_file(fptr, &status);
+                rollback_inserted_rows(fptr, start_row, num_rows);
                 throw std::runtime_error("append_rows string column expects list/tuple/str for " + col_name);
             }
 
             if (static_cast<long>(values.size()) != num_rows) {
-                fits_close_file(fptr, &status);
+                rollback_inserted_rows(fptr, start_row, num_rows);
                 throw std::runtime_error("append_rows column length mismatch for " + col_name);
             }
 
@@ -291,25 +377,26 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             rows = static_cast<long>(tensor.shape(0));
             repeat_vals = static_cast<long>(tensor.shape(1));
         } else {
-            fits_close_file(fptr, &status);
+            rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("append_rows only supports 1D/2D columns for " + col_name);
         }
 
         if (rows != num_rows) {
-            fits_close_file(fptr, &status);
+            rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("append_rows column length mismatch for " + col_name);
         }
 
-        void* data_ptr = tensor.data();
+        long nelements = num_rows * repeat_vals;
+        std::vector<uint8_t> contig_buf;
+        void* data_ptr = ensure_c_contiguous_ndarray(tensor, nelements, contig_buf);
         int fits_type = 0;
         std::vector<unsigned char> logical_buffer;
 
         nb::dlpack::dtype dt = tensor.dtype();
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::Bool && dt.bits == 8) {
             fits_type = TLOGICAL;
-            long nelements = rows * repeat_vals;
             logical_buffer.resize(static_cast<size_t>(nelements));
-            const bool* src = static_cast<const bool*>(tensor.data());
+            const bool* src = static_cast<const bool*>(data_ptr);
             for (long idx = 0; idx < nelements; ++idx) {
                 logical_buffer[static_cast<size_t>(idx)] = src[idx] ? 1 : 0;
             }
@@ -331,19 +418,18 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Complex && dt.bits == 128) {
             fits_type = TDBLCOMPLEX;
         } else {
-            fits_close_file(fptr, &status);
+            rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Unsupported dtype for append_rows");
         }
 
-        long nelements = num_rows * repeat_vals;
         fits_write_col(fptr, fits_type, colnum, start_row, 1, nelements, data_ptr, &status);
     }
 
-    fits_close_file(fptr, &status);
-
     if (status != 0) {
+        rollback_inserted_rows(fptr, start_row, num_rows);
         throw std::runtime_error("Failed to append rows to FITS table");
     }
+    fits_close_file(fptr, &status);
 }
 
 void insert_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long start_row) {
@@ -391,7 +477,17 @@ void insert_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long s
     }
 
     // Reuse the existing typed write path to populate inserted rows.
-    update_rows(filename, hdu_num, tensor_dict, start_row, num_rows);
+    // Best-effort rollback if column writes fail after the structural insert.
+    try {
+        update_rows(filename, hdu_num, tensor_dict, start_row, num_rows);
+    } catch (...) {
+        try {
+            delete_rows(filename, hdu_num, start_row, num_rows);
+        } catch (...) {
+            // ponytail: CFITSIO status may already be poisoned; prefer original error
+        }
+        throw;
+    }
 }
 
 void delete_rows(const char* filename, int hdu_num, long start_row, long num_rows) {
@@ -767,16 +863,17 @@ void update_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long s
             throw std::runtime_error("update_rows column length mismatch for " + col_name);
         }
 
-        void* data_ptr = tensor.data();
+        long nelements = num_rows * repeat_vals;
+        std::vector<uint8_t> contig_buf;
+        void* data_ptr = ensure_c_contiguous_ndarray(tensor, nelements, contig_buf);
         int fits_type = 0;
         std::vector<unsigned char> logical_buffer;
 
         nb::dlpack::dtype dt = tensor.dtype();
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::Bool && dt.bits == 8) {
             fits_type = TLOGICAL;
-            long nelements = rows * repeat_vals;
             logical_buffer.resize(static_cast<size_t>(nelements));
-            const bool* src = static_cast<const bool*>(tensor.data());
+            const bool* src = static_cast<const bool*>(data_ptr);
             for (long idx = 0; idx < nelements; ++idx) {
                 logical_buffer[static_cast<size_t>(idx)] = src[idx] ? 1 : 0;
             }
@@ -802,7 +899,6 @@ void update_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long s
             throw std::runtime_error("Unsupported dtype for update_rows");
         }
 
-        long nelements = num_rows * repeat_vals;
         fits_write_col(fptr, fits_type, colnum, start_row, 1, nelements, data_ptr, &status);
     }
 

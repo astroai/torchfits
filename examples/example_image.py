@@ -36,8 +36,8 @@ def main() -> None:
         print(f"read: OBJECT={header['OBJECT']}, EXPTIME={header['EXPTIME']}")
 
         # Header without loading pixels
-        hdr = torchfits.get_header(path, hdu=0)
-        print(f"get_header: NAXIS={hdr['NAXIS']}, BITPIX={hdr['BITPIX']}")
+        hdr = torchfits.read_header(path, hdu=0)
+        print(f"read_header: NAXIS={hdr['NAXIS']}, BITPIX={hdr['BITPIX']}")
 
         # Write tensor back to FITS
         scaled = data * 2.0

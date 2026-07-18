@@ -95,6 +95,9 @@ def _apply_unsigned_offset(
         return (data.to(torch.int32) + offset).to(torch.uint16)
     if dtype == torch.uint32 and data.dtype == torch.int32:
         return (data.to(torch.int64) + offset).to(torch.uint32)
+    if dtype == torch.int8 and data.dtype == torch.uint8 and offset == -128:
+        # FITS signed-byte (BZERO=-128): XOR path matches _apply_scale_on_device.
+        return (data ^ 0x80).view(torch.int8)
     return data.to(torch.int64).add_(offset).to(dtype=dtype)
 
 

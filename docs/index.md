@@ -5,39 +5,50 @@ title: FITS I/O for PyTorch
 
 <div class="tf-below" markdown>
 
-# torchfits
-
-## Start here
+## Browse
 
 <ul class="tf-paths" markdown>
 <li markdown>
 [Install](install.md)
 
-Wheels for Linux and macOS. PyTorch 2.10.
+Wheels, source builds, GPU / accelerator notes.
 </li>
 <li markdown>
 [Quick start](quickstart.md)
 
-First `read_tensor`, table filter, DataLoader.
+`read_tensor`, table filters, DataLoader.
 </li>
 <li markdown>
 [CLI](cli.md)
 
-`info`, `header`, `verify`, `cutout`, and more.
+`info`, `header`, `verify`, `cutout`, …
 </li>
 <li markdown>
-[API reference](api.md)
+[API](api.md)
 
-I/O, tables, datasets, transforms.
+Core I/O, tables, datasets, transforms.
+</li>
+<li markdown>
+[Examples](examples.md)
+
+Runnable scripts and transform galleries.
+</li>
+<li markdown>
+[Benchmarks](benchmarks.md)
+
+Methodology and scorecards.
+</li>
+<li markdown>
+[Migration](migration_astropy.md)
+
+From Astropy / fitsio.
+</li>
+<li markdown>
+[Parity](parity.md)
+
+What torchfits covers today.
 </li>
 </ul>
-
-??? info "New to FITS?"
-    **FITS** (Flexible Image Transport System) is the standard file format in
-    astronomy. A FITS file contains one or more **HDUs** (Header Data Units) —
-    each with a header and data (image or table). HDU 0 is usually the primary
-    image; higher HDUs hold tables or more images. Some files use **EXTNAME**
-    labels such as `'SCI'` or `'EVENTS'`. torchfits reads these natively.
 
 ## At a glance
 
@@ -53,7 +64,7 @@ loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32)
 
 ```bash
 torchfits info image.fits
-torchfits header image.fits --keyword OBJECT --json
+torchfits header image.fits -k OBJECT -f json
 ```
 
 ## Why torchfits?
@@ -70,27 +81,7 @@ torchfits header image.fits --keyword OBJECT --json
 
 Numbers from the lab scorecard — methodology in [Benchmarks](benchmarks.md).
 
-## Documentation
-
-| Page | Contents |
-|---|---|
-| [Install](install.md) | Wheels, source builds, GPU notes |
-| [Quick start](quickstart.md) | Images, tables, training stack |
-| [CLI](cli.md) | Shell commands and recipes |
-| [Examples](examples.md) | Runnable scripts |
-| [API reference](api.md) | Core I/O, tables, data, transforms |
-| [Migration](migration_astropy.md) | From Astropy / fitsio |
-| [Parity](parity.md) | Supported vs out of scope |
-
-## Scope
-
-torchfits owns FITS I/O: images, tables, headers, compression, checksums, and
-ML data pipelines. It is **not** a full Astropy replacement — WCS, sky
-coordinates, HEALPix, and simulation belong in downstream packages. See
-[Parity](parity.md).
-
-Supported conventions include BSCALE/BZERO, unsigned integers, binary/ASCII
-tables, variable-length arrays, complex columns, compressed images (RICE_1,
-GZIP_1, PLIO_1, HCOMPRESS_1), and FITS checksums.
+Docs channels: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·
+[edge](https://astroai.github.io/torchfits/edge/) (`main` tip).
 
 </div>

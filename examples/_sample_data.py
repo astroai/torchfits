@@ -7,11 +7,23 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-CACHE_DIR = Path(
-    os.environ.get(
-        "TORCHFITS_SAMPLE_CACHE", Path.home() / ".cache" / "torchfits" / "samples"
-    )
-)
+
+def _default_sample_cache() -> Path:
+    override = os.environ.get("TORCHFITS_SAMPLE_CACHE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    try:
+        from torchfits.cache import sample_cache_root
+
+        return sample_cache_root()
+    except Exception:
+        xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+        if xdg:
+            return Path(xdg).expanduser() / "torchfits" / "samples"
+        return Path.home() / ".cache" / "torchfits" / "samples"
+
+
+CACHE_DIR = _default_sample_cache()
 
 # Stable public tutorial / survey files (astropy-data + SDSS SAS).
 SAMPLES: dict[str, str] = {

@@ -5,7 +5,10 @@ This module provides intelligent caching strategies for different environments
 including local development, HPC clusters, and cloud platforms.
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -33,6 +36,39 @@ CLOUD_ENV_SENTINELS: tuple[str, ...] = (
 )
 # Convenience union used by tests to clear every classification variable at once.
 CACHE_ENV_SENTINELS: tuple[str, ...] = HPC_ENV_SENTINELS + CLOUD_ENV_SENTINELS
+
+
+def cache_root() -> Path:
+    """Filesystem root for torchfits disk caches (remote downloads, samples).
+
+    Resolution order:
+    1. ``TORCHFITS_CACHE_DIR``
+    2. ``$XDG_CACHE_HOME/torchfits`` when ``XDG_CACHE_HOME`` is set
+    3. ``~/.cache/torchfits``
+    """
+    override = os.environ.get("TORCHFITS_CACHE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser() / "torchfits"
+    return Path.home() / ".cache" / "torchfits"
+
+
+def remote_cache_root() -> Path:
+    """Directory for HTTP(S) Dataset prefetch materialization."""
+    override = os.environ.get("TORCHFITS_REMOTE_CACHE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return cache_root() / "remote"
+
+
+def sample_cache_root() -> Path:
+    """Directory for example/gallery sample downloads."""
+    override = os.environ.get("TORCHFITS_SAMPLE_CACHE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return cache_root() / "samples"
 
 
 class CacheConfig:
@@ -326,6 +362,7 @@ def _detect_environment_type() -> str:
 __all__ = [
     "CacheConfig",
     "CacheManager",
+    "cache_root",
     "clear",
     "clear_cache",
     "configure_cache",
@@ -334,5 +371,7 @@ __all__ = [
     "get_cache_stats",
     "get_optimal_cache_config",
     "optimize_for_dataset",
+    "remote_cache_root",
+    "sample_cache_root",
     "stats",
 ]

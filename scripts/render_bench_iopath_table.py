@@ -30,7 +30,8 @@ Cell text rules:
     impossible median rates (e.g. ``>10^8 MB/s`` for ``fitstable``).
   * ``disk->GPU`` / ``disk->CPU->GPU`` / ``disk->RAM->GPU`` with no matching CSV
     rows render ``—``.
-  * ``fitstable`` rows in GPU transports always render ``—`` (tables not benchmarked on GPU).
+  * ``fitstable`` GPU transport cells populate when ``bench_gpu_transports`` emits
+    ``fitstable_gpu`` rows with ``metadata.io_transport``.
   * ``fitsio`` cells in ``disk->RAM->CPU`` render
     ``— (rows skipped under ``strict_mmap_fairness``)`` (fitsio rows are
     present in the CSV but the mmap-fairness rule excludes them).
@@ -64,7 +65,7 @@ IO_PATHS = [
     "disk\u2192RAM\u2192GPU",
 ]
 BACKENDS = ["torchfits", "astropy", "fitsio"]
-DOMAINS = [("fits", "FITS image I/O"), ("fitstable", "FITS table I/O")]
+DOMAINS = [("fits", "Tensor I/O (IMAGE HDU)"), ("fitstable", "Table I/O")]
 GPU_TRANSPORTS = ("disk\u2192GPU", "disk\u2192CPU\u2192GPU", "disk\u2192RAM\u2192GPU")
 
 
@@ -159,8 +160,6 @@ def cell_text(
 ) -> str:
     """Decide the cell text from the (domain, transport, backend) bucket."""
     if transport == "disk\u2192GPU":
-        return "\u2014"
-    if domain == "fitstable" and transport in GPU_TRANSPORTS:
         return "\u2014"
     if transport in ("disk\u2192CPU\u2192GPU", "disk\u2192RAM\u2192GPU"):
         if samples:

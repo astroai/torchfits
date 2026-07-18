@@ -291,9 +291,9 @@ class TestEndToEndFITSHeaderNormalize:
             hdu.header["BSCALE"] = 1.0
             hdu.header["BZERO"] = 32768.0
             hdu.writeto(path, overwrite=True)
-            from torchfits import get_header, read_tensor
+            from torchfits import read_header, read_tensor
 
-            header = get_header(path, hdu=0)
+            header = read_header(path, hdu=0)
             recovered = read_tensor(path, hdu=0)
             t = FITSHeaderNormalize(dict(header))
             normalised = t.forward(recovered.float())

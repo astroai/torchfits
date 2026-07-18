@@ -404,7 +404,7 @@ def _build_fits_metadata(
     if header is None:
         import torchfits
 
-        header = torchfits.get_header(path, hdu)
+        header = torchfits.read_header(path, hdu)
     field_meta: dict[str, dict[str, str]] = {}
     table_meta: dict[str, str] = {
         "fits_hdu": str(hdu),
@@ -466,7 +466,7 @@ def _column_tforms_for_decode(
         import torchfits
 
         try:
-            header = torchfits.get_header(path, hdu)
+            header = torchfits.read_header(path, hdu)
         except Exception:
             return {}
     out: dict[str, str] = {}
@@ -486,7 +486,7 @@ def _unsigned_column_dtypes(
         import torchfits
 
         try:
-            header = torchfits.get_header(path, hdu)
+            header = torchfits.read_header(path, hdu)
         except Exception:
             return {}
     torch_dtype_map = fits_schema.unsigned_column_dtypes_from_header(header)
@@ -507,7 +507,7 @@ def _can_use_mmap_row_path_for_full_read(
         import torchfits
 
         try:
-            header = torchfits.get_header(path, hdu)
+            header = torchfits.read_header(path, hdu)
         except Exception:
             return False
     try:
@@ -555,7 +555,7 @@ def _can_use_torch_table_path_for_full_read(
         import torchfits
 
         try:
-            header = torchfits.get_header(path, hdu)
+            header = torchfits.read_header(path, hdu)
         except Exception:
             return False
     try:
@@ -605,7 +605,7 @@ def _iter_chunks_cpp_table(
     if not hasattr(cpp, "read_fits_table_rows_from_handle"):
         return None
 
-    header = torchfits.get_header(path, hdu)
+    header = torchfits.read_header(path, hdu)
     total_rows = header.get("NAXIS2", 0)
     try:
         total_rows = (
@@ -846,7 +846,7 @@ def _read_table_with_where(
     hdr: Any = {}
     n_rows = 0
     try:
-        hdr = torchfits.get_header(path, hdu)
+        hdr = torchfits.read_header(path, hdu)
         n_rows = int(hdr.get("NAXIS2", 0))
         header_ok = True
     except Exception:
@@ -1035,9 +1035,9 @@ def scan(
     selected = set(columns) if columns else None
 
     # Read the header once and pass it to all helper functions to avoid
-    # redundant get_header() calls.
+    # redundant read_header() calls.
     try:
-        _hdr = torchfits.get_header(path, hdu)
+        _hdr = torchfits.read_header(path, hdu)
     except (OSError, ValueError):
         _hdr = None
 
@@ -1074,7 +1074,7 @@ def scan(
         from .._io_engine.table_streaming import stream_table as _engine_stream_table
 
         chunk_iter = _engine_stream_table(
-            torchfits.get_header,
+            torchfits.read_header,
             path,
             hdu=hdu,
             columns=columns,
@@ -1260,7 +1260,7 @@ def _schema_from_header(
     import torchfits
 
     try:
-        header = torchfits.get_header(path, hdu)
+        header = torchfits.read_header(path, hdu)
     except Exception:
         return None
 
@@ -1400,12 +1400,12 @@ def _read_cpp_table_chunk(
     selected = set(columns) if columns else None
 
     # Read the header once and pass it to all helper functions to avoid
-    # redundant get_header() calls (each of which hits the C++ cache or
+    # redundant read_header() calls (each of which hits the C++ cache or
     # re-reads the FITS header).
     import torchfits
 
     try:
-        _hdr = torchfits.get_header(path, hdu)
+        _hdr = torchfits.read_header(path, hdu)
     except (OSError, ValueError):
         _hdr = None
 
@@ -1457,7 +1457,13 @@ def _read_cpp_table_chunk(
             try:
                 if not col_list:
                     file_handle = _acquire_cpp_handle(path, cpp)
-                    chunk = cpp.read_fits_table_from_handle(file_handle, hdu)
+                    try:
+                        chunk = cpp.read_fits_table_from_handle(file_handle, hdu)
+                    finally:
+                        try:
+                            file_handle.close()
+                        except Exception:
+                            pass
                 else:
                     chunk = cpp.read_fits_table(path, hdu, col_list, False)
             except Exception:
@@ -1564,7 +1570,7 @@ def scan_torch(
     if use_mmap:
         # Read header once for the capability check.
         try:
-            _hdr = torchfits.get_header(path, hdu)
+            _hdr = torchfits.read_header(path, hdu)
         except Exception:
             _hdr = None
         use_mmap = _can_use_mmap_row_path_for_full_read(path, hdu, columns, header=_hdr)
@@ -1573,7 +1579,7 @@ def scan_torch(
     from .._io_engine.table_streaming import stream_table as _engine_stream_table
 
     for chunk in _engine_stream_table(
-        torchfits.get_header,
+        torchfits.read_header,
         path,
         hdu=hdu,
         columns=columns,

@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -17,18 +19,21 @@ concurrency:
 
 jobs:
   build:
-    name: Build docs
+    name: Build docs (stable + edge)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: pip install "zensical>=0.0.50,<0.0.51"
-      - run: bash scripts/sync_docs_examples.sh && zensical build --clean
+      - name: Build Pages tree (stable=/ edge=/edge/)
+        run: bash scripts/build_docs_pages.sh
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site_pages
 
   deploy:
     name: Deploy GitHub Pages

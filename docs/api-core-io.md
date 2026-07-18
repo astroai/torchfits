@@ -10,14 +10,14 @@ multi-extension files, checksums, and caching.
 Unified FITS reader. Auto-detects image or table HDUs.
 
 ```python
-torchfits.read(path, hdu=None, device="cpu", mmap="auto", mode="auto",
+torchfits.read(path, hdu=0, device="cpu", mmap="auto", mode="auto",
                options=None, return_header=False, **kwargs)
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str \| PathLike` | *(required)* | FITS file path |
-| `hdu` | `int \| str \| None` | `None` | HDU index, EXTNAME, or `None` for auto |
+| `hdu` | `int \| str \| None` | `0` | HDU index, EXTNAME, or `None`/`"auto"` for autodetection |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
 | `mmap` | `bool \| str` | `"auto"` | `True`, `False`, or `"auto"` |
 | `mode` | `str` | `"auto"` | `"auto"`, `"image"`, or `"table"` |
@@ -26,11 +26,18 @@ torchfits.read(path, hdu=None, device="cpu", mmap="auto", mode="auto",
 **Returns:** `torch.Tensor` (images), `dict[str, torch.Tensor]` (tables), or
 tuple if `return_header=True`.
 
+!!! tip "When to mmap"
+    Mmap helps large **local** IMAGE HDUs and repeated cutouts. Prefer
+    `mmap=False` with multi-worker `DataLoader` on the same files if handle
+    contention appears; also prefer non-mmap on cold network filesystems and
+    for VLA / scaled tables. Dataset docs: [Data module](api-data.md).
+
 !!! info "When to use"
-    Use `read()` for quick exploration or when you want auto-detection. For
-    explicit tensor reads, prefer `read_tensor()`. For dataframe workflows
-    (predicate pushdown `where=`, Arrow/Polars), prefer `table.read()` —
-    root `read()` does not accept `where=` and does **not** return Arrow.
+    Use `read()` for quick exploration. Default `hdu=0` (primary). Pass
+    `hdu=None` for first image/table autodetection. For explicit tensor reads,
+    prefer `read_tensor()`. For dataframe workflows (predicate pushdown
+    `where=`, Arrow/Polars), prefer `table.read()` — root `read()` does not
+    accept `where=` and does **not** return Arrow.
 
 ```python
 # Image with header
@@ -250,15 +257,19 @@ tensors = torchfits.read_batch(["img1.fits", "img2.fits"], hdu=0)
 
 ---
 
-## `get_batch_info()`
+## `read_batch_info()`
 
 Inspect shape and dtype consistency across files before batch reading.
 
 ```python
-torchfits.get_batch_info(file_paths)
+torchfits.read_batch_info(file_paths)
 ```
 
 **Returns:** `dict` with shape, dtype, and file info.
+
+!!! note "Deprecated alias"
+    `torchfits.get_batch_info()` remains available but emits
+    :class:`DeprecationWarning`; prefer `read_batch_info()`.
 
 ---
 
@@ -293,20 +304,25 @@ torchfits `open` surface yet.
 
 ---
 
-## `get_header()`
+## `read_header()`
 
 Read only the FITS header from an HDU.
 
 ```python
-torchfits.get_header(path, hdu=None)
+torchfits.read_header(path, hdu=0)
 ```
 
-**Returns:** `Header` (dict-like).
+**Returns:** `Header` (dict-like). Default `hdu=0`; pass `hdu=None` / `"auto"`
+to autodetect.
 
 ```python
-header = torchfits.get_header("image.fits", hdu=0)
+header = torchfits.read_header("image.fits", hdu=0)
 print(header["EXPTIME"])  # e.g. 300.0
 ```
+
+!!! note "Deprecated alias"
+    `torchfits.get_header()` remains available but emits
+    :class:`DeprecationWarning`; prefer `read_header()`.
 
 ---
 
