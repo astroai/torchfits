@@ -136,9 +136,10 @@ Outputs land in `benchmarks_results/<run-id>/megacam_results.csv`. Sample
 FITS files are gitignored under `benchmarks_data/cfht_megacam/`.
 
 For **uncompressed** survey mosaics (e.g. CFHTLS MegaPipe float32 stacks),
-tiny random windows are mostly page-cache + memcpy — see the walkthrough in
-[ML with FITS](examples-ml.md#survey-mosaic-cutouts-cfht-megapipe). That path
-is a different comparison than Rice `.fz` or full-HDU scorecard rows.
+`open_subset_reader` maps the data segment once and slices cutouts with
+endian swap into torch tensors — see
+[ML with FITS](examples-ml.md#survey-mosaic-cutouts-cfht-megapipe). Rice `.fz`
+MegaCam cutouts remain a separate comparison (tile decompress inside CFITSIO).
 
 ## Correctness Gates
 

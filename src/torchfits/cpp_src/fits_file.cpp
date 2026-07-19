@@ -816,10 +816,12 @@ void FITSFile::close_raw_fd() {
 // SubsetReader implementation
 // ===========================================================================
 SubsetReader::SubsetReader(const std::string& filename, int hdu_num)
-    : file_(filename.c_str(), 0), hdu_num_(hdu_num) {
+    : file_(filename.c_str(), 0), filename_(filename), hdu_num_(hdu_num) {
     if (hdu_num_ < 0) throw std::runtime_error("HDU index must be non-negative");
     init_from_hdu();
 }
+
+SubsetReader::~SubsetReader() { release_data_mmap(); }
 
 void SubsetReader::init_from_hdu() {
     int status = 0;
@@ -831,6 +833,7 @@ void SubsetReader::init_from_hdu() {
     const auto& naxes = std::get<2>(info);
     if (naxis < 2) throw std::runtime_error("SubsetReader requires at least 2D image HDU");
     naxis_ = naxis;
+    bitpix_ = bitpix;
     naxes_.resize(naxis_);
     for (int i = 0; i < naxis_; ++i) naxes_[i] = static_cast<long>(naxes[i]);
     max_x_ = static_cast<long>(naxes[0]);
@@ -851,14 +854,111 @@ void SubsetReader::init_from_hdu() {
         dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
     }
     switch (bitpix) {
-        case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      break;
-        case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     break;
-        case LONG_IMG:     dtype_ = torch::kInt32;  datatype_ = TINT;       break;
-        case LONGLONG_IMG: dtype_ = torch::kInt64;  datatype_ = TLONGLONG;  break;
-        case FLOAT_IMG:    dtype_ = torch::kFloat32; datatype_ = TFLOAT;     break;
-        case DOUBLE_IMG:   dtype_ = torch::kFloat64; datatype_ = TDOUBLE;    break;
+        case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      elem_bytes_ = 1; break;
+        case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     elem_bytes_ = 2; break;
+        case LONG_IMG:     dtype_ = torch::kInt32;  datatype_ = TINT;       elem_bytes_ = 4; break;
+        case LONGLONG_IMG: dtype_ = torch::kInt64;  datatype_ = TLONGLONG;  elem_bytes_ = 8; break;
+        case FLOAT_IMG:    dtype_ = torch::kFloat32; datatype_ = TFLOAT;    elem_bytes_ = 4; break;
+        case DOUBLE_IMG:   dtype_ = torch::kFloat64; datatype_ = TDOUBLE;   elem_bytes_ = 8; break;
         default: throw std::runtime_error("Unsupported BITPIX");
     }
+
+    // Uncompressed primary/local 2D image: row pread + endian swap beats
+    // fits_read_subset on large mosaics (page-cache + memcpy, like fitsio memmap).
+    const bool compressed = file_.is_compressed_image_cached(hdu_num_);
+    if (!compressed && naxis_ == 2 && elem_bytes_ > 0 &&
+        filename_.find('[') == std::string::npos &&
+        filename_.find("://") == std::string::npos) {
+        LONGLONG headstart = 0, data_offset = 0, dataend = 0;
+        status = 0;
+        fits_get_hduaddrll(file_.get_fptr(), &headstart, &data_offset, &dataend, &status);
+        if (status == 0 && data_offset > 0) {
+            data_offset_ = data_offset;
+            raw_fast_ok_ = true;
+        }
+    }
+}
+
+bool SubsetReader::ensure_data_mmap() {
+    if (pixel_base_ != nullptr) return true;
+    if (!raw_fast_ok_ || elem_bytes_ == 0 || data_offset_ <= 0) return false;
+    auto meta = detail::get_shared_meta_for_path(filename_);
+    const int fd = detail::get_shared_raw_fd(meta, filename_);
+    if (fd < 0) return false;
+
+    const size_t nbytes =
+        static_cast<size_t>(naxes_[0]) * static_cast<size_t>(naxes_[1]) * elem_bytes_;
+    if (nbytes == 0) return false;
+
+    static const long kPageSize = sysconf(_SC_PAGESIZE);
+    const off_t page_mask = kPageSize > 0 ? static_cast<off_t>(kPageSize - 1) : 0;
+    map_page_offset_ = static_cast<off_t>(data_offset_) & ~page_mask;
+    map_len_ = nbytes + static_cast<size_t>(static_cast<off_t>(data_offset_) - map_page_offset_);
+    map_ptr_ = mmap(nullptr, map_len_, PROT_READ, MAP_SHARED, fd, map_page_offset_);
+    if (map_ptr_ == MAP_FAILED) {
+        map_ptr_ = nullptr;
+        map_len_ = 0;
+        return false;
+    }
+#if defined(MADV_RANDOM) && defined(MADV_WILLNEED)
+    // Random cutouts over a survey mosaic — WILLNEED is a light prefetch hint.
+    madvise(map_ptr_, map_len_, MADV_RANDOM | MADV_WILLNEED);
+#endif
+    pixel_base_ = static_cast<const uint8_t*>(map_ptr_) +
+                  (static_cast<off_t>(data_offset_) - map_page_offset_);
+    return true;
+}
+
+void SubsetReader::release_data_mmap() {
+    if (map_ptr_ != nullptr) {
+        munmap(map_ptr_, map_len_);
+        map_ptr_ = nullptr;
+        map_len_ = 0;
+        map_page_offset_ = 0;
+        pixel_base_ = nullptr;
+    }
+}
+
+bool SubsetReader::try_read_via_mmap(
+    long x1, long y1, long x2, long y2, torch::Tensor& out
+) {
+    if (!ensure_data_mmap()) return false;
+
+    const long width = x2 - x1;
+    const long height = y2 - y1;
+    const long naxis1 = naxes_[0];
+    const size_t row_bytes = static_cast<size_t>(width) * elem_bytes_;
+    uint8_t* base = static_cast<uint8_t*>(out.data_ptr());
+    const bool swap = host_is_little_endian() && elem_bytes_ > 1;
+
+    for (long y = y1; y < y2; ++y) {
+        const uint8_t* src =
+            pixel_base_ +
+            (static_cast<size_t>(y) * static_cast<size_t>(naxis1) + static_cast<size_t>(x1)) *
+                elem_bytes_;
+        uint8_t* dst_row = base + static_cast<size_t>(y - y1) * row_bytes;
+        if (!swap || elem_bytes_ == 1) {
+            std::memcpy(dst_row, src, row_bytes);
+        } else if (elem_bytes_ == 2) {
+            internal::bswap16_copy(
+                reinterpret_cast<const uint16_t*>(src),
+                reinterpret_cast<uint16_t*>(dst_row),
+                static_cast<size_t>(width));
+        } else if (elem_bytes_ == 4) {
+            internal::bswap32_copy(
+                reinterpret_cast<const uint32_t*>(src),
+                reinterpret_cast<uint32_t*>(dst_row),
+                static_cast<size_t>(width));
+        } else if (elem_bytes_ == 8) {
+            internal::bswap64_copy(
+                reinterpret_cast<const uint64_t*>(src),
+                reinterpret_cast<uint64_t*>(dst_row),
+                static_cast<size_t>(width));
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
@@ -882,6 +982,9 @@ torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     shape.push_back(height);
     shape.push_back(width);
     auto tensor = torch::empty(shape, torch::TensorOptions().dtype(dtype_));
+    if (try_read_via_mmap(x1, y1, x2, y2, tensor)) {
+        return tensor;
+    }
     std::vector<long> fpixel(naxis_, 1);
     std::vector<long> lpixel(naxis_, 1);
     std::vector<long> inc(naxis_, 1);
@@ -905,7 +1008,11 @@ torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
 }
 
 void SubsetReader::close() {
-    if (!closed_) { file_.close(); closed_ = true; }
+    if (!closed_) {
+        release_data_mmap();
+        file_.close();
+        closed_ = true;
+    }
 }
 
 } // namespace torchfits

@@ -88,23 +88,24 @@ The example:
 1. Selects 64 gallery stamps with `MAG_AUTO ∈ [17, 22]`.
 2. Reads matching G/R/I windows with `open_subset_reader`.
 3. Builds Lupton RGB (`Q=8`, `stretch=5`) into an 8×8 collage (512×512).
-4. Times 1000 random 64×64 boxes (one subprocess per backend).
+4. Times 1000 random 64×64 boxes (one subprocess per backend; setup+warm
+   outside the timer; peers force owned copies).
 
-Indicative single-pass timing on this machine (1000×64×64, G band):
+Indicative timing on this machine (1000×64×64, G band, uncompressed float32):
 
 | Backend | Wall | ms/cutout |
 |---|---:|---:|
-| `torchfits.read_subset` | 4.15 s | 4.15 |
-| `torchfits.open_subset_reader` | 0.79 s | 0.79 |
-| fitsio | 0.20 s | 0.20 |
-| astropy (`memmap`) | 0.17 s | 0.17 |
+| `torchfits.open_subset_reader` | 0.060 s | 0.060 |
+| astropy (`memmap` + copy) | 0.149 s | 0.149 |
+| `torchfits.read_subset` | 0.165 s | 0.165 |
+| fitsio | 0.297 s | 0.297 |
 
-`open_subset_reader` beats repeated `read_subset` (~5× here). On this
-**uncompressed** mosaic, tiny windows are mostly OS page-cache + a memcpy:
-fitsio/astropy `memmap` slices stay cheaper than CFITSIO→torch. That is a
-different workload from the [published scorecards](benchmarks.md) (full HDU
-reads, Rice `.fz` MegaCam cutouts, GPU transports, Arrow tables), where
-torchfits usually leads.
+`open_subset_reader` maps the uncompressed data segment once and does
+row slice + endian swap into a torch tensor — same class of work as fitsio /
+Astropy memmap cutouts, with CFITSIO only on the fallback path (compressed /
+scaled / non-2D). Prefer it over repeated `read_subset` for many windows from
+one mosaic. Rice `.fz` / full-HDU / GPU numbers stay on the
+[scorecards](benchmarks.md).
 
 ![MegaPipe gri cutout collage](assets/gallery/megapipe_cutout_collage.png)
 

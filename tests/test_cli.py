@@ -208,7 +208,7 @@ def test_lupton_rgb_preserves_midtones_with_bright_star():
 
 
 def test_lupton_rgb_astropy_parity():
-    """Match Astropy ``make_lupton_rgb`` float mapping (LuptonAsinhStretch)."""
+    """Match Astropy ``make_lupton_rgb`` (LuptonAsinhStretch)."""
     np = pytest.importorskip("numpy")
     pytest.importorskip("astropy")
     from astropy.visualization import make_lupton_rgb
@@ -219,16 +219,24 @@ def test_lupton_rgb_astropy_parity():
     g = torch.rand(24, 24) * 40.0
     b = torch.rand(24, 24) * 40.0
     ours = lupton_rgb(r, g, b, Q=8.0, stretch=0.5).numpy()
-    ref = make_lupton_rgb(
-        r.numpy(),
-        g.numpy(),
-        b.numpy(),
-        Q=8.0,
-        stretch=0.5,
-        output_dtype=np.float64,
-    )
-    err = float(np.abs(ours - ref).max())
-    assert err < 1e-6, f"max abs err vs Astropy={err}"
+    # Astropy <5.x has no output_dtype=; compare via uint8 / 255.
+    try:
+        ref = make_lupton_rgb(
+            r.numpy(),
+            g.numpy(),
+            b.numpy(),
+            Q=8.0,
+            stretch=0.5,
+            output_dtype=np.float64,
+        )
+        err = float(np.abs(ours - ref).max())
+        assert err < 1e-6, f"max abs err vs Astropy float={err}"
+    except TypeError:
+        ref_u8 = make_lupton_rgb(
+            r.numpy(), g.numpy(), b.numpy(), Q=8.0, stretch=0.5
+        ).astype(np.float64) / 255.0
+        err = float(np.abs(ours - ref_u8).mean())
+        assert err < 0.01, f"mean abs err vs Astropy uint8={err}"
 
 
 def test_convert_infers_format_from_extension(table_fits, tmp_path):

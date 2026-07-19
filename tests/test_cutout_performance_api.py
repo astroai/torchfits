@@ -21,6 +21,11 @@ def test_read_subset_basic_roundtrip():
         cut = torchfits.read_subset(name, 0, 5, 7, 15, 17)
         assert cut.shape == (10, 10)
         assert np.allclose(cut.numpy(), data[7:17, 5:15])
+
+        with torchfits.open_subset_reader(name, hdu=0) as reader:
+            cut2 = reader.read_subset(5, 7, 15, 17)
+        assert cut2.shape == (10, 10)
+        assert np.allclose(cut2.numpy(), data[7:17, 5:15])
     finally:
         try:
             os.unlink(name)

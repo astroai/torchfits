@@ -163,34 +163,47 @@ def _assert_visible(rgb: torch.Tensor, *, label: str) -> None:
 
 
 def _print_timing_table(path: Path, boxes: list[Box]) -> list[tuple[str, float]]:
-    """Time each backend in its own subprocess so one backend's page-cache
-    warm-up does not silently gift the next.
+    """Time each backend in its own subprocess.
+
+    Setup (import + open + one warm cutout) is outside the timed loop so we
+    measure cutout throughput, not extension import cost.
     """
     workers = {
         "torchfits.read_subset": (
             "import torchfits\n"
+            "torchfits.read_subset(path, 0, *boxes[0])\n",
             "for b in boxes:\n"
-            "    torchfits.read_subset(path, 0, *b)\n"
+            "    torchfits.read_subset(path, 0, *b)\n",
         ),
         "torchfits.open_subset_reader": (
             "import torchfits\n"
-            "with torchfits.open_subset_reader(path, hdu=0) as reader:\n"
-            "    for b in boxes:\n"
-            "        reader.read_subset(*b)\n"
+            "reader = torchfits.open_subset_reader(path, hdu=0)\n"
+            "reader.read_subset(*boxes[0])\n",
+            "for b in boxes:\n"
+            "    reader.read_subset(*b)\n"
+            "reader.close()\n",
         ),
         "fitsio": (
             "import fitsio\n"
-            "with fitsio.FITS(path) as handle:\n"
-            "    ext = handle[0]\n"
-            "    for x1, y1, x2, y2 in boxes:\n"
-            "        _ = ext[y1:y2, x1:x2]\n"
+            "import numpy as np\n"
+            "handle = fitsio.FITS(path)\n"
+            "ext = handle[0]\n"
+            "x1,y1,x2,y2 = boxes[0]\n"
+            "_ = np.array(ext[y1:y2, x1:x2], copy=True)\n",
+            "for x1, y1, x2, y2 in boxes:\n"
+            "    _ = np.array(ext[y1:y2, x1:x2], copy=True)\n"
+            "handle.close()\n",
         ),
         "astropy": (
             "from astropy.io import fits as af\n"
-            "with af.open(path, memmap=True) as hdul:\n"
-            "    data = hdul[0].data\n"
-            "    for x1, y1, x2, y2 in boxes:\n"
-            "        _ = data[y1:y2, x1:x2]\n"
+            "import numpy as np\n"
+            "hdul = af.open(path, memmap=True)\n"
+            "data = hdul[0].data\n"
+            "x1,y1,x2,y2 = boxes[0]\n"
+            "_ = np.array(data[y1:y2, x1:x2], copy=True)\n",
+            "for x1, y1, x2, y2 in boxes:\n"
+            "    _ = np.array(data[y1:y2, x1:x2], copy=True)\n"
+            "hdul.close()\n",
         ),
     }
 
@@ -198,18 +211,19 @@ def _print_timing_table(path: Path, boxes: list[Box]) -> list[tuple[str, float]]
     with tempfile.TemporaryDirectory() as tmp:
         box_path = Path(tmp) / "boxes.json"
         box_path.write_text(json.dumps(boxes))
-        for name, body in workers.items():
+        for name, (setup, body) in workers.items():
             script = (
                 "import json, time\n"
                 f"path = {str(path)!r}\n"
                 f"boxes = [tuple(b) for b in json.loads(open({str(box_path)!r}).read())]\n"
-                "t0 = time.perf_counter()\n"
                 "try:\n"
-                + "".join(f"    {line}\n" for line in body.splitlines())
+                + "".join(f"    {line}\n" for line in setup.splitlines())
                 + "except ImportError as exc:\n"
                 "    print('IMPORT_ERROR', exc)\n"
                 "    raise SystemExit(2) from exc\n"
-                "print(time.perf_counter() - t0)\n"
+                "t0 = time.perf_counter()\n"
+                + body
+                + "print(time.perf_counter() - t0)\n"
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -232,7 +246,7 @@ def _print_timing_table(path: Path, boxes: list[Box]) -> list[tuple[str, float]]
     n = len(boxes)
     print(
         f"\ntiming: {n} {SIZE}x{SIZE} cutouts, G band, one subprocess per backend "
-        f"(indicative single pass; OS page cache may still retain the mosaic):"
+        f"(setup+warm outside timer; owned copies):"
     )
     for name, secs in rows:
         print(f"  {name:<30s} {secs:7.3f}s  ({secs / n * 1e3:6.3f} ms/cutout)")

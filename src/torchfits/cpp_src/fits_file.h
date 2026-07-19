@@ -80,6 +80,7 @@ private:
 class SubsetReader {
 public:
     SubsetReader(const std::string& filename, int hdu_num = 0);
+    ~SubsetReader();
     torch::Tensor read(long x1, long y1, long x2, long y2);
     void close();
     long width() const { return max_x_; }
@@ -87,7 +88,11 @@ public:
     int hdu() const { return hdu_num_; }
 private:
     void init_from_hdu();
+    bool ensure_data_mmap();
+    bool try_read_via_mmap(long x1, long y1, long x2, long y2, torch::Tensor& out);
+    void release_data_mmap();
     FITSFile file_;
+    std::string filename_;
     int hdu_num_ = 0;
     long max_x_ = 0;
     long max_y_ = 0;
@@ -95,7 +100,16 @@ private:
     std::vector<long> naxes_;
     torch::ScalarType dtype_ = torch::kFloat32;
     int datatype_ = TFLOAT;
+    int bitpix_ = FLOAT_IMG;
+    LONGLONG data_offset_ = 0;
+    size_t elem_bytes_ = 0;
+    bool raw_fast_ok_ = false;
     bool closed_ = false;
+    // Uncompressed 2D mosaic fast path: map data once, slice+bswap per cutout.
+    void* map_ptr_ = nullptr;
+    size_t map_len_ = 0;
+    off_t map_page_offset_ = 0;
+    const uint8_t* pixel_base_ = nullptr;
 };
 
 } // namespace torchfits
