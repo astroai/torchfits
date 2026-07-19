@@ -168,10 +168,18 @@ flowchart LR
   local["Local paths"] --> worker
 ```
 
-HTTP(S) paths on Dataset classes download into the remote cache
+HTTP(S) and vos/vault paths on Dataset classes download into the remote cache
 (`TORCHFITS_CACHE_DIR` / `TORCHFITS_REMOTE_CACHE`, or `cache_dir=` on the
 Dataset). `make_loader(..., optimize_cache=True)` can start prefetch for URLs
-in `dataset.files`.
+in `dataset.files` (skipped for `FitsCutoutDataset`, which prefers HTTP Range
+cutouts). Short forms `vos:<user>/...` and `vault:<user>/...` normalize to
+`vos://cadc.nrc.ca~vault/<user>/...` via the optional `vos` client.
+
+`read_subset` / CLI `cutout` on **uncompressed 2D** HTTP(S) images Range-fetch
+the header plus a contiguous row-band (no full download). Rice / compressed /
+scaled remotes still materialize the full file, then use CFITSIO. Remote table
+reads use the same full-file cache path (no Range row slices yet). Auth:
+`TORCHFITS_HTTP_AUTHORIZATION` or `TORCHFITS_HTTP_TOKEN`.
 
 ### Batch image reads
 
@@ -303,8 +311,11 @@ Variables a typical caller sets to point caching at a different disk location.
 | Variable | Default | Description |
 |---|---|---|
 | `TORCHFITS_CACHE_DIR` | `$XDG_CACHE_HOME/torchfits` or `~/.cache/torchfits` | Disk cache root (remotes + samples) |
-| `TORCHFITS_REMOTE_CACHE` | `{CACHE_DIR}/remote` | HTTP Dataset prefetch directory |
+| `TORCHFITS_REMOTE_CACHE` | `{CACHE_DIR}/remote` | HTTP/vos Dataset prefetch directory |
 | `TORCHFITS_SAMPLE_CACHE` | `{CACHE_DIR}/samples` | Example/gallery sample downloads |
+| `TORCHFITS_HTTP_TIMEOUT` | `120` | HTTP(S) download / Range timeout (seconds) |
+| `TORCHFITS_HTTP_AUTHORIZATION` | unset | Full `Authorization` header value for remotes (wins over `_TOKEN`) |
+| `TORCHFITS_HTTP_TOKEN` | unset | Sent as `Authorization: Bearer <token>` when `_AUTHORIZATION` is unset |
 
 ### Expert
 

@@ -1,0 +1,164 @@
+"""Shared HTTP(S) helpers: SSRF-safe redirects, auth env, timeouts.
+
+Used by ``torchfits probe`` and remote Dataset/cache downloads.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+import socket
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Mapping
+
+
+class HttpBlockedError(OSError):
+    """Raised when a URL or redirect targets a blocked (internal) host."""
+
+
+class HttpRangeNotSatisfied(OSError):
+    """Raised when the server does not return a usable byte Range body."""
+
+
+def http_timeout(default: float = 120.0) -> float:
+    raw = os.environ.get("TORCHFITS_HTTP_TIMEOUT", "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def auth_headers() -> dict[str, str]:
+    """Authorization headers from env (first non-empty wins)."""
+    full = os.environ.get("TORCHFITS_HTTP_AUTHORIZATION", "").strip()
+    if full:
+        return {"Authorization": full}
+    token = os.environ.get("TORCHFITS_HTTP_TOKEN", "").strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def is_internal_url(url: str) -> bool:
+    """True if *url*'s host resolves to any non-public address (or cannot resolve).
+
+    Resolving with :func:`socket.getaddrinfo` and rejecting when *any* returned
+    address is private/loopback/link-local/reserved/multicast/unspecified closes
+    the DNS-rebinding and multi-record SSRF gaps left by a single
+    ``gethostbyname`` lookup. Resolution failure is treated as internal (block).
+    """
+    try:
+        hostname = urllib.parse.urlparse(url).hostname
+    except Exception:
+        return True
+    if not hostname:
+        return True
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return True
+    for info in infos:
+        ip = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return True
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_reserved
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+        ):
+            return True
+    return False
+
+
+class ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop so redirects cannot reach internal hosts."""
+
+    def redirect_request(  # type: ignore[no-untyped-def]
+        self, req, fp, code, msg, headers, newurl
+    ):
+        if is_internal_url(newurl):
+            raise HttpBlockedError(
+                f"{newurl}: redirect to internal or private networks is blocked "
+                "for security reasons"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def build_http_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(ValidatingRedirectHandler())
+
+
+def http_request(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    method: str | None = None,
+) -> urllib.request.Request:
+    if is_internal_url(url):
+        raise HttpBlockedError(
+            f"{url}: access to internal or private networks is blocked "
+            "for security reasons"
+        )
+    merged = dict(auth_headers())
+    if headers:
+        merged.update(headers)
+    return urllib.request.Request(url, headers=merged, method=method)
+
+
+def http_open(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> Any:
+    """Open *url* with SSRF-safe redirects and optional auth. Caller closes."""
+    request = http_request(url, headers=headers)
+    opener = build_http_opener()
+    return opener.open(request, timeout=http_timeout() if timeout is None else timeout)
+
+
+def http_read_range(
+    url: str,
+    start: int,
+    end_inclusive: int,
+    *,
+    timeout: float | None = None,
+) -> bytes:
+    """GET ``Range: bytes=start-end`` and return those bytes.
+
+    Requires HTTP 206, or HTTP 200 when ``start == 0`` (server ignored Range
+    but the leading bytes still match). Mid-file 200 responses raise
+    :class:`HttpRangeNotSatisfied` so callers can fall back to a full fetch.
+    """
+    if end_inclusive < start:
+        raise ValueError("end_inclusive must be >= start")
+    want = end_inclusive - start + 1
+    headers = {"Range": f"bytes={start}-{end_inclusive}"}
+    try:
+        with http_open(url, headers=headers, timeout=timeout) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            data = bytes(response.read(want))
+            if status == 206:
+                return data
+            if status == 200 and start == 0:
+                return data
+            raise HttpRangeNotSatisfied(
+                f"{url}: Range not satisfied (HTTP {status}, start={start})"
+            )
+    except HttpBlockedError:
+        raise
+    except HttpRangeNotSatisfied:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise OSError(f"{url}: HTTP {exc.code}") from exc
+    except Exception as exc:
+        raise OSError(f"{url}: {exc}") from exc

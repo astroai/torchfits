@@ -49,13 +49,16 @@ input if they need mask-aware Dataset wiring — see
     scaled tables.
 
 !!! tip "Disk cache (remotes + samples only)"
-    Dataset HTTP(S) prefetch and example samples write under
+    Dataset HTTP(S)/vos prefetch and example samples write under
     `TORCHFITS_CACHE_DIR` (default `$XDG_CACHE_HOME/torchfits` or
     `~/.cache/torchfits`). Subdirs: `remote/`, `samples/`. Override with
     `TORCHFITS_REMOTE_CACHE` / `TORCHFITS_SAMPLE_CACHE`, or pass
     `cache_dir=` into Datasets / rely on `make_loader` prefetch. Point the
     root at scratch on shared HPC homes — no silent writes elsewhere under
-    `$HOME`.
+    `$HOME`. HTTP auth: `TORCHFITS_HTTP_AUTHORIZATION` or
+    `TORCHFITS_HTTP_TOKEN`. Uncompressed 2D HTTP cutouts (`read_subset` /
+    `FitsCutoutDataset`) use Range GETs when possible; compressed and vos
+    paths cache the full file first.
 
 ---
 

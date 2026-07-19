@@ -197,16 +197,24 @@ Defaults are for previews, not journal figures — retune stretch / Q per survey
 
 - **Local paths** — same inventory as `info` (`-e` selects HDUs).
 - **HTTP(S)** — range-fetch primary header (`--bytes`, `--timeout`); `-e` is
-  ignored for remote peeks (primary only).
-- **`vos:` / `vos://`** — optional; install the `vos` package for CANFAR VOSpace.
-  Auth uses the client’s normal config.
+  ignored for remote peeks (primary only). Follows redirects with SSRF checks;
+  optional `TORCHFITS_HTTP_AUTHORIZATION` / `TORCHFITS_HTTP_TOKEN`.
+- **`vos:` / `vault:` / `vos://`** — optional; install the `vos` package.
+  Short `vos:<user>/...` and `vault:<user>/...` map to
+  `vos://cadc.nrc.ca~vault/<user>/...`. Auth uses the client’s normal config.
 
 ```bash
 torchfits probe science.fits
 torchfits probe https://example.edu/data.fits --bytes 5760 --timeout 15 -f json
+torchfits probe vos:alice/data/sample.fits
 ```
 
 Archive *search* (CAOM / `astquery`-style queries) is out of scope.
+
+### `cutout`
+
+Pixel box extraction. HTTP(S) **uncompressed 2D** inputs use Range GETs;
+compressed remotes download into the cache first (same as `read_subset`).
 
 ## Familiar-tool mapping
 

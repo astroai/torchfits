@@ -31,7 +31,7 @@ from .datasets import (
     FitsTensorDataset,
     FitsTensorIterableDataset,
 )
-from .remote import is_http_url, prefetch_urls, resolve_local_path
+from .remote import is_remote_url, prefetch_urls, resolve_local_path
 
 # ---------------------------------------------------------------------------
 # FitsTableDataset — row-indexable table catalog
@@ -388,7 +388,8 @@ class FitsCutoutDataset(Dataset[Any]):
         from torchfits import read_subset
 
         path, hdu, x1, y1, x2, y2 = self.cutouts[idx]
-        path = resolve_local_path(path)
+        # HTTP(S) uncompressed 2D uses Range cutouts; compressed/vos fall back
+        # inside read_subset. Do not force full prefetch here.
         image = read_subset(path, hdu, x1, y1, x2, y2)
         if self.device != "cpu":
             image = image.to(self.device)
@@ -522,11 +523,18 @@ def make_loader(
             from torchfits.cache import optimize_for_dataset
 
             cache_dir = getattr(dataset, "cache_dir", None)
-            remote = [p for p in file_list if is_http_url(str(p))]
-            if remote:
-                prefetch_urls(remote, cache_dir=cache_dir)
-            local = [resolve_local_path(str(p), cache_dir=cache_dir) for p in file_list]
-            optimize_for_dataset(local, avg_file_size_mb=avg_file_size_mb)
+            # FitsCutoutDataset prefers HTTP Range cutouts — skip full prefetch.
+            if type(dataset).__name__ != "FitsCutoutDataset":
+                remote = [p for p in file_list if is_remote_url(str(p))]
+                if remote:
+                    prefetch_urls(remote, cache_dir=cache_dir)
+                local = [
+                    resolve_local_path(str(p), cache_dir=cache_dir) for p in file_list
+                ]
+            else:
+                local = [str(p) for p in file_list if not is_remote_url(str(p))]
+            if local:
+                optimize_for_dataset(local, avg_file_size_mb=avg_file_size_mb)
 
     return DataLoader(
         dataset,

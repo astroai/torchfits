@@ -19,6 +19,7 @@ from torchfits.cli.cmds_probe import (
     _probe_http,
 )
 from torchfits.cli.common import IoError
+from torchfits.http_util import HttpBlockedError
 
 
 def test_http_range_probe_blocks_loopback() -> None:
@@ -37,7 +38,7 @@ def test_is_internal_url_blocks_private_ipv6_and_unresolvable() -> None:
 
 def test_redirect_to_internal_is_blocked() -> None:
     handler = _ValidatingRedirectHandler()
-    with pytest.raises(IoError, match="redirect to internal"):
+    with pytest.raises((IoError, HttpBlockedError), match="redirect to internal"):
         handler.redirect_request(
             None, None, 302, "Found", {}, "http://127.0.0.1/evil.fits"
         )

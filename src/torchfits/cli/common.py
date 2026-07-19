@@ -12,7 +12,7 @@ EXIT_USAGE = 2
 EXIT_IO = 3
 EXIT_VERIFY_FAIL = 4
 
-_REMOTE_PREFIXES = ("http://", "https://", "vos://", "vos:")
+_REMOTE_PREFIXES = ("http://", "https://", "vos://", "vos:", "vault:")
 _EMIT_FORMATS = ("text", "json", "jsonl")
 
 

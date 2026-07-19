@@ -496,7 +496,8 @@ def test_vos_probe_missing_package_message(monkeypatch):
 
 
 def test_vos_probe_bad_uri_is_io_error_when_vos_present():
-    result = _run_cli("probe", "vos:sfabbro/example.fits", "--json")
+    # Placeholder user only — never a personal vault path in CI/git.
+    result = _run_cli("probe", "vos:alice/example.fits", "--json")
     # vos may be installed (CANFAR lab) or missing; either way no traceback.
     assert result.returncode in (2, 3), result.stderr
     assert "vos" in result.stderr.lower() or "service" in result.stderr.lower()

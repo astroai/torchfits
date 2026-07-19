@@ -110,11 +110,15 @@ torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `path` | `str` | *(required)* | FITS file path |
+| `path` | `str` | *(required)* | FITS file path or HTTP(S) URL |
 | `hdu` | `int` or `str` | *(required)* | HDU index or EXTNAME |
 | `x1, y1, x2, y2` | `int` | *(required)* | Half-open pixel window `[x1,x2)×[y1,y2)` |
 
 **Returns:** `torch.Tensor`
+
+HTTP(S) **uncompressed 2D** images Range-fetch a row-band (no full download).
+Compressed / scaled remotes and `vos:` / `vault:` paths materialize into the
+remote cache first, then cut out locally.
 
 ```python
 stamp = torchfits.read_subset("mosaic.fits", hdu=0, x1=0, y1=0, x2=256, y2=256)

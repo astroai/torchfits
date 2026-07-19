@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterator, Sequence
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
-from .remote import is_http_url, prefetch_urls, resolve_local_path
+from .remote import is_remote_url, prefetch_urls, resolve_local_path
 
 HduRef = int | str
 HduSpec = HduRef | Sequence[HduRef]
@@ -17,7 +17,7 @@ HduSpec = HduRef | Sequence[HduRef]
 
 def _resolve_paths(paths: str | list[str]) -> list[str]:
     if isinstance(paths, str):
-        if is_http_url(paths):
+        if is_remote_url(paths):
             return [paths]
         paths = sorted(_glob.glob(paths)) or [paths]
     return list(paths)
