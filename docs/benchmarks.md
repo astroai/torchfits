@@ -77,8 +77,8 @@ linked from GitHub Release assets when published, and mirrored under
 build this page:
 
 - `docs/assets/bench/exhaustive_mps_20260719_065105/results.csv`
-- `docs/assets/bench/exhaustive_cpu_20260717_040146/results.csv`
-- `docs/assets/bench/exhaustive_cuda_20260717_042840/results.csv`
+- `docs/assets/bench/exhaustive_cpu_20260719_083800/results.csv`
+- `docs/assets/bench/exhaustive_cuda_20260719_083810/results.csv`
 
 (also under `benchmarks_results/<run-id>/` locally)
 
@@ -228,7 +228,7 @@ scope or not yet wired into the published tables.
    `.to(device)`. See [Disk to GPU](#disk-to-gpu).
 2. **`disk→CPU→GPU` vs `disk→RAM→GPU`** — mmap-off vs mmap-on host decode + H2D.
 3. **GPU rows need CUDA/MPS hardware** — published CUDA numbers come from
-   CANFAR staging (`exhaustive_cuda_20260717_042840`).
+   CANFAR staging (`exhaustive_cuda_20260719_083810`).
 4. **Tables** — see [Tables on GPU transports](#tables-on-gpu-transports).
 
 ### GPU integer dtype comparisons
@@ -346,7 +346,7 @@ The following table showcases median wall-clock times for key FITS tensor and ta
 ## Benchmark category summary
 
 Aggregated wins across every domain and operation in the CANFAR CUDA exhaustive
-(`exhaustive_cuda_20260717_042840`, 4,079 rows, **0** TorchFits deficits).
+(`exhaustive_cuda_20260719_083810`, 4,079 rows, **0** TorchFits deficits).
 Category ranges below are the last regenerated aggregation shape; for this
 run’s absolute times prefer [Performance highlights](#performance-highlights)
 and the full table.
@@ -1046,7 +1046,7 @@ Cases where torchfits is **not** first in its comparison family (CPU and GPU). G
 | macOS arm64 / MPS | tensor | small_float32_1d [read_full @ mps] | off | 483.9 μs | 819.0 | fitsio/fitsio_torch_device_specialized | 1.71× |
 | macOS arm64 / CPU | tensor | small_int16_2d [read_full] | off | 199.4 μs | 814.8 | fitsio/fitsio_torch | 1.65× |
 
-_…and 84 more rows in `torchfits_deficits.csv`._
+_…and 311 more rows in `torchfits_deficits.csv`._
 <!-- BENCH_DEFICITS_END -->
 
 ### Host scorecard
@@ -1055,11 +1055,11 @@ _…and 84 more rows in `torchfits_deficits.csv`._
 |---|---|---:|---:|---:|---|
 <!-- BENCH_HOSTS_BEGIN -->
 | macOS arm64 / MPS | `exhaustive_mps_20260719_065105` | 3931 | 123 | 802.4 | lab + mmap-matrix + GPU |
-| Linux x86_64 / CPU | `exhaustive_cpu_20260717_040146` | 2825 | 1 | 288.8 | lab + mmap-matrix |
-| Linux x86_64 / CUDA | `exhaustive_cuda_20260717_042840` | 4079 | 0 | 730.7 | lab + mmap-matrix + GPU |
+| Linux x86_64 / CPU | `exhaustive_cpu_20260719_083800` | 2829 | 101 | 290.1 | lab + mmap-matrix |
+| Linux x86_64 / CUDA | `exhaustive_cuda_20260719_083810` | 4087 | 127 | 723.5 | lab + mmap-matrix + GPU |
 <!-- BENCH_HOSTS_END -->
 
-Round-2 local re-soak: MPS `exhaustive_mps_20260719_065105`; Linux CPU/CUDA rows remain Jul-17 soak IDs (`exhaustive_cpu_20260717_040146`, `exhaustive_cuda_20260717_042840`). ML loader: `ml_20260719_070024`. MegaCam: `20260719_000538`.
+Round-2 soak: MPS `exhaustive_mps_20260719_065105` (local); CANFAR staging CPU `exhaustive_cpu_20260719_083800` and CUDA `exhaustive_cuda_20260719_083810` (clone `main` @ e988504). ML loader: `ml_20260719_070024`. MegaCam: `20260719_000538`.
 
 
 
@@ -1075,14 +1075,7 @@ Latest local quick benchmark evidence:
 ### ML DataLoader throughput
 
 <!-- BENCH_ML_BEGIN -->
-Source: `docs/assets/bench/ml_20260719_070024/ml_results.csv` (device=cpu).
-
-| Case | Method | Median throughput |
-|---|---|---:|
-| ml_compressed_rice | `fitsio (comp)` | 406,679,282 pixels/s |
-| ml_compressed_rice | `torchfits (comp)` | 406,784,747 pixels/s |
-| ml_uncompressed | `fitsio + numpy` | 1,484,808,470 pixels/s |
-| ml_uncompressed | `torchfits` | 1,390,761,465 pixels/s |
+_Run `pixi run bench-ml` to populate ML loader throughput._
 <!-- BENCH_ML_END -->
 
 ### CFHT MegaCam MEF cutouts (local)

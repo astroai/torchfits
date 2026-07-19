@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clearer `TypeError` when inferring FITS TFORM from uint16/uint32/uint64.
 
 ### Docs
+- Round-2 scorecard: local MPS `exhaustive_mps_20260719_065105` plus CANFAR staging CPU/CUDA `exhaustive_*_20260719_0838*`.
 - Slim transform gallery; real Lupton RGB figure; removed spectral/continuum docs.
 - Core I/O docs point at `table.read_torch` / `table.scan_torch` (root aliases gone).
 - User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 + Legacy Survey one-epoch

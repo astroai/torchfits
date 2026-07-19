@@ -1,2 +1,0 @@
-run_id,domain,family,case_id,case_label,operation,mmap_target,host,torchfits_method,torchfits_time_s,torchfits_peak_rss_mb,best_library,best_method,best_time_s,best_peak_rss_mb,lag_ratio,pct_behind,n_points,perceived_impact
-exhaustive_cpu_20260717_040146,fitstable,specialized,narrow_1000000::predicate_filter,narrow_1000000 [predicate_filter],predicate_filter,off,torchfits-gpu-exhaustive-cpu-20260717-040146,torchfits_specialized,0.009568384848535061,393.83203125,astropy,astropy,0.008302922360599041,393.83203125,1.1524116971081395,15.241169710813951,1000000,visible
