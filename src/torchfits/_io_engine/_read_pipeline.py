@@ -16,7 +16,6 @@ from ..hdu import Header
 from .options import ReadOptions
 from .caches import (
     cache_stats,
-    get_cached_handle,
     get_cached_hdu_type,
 )
 
@@ -134,22 +133,6 @@ def _apply_scale_on_device(
     if bzero != 0.0:
         out = out.add(bzero)
     return out.to(device=device)
-
-
-def _read_unsigned_image_if_needed(
-    *,
-    cpp_module: Any,
-    path: str,
-    hdu_num: int,
-    effective_mmap: bool,
-    header: Header | None,
-) -> torch.Tensor | None:
-    """Read image data with unsigned integer convention handling.
-
-    Always defer to the C++ path, which handles unsigned conventions
-    natively for both mmap and non-mmap reads.
-    """
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -364,12 +347,10 @@ def read_unified(
             hdu=hdu,
             mmap=mmap,
             cache_capacity=cache_capacity,
-            handle_cache_capacity=handle_cache_capacity,
             fp16=fp16,
             bf16=bf16,
             force_image=force_image,
             resolve_image_mmap=resolve_image_mmap,
-            get_cached_handle=get_cached_handle,
             cache_stats=cache_stats,
             read_exc_types=read_exc_types,
             debug_scale=debug_scale,
@@ -567,22 +548,6 @@ def _read_batch_hdus(
         except TypeError:
             effective_mmap = True if isinstance(mmap, str) else mmap
             data = cpp_module.read_hdus_batch(path, list(hdu), effective_mmap)
-        effective_mmap = True if isinstance(mmap, str) else bool(mmap)
-        if not raw_scale and not (fp16 or bf16):
-            for idx, hdu_num in enumerate(hdu):
-                try:
-                    header = Header(cpp_module.read_header_dict(path, int(hdu_num)))
-                except Exception:
-                    header = None
-                unsigned = _read_unsigned_image_if_needed(
-                    cpp_module=cpp_module,
-                    path=path,
-                    hdu_num=int(hdu_num),
-                    effective_mmap=effective_mmap,
-                    header=header,
-                )
-                if unsigned is not None:
-                    data[idx] = unsigned
         if device != "cpu":
             data = batch_to_device(data, device)
         return data
@@ -650,12 +615,10 @@ def _read_cpu_fast_path(
     hdu: int,
     mmap: bool | str,
     cache_capacity: int,
-    handle_cache_capacity: int,
     fp16: bool,
     bf16: bool,
     force_image: bool,
     resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
-    get_cached_handle: Callable[[str, int], tuple[Any, bool]],
     cache_stats: dict[str, int],
     read_exc_types: tuple[type[BaseException], ...],
     debug_scale: bool,
@@ -665,7 +628,6 @@ def _read_cpu_fast_path(
     # One-shot full-image read: thin CFITSIO → Tensor (matches fitsio+from_numpy).
     # Handle-cache scaffolding (read_full_cached) is for persistent subset readers,
     # not single full reads — it lost ~15% to fitsio on hcompress.
-    _ = (handle_cache_capacity, get_cached_handle)
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
         if cache_capacity <= 0 and hasattr(cpp_module, "read_full_nocache"):

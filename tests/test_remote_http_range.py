@@ -247,7 +247,10 @@ def test_download_resume_appends_partial(tmp_path, allow_loopback, monkeypatch):
 
     class _Resp:
         status = 206
-        headers = {"Content-Length": str(len(body) - 10)}
+        headers = {
+            "Content-Length": str(len(body) - 10),
+            "Content-Range": f"bytes 10-{len(body) - 1}/{len(body)}",
+        }
         _payload: bytes
 
         def __init__(self) -> None:
@@ -271,3 +274,66 @@ def test_download_resume_appends_partial(tmp_path, allow_loopback, monkeypatch):
     with mock.patch("torchfits.data.remote.http_open", return_value=_Resp()):
         local = resolve_local_path(url, cache_dir=cache)
     assert Path(local).read_bytes() == body
+
+
+def test_http_read_range_rejects_wrong_content_range(monkeypatch):
+    class _Resp:
+        status = 206
+        headers = {"Content-Range": "bytes 0-3/100"}
+
+        def read(self, n: int = -1) -> bytes:
+            return b"bad!"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def getcode(self):
+            return 206
+
+    monkeypatch.setattr(http_util, "http_open", lambda *args, **kwargs: _Resp())
+    with pytest.raises(http_util.HttpRangeNotSatisfied, match="Content-Range"):
+        http_util.http_read_range("https://example.test/data.fits", 10, 13)
+
+
+def test_download_resume_rejects_incomplete_206(tmp_path, monkeypatch):
+    from torchfits.data.remote import cache_path_for_url, resolve_local_path
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/incomplete.fits"
+    dest = cache_path_for_url(url, cache_dir=cache)
+    partial = dest.with_suffix(dest.suffix + ".partial")
+    partial.write_bytes(b"a" * 10)
+
+    class _Resp:
+        status = 206
+        headers = {
+            "Content-Length": "10",
+            "Content-Range": "bytes 10-19/30",
+        }
+
+        def __init__(self) -> None:
+            self._payload = b"b" * 10
+
+        def read(self, n: int = -1) -> bytes:
+            data = self._payload
+            self._payload = b""
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def getcode(self):
+            return 206
+
+    with mock.patch("torchfits.data.remote.http_open", return_value=_Resp()):
+        with pytest.raises(OSError, match="incomplete Range download"):
+            resolve_local_path(url, cache_dir=cache)
+    assert not dest.exists()
+    assert partial.read_bytes() == b"a" * 10 + b"b" * 10

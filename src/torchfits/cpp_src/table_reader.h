@@ -2073,7 +2073,7 @@ public:
         // have a local path (same bytes, less CFITSIO overhead on cold opens).
         int data_fd = -1;
         LONGLONG data_offset = 0;
-        if (!filename_.empty() && filename_.find('[') == std::string::npos) {
+        if (!filename_.empty() && !has_cfitsio_extended_filename_syntax(filename_)) {
             LONGLONG headstart = 0, dataend = 0;
             int addr_status = 0;
             fits_get_hduaddrll(fptr_, &headstart, &data_offset, &dataend, &addr_status);

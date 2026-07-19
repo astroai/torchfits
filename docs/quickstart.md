@@ -157,6 +157,6 @@ read by name.
 - [Tables](api-tables.md) — `table.read`, pushdown, Polars/DuckDB
 - [ML with FITS](examples-ml.md) — Datasets, `make_loader`, Galaxy Zoo + MegaPipe examples
 - [Data module](api-data.md) — Dataset / loader API reference
-- [Transforms](api-transforms.md) — stretches, normalizers, spectral prep
+- [Transforms](api-transforms.md) — stretches, normalizers, clip, `as_module`
 - [CLI](cli.md) — shell inspect / cutout / convert
 - [Examples](examples.md) — runnable scripts

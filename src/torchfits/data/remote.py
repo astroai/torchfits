@@ -12,11 +12,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import logging
 import threading
+import warnings
 from pathlib import Path
 from typing import Iterable
 
-from torchfits.http_util import HttpBlockedError, http_open, http_timeout
+from torchfits.http_util import (
+    HttpBlockedError,
+    _parse_http_content_range,
+    http_open,
+    http_timeout,
+)
 from torchfits.vos_uri import is_vos_path as is_vos_path
 from torchfits.vos_uri import normalize_vos_uri as normalize_vos_uri
 
@@ -25,6 +32,8 @@ from torchfits.cache import remote_cache_root
 _REMOTE_PREFIXES = ("http://", "https://")
 _prefetch_lock = threading.Lock()
 _prefetch_threads: dict[str, threading.Thread] = {}
+_download_locks: dict[str, threading.Lock] = {}
+_log = logging.getLogger(__name__)
 
 
 def is_http_url(path: str) -> bool:
@@ -60,8 +69,24 @@ def _download_http(url: str, dest: Path) -> Path:
             url, headers=headers or None, timeout=http_timeout()
         ) as response:
             status = getattr(response, "status", None) or response.getcode()
+            content_range = _parse_http_content_range(
+                response.headers.get("Content-Range")
+            )
             # Server ignored Range → restart from scratch.
-            append = status == 206 and existing > 0
+            append = (
+                status == 206
+                and existing > 0
+                and content_range is not None
+                and content_range[0] == existing
+            )
+            if status == 206 and content_range is None:
+                raise OSError(f"{url}: invalid or missing Content-Range")
+            if status == 206 and existing > 0 and not append:
+                raise OSError(
+                    f"{url}: resumed response starts at "
+                    f"{None if content_range is None else content_range[0]}, "
+                    f"expected {existing}"
+                )
             if not append:
                 existing = 0
             mode = "ab" if append else "wb"
@@ -83,6 +108,20 @@ def _download_http(url: str, dest: Path) -> Path:
                 raise OSError(
                     f"{url}: short download ({wrote} bytes, expected {expected})"
                 )
+            if status == 206 and content_range is not None:
+                range_start, range_end, total = content_range
+                range_size = range_end - range_start + 1
+                final_size = existing + wrote
+                if (
+                    wrote != range_size
+                    or total is None
+                    or range_end + 1 != total
+                    or final_size != total
+                ):
+                    raise OSError(
+                        f"{url}: incomplete Range download "
+                        f"({final_size} bytes, total={total})"
+                    )
     except HttpBlockedError:
         raise
     tmp.replace(dest)
@@ -115,6 +154,17 @@ def _download(url: str, dest: Path) -> Path:
     return _download_http(url, dest)
 
 
+def _download_once(cache_key: str, url: str, dest: Path) -> Path:
+    # ponytail: process-local locks cover Dataset/prefetch threads; use lock files
+    # if cross-process download-on-demand is added.
+    with _prefetch_lock:
+        lock = _download_locks.setdefault(cache_key, threading.Lock())
+    with lock:
+        if dest.is_file():
+            return dest
+        return _download(url, dest)
+
+
 def resolve_local_path(
     path: str,
     *,
@@ -139,7 +189,7 @@ def resolve_local_path(
             return str(dest)
     if not download:
         return str(dest)
-    return str(_download(path, dest))
+    return str(_download_once(cache_key, path, dest))
 
 
 def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None:
@@ -156,11 +206,17 @@ def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None
             if existing is not None and existing.is_alive():
                 continue
 
-            def _job(u: str = url, d: Path = dest) -> None:
+            def _job(u: str = url, d: Path = dest, key: str = cache_key) -> None:
                 try:
-                    _download(u, d)
-                except Exception:
-                    pass  # ponytail: best-effort prefetch; next resolve retries
+                    _download_once(key, u, d)
+                except Exception as exc:
+                    # ponytail: best-effort prefetch; next resolve retries
+                    _log.warning("prefetch failed for %s: %s", u, exc)
+                    warnings.warn(
+                        f"prefetch failed for {u}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
 
             thread = threading.Thread(
                 target=_job, name="torchfits-prefetch", daemon=True

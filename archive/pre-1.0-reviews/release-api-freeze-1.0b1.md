@@ -39,7 +39,7 @@ None remaining.
 
 ## Defer to 1.0.0rc1
 
-**Closed in `docs/reviews/release-api-freeze-1.0.0rc1.md`.**
+**Closed in `release-api-freeze-1.0.0rc1.md`.**
 
 1. Fresh multi-host exhaustive scorecard refresh (cite new IDs in README/benchmarks).
 2. Clean-install wheel matrix across supported Python versions.

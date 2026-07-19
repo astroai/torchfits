@@ -88,10 +88,8 @@ docs-links = "pixi run python scripts/check_docs_links.py"
 bench-install = "pip install -e . --no-build-isolation"
 bench-fits = "pixi run -e bench-all bench-install && pixi run -e bench-all python benchmarks/bench_all.py --profile user --fits-only"
 bench-fitstable = "pixi run -e bench-all bench-install && pixi run -e bench-all python benchmarks/bench_all.py --profile user --fitstable-only"
-bench-fast = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_fast.py --output benchmark_results/fast_results.csv"
-bench-mps = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_fast.py --device mps --output benchmark_results/mps_fast_results.csv"
-bench-fast-stable = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_fast.py --output benchmark_results/fast_results.csv --torch-threads 1 --compressed-repeats 3"
-bench-core = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_fast.py"
+# Same command as bench-fits; mnemonic for Apple Silicon hosts (device picked at runtime).
+bench-mps = "pixi run bench-fits"
 bench-table-arrow = "pixi run -e bench bench-install && pixi run -e bench python benchmarks/bench_arrow_tables.py"
 
 # Comprehensive benchmarks (renamed from exhaustive)

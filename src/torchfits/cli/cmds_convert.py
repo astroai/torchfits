@@ -94,7 +94,10 @@ def _band_indices(raw: str | None, num_inputs: int) -> list[int]:
             return [0, 1, 2]
         if num_inputs == 3:
             return [0, 0, 0]
-        raise UsageError("png convert needs one file plus --bands or three band files")
+        raise UsageError(
+            f"png convert got {num_inputs} input path(s); need one FITS file "
+            "(optionally with --bands 0,1,2) or exactly three band files"
+        )
     try:
         indices = [int(part.strip()) for part in raw.split(",") if part.strip()]
     except ValueError:

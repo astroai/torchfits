@@ -11,6 +11,7 @@ Transforms live under :mod:`torchfits.transforms`. Arrow tables under
 from __future__ import annotations
 
 import os
+import threading
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
@@ -30,19 +31,14 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "read": ("torchfits.io", "read"),
     "write": ("torchfits.io", "write"),
     "open": ("torchfits.io", "open"),
-    "get_header": ("torchfits.io", "get_header"),
     "read_header": ("torchfits.io", "read_header"),
     "read_tensor": ("torchfits.io", "read_tensor"),
-    "read_table": ("torchfits.io", "read_table"),
     "read_hdus": ("torchfits.io", "read_hdus"),
     "read_subset": ("torchfits.io", "read_subset"),
     "open_subset_reader": ("torchfits.io", "open_subset_reader"),
     "read_batch": ("torchfits.io", "read_batch"),
-    "get_batch_info": ("torchfits.io", "get_batch_info"),
     "read_batch_info": ("torchfits.io", "read_batch_info"),
     "get_cache_performance": ("torchfits.io", "get_cache_performance"),
-    "read_table_rows": ("torchfits.io", "read_table_rows"),
-    "stream_table": ("torchfits.io", "stream_table"),
     "clear_file_cache": ("torchfits.io", "clear_file_cache"),
     "verify_checksums": ("torchfits.io", "verify_checksums"),
     "insert_hdu": ("torchfits.io", "insert_hdu"),
@@ -69,10 +65,8 @@ __all__ = tuple(
         "read",
         "write",
         "open",
-        "get_header",
         "read_header",
         "read_tensor",
-        "read_table",
         "read_hdus",
         "read_subset",
         "open_subset_reader",
@@ -83,11 +77,8 @@ __all__ = tuple(
         "TableHDU",
         "TableHDURef",
         "read_batch",
-        "get_batch_info",
         "read_batch_info",
         "get_cache_performance",
-        "read_table_rows",
-        "stream_table",
         "clear_file_cache",
         "verify_checksums",
         "insert_hdu",
@@ -103,6 +94,10 @@ __all__ = tuple(
 )
 
 _RUNTIME_INITIALIZED = False
+_ATTR_CACHE: dict[str, Any] = {}
+# RLock: loading a namespace (e.g. table) may re-enter __getattr__ via
+# ``from torchfits import fits_schema`` / similar relative imports.
+_ATTR_LOCK = threading.RLock()
 
 
 def _positive_env_int(name: str, default: int) -> int:
@@ -147,31 +142,35 @@ def _ensure_runtime_init() -> None:
 
 
 def __getattr__(name: str) -> Any:
-    if name in _NAMESPACES:
-        if name == "cpp":
+    cached = _ATTR_CACHE.get(name)
+    if cached is not None:
+        return cached
+
+    with _ATTR_LOCK:
+        cached = _ATTR_CACHE.get(name)
+        if cached is not None:
+            return cached
+
+        if name in _NAMESPACES:
+            if name == "cpp":
+                _ensure_runtime_init()
+            value: Any = import_module(_NAMESPACES[name])
+        elif name in _ROOT_FUNCTIONS:
             _ensure_runtime_init()
-        module = import_module(_NAMESPACES[name])
-        globals()[name] = module
-        return module
+            module_name, attr_name = _ROOT_FUNCTIONS[name]
+            value = getattr(import_module(module_name), attr_name)
+        elif name in _ROOT_OBJECTS:
+            module_name, attr_name = _ROOT_OBJECTS[name]
+            value = getattr(import_module(module_name), attr_name)
+        else:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    if name in _ROOT_FUNCTIONS:
-        _ensure_runtime_init()
-        module_name, attr_name = _ROOT_FUNCTIONS[name]
-        value = getattr(import_module(module_name), attr_name)
-        globals()[name] = value
+        _ATTR_CACHE[name] = value
         return value
-
-    if name in _ROOT_OBJECTS:
-        module_name, attr_name = _ROOT_OBJECTS[name]
-        value = getattr(import_module(module_name), attr_name)
-        globals()[name] = value
-        return value
-
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(__all__) | set(_ATTR_CACHE))
 
 
 if TYPE_CHECKING:
@@ -192,10 +191,8 @@ if TYPE_CHECKING:
     from .hdu import TensorHDU as TensorHDU
     from .io import clear_file_cache as clear_file_cache
     from .io import delete_hdu as delete_hdu
-    from .io import get_batch_info as get_batch_info
     from .io import read_batch_info as read_batch_info
     from .io import get_cache_performance as get_cache_performance
-    from .io import get_header as get_header
     from .io import read_header as read_header
     from .io import insert_hdu as insert_hdu
     from .io import open as open
@@ -204,11 +201,8 @@ if TYPE_CHECKING:
     from .io import read_batch as read_batch
     from .io import read_hdus as read_hdus
     from .io import read_subset as read_subset
-    from .io import read_table as read_table
-    from .io import read_table_rows as read_table_rows
     from .io import read_tensor as read_tensor
     from .io import replace_hdu as replace_hdu
-    from .io import stream_table as stream_table
     from .io import verify_checksums as verify_checksums
     from .io import write as write
     from .io import write_checksums as write_checksums

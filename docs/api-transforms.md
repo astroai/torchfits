@@ -1,6 +1,6 @@
 # Transforms
 
-Header-aware preprocessing for FITS images, spectra, and tables.
+Header-aware preprocessing for FITS images and tables.
 
 ## When to use
 
@@ -18,22 +18,14 @@ Wire a pipeline into training with `FitsTensorDataset(..., transform=pipeline)`
 or call it on a tensor from `read_tensor`. See [Data module](api-data.md) for
 when to introduce a Dataset / `make_loader`.
 
-!!! note "1.0 transform boundary (rc)"
-    **Core (kept):** stretches, zscale / robust norms, FITS BSCALE / null
-    hygiene, basic continuum divide/subtract.
-    **Advanced (frozen for 1.0):** ALS / alpha-shape / BandMath / PhaseFold /
-    wavelet and specialty continuum estimators stay in-tree; no expansion this
-    rc cycle — candidates for torchsky later. Treat the advanced set as
-    stable-but-not-growing until 1.0.0 ships.
-
 !!! note "RGB"
-    1.0 ships Lupton asinh RGB via `torchfits.transforms.lupton_rgb` (same as
-    `torchfits convert … --to png`). Richer multi-band variants → **1.1**.
+    Lupton asinh RGB ships via `torchfits.transforms.lupton_rgb` (same as
+    `torchfits convert … --to png`).
 
 All transforms implement the `FITSTransform` callable protocol
 (`forward` / `inverse` / `__call__`). They are **not**
-`torch.nn.Module` subclasses — use them as callables with
-`torch.utils.data.Dataset` / `DataLoader`. Inverse state is
+`torch.nn.Module` subclasses — wrap with :func:`as_module` (or
+:class:`AsModule`) for `nn.Sequential`. Inverse state is
 **instance-local** (`_last_*` fields); construct one pipeline per worker
 when `num_workers > 0`.
 
@@ -57,16 +49,16 @@ pipeline.inverse(normalized, mask=finite_mask)
 
 | Kind | `inverse()` |
 |---|---|
-| Stretches, normalizers, FITS scale, continuum divide/subtract, baseline estimators, wavelet | Yes (state cached on the instance) |
-| `BandMath`, `PhaseFold`, `SigmaClip`, `AsymmetricSigmaClip`, `TNullToNan` | No — lossy / many-to-one |
+| Stretches, normalizers, FITS scale | Yes (state cached on the instance) |
+| `SigmaClip`, `AsymmetricSigmaClip`, `TNullToNan` | No — lossy / many-to-one |
 
 Stateless stretches are the most likely to work under `torch.compile`;
 data-dependent normalizers cache Python-side state and may graph-break.
 There is no certified compile matrix yet.
 
 The implementation lives under `torchfits.transforms` as a small package
-(`stretch`, `normalize`, `fits_meta`, `spectral`, `continuum`,
-`clip`) re-exported from `torchfits.transforms`.
+(`stretch`, `normalize`, `fits_meta`, `clip`, `rgb`) re-exported from
+`torchfits.transforms`.
 
 ---
 
@@ -239,268 +231,7 @@ $\sqrt{\text{mean}(x^2)}$ (RMS).
 
 !!! info "When to use"
     When you want the simplest possible normalization — just scale by the
-    typical value. Good for quick comparisons between spectra.
-
----
-
-## Spectral Transforms
-
-1D astronomy-specific transforms for spectra and hyperspectral cubes.
-
-### `ContinuumNormalize(order=3, n_sigma=2.0, max_iter=3)`
-
-Fit polynomial continuum with sigma-clipping, then **divide** spectrum by it.
-
-1. Build Vandermonde matrix $A$ of size $[L, \text{order}+1]$ on $t \in [-1, 1]$.
-2. Iteratively solve $(A^T W A + \lambda I) c = A^T W y$ with sigma-clipped weights.
-3. Continuum $= Ac$
-
-$$\text{output} = \frac{x}{\max(|\text{continuum}|,\ 10^{-30})}$$
-
-**Inverse:** $x = \text{output} \times \text{continuum}$
-
-| Param | Default | Description |
-|---|---|---|
-| `order` | `3` | Polynomial order |
-| `n_sigma` | `2.0` | Sigma-clipping threshold |
-| `max_iter` | `3` | Max clipping iterations |
-
-!!! info "When to use"
-    Standard step in stellar/galaxy spectroscopy. Removes the broad continuum
-    shape so absorption/emission features can be analyzed. Use before
-    measuring equivalent widths or feeding spectra to ML models.
-
-### `ContinuumRemoval(method="polynomial", order=3, n_knots=10)`
-
-Fit continuum and **subtract** it (additive decomposition).
-
-- `method="polynomial"`: same polynomial fit as `ContinuumNormalize`.
-- `method="spline"`: cubic B-spline via $(B^T W B + \lambda I)c = B^T W y$.
-
-$$\text{output} = x - \text{baseline}$$
-
-**Inverse:** $x = \text{output} + \text{baseline}$
-
-| Param | Default | Description |
-|---|---|---|
-| `method` | `"polynomial"` | `"polynomial"` or `"spline"` |
-| `order` | `3` | Polynomial order (if polynomial) |
-| `n_knots` | `10` | B-spline knots (if spline) |
-| `n_sigma` | `2.0` | Sigma-clipping threshold |
-| `max_iter` | `3` | Max iterations |
-
-!!! info "When to use"
-    Use when you want to isolate spectral features by removing the baseline
-    additively (unlike `ContinuumNormalize` which divides). Better for
-    emission-line spectra where you want to measure line fluxes.
-
-### `DopplerShift(z=0.0)`
-
-Redshift/blueshift via linear interpolation resampling.
-
-$$L_{\text{new}} = \max(2,\ \lfloor L \cdot (1 + z) \rfloor)$$
-
-Resamples the last dimension by factor $(1 + z)$ using `F.interpolate`.
-
-**Inverse:** Applies opposite shift $1/(1+z)$.
-
-| Param | Default | Description |
-|---|---|---|
-| `z` | `0.0` | Redshift (+ = redshift, − = blueshift) |
-
-!!! info "When to use"
-    Data augmentation for spectral ML — randomly shift spectra to improve
-    redshift robustness. Also used to correct known redshifts.
-
-### `SpectralBinning(factor=2, mode="mean", dim=-1)`
-
-Bin adjacent channels. Trailing partial bins are dropped.
-
-$$\text{output} = \text{reduce}(x_{\text{reshaped}},\ \text{along factor dim})$$
-
-- `mode="mean"`: $\text{mean}$ — flux-conserving.
-- `mode="sum"`: $\text{sum}$ — total flux per bin.
-
-**Inverse:** Nearest-neighbour repeat upsample (pads with zeros if trailing bins were dropped).
-
-| Param | Default | Description |
-|---|---|---|
-| `factor` | `2` | Channels per bin |
-| `mode` | `"mean"` | `"mean"` or `"sum"` |
-| `dim` | `-1` | Spectral dimension |
-
-!!! info "When to use"
-    Increase signal-to-noise by trading spectral resolution. Use factor=2 for
-    a quick SNR boost, or larger factors for coarse binning.
-
-### `BandMath(func, band_dim=0)`
-
-!!! note "Advanced"
-    Generic NDVI-style band arithmetic — not FITS-specific. Prefer survey
-    code or a one-liner for most pipelines.
-
-Dimension-agnostic band arithmetic via `torch.unbind`.
-
-$$\text{output} = \text{func}(\text{bands})$$
-
-**Inverse:** None (lossy).
-
-| Param | Default | Description |
-|---|---|---|
-| `func` | *(required)* | Callable receiving tuple of band tensors |
-| `band_dim` | `0` | Dimension containing spectral bands |
-
-```python
-# NDVI for remote sensing
-ndvi = BandMath(lambda b: (b[3] - b[2]) / (b[3] + b[2] + 1e-8))
-```
-!!! info "When to use"
-    Compute spectral indices (NDVI, color ratios, etc.) from multi-band data.
-    The function receives unbound band tensors and can do any arithmetic.
-
----
-
-## Continuum / Baseline Estimators
-
-Additive decomposition: $\text{Original} = \text{Estimate} + \text{Residuals}$.
-`inverse()` re-adds stored residuals for perfect recovery.
-
-### `SavitzkyGolayFilter(window_length=7, polyorder=3, dim=-1)`
-
-Polynomial smoothing via conv1d with pre-computed SG coefficients.
-
-Solves least-squares polynomial fit at each window position:
-
-$$c = \text{lstsq}(A,\ y_{\text{impulse}})$$
-
-where $A$ is the Vandermonde matrix for positions $[-h, \ldots, h]$.
-
-**Inverse:** $x = \text{output} + \text{residuals}$
-
-| Param | Default | Description |
-|---|---|---|
-| `window_length` | `7` | Odd window length (≥ 3) |
-| `polyorder` | `3` | Polynomial order (< `window_length`) |
-| `dim` | `-1` | Dimension to filter along |
-
-!!! info "When to use"
-    Fast, non-parametric smoothing that preserves peaks better than a moving
-    average. Good for cleaning spectra before continuum fitting.
-
-### `RunningPercentile(percentile=90, window_size=21, dim=-1)`
-
-Sliding-window percentile via `unfold` + `torch.quantile`.
-
-$$\text{continuum}[i] = Q_{\text{percentile}/100}(\text{window centered at } i)$$
-
-**Inverse:** $x = \text{output} + \text{residuals}$
-
-| Param | Default | Description |
-|---|---|---|
-| `percentile` | `90.0` | Percentile for each window |
-| `window_size` | `21` | Odd sliding window size |
-| `dim` | `-1` | Dimension to filter along |
-
-!!! info "When to use"
-    Robust continuum estimate that ignores absorption features (use high
-    percentile like 90-95) or emission features (use low percentile like 5-10).
-
-### `UpperEnvelopeContinuum(window=11, smooth=0.0, dim=-1)`
-
-Local-max detection + linear interpolation between maxima.
-
-1. Detect local maxima within window.
-2. Linearly interpolate between nearest left/right maxima.
-3. Optional Gaussian smoothing.
-
-**Inverse:** $x = \text{output} + \text{residuals}$
-
-| Param | Default | Description |
-|---|---|---|
-| `window` | `11` | Half-width for local-max detection |
-| `smooth` | `0.0` | Gaussian smoothing sigma (0 = none) |
-| `dim` | `-1` | Dimension to operate along |
-
-!!! info "When to use"
-    Fast upper-envelope estimate. Works well for emission-dominated spectra
-    where the continuum connects the peaks.
-
-### `AsymmetricLeastSquares(lam=1e5, p=0.01, max_iter=10, dim=-1, envelope="lower")`
-
-!!! note "Advanced"
-    Raman/NIR specialty baseline. Prefer `UpperEnvelopeContinuum` or
-    `SavitzkyGolayFilter` for generic astronomy spectra unless you need ALS.
-
-Eilers (2003) penalized baseline with asymmetric weights. Standard in Raman
-and NIR spectroscopy.
-
-Iteratively solves $(W + \lambda D^T D)z = Wy$ where:
-- $D$ is the second-difference operator.
-- $W$ is diagonal with $w_i = p$ if $y_i > z_i$, else $w_i = 1-p$ (for `envelope="lower"`).
-
-Solved via O(n) banded Cholesky factorization (pentadiagonal matrix).
-
-**Inverse:** $x = \text{output} + \text{residuals}$
-
-| Param | Default | Description |
-|---|---|---|
-| `lam` | `1e5` | Smoothness (larger = stiffer baseline) |
-| `p` | `0.01` | Asymmetry weight in (0, 1) |
-| `max_iter` | `10` | Max reweighting iterations |
-| `dim` | `-1` | Dimension to operate along |
-| `envelope` | `"lower"` | `"lower"` (hug absorption) or `"upper"` (hug emission) |
-
-!!! info "When to use"
-    The gold standard for baseline estimation in vibrational spectroscopy
-    (Raman, NIR, IR). Produces smooth baselines that closely follow the lower
-    envelope of broad fluorescence backgrounds.
-
-### `AlphaShapeContinuum(half_window=15, iterations=1, dim=-1)`
-
-!!! note "Advanced"
-    Morphological upper-envelope variant. Prefer `UpperEnvelopeContinuum`
-    unless you specifically want closing (dilate+erode).
-
-Morphological closing (dilation then erosion) via `unfold`.
-
-$$\text{dilated} = \text{max-pool}(x,\ \text{window}=2h+1)$$
-
-$$\text{continuum} = \text{min-pool}(\text{dilated},\ \text{window}=2h+1)$$
-
-**Inverse:** $x = \text{output} + \text{residuals}$
-
-| Param | Default | Description |
-|---|---|---|
-| `half_window` | `15` | Half-width of structuring element |
-| `iterations` | `1` | Number of closing operations |
-| `dim` | `-1` | Dimension to operate along |
-
-!!! info "When to use"
-    Guaranteed upper envelope. Fast and non-parametric. Good for emission
-    spectra where the continuum connects peaks.
-
-### `WaveletDecompose(levels=3, dim=-1)`
-
-Multi-level Haar discrete wavelet transform. Fully invertible frequency split.
-
-At each level:
-
-$$\text{approx}[i] = \frac{x[2i] + x[2i+1]}{2}, \qquad \text{detail}[i] = \frac{x[2i] - x[2i+1]}{2}$$
-
-Output: $[\text{approx}_L, \text{detail}_L, \ldots, \text{detail}_1]$
-
-**Inverse:** Reconstructs via inverse Haar DWT:
-$x[2i] = \text{approx}[i] + \text{detail}[i]$, $x[2i+1] = \text{approx}[i] - \text{detail}[i]$.
-
-| Param | Default | Description |
-|---|---|---|
-| `levels` | `3` | Decomposition levels (1–8) |
-| `dim` | `-1` | Dimension to decompose along |
-
-!!! info "When to use"
-    Multi-scale analysis of spectra or images. The approximation coefficients
-    capture the broad continuum; details capture noise and features at
-    different scales. Fully invertible — no information is lost.
+    typical value. Good for quick per-image scaling before comparison.
 
 ---
 
@@ -549,34 +280,6 @@ Outliers replaced with median.
     Faster than iterative sigma-clip. Use different `n_low`/`n_high` when
     the outlier distribution is asymmetric (e.g., bright stars are more
     common than dark holes).
-
----
-
-## Time-Domain
-
-### `PhaseFold(period=1.0, n_bins=64, t0=0.0)`
-
-!!! note "Advanced"
-    Time-series / variable-star tool — lossy. Not part of the core FITS image
-    ML path.
-
-Fold periodic time series into phase bins.
-
-$$\text{phase}[i] = \left(\frac{t_i - t_0}{\text{period}}\right) \bmod 1$$
-
-Bin each sample by phase into `n_bins` uniform bins in $[0, 1)$.
-
-**Inverse:** None (many-to-one, lossy).
-
-| Param | Default | Description |
-|---|---|---|
-| `period` | `1.0` | Folding period |
-| `n_bins` | `64` | Number of phase bins (≥ 2) |
-| `t0` | `0.0` | Phase zero-point |
-
-!!! info "When to use"
-    Essential for variable star and exoplanet transit analysis. Folds noisy
-    time series into a clean phase curve.
 
 ---
 
@@ -662,6 +365,27 @@ original = pipeline.inverse(normalized)
 
 Base class for custom transforms. Override `forward()` and optionally
 `inverse()`. `__call__` delegates to `forward()`. Not an `nn.Module`.
+
+### `as_module(transform)` / `AsModule`
+
+Wrap a `FITSTransform` as a thin `nn.Module` for `nn.Sequential`:
+
+```python
+import torch.nn as nn
+from torchfits.transforms import ArcsinhStretch, as_module
+
+model = nn.Sequential(as_module(ArcsinhStretch(a=0.1)), nn.Linear(64, 10))
+```
+
+Only the forward pass is exposed; call `transform.inverse` on the wrapped
+instance for undo.
+
+### `lupton_rgb(i, r, g, *, Q=8.0, stretch=0.15)`
+
+Lupton asinh RGB from three single-band tensors (same shape). Returns a
+`[H, W, 3]` float tensor in `[0, 1]`. Matches Astropy's
+`make_lupton_rgb` / `LuptonAsinhStretch` mapping. See
+`examples/example_lupton_rgb_sdss.py`.
 
 #### Writing a custom transform
 
@@ -750,16 +474,13 @@ Import transform classes from `torchfits.transforms` (namespace-only since
 
 ```python
 from torchfits.transforms import (
-    ArcsinhStretch, BackgroundSubtract, Compose, ZScaleNormalize,
+    ArcsinhStretch, AsModule, BackgroundSubtract, Compose, ZScaleNormalize,
     RobustNormalize, MinMaxNormalize, PercentileClipNormalize,
-    LogStretch, SqrtStretch,
-    SpectralBinning, ContinuumRemoval, BandMath, ContinuumNormalize,
-    DopplerShift, PhaseFold, GlobalScalarNorm,
-    SavitzkyGolayFilter, RunningPercentile, UpperEnvelopeContinuum,
-    WaveletDecompose, AsymmetricLeastSquares, AlphaShapeContinuum,
+    LogStretch, SqrtStretch, GlobalScalarNorm,
     AsymmetricSigmaClip, SigmaClip,
     FITSScaleColumns, TNullToNan, FITSHeaderNormalize,
+    as_module, lupton_rgb,
 )
 ```
 See `examples/example_transforms.py` (image pipeline) and
-`examples/example_hyperspectral.py` (spectral cube) for runnable demos.
+`examples/example_lupton_rgb_sdss.py` (Lupton RGB) for runnable demos.

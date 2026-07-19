@@ -9,8 +9,8 @@
 | Prerequisite | Status |
 |---|---|
 | Lean Python API (0.9.2 cuts) | Done |
-| Thermonuclear review | Done (`docs/reviews/thermo-nuclear-0.9.2.md`) |
-| Transforms profound review | Done (`docs/reviews/transforms-1.0.md`); catalog keep-all with doc demotions |
+| Thermonuclear review | Done (`thermo-nuclear-0.9.2.md`) |
+| Transforms profound review | Superseded — continuum/spectral deleted in 1.0 triage; keep stretch/normalize/clip/fits_meta/lupton |
 | CLI one-word MEF surface | Done (`docs/cli.md`, `torchfits` entry point) |
 | Archive probe | Local + HTTP(S) range header probe; `vos:` deferred |
 | Fresh multi-host exhaustive scorecard | Published IDs kept (`…190646` / `…191252` / `…191255`); scorecard re-patched 2026-07-16. Local `exhaustive_mps_20260717_000853` started; CANFAR re-create returned HTTP 400 from this workspace |

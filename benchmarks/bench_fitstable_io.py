@@ -336,7 +336,7 @@ def _bench_case(
                 mmap=target_memmap,
                 **_TF_READ_NO_CACHE,
             ),
-            "torchfits_specialized": lambda: torchfits.read_table(
+            "torchfits_specialized": lambda: torchfits.table.read_torch(
                 str(path), hdu=1, mmap=target_memmap, **_TF_NO_CACHE
             ),
             "astropy": lambda: _astropy_read_full(path, memmap=target_memmap),
@@ -356,7 +356,7 @@ def _bench_case(
                 columns=proj_cols,
                 **_TF_READ_NO_CACHE,
             ),
-            "torchfits_specialized": lambda: torchfits.read_table(
+            "torchfits_specialized": lambda: torchfits.table.read_torch(
                 str(path),
                 hdu=1,
                 columns=proj_cols,
@@ -385,7 +385,7 @@ def _bench_case(
                 num_rows=row_slice_n,
                 **_TF_READ_NO_CACHE,
             ),
-            "torchfits_specialized": lambda: torchfits.read_table_rows(
+            "torchfits_specialized": lambda: torchfits.table.read_torch(
                 str(path),
                 hdu=1,
                 start_row=row_slice_start,
@@ -621,7 +621,7 @@ def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow:
     # Smart family scores the Tensor contract against fitsio_torch peers —
     # not Arrow interchange latency vs torch.from_numpy().
     _ = has_pyarrow
-    data = torchfits.read_table(
+    data = torchfits.table.read_torch(
         str(path), hdu=1, columns=[col], mmap=mmap, **_TF_NO_CACHE
     )
     values = data[col]
@@ -653,12 +653,12 @@ def _torchfits_filter_col_local(path: Path, *, col: str, mmap: bool):
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
     _ = col, mmap, has_pyarrow
     # Peer contract: NAXIS2 / get_nrows — not a column materialize.
-    return int(torchfits.get_header(str(path), hdu=1).get("NAXIS2", 0))
+    return int(torchfits.read_header(str(path), hdu=1).get("NAXIS2", 0))
 
 
 def _torchfits_scan_count_local(path: Path, *, col: str, mmap: bool):
     _ = col, mmap
-    return int(torchfits.get_header(str(path), hdu=1).get("NAXIS2", 0))
+    return int(torchfits.read_header(str(path), hdu=1).get("NAXIS2", 0))
 
 
 def _make_row(

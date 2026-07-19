@@ -6,6 +6,7 @@ These are the slow-but-reliable paths used when fast-path conditions are not met
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -15,7 +16,6 @@ from ..hdu import Header
 from ._read_pipeline import (
     _coerce_bit_table_columns,
     _coerce_unsigned_table_columns,
-    _read_unsigned_image_if_needed,
 )
 from .caches import (
     cache_stats,
@@ -24,6 +24,8 @@ from .caches import (
     path_signature,
     set_cached_hdu_type,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def read_fallback(
@@ -82,7 +84,13 @@ def read_fallback(
                 if hasattr(cpp_module, "resolve_hdu_name_cached"):
                     try:
                         hdu_num = int(cpp_module.resolve_hdu_name_cached(path, hdu))
-                    except Exception:
+                    except Exception as exc:
+                        _log.debug(
+                            "resolve_hdu_name_cached(%r, %r) failed: %s",
+                            path,
+                            hdu,
+                            exc,
+                        )
                         hdu_num = None
 
                 if hdu_num is None:
@@ -211,17 +219,7 @@ def read_fallback_image(
             header = Header(header_data)
         except Exception:
             header = None
-    data = None
-    if isinstance(hdu_num, int) and not (fp16 or bf16):
-        data = _read_unsigned_image_if_needed(
-            cpp_module=cpp_module,
-            path=path,
-            hdu_num=hdu_num,
-            effective_mmap=bool(effective_mmap),
-            header=header,
-        )
-    if data is None:
-        data = cpp_module.read_full(file_handle, hdu_num, effective_mmap)
+    data = cpp_module.read_full(file_handle, hdu_num, effective_mmap)
 
     if fp16:
         data = data.to(torch.float16)

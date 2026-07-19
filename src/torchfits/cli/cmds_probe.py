@@ -50,13 +50,11 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     parser.add_argument(
         "--header-bytes",
-        "--bytes",
         type=int,
         default=_DEFAULT_HEADER_BYTES,
         dest="header_bytes",
         help=(
-            f"bytes to fetch for remote header peek "
-            f"(default: {_DEFAULT_HEADER_BYTES}; --bytes is a deprecated alias)"
+            f"bytes to fetch for remote header peek (default: {_DEFAULT_HEADER_BYTES})"
         ),
     )
     parser.add_argument(

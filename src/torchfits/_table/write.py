@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Any
 
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 from ..io import _normalize_cpp_table_data, _write_header_cards_if_supported
+
+_log = logging.getLogger(__name__)
 
 
 def write(
@@ -270,5 +273,5 @@ def _resolve_table_hdu_index_and_columns(
     finally:
         try:
             handle.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("table write: failed to close handle for %r: %s", path, exc)

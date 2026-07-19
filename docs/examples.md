@@ -1,7 +1,9 @@
 # Examples
 
-Short worked examples with real outputs. Full scripts live under
-[`published-examples/`](published-examples/README.md). Smoke suite:
+Short worked examples with real outputs. Runnable scripts live in the repo
+Runnable scripts live in the repo `examples/` tree; docs builds copy them to
+[`published-examples/`](published-examples/README.md) for the site. Smoke suite:
+
 
 ```bash
 pixi run python examples/test_examples.py
@@ -47,7 +49,6 @@ fallbacks or a clean `SKIP:` exit where no fallback exists.
 | Learn Astropy — FITS cubes | `radio_cube_c14` | [`example_image_cube.py`](published-examples/example_image_cube.py) |
 | Astropy photometry tutorial | `spitzer_example` | [`example_cutout_wcs_write.py`](published-examples/example_cutout_wcs_write.py) |
 | Astropy visualization — reprojected SDSS g/r/i | `sdss_lupton_g/r/i` | [`example_lupton_rgb_sdss.py`](published-examples/example_lupton_rgb_sdss.py) |
-| SDSS DR16 spectrum | `sdss_spectrum` | [`gallery_spectra.py`](published-examples/gallery_spectra.py) |
 | SDSS MaNGA DR17 LOGCUBE | `manga_logcube` | [`example_manga_logcube.py`](published-examples/example_manga_logcube.py) |
 | CFHT MegaCam (CADC) | MEF `.fits.fz` exposures | [`example_megacam_mef_cutouts.py`](published-examples/example_megacam_mef_cutouts.py) |
 | Galaxy Zoo 1 + Legacy Survey cutouts | `galaxy_zoo1_table2` + LS FITS stamps | [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py) |
@@ -142,7 +143,7 @@ restored = pipeline.inverse(out)
 
 ![Compose pipeline](assets/gallery/image_compose_pipeline.png)
 
-Full gallery (continuum, Lupton RGB, LC): [Transform gallery](examples-transforms.md).
+Full gallery (Lupton RGB, light-curve clip): [Transform gallery](examples-transforms.md).
 Script: [`example_transforms.py`](published-examples/example_transforms.py).
 Custom subclass: [`example_custom_transform.py`](published-examples/example_custom_transform.py).
 
@@ -201,12 +202,11 @@ Recipes: [CLI recipes](cli-recipes.md). Shell demo:
 | [`example_polars.py`](published-examples/example_polars.py) | `read_polars` / `scan_polars` |
 | [`example_table_recipes.py`](published-examples/example_table_recipes.py) | scanner, DuckDB |
 
-### Training / spectra / time series
+### Training / time series
 
 | Script | Demonstrates |
 |---|---|
-| [`example_hyperspectral.py`](published-examples/example_hyperspectral.py) | cube transforms |
-| [`example_time_series.py`](published-examples/example_time_series.py) | phase fold, sigma clip |
+| [`example_time_series.py`](published-examples/example_time_series.py) | FITS table light curve + asymmetric sigma clip |
 | [`example_custom_transform.py`](published-examples/example_custom_transform.py) | subclassing `FITSTransform`, `Compose`, Dataset wiring |
 | [`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py) | `make_loader` vs plain `DataLoader` |
 | [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py) | GZ1 labels + Legacy Survey FITS cutouts → Dataset → tiny CNN ([ML guide](examples-ml.md)) |
@@ -217,8 +217,7 @@ Recipes: [CLI recipes](cli-recipes.md). Shell demo:
 | Script | Output |
 |---|---|
 | [`gallery_images.py`](published-examples/gallery_images.py) | image before/after PNGs |
-| [`gallery_spectra.py`](published-examples/gallery_spectra.py) | continuum / Doppler plots |
-| [`gallery_tables_lc.py`](published-examples/gallery_tables_lc.py) | light-curve plots |
+| [`gallery_tables_lc.py`](published-examples/gallery_tables_lc.py) | light-curve / table plots |
 
 Samples cache under `~/.cache/torchfits/samples/`. CI sets
 `TORCHFITS_EXAMPLE_FAST=1` to skip downloads.

@@ -183,67 +183,22 @@ sci, wht, msk = torchfits.read_hdus("mef.fits", hdus=["SCI", "WHT", "MASK"])
 
 ---
 
-## `read_table()`
+## Table tensors (see [Tables](api-tables.md))
 
-Root alias of [`table.read_torch`](api-tables.md#tableread_torch): read a FITS
-table (dataframe on disk) as column tensors for training.
+Root aliases `read_table` / `read_table_rows` / `stream_table` were removed in
+1.0. Use:
 
-```python
-torchfits.read_table(path, hdu=1, columns=None, start_row=1, num_rows=-1,
-                     device="cpu", mmap="auto", cache_capacity=10,
-                     handle_cache_capacity=16, fast_header=True,
-                     return_header=False)
-```
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `path` | `str` | *(required)* | FITS file path |
-| `hdu` | `int` | `1` | Table HDU index |
-| `columns` | `list[str]` or `None` | `None` | Column names (None = all) |
-| `start_row` | `int` | `1` | First row (1-indexed) |
-| `num_rows` | `int` | `-1` | Number of rows (-1 = all) |
-| `device` | `str` | `"cpu"` | Target device |
-
-**Returns:** `dict[str, torch.Tensor]`
-
-!!! info "When to use"
-    Prefer `table.read_torch()` in new code. Use this root alias when you want
-    dataframe columns as tensors. For Arrow/Polars dataframes with `where=`,
-    use `table.read()` / `table.read_polars()`.
-
----
-
-## `read_table_rows()`
-
-Sugar on `read_table` / `table.read_torch` for a contiguous row range
-(`num_rows` must be `> 0`).
+| Need | API |
+|---|---|
+| Full / sliced column tensors | [`table.read_torch`](api-tables.md#tableread_torch) |
+| Streaming tensor chunks | [`table.scan_torch`](api-tables.md#tablescan_torch) |
+| Arrow / Polars / `where=` | [`table.read`](api-tables.md) / `table.read_polars` |
 
 ```python
-torchfits.read_table_rows(path, hdu=1, start_row=1, num_rows=1000,
-                          columns=None, device="cpu", mmap=True)
-```
-
-**Returns:** `dict[str, torch.Tensor]`
-
----
-
-## `stream_table()`
-
-Iterate over dataframe rows in fixed-size tensor chunks. Prefer
-[`table.scan_torch`](api-tables.md#tablescan_torch) in new code (same idea;
-`scan_torch` adds device/pin_memory options and uses `batch_size` /
-`row_slice`).
-
-```python
-torchfits.stream_table(file_path, hdu=1, columns=None, start_row=1,
-                       num_rows=-1, chunk_rows=65536, mmap=False,
-                       max_chunks=None)
-```
-
-**Yields:** `dict[str, Tensor | list]` per chunk.
-
-```python
-for chunk in torchfits.stream_table("survey.fits", hdu=1, chunk_rows=100_000):
+cols = torchfits.table.read_torch("catalog.fits", hdu=1, columns=["RA", "DEC"])
+for chunk in torchfits.table.scan_torch(
+    "survey.fits", hdu=1, batch_size=100_000
+):
     process(chunk)
 ```
 
@@ -274,10 +229,6 @@ torchfits.read_batch_info(file_paths)
 ```
 
 **Returns:** `dict` with shape, dtype, and file info.
-
-!!! note "Deprecated alias"
-    `torchfits.get_batch_info()` remains available but emits
-    :class:`DeprecationWarning`; prefer `read_batch_info()`.
 
 ---
 
@@ -327,10 +278,6 @@ to autodetect.
 header = torchfits.read_header("image.fits", hdu=0)
 print(header["EXPTIME"])  # e.g. 300.0
 ```
-
-!!! note "Deprecated alias"
-    `torchfits.get_header()` remains available but emits
-    :class:`DeprecationWarning`; prefer `read_header()`.
 
 ---
 

@@ -27,7 +27,7 @@ Root `read_table` / `stream_table` / `read_table_rows` emit
 | 3 | Network fixtures + replay | **Good** | `tests/test_http_probe_fixture.py` — local Range-capable HTTP server + `probe` JSON path. |
 | 4 | Compatibility matrix | **Good** | `docs/compatibility.md` (Python / PyTorch / Arrow / platforms). |
 | 5 | Formal public-boundary freeze stamp | **Good** | This document. Final `1.0.0` stamp after rc soak. |
-| 6 | FITSH peer CLI | **Good (SKIP)** | Unavailable via Homebrew; same SKIP as b1 R4 (`docs/reviews/release-1.0b1-realdata-cli.md`). |
+| 6 | FITSH peer CLI | **Good (SKIP)** | Unavailable via Homebrew; same SKIP as b1 R4 (`release-1.0b1-realdata-cli.md`). |
 | 7 | Deprecate root table helpers | **Good** | `DeprecationWarning` on `read_table` / `stream_table` / `read_table_rows`. |
 
 ## Should-fix from b1 (closed)

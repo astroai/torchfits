@@ -18,11 +18,11 @@ Common shorts (where applicable):
 | `-f` | `--format` | inventory output: `text` / `json` / `jsonl` |
 | `-o` | `--out` | output path (also positional on copy/cutout/convert/compress) |
 | `-w` / `-c` | `--where` / `--columns` | `convert` table filter (STILTS-like) |
-| `-n` | `--rows` | `table` preview row count (`--preview` alias) |
+| `-n` | `--rows` | `table` preview row count |
 | `-k` | `--keyword` / `--key` | **same short, different commands:** `header -k` filters cards; `setkey -k` sets a keyword |
 
-`probe --header-bytes` (alias `--bytes`) controls the remote header peek size;
-`--timeout` is the HTTP timeout.
+`probe --header-bytes` controls the remote header peek size; `--timeout` is the
+HTTP timeout.
 
 ### Process tax (cold start)
 
@@ -47,7 +47,7 @@ torchfits info science.fits
 torchfits header science.fits -k OBJECT -f json
 torchfits verify science.fits
 torchfits stats science.fits -e 0 -f jsonl
-torchfits table catalog.fits -e 1 --preview 5
+torchfits table catalog.fits -e 1 -n 5
 torchfits cutout science.fits -o cutout.fits -e 0 --box 100,100,256,256
 torchfits cutout 'science.fits[100:256,100:256]' cutout.fits
 torchfits convert catalog.fits -o out.parquet -e 1
@@ -88,7 +88,7 @@ printf '%s\n' *.fits | torchfits header --stdin --keyword-table -k OBJECT -k NAX
 | `table` | Arrow schema + preview rows |
 | `cutout` | write a pixel box to a new FITS file |
 | `convert` | table → Parquet/CSV/TSV/Arrow/FITS; filter with `--where`; Lupton RGB → PNG |
-| `probe` | local = `info`; HTTP(S)/vos = header peek (`--bytes` / `--timeout`) |
+| `probe` | local = `info`; HTTP(S)/vos = header peek (`--header-bytes` / `--timeout`) |
 | `diff` | compare two files (exit 1 if they differ) |
 | `copy` | MEF-preserving FITS → FITS copy |
 | `arith` | image ±×÷ by a constant |
@@ -168,7 +168,7 @@ torchfits setkey *.fits --rename OBJECT=TARGET -e 0 --out-dir /tmp/edited
 
 ### `header --keyword-table`
 
-Print a keyword table across many files (`--fitsort` remains a deprecated alias):
+Print a keyword table across many files:
 
 ```bash
 torchfits header *.fits --keyword-table -k OBJECT -k DATE-OBS
@@ -193,10 +193,23 @@ torchfits header *.fits --keyword-table -k BITPIX -f json
 
 Defaults are for previews, not journal figures — retune stretch / Q per survey.
 
+### `transform`
+
+`--name` is a class from `torchfits.transforms.__all__`. Append
+`:key=val,key2=val2` to pass constructor kwargs (values are parsed as
+bool/int/float, else left as a string); unknown kwargs are rejected before
+construction.
+
+```bash
+torchfits transform image.fits --name ArcsinhStretch -o out.fits
+torchfits transform image.fits --name ArcsinhStretch:a=2.0 -o out.fits
+torchfits transform image.fits --name PercentileClipNormalize:lower_pct=1.0,upper_pct=99.0 -o out.fits
+```
+
 ### `probe`
 
 - **Local paths** — same inventory as `info` (`-e` selects HDUs).
-- **HTTP(S)** — range-fetch primary header (`--bytes`, `--timeout`); `-e` is
+- **HTTP(S)** — range-fetch primary header (`--header-bytes`, `--timeout`); `-e` is
   ignored for remote peeks (primary only). Follows redirects with SSRF checks;
   optional `TORCHFITS_HTTP_AUTHORIZATION` / `TORCHFITS_HTTP_TOKEN`.
 - **`vos:` / `vault:` / `vos://`** — optional; install the `vos` package.
@@ -205,7 +218,7 @@ Defaults are for previews, not journal figures — retune stretch / Q per survey
 
 ```bash
 torchfits probe science.fits
-torchfits probe https://example.edu/data.fits --bytes 5760 --timeout 15 -f json
+torchfits probe https://example.edu/data.fits --header-bytes 5760 --timeout 15 -f json
 torchfits probe vos:alice/data/sample.fits
 ```
 

@@ -32,8 +32,8 @@ def main() -> None:
         _create_table(path)
 
         # Tensor dict path (good for GPU / torch workflows)
-        table_dict = torchfits.read_table(path, hdu=1)
-        print("read_table columns:", list(table_dict.keys()))
+        table_dict = torchfits.table.read_torch(path, hdu=1)
+        print("read_torch columns:", list(table_dict.keys()))
 
         # Arrow path (good for analytics / interop)
         arrow_table = torchfits.table.read(path, hdu=1, decode_bytes=True)

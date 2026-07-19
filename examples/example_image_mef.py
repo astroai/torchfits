@@ -52,7 +52,7 @@ def main() -> None:
         sci, err = torchfits.read_hdus(path, hdus=["SCI", "ERR"])
         print(f"read_hdus SCI={sci.shape}, ERR={err.shape}")
 
-        # Read table by EXTNAME via unified read (read_table requires int hdu)
+        # Read table by EXTNAME via unified read (table.read_torch needs int hdu)
         catalog = torchfits.read(
             path, hdu="CATALOG", mode="table", columns=["ra", "flux"]
         )

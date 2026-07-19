@@ -331,7 +331,7 @@ def test_fitsio_complex_bit_string_table_mmap_updates_match_torchfits() -> None:
 
 def test_fitsio_complex128_int64_columns_roundtrip_match_torchfits() -> None:
     """Double-precision complex (TFORM=M) and 64-bit integer (TFORM=K)
-    columns round-trip through torchfits.read_table / torchfits.write and
+    columns round-trip through torchfits.table.read_torch / torchfits.write and
     decode identically via fitsio and astropy.io.fits. The C/M/K TFORM
     paths are exercised by other tests only for complex64 (C); int64 (K)
     had no parity coverage at all and M only via the in-place write path."""
@@ -356,7 +356,7 @@ def test_fitsio_complex128_int64_columns_roundtrip_match_torchfits() -> None:
             ]
         ).writeto(src_path, overwrite=True)
 
-        out = torchfits.read_table(src_path.as_posix(), hdu=1, mmap=False)
+        out = torchfits.table.read_torch(src_path.as_posix(), hdu=1, mmap=False)
         np.testing.assert_allclose(
             np.asarray(out["ZM"]).squeeze(), complex128_col, rtol=0.0, atol=0.0
         )

@@ -98,6 +98,51 @@ def test_resolve_local_path_waits_for_inflight_prefetch(tmp_path, monkeypatch):
     assert len(calls) == 1, f"expected exactly one download, got {len(calls)}"
 
 
+def test_concurrent_resolve_local_path_downloads_once(tmp_path, monkeypatch):
+    import threading
+    import time
+    from unittest import mock
+
+    import torchfits.data.remote as remote
+
+    calls: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_download(url, dest):
+        calls.append(url)
+        started.set()
+        release.wait(timeout=2)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("data")
+        return dest
+
+    url = "https://example.test/cold-cache.fits"
+    outputs: list[str] = []
+    with mock.patch.object(remote, "_download", side_effect=_slow_download):
+        first = threading.Thread(
+            target=lambda: outputs.append(
+                remote.resolve_local_path(url, cache_dir=tmp_path)
+            )
+        )
+        second = threading.Thread(
+            target=lambda: outputs.append(
+                remote.resolve_local_path(url, cache_dir=tmp_path)
+            )
+        )
+        first.start()
+        assert started.wait(timeout=1)
+        second.start()
+        time.sleep(0.05)
+        release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+    assert len(calls) == 1
+    assert len(outputs) == 2
+    assert Path(outputs[0]).read_text() == "data"
+
+
 def test_remote_cache_path_stable(tmp_path, monkeypatch):
     from torchfits.data.remote import (
         cache_path_for_url,

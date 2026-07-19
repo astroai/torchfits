@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections import OrderedDict
 from types import MappingProxyType
-from types import ModuleType
 from typing import Any
 
 
@@ -106,7 +106,6 @@ def cache_subsystem_policy(name: str) -> dict[str, bool]:
 def clear_cache_subsystem(
     name: str,
     *,
-    table_module: ModuleType | None = None,
     cpp_module: Any = None,
 ) -> None:
     """Clear one named FITS I/O cache subsystem."""
@@ -126,15 +125,7 @@ def clear_cache_subsystem(
 
             _close_all_cached_handles()
         except Exception:
-            if table_module is not None:
-                try:
-                    close_handles = getattr(
-                        table_module, "_close_all_cached_handles", None
-                    )
-                    if close_handles is not None:
-                        close_handles()
-                except Exception:
-                    pass
+            pass
 
 
 def path_signature(path: str) -> tuple[int, int, int] | None:
@@ -153,7 +144,7 @@ def get_cached_handle(path: str, handle_cache_capacity: int) -> tuple[Any, bool]
     Per-path handle caching was removed: sharing one ``fitsfile*`` across threads
     corrupts CFITSIO's position state (§4 Option A). ``cached`` is always ``False``
     so every caller closes the handle it received. ``handle_cache_capacity`` is
-    accepted for signature compatibility but no longer used.
+    ignored (kept only so existing call sites need no signature churn).
     """
     import torchfits._C as cpp
 
@@ -305,12 +296,8 @@ def _close_hdulist_for_path(path: str) -> None:
             pass
 
 
-def invalidate_path_caches(path: str, table_module: ModuleType | None = None) -> None:
-    """Invalidate Python-side caches and open handles for one path.
-
-    ``table_module`` is deprecated; table handle caches are cleared via
-    :mod:`torchfits._table.cache` directly.
-    """
+def invalidate_path_caches(path: str) -> None:
+    """Invalidate Python-side caches and open handles for one path."""
     # Close any open HDUList file handle so mutations can open the file for writing.
     _close_hdulist_for_path(path)
 
@@ -347,18 +334,9 @@ def invalidate_path_caches(path: str, table_module: ModuleType | None = None) ->
     ]:
         auto_hdu_cache.pop(key, None)
 
-    try:
-        from .._table.cache import _invalidate_caches_for_path
+    from .._table.cache import _invalidate_caches_for_path
 
-        _invalidate_caches_for_path(path)
-    except Exception:
-        if table_module is not None:
-            try:
-                invalidate = getattr(table_module, "_invalidate_caches_for_path", None)
-                if invalidate is not None:
-                    invalidate(path)
-            except Exception:
-                pass
+    _invalidate_caches_for_path(path)
 
 
 def get_cache_performance() -> dict[str, Any]:
@@ -448,5 +426,9 @@ def clear_file_cache(
         cpp_module.clear_file_cache()
         if hasattr(cpp_module, "clear_shared_read_meta_cache"):
             cpp_module.clear_shared_read_meta_cache()
-    except (AttributeError, RuntimeError):
-        pass
+    except (AttributeError, RuntimeError) as exc:
+        warnings.warn(
+            f"clear_file_cache: C++ cache clear skipped ({exc!s})",
+            RuntimeWarning,
+            stacklevel=2,
+        )

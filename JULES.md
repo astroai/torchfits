@@ -15,7 +15,7 @@ Jules cannot edit schedules in place: delete the old task, then create a new one
 ## Weekly prompt
 
 ```text
-Weekly torchfits deep pass (bug + performance only). Read AGENTS.md and docs/jules-ledger.md first.
+Weekly torchfits deep pass (bug + performance only). Read AGENTS.md and .cursor/jules-ledger.md first.
 
 Research (≥30 min of reading before coding):
 - Recent commits / CHANGELOG / roadmap deferred items
@@ -29,7 +29,7 @@ B) Performance: one optimization with before/after numbers from an existing pixi
 
 Rules:
 - No a11y, HTML polish, renames, comment-only, docstring-only, or "refactor for clarity"
-- No repeating themes listed in docs/jules-ledger.md or already merged Jules PRs
+- No repeating themes listed in .cursor/jules-ledger.md or already merged Jules PRs
 - One PR; evidence in the PR body; leave unrelated files alone
 - If nothing serious is found: open NO PR — comment on the scheduled-task run that research found nothing
 ```

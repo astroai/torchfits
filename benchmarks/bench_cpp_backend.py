@@ -33,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 try:
     import torchfits
-    from torchfits.core import FITSCore  # noqa: F401
 except ImportError as e:
     print(f"[diagnostic] torchfits import failed: {e}")
     torchfits = None

@@ -22,6 +22,26 @@ class HttpRangeNotSatisfied(OSError):
     """Raised when the server does not return a usable byte Range body."""
 
 
+def _parse_http_content_range(value: str | None) -> tuple[int, int, int | None] | None:
+    """Parse ``Content-Range: bytes start-end/total`` or return ``None``."""
+    if not value:
+        return None
+    unit, separator, remainder = value.strip().partition(" ")
+    span, slash, total_text = remainder.partition("/")
+    start_text, dash, end_text = span.partition("-")
+    if unit.lower() != "bytes" or not separator or not slash or not dash:
+        return None
+    try:
+        start = int(start_text)
+        end = int(end_text)
+        total = None if total_text == "*" else int(total_text)
+    except ValueError:
+        return None
+    if start < 0 or end < start or (total is not None and total <= end):
+        return None
+    return start, end, total
+
+
 def http_timeout(default: float = 120.0) -> float:
     raw = os.environ.get("TORCHFITS_HTTP_TIMEOUT", "").strip()
     if not raw:
@@ -148,6 +168,17 @@ def http_read_range(
             status = getattr(response, "status", None) or response.getcode()
             data = bytes(response.read(want))
             if status == 206:
+                content_range = response.headers.get("Content-Range")
+                parsed = _parse_http_content_range(content_range)
+                if (
+                    parsed is None
+                    or parsed[0] != start
+                    or len(data) > parsed[1] - parsed[0] + 1
+                ):
+                    raise HttpRangeNotSatisfied(
+                        f"{url}: invalid Content-Range {content_range!r} "
+                        f"for requested start={start}"
+                    )
                 return data
             if status == 200 and start == 0:
                 return data

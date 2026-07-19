@@ -1,8 +1,8 @@
-"""Explicit compatibility surface for the native FITS extension.
+"""Explicit public surface for the native FITS extension.
 
 New symbols added to :mod:`torchfits._C` stay private until deliberately added
-to ``__all__``. Direct attribute access continues to delegate to the extension
-for pre-1.0 compatibility.
+to ``__all__``. Attribute access for names in ``__all__`` delegates to the
+extension.
 """
 
 # ruff: noqa: F822  # nanobind symbols are installed into globals below.

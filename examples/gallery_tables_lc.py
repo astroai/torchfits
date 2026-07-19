@@ -14,14 +14,12 @@ if str(ROOT) not in sys.path:
 
 from examples._plotting import (  # noqa: E402
     save_lightcurve_before_after,
-    save_spectrum_before_after,
+    save_1d_before_after,
 )
 
 from torchfits.transforms import (  # noqa: E402
     AsymmetricSigmaClip,
     FITSScaleColumns,
-    PhaseFold,
-    SavitzkyGolayFilter,
     SigmaClip,
     TNullToNan,
 )
@@ -53,7 +51,7 @@ def _demo_table_meta() -> None:
         int(torch.isnan(cleaned["COUNTS"]).sum().item()),
     )
     _log(
-        save_spectrum_before_after(
+        save_1d_before_after(
             None,
             stored["FLUX"],
             scaled["FLUX"],
@@ -96,34 +94,6 @@ def _demo_lightcurve() -> None:
             sym,
             "lightcurve_sigma_clip",
             titles=("raw", "sigma clip"),
-        )
-    )
-
-    # PhaseFold treats the last axis as sample index (not wall time).
-    # Map the physical period (5.0 in `time` units) onto sample spacing.
-    period_samples = float(n) * (period / float(time[-1] - time[0]))
-    folded = PhaseFold(period=period_samples, n_bins=80)(flux.clone())
-    phase_axis = torch.linspace(0.0, 1.0, folded.shape[-1])
-    _log(
-        save_lightcurve_before_after(
-            time,
-            flux,
-            phase_axis,
-            folded,
-            "lightcurve_phase_fold",
-            titles=("time series", "phase-folded"),
-        )
-    )
-
-    smooth = SavitzkyGolayFilter(window_length=21, polyorder=3)(folded.clone())
-    _log(
-        save_lightcurve_before_after(
-            phase_axis,
-            folded,
-            phase_axis,
-            smooth,
-            "lightcurve_savgol_folded",
-            titles=("folded", "Savitzky–Golay"),
         )
     )
 

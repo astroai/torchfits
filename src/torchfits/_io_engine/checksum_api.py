@@ -4,14 +4,50 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ..core import ChecksumVerifier
+import torchfits._C as cpp
+
+
+def _validate_hdu(hdu: int) -> int:
+    if isinstance(hdu, bool) or not isinstance(hdu, int):
+        raise TypeError("hdu must be a non-negative integer")
+    if hdu < 0:
+        raise ValueError("hdu must be a non-negative integer")
+    return int(hdu)
 
 
 def write_checksums(path: str, hdu: int = 0) -> None:
     """Compute and write DATASUM/CHECKSUM keywords for an HDU (CFITSIO)."""
-    ChecksumVerifier.write_hdu_checksums(path, hdu)
+    cpp.write_hdu_checksums(str(path), _validate_hdu(hdu))
 
 
 def verify_checksums(path: str, hdu: int = 0) -> Dict[str, Any]:
-    """Verify DATASUM/CHECKSUM keywords for an HDU (CFITSIO)."""
-    return dict(ChecksumVerifier.verify_hdu_checksums(path, hdu))
+    """Verify DATASUM/CHECKSUM keywords for an HDU (CFITSIO).
+
+    CFITSIO ``ffvcks`` status codes:
+    - ``0`` — checksum keywords absent (nothing to verify)
+    - ``1`` — checksum present and correct
+    - ``-1`` — checksum present but incorrect (corrupt)
+
+    Returns a dict with ``datastatus``, ``hdustatus``, ``ok``, and
+    ``status`` (``"ok"``, ``"no_checksums"``, or ``"fail"``).
+    """
+    datastatus, hdustatus = cpp.verify_hdu_checksums(str(path), _validate_hdu(hdu))
+    data_i = int(datastatus)
+    hdu_i = int(hdustatus)
+
+    if data_i == 0 and hdu_i == 0:
+        status_str = "no_checksums"
+        ok = True
+    elif data_i == 1 and hdu_i == 1:
+        status_str = "ok"
+        ok = True
+    else:
+        status_str = "fail"
+        ok = False
+
+    return {
+        "datastatus": data_i,
+        "hdustatus": hdu_i,
+        "ok": ok,
+        "status": status_str,
+    }

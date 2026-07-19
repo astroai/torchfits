@@ -5,6 +5,21 @@
 
 namespace torchfits {
 
+// Detect whether `filename` carries a CFITSIO extended filename syntax
+// section, e.g. "file.fits[1]" or "file.fits[1:10,1:10]". CFITSIO only
+// parses bracket syntax when it terminates the final path component, so a
+// naive `filename.find('[') != npos` check produces false positives for
+// paths with a literal '[' in a directory component, e.g.
+// "/home/user/[data]/file.fits". Require the string to end in ']' *and*
+// contain a '[' after the last '/' before treating it as an extended
+// filename section.
+inline bool has_cfitsio_extended_filename_syntax(const std::string& filename) {
+    if (filename.empty() || filename.back() != ']') return false;
+    const size_t last_slash = filename.find_last_of('/');
+    const size_t search_start = (last_slash == std::string::npos) ? 0 : last_slash + 1;
+    return filename.find('[', search_start) != std::string::npos;
+}
+
 inline void check_fits_filename_security(const std::string& filename) {
     if (!filename.empty()) {
         // Strip all standard whitespace characters since cfitsio ignores them,

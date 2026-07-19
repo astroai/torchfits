@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import logging
+import os
+import warnings
 from typing import Any, Callable, cast
 
 from torch import Tensor
@@ -49,6 +50,11 @@ def read_batch(
         except read_exc_types as exc:
             if strict:
                 raise
+            warnings.warn(
+                f"read_batch: skipped {path!r}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             log.debug("read_batch: skipped %r: %s", path, exc, exc_info=True)
             continue
     return results

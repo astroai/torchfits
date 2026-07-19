@@ -425,49 +425,49 @@ class TestTableAPI:
             return f.name
 
     def test_table_streaming_api(self):
-        """Test streaming read via stream_table."""
+        """Test streaming read via table.scan_torch."""
         filepath = self.create_test_table(10000)
 
         try:
-            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=5000))
+            chunks = list(torchfits.table.scan_torch(filepath, hdu=1, batch_size=5000))
             total_rows = sum(len(chunk["RA"]) for chunk in chunks)
             assert total_rows == 10000
 
-            # Test non-streaming read via read_table
-            result2 = torchfits.read_table(filepath, hdu=1)
+            # Test non-streaming read via table.read_torch
+            result2 = torchfits.table.read_torch(filepath, hdu=1)
             assert isinstance(result2, dict)
 
         finally:
             os.unlink(filepath)
 
-    def test_read_table_wrapper_columns(self):
-        """read_table should return table columns and reject image HDUs."""
+    def test_read_torch_wrapper_columns(self):
+        """table.read_torch should return table columns and reject image HDUs."""
         filepath = self.create_test_table(256)
 
         try:
-            data = torchfits.read_table(filepath, hdu=1)
+            data = torchfits.table.read_torch(filepath, hdu=1)
             assert isinstance(data, dict)
             assert "RA" in data
             assert len(data["RA"]) == 256
         finally:
             os.unlink(filepath)
 
-    def test_read_table_wrapper(self):
-        """read_table / read_table_rows return consistent tensor dict views."""
+    def test_read_torch_wrapper(self):
+        """table.read_torch row slices return consistent tensor dict views."""
         filepath = self.create_test_table(128)
         try:
-            table = torchfits.read_table(filepath, hdu=1)
-            rows = torchfits.read_table_rows(
+            full = torchfits.table.read_torch(filepath, hdu=1)
+            rows = torchfits.table.read_torch(
                 filepath,
                 hdu=1,
                 start_row=1,
                 num_rows=16,
             )
-            assert isinstance(table, dict)
+            assert isinstance(full, dict)
             assert len(rows["RA"]) == 16
-            for k in table.keys():
-                if isinstance(table[k], torch.Tensor):
-                    torch.testing.assert_close(table[k][:16], rows[k])
+            for k in full.keys():
+                if isinstance(full[k], torch.Tensor):
+                    torch.testing.assert_close(full[k][:16], rows[k])
         finally:
             os.unlink(filepath)
 
@@ -483,24 +483,26 @@ class TestTableAPI:
         finally:
             os.unlink(filepath)
 
-    def test_read_table_default_hdu(self):
-        """read_table default HDU should read first table extension (index 1)."""
+    def test_read_torch_default_hdu(self):
+        """table.read_torch default HDU should read first table extension (index 1)."""
         filepath = self.create_test_table(64)
 
         try:
-            data = torchfits.read_table(filepath)
+            data = torchfits.table.read_torch(filepath)
             assert isinstance(data, dict)
             assert "ID" in data
             assert len(data["ID"]) == 64
         finally:
             os.unlink(filepath)
 
-    def test_read_table_rows_wrapper(self):
-        """read_table_rows should return the requested row slice."""
+    def test_read_torch_rows_wrapper(self):
+        """table.read_torch should return the requested row slice."""
         filepath = self.create_test_table(512)
 
         try:
-            data = torchfits.read_table_rows(filepath, hdu=1, start_row=11, num_rows=25)
+            data = torchfits.table.read_torch(
+                filepath, hdu=1, start_row=11, num_rows=25
+            )
             assert isinstance(data, dict)
             assert "ID" in data
             assert len(data["ID"]) == 25
@@ -508,41 +510,41 @@ class TestTableAPI:
         finally:
             os.unlink(filepath)
 
-    def test_read_table_rows_default_hdu(self):
-        """read_table_rows default HDU should read first table extension (index 1)."""
+    def test_read_torch_rows_default_hdu(self):
+        """table.read_torch default HDU should read first table extension (index 1)."""
         filepath = self.create_test_table(128)
 
         try:
-            data = torchfits.read_table_rows(filepath, start_row=6, num_rows=10)
+            data = torchfits.table.read_torch(filepath, start_row=6, num_rows=10)
             assert "ID" in data
             assert len(data["ID"]) == 10
             assert int(data["ID"][0].item()) == 5
         finally:
             os.unlink(filepath)
 
-    def test_read_table_rejects_auto_hdu(self):
+    def test_read_torch_rejects_auto_hdu(self):
         """Specialized table API should require explicit HDU index."""
         filepath = self.create_test_table(128)
 
         try:
             with pytest.raises(ValueError, match="non-negative integer"):
-                torchfits.read_table(filepath, hdu="auto")  # type: ignore[arg-type]
+                torchfits.table.read_torch(filepath, hdu="auto")  # type: ignore[arg-type]
         finally:
             os.unlink(filepath)
 
-    def test_read_table_rows_rejects_auto_hdu(self):
+    def test_read_torch_rows_rejects_auto_hdu(self):
         """Specialized table row API should require explicit HDU index."""
         filepath = self.create_test_table(128)
 
         try:
             with pytest.raises(ValueError, match="non-negative integer"):
-                torchfits.read_table_rows(  # type: ignore[arg-type]
+                torchfits.table.read_torch(  # type: ignore[arg-type]
                     filepath, hdu="auto", start_row=1, num_rows=5
                 )
         finally:
             os.unlink(filepath)
 
-    def test_read_table_by_extname(self):
+    def test_read_torch_by_extname(self):
         """read should resolve named table HDUs via EXTNAME."""
         filepath = self.create_test_table(128, extname="CATALOG")
         try:

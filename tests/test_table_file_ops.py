@@ -443,6 +443,32 @@ def test_insert_column_with_explicit_format_metadata():
         os.unlink(path.name)
 
 
+def test_insert_column_infers_format_from_numpy_and_list():
+    """insert_column without format= must infer TFORM (regression: NameError np)."""
+    path = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    path.close()
+    try:
+        torchfits.table.write(
+            path.name,
+            data={"ID": np.array([1, 2], dtype=np.int32)},
+            schema={"ID": {"format": "J"}},
+            overwrite=True,
+        )
+
+        torchfits.table.insert_column(
+            path.name, "FA", np.array([1.5, 2.5], dtype=np.float64), hdu=1
+        )
+        torchfits.table.insert_column(path.name, "LB", [7, 8], hdu=1)
+
+        with torchfits.open(path.name) as hdul:
+            table = hdul[1]
+            assert set(table.columns) == {"ID", "FA", "LB"}
+            assert table["FA"].squeeze(-1).tolist() == [1.5, 2.5]
+            assert table["LB"].squeeze(-1).tolist() == [7, 8]
+    finally:
+        os.unlink(path.name)
+
+
 def test_replace_column_preserves_metadata_contract():
     path = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
     path.close()
@@ -475,6 +501,38 @@ def test_replace_column_preserves_metadata_contract():
             assert int(table.header.get("TNULL2")) == -999
     finally:
         os.unlink(path.name)
+
+
+@pytest.mark.parametrize(
+    "dtype,signed_name",
+    [
+        (np.uint16, "int16"),
+        (np.uint32, "int32"),
+        (np.uint64, "int64"),
+    ],
+)
+def test_infer_fits_scalar_code_unsigned_dtype_raises_helpful_type_error(
+    dtype, signed_name
+):
+    """uint16/32/64 have no native FITS TFORM; the error should say why and
+
+    point at a fix (cast to signed, or use the BZERO unsigned write path)
+    instead of the opaque "Cannot infer FITS TFORM" message.
+    """
+    from torchfits._table.mutation import _infer_fits_scalar_code
+
+    with pytest.raises(TypeError) as excinfo:
+        _infer_fits_scalar_code(np.array([1, 2], dtype=dtype))
+    message = str(excinfo.value)
+    assert "unsigned" in message.lower()
+    assert signed_name in message
+    assert "BZERO" in message
+
+
+def test_infer_fits_scalar_code_uint8_still_maps_to_b():
+    from torchfits._table.mutation import _infer_fits_scalar_code
+
+    assert _infer_fits_scalar_code(np.array([1, 2], dtype=np.uint8)) == "B"
 
 
 def test_table_write_noncontiguous_numeric_roundtrip():

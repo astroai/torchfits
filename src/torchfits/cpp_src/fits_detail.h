@@ -12,6 +12,7 @@
 #include <mutex>
 #include <atomic>
 #include <limits>
+#include <stdexcept>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -27,9 +28,32 @@
 
 #include "internal_utils.h"
 #include "hardware.h"
+#include "security.h"
 
 namespace torchfits {
 namespace detail {
+
+inline void validate_image_naxis(int naxis) {
+    if (naxis < 0 || naxis > 9) {
+        throw std::runtime_error(
+            "torchfits supports FITS images with at most 9 axes; got NAXIS=" +
+            std::to_string(naxis));
+    }
+}
+
+inline void read_image_params_9d(
+    fitsfile* fptr,
+    int* bitpix,
+    int* naxis,
+    std::array<LONGLONG, 9>& naxes,
+    int* status
+) {
+    int declared_naxis = 0;
+    fits_read_key(fptr, TINT, "NAXIS", &declared_naxis, nullptr, status);
+    if (*status != 0) return;
+    validate_image_naxis(declared_naxis);
+    fits_get_img_paramll(fptr, 9, bitpix, naxis, naxes.data(), status);
+}
 
 // ---------------------------------------------------------------------------
 // Sign-bit XOR for signed-byte encoding
@@ -169,7 +193,7 @@ inline const int64_t kSharedMetaValidateIntervalNs = []() {
 }();
 
 inline std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& filename) {
-    bool can_stat = kValidateSharedMeta && filename.find('[') == std::string::npos;
+    bool can_stat = kValidateSharedMeta && !has_cfitsio_extended_filename_syntax(filename);
     std::shared_ptr<SharedReadMeta> meta;
     {
         std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
@@ -221,7 +245,7 @@ inline int open_readonly_fd(const std::string& filename) {
 // Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
 inline int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     int status = 0;
-    if (path.find('[') != std::string::npos || path.find("://") != std::string::npos) {
+    if (has_cfitsio_extended_filename_syntax(path) || path.find("://") != std::string::npos) {
         fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
     } else {
         fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
@@ -230,7 +254,7 @@ inline int open_fits_readonly(fitsfile** fptr, const std::string& path) {
 }
 
 inline int get_shared_raw_fd(const std::shared_ptr<SharedReadMeta>& meta, const std::string& filename) {
-    if (!meta || filename.find('[') != std::string::npos) return -1;
+    if (!meta || has_cfitsio_extended_filename_syntax(filename)) return -1;
     std::lock_guard<std::mutex> lock(meta->mutex);
     if (meta->raw_fd != -1) return meta->raw_fd;
     meta->raw_fd = open_readonly_fd(filename);
@@ -327,6 +351,7 @@ inline torch::Tensor read_tensor_canonical(
     const double bzero = meta.bzero;
     const bool compressed = meta.compressed;
 
+    validate_image_naxis(naxis);
     if (naxis == 0) {
         torch::ScalarType dtype = torch::kUInt8;
         switch (bitpix) {
@@ -399,7 +424,7 @@ inline torch::Tensor read_tensor_canonical(
     // Multi-byte mmap fast path — SIMD endian convert while copying (all sizes).
     const bool multi_byte_mmap_ok =
         use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
-        path.find('[') == std::string::npos;
+        !has_cfitsio_extended_filename_syntax(path);
     if (multi_byte_mmap_ok) {
         size_t elem_size = 0;
         switch (bitpix) {

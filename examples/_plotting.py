@@ -74,15 +74,15 @@ def save_image_before_after(
     return path
 
 
-def save_spectrum_before_after(
+def save_1d_before_after(
     wave: torch.Tensor | np.ndarray | None,
     flux: torch.Tensor | np.ndarray,
     transformed: torch.Tensor | np.ndarray,
     name: str,
     *,
-    continuum: torch.Tensor | np.ndarray | None = None,
     titles: Sequence[str] = ("flux", "transformed"),
 ) -> Path | None:
+    """1-D before/after plot (table columns or image slices)."""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -95,29 +95,14 @@ def save_spectrum_before_after(
     x1 = np.arange(y1.size) if wave is None or y1.size != y0.size else x0[: y1.size]
     path = output_path(name)
 
-    n = 3 if continuum is not None else 2
     fig, axes = plt.subplots(
-        n, 1, figsize=(8, 2.2 * n), sharex=False, constrained_layout=True
+        2, 1, figsize=(8, 4.4), sharex=False, constrained_layout=True
     )
-    axes = list(axes)
-
     axes[0].plot(x0, y0, color="#1f4e79", lw=0.8)
     axes[0].set_ylabel(titles[0])
-    if continuum is not None:
-        c = _to_numpy(continuum).reshape(-1)
-        axes[0].plot(x0[: c.size], c, color="#c45c26", lw=1.0, label="continuum")
-        axes[0].legend(loc="upper right", fontsize=8)
-        axes[1].plot(x0, y0, color="#1f4e79", lw=0.6, alpha=0.5)
-        axes[1].plot(x0[: c.size], c, color="#c45c26", lw=1.0)
-        axes[1].set_ylabel("continuum")
-        axes[2].plot(x1, y1, color="#1f4e79", lw=0.8)
-        axes[2].set_ylabel(titles[1])
-        axes[2].set_xlabel("wavelength / pixel")
-    else:
-        axes[1].plot(x1, y1, color="#1f4e79", lw=0.8)
-        axes[1].set_ylabel(titles[1])
-        axes[1].set_xlabel("wavelength / pixel")
-
+    axes[1].plot(x1, y1, color="#1f4e79", lw=0.8)
+    axes[1].set_ylabel(titles[1])
+    axes[1].set_xlabel("index / pixel")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     return path

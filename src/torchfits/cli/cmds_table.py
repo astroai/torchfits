@@ -36,11 +36,10 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.add_argument(
         "-n",
         "--rows",
-        "--preview",
         type=int,
         default=5,
         dest="preview",
-        help="preview row count (-n/--rows; --preview is an alias)",
+        help="preview row count (default: 5)",
     )
     add_emit_format_args(parser)
     parser.set_defaults(func=run)

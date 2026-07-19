@@ -11,8 +11,6 @@ import torchfits._C as _cpp
 
 from ..hdu import Header
 
-from ._read_pipeline import _read_unsigned_image_if_needed
-
 
 def batch_to_device(
     tensors: list[torch.Tensor], device: str | torch.device
@@ -156,20 +154,6 @@ def read_hdus(
         raise ValueError("each item in hdus must be an int or str")
 
     data = _cpp.read_hdus_batch(path, resolved_hdus, mmap)
-    for idx, hdu_num in enumerate(resolved_hdus):
-        try:
-            header = Header(_cpp.read_header_dict(path, hdu_num))
-        except Exception:
-            header = None
-        unsigned = _read_unsigned_image_if_needed(
-            cpp_module=_cpp,
-            path=path,
-            hdu_num=hdu_num,
-            effective_mmap=mmap,
-            header=header,
-        )
-        if unsigned is not None:
-            data[idx] = unsigned
     if device != "cpu":
         data = batch_to_device(data, device)
 

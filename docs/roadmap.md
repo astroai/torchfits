@@ -3,13 +3,13 @@
 `torchfits` is FITS I/O for PyTorch tensors and dataframes. This page is
 forward-looking only.
 
-## Current focus (pre-1.0)
+## Current focus (toward 1.0.0)
 
-Ship SemVer **1.0.0** after soak on the `1.0.0rc*` line. **rc2** landed the
-CFITSIO per-read handle fix and the leftover API/docs/CLI wave; **rc3** targets
-Astropy-parity examples, docs gaps (API / cache / loader), and small I/O
-correctness fixes. rc tags are API-stable previews — SemVer `1.0.0` still waits
-for post-rc soak.
+Ship SemVer **1.0.0** after soak on the `1.0.0rc*` line. Deep-review triage
+(hard-removed root aliases, deleted continuum/spectral transforms, bench
+honesty) is in the working tree; larger scope cuts (cache merge, dataset zoo,
+CLI trim) stay deferred. rc tags are API-stable previews; SemVer `1.0.0`
+still waits for post-rc soak.
 
 ## Parity tiers
 
@@ -22,9 +22,9 @@ for post-rc soak.
 
 ## Near-term (through 1.0.0)
 
+- Finish soak on the triage working tree; tag only after `ci-local` green on a clean commit
 - Benchmark honesty: tensor vs table domains, CPU↔GPU deficits visible, CFITSIO-direct in the exhaustive table, MegaCam multi-cutout suite
 - CLI depth: HIERARCH keys, batch header edit, honest `verify` scope, real RGB demos
-- API consistency: prefer `read_*` for FITS payload/metadata reads
 - Publish exhaustive CSVs with release artifacts for user analysis
 
 ## Deferred (cosmetic / low priority)

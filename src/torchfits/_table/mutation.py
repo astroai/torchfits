@@ -24,11 +24,47 @@ from .._table.write import (
     _sanitize_table_header_for_rewrite,
 )
 
-# -- module-level dtype maps (lazily populated) ----------------------------------
+# -- module-level dtype maps (populated once on first use) -----------------------
 
 _VLA_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_TFORM_CODES: frozenset[str] = frozenset({"C", "M"})
+
+
+def _ensure_dtype_maps() -> None:
+    """Fill ``_VLA_DTYPE_MAP`` / ``_COMPLEX_DTYPE_MAP`` once (numpy-backed)."""
+    global _VLA_DTYPE_MAP, _COMPLEX_DTYPE_MAP
+    if _COMPLEX_DTYPE_MAP:
+        return
+    import numpy as np
+
+    _VLA_DTYPE_MAP = {
+        "L": np.bool_,
+        "B": np.uint8,
+        "I": np.int16,
+        "J": np.int32,
+        "K": np.int64,
+        "E": np.float32,
+        "D": np.float64,
+        "C": np.complex64,
+        "M": np.complex128,
+    }
+    _COMPLEX_DTYPE_MAP = {"C": np.complex64, "M": np.complex128}
+
+
+def _mutation_cache_barrier(path: str) -> None:
+    """Invalidate path-local and global caches around a table mutation.
+
+    Called once before and once after the on-disk rewrite/append/delete op
+    in each mutation function below, so callers never observe a stale
+    handle or cached read for ``path``.
+    """
+    # Imported lazily: torchfits imports this module during package init,
+    # so a top-level `import torchfits` here would be circular.
+    import torchfits
+
+    _invalidate_path_caches(path)
+    torchfits.cache.clear()
 
 
 # -- helpers moved from write section (used only by mutation) --------------------
@@ -41,6 +77,15 @@ def _infer_fits_scalar_code(arr: "np.ndarray") -> str:
         return "L"
     if kind == "u" and itemsize == 1:
         return "B"
+    if kind == "u" and itemsize in (2, 4, 8):
+        signed = {2: "int16", 4: "int32", 8: "int64"}[itemsize]
+        raise TypeError(
+            f"Cannot infer FITS TFORM for dtype={arr.dtype}: FITS has no native "
+            f"unsigned {itemsize * 8}-bit integer format. Cast the column to "
+            f"{signed} (values will be reinterpreted, not rescaled), or write it "
+            "explicitly as a signed column with a BZERO offset (the FITS unsigned "
+            "convention) instead of relying on format inference."
+        )
     if kind == "i" and itemsize == 2:
         return "I"
     if kind == "i" and itemsize == 4:
@@ -114,21 +159,7 @@ def _default_table_column_values(
 ) -> Any:
     import numpy as np
 
-    global _VLA_DTYPE_MAP, _COMPLEX_DTYPE_MAP
-    if not _VLA_DTYPE_MAP:
-        _VLA_DTYPE_MAP = {
-            "L": np.bool_,
-            "B": np.uint8,
-            "I": np.int16,
-            "J": np.int32,
-            "K": np.int64,
-            "E": np.float32,
-            "D": np.float64,
-            "C": np.complex64,
-            "M": np.complex128,
-        }
-    if not _COMPLEX_DTYPE_MAP:
-        _COMPLEX_DTYPE_MAP = {"C": np.complex64, "M": np.complex128}
+    _ensure_dtype_maps()
 
     is_vla, code, repeat = _parse_tform(tform)
     if repeat <= 0:
@@ -391,9 +422,7 @@ def _coerce_table_column_array(
 ) -> "np.ndarray":
     import numpy as np
 
-    global _COMPLEX_DTYPE_MAP
-    if not _COMPLEX_DTYPE_MAP:
-        _COMPLEX_DTYPE_MAP = {"C": np.complex64, "M": np.complex128}
+    _ensure_dtype_maps()
     if isinstance(value, torch.Tensor):
         tensor = value.detach()
         if tensor.device.type != "cpu":
@@ -475,17 +504,7 @@ def _coerce_table_vla_values(
 ) -> "list[np.ndarray]":
     import numpy as np
 
-    global _VLA_DTYPE_MAP
-    if not _VLA_DTYPE_MAP:
-        _VLA_DTYPE_MAP = {
-            "L": np.bool_,
-            "B": np.uint8,
-            "I": np.int16,
-            "J": np.int32,
-            "K": np.int64,
-            "E": np.float32,
-            "D": np.float64,
-        }
+    _ensure_dtype_maps()
     code = base_code.upper()
     if code not in _VLA_DTYPE_MAP:
         raise TypeError(f"Column '{name}' VLA code '{code}' is not supported")
@@ -534,12 +553,7 @@ def _coerce_table_complex_values(
 ) -> "np.ndarray":
     import numpy as np
 
-    global _COMPLEX_DTYPE_MAP
-    if not _COMPLEX_DTYPE_MAP:
-        _COMPLEX_DTYPE_MAP = {
-            "C": np.complex64,
-            "M": np.complex128,
-        }
+    _ensure_dtype_maps()
     base = code.upper()
     if base not in _COMPLEX_TFORM_CODES:
         raise TypeError(f"Column '{name}' complex code '{base}' is not supported")
@@ -578,6 +592,8 @@ def _coerce_table_complex_values(
 
 
 def _infer_column_format_for_insert(name: str, values: Any) -> str:
+    import numpy as np
+
     if isinstance(values, torch.Tensor):
         tensor = values.detach()
         if tensor.device.type != "cpu":
@@ -716,8 +732,6 @@ def insert_column(
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
 
-    import torchfits
-
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
     )
@@ -772,8 +786,7 @@ def insert_column(
     schema_by_name[name] = new_meta
     rewritten_schema = _ordered_dict_for_columns(new_columns, schema_by_name)
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     _rewrite_table_hdu_with_schema(
         path,
         target_hdu,
@@ -782,8 +795,7 @@ def insert_column(
         table_header,
         table_type,
     )
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def replace_column(
@@ -801,8 +813,6 @@ def replace_column(
 ) -> None:
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
-
-    import torchfits
 
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
@@ -852,8 +862,7 @@ def replace_column(
     rewritten_schema = _ordered_dict_for_columns(columns, existing_schema)
     rewritten_data = _ordered_dict_for_columns(columns, rewritten_data)
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     _rewrite_table_hdu_with_schema(
         path,
         target_hdu,
@@ -862,8 +871,7 @@ def replace_column(
         table_header,
         table_type,
     )
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 # -- public row mutation API -----------------------------------------------------
@@ -877,7 +885,6 @@ def append_rows(
     rows = _coerce_rows_from_arrow(rows)
     if not isinstance(rows, dict) or not rows:
         raise ValueError("rows must be a non-empty dictionary")
-    import torchfits
     import torchfits._C as cpp
 
     target_hdu, header_map, columns, tform_map = _resolve_table_hdu_index_and_columns(
@@ -894,11 +901,9 @@ def append_rows(
     if expected_rows <= 0:
         return
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     cpp.append_fits_table_rows(path, target_hdu, normalized)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def insert_rows(
@@ -941,8 +946,7 @@ def insert_rows(
         return
 
     start_row = row + 1
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     if hasattr(cpp, "insert_fits_table_rows"):
         cpp.insert_fits_table_rows(path, target_hdu, normalized, start_row)
     else:
@@ -953,8 +957,7 @@ def insert_rows(
                 existing[name], normalized[name], row
             )
         torchfits.replace_hdu(path, target_hdu, rewritten)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def delete_rows(
@@ -995,8 +998,7 @@ def delete_rows(
     if num_rows <= 0:
         return
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     if hasattr(cpp, "delete_fits_table_rows"):
         cpp.delete_fits_table_rows(path, target_hdu, start_row, num_rows)
     else:
@@ -1007,8 +1009,7 @@ def delete_rows(
         for name in columns:
             rewritten[name] = _delete_column_rows(existing[name], start0, num_rows)
         torchfits.replace_hdu(path, target_hdu, rewritten)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def update_rows(
@@ -1035,11 +1036,7 @@ def update_rows(
     string_widths: dict[str, int] = {}
     vla_codes: dict[str, str] = {}
     complex_codes: dict[str, str] = {}
-    global _COMPLEX_DTYPE_MAP
-    if not _COMPLEX_DTYPE_MAP:
-        import numpy as np
-
-        _COMPLEX_DTYPE_MAP = {"C": np.complex64, "M": np.complex128}
+    _ensure_dtype_maps()
     for name, tform in tform_map.items():
         if not tform:
             continue
@@ -1182,14 +1179,11 @@ def rename_columns(
             f"{conflicts}"
         )
 
-    import torchfits
     import torchfits._C as cpp
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     cpp.rename_fits_table_columns(path, target_hdu, normalized)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def drop_columns(
@@ -1213,11 +1207,8 @@ def drop_columns(
     if missing:
         raise KeyError(f"Column(s) not found for drop_columns: {missing}")
 
-    import torchfits
     import torchfits._C as cpp
 
-    _invalidate_path_caches(path)
-    torchfits.cache.clear()
+    _mutation_cache_barrier(path)
     cpp.drop_fits_table_columns(path, target_hdu, normalized)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)

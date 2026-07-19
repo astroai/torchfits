@@ -379,7 +379,7 @@ def test_header_keyword_table(image_fits):
     assert "NAXIS" in result.stdout
 
 
-def test_header_fitsort_alias_still_works(image_fits):
+def test_header_rejects_fitsort_alias(image_fits):
     result = _run_cli(
         "header",
         str(image_fits),
@@ -388,11 +388,9 @@ def test_header_fitsort_alias_still_works(image_fits):
         "BITPIX",
         "--hdu",
         "0",
-        "--json",
     )
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    assert int(payload[0]["BITPIX"]) == -32
+    assert result.returncode != 0
+    assert "unrecognized" in result.stderr.lower() or "error" in result.stderr.lower()
 
 
 def test_header_keyword_table_json(image_fits):
@@ -520,7 +518,7 @@ def test_convert_png_invalid_bands_non_integer(image_fits, tmp_path):
     assert result.returncode == 2, result.stderr
 
 
-def test_fitsort_with_invalid_hdu(image_fits):
+def test_keyword_table_with_invalid_hdu(image_fits):
     result = _run_cli(
         "header",
         str(image_fits),
@@ -565,6 +563,77 @@ def test_setkey_hierarch_and_rename(image_fits, tmp_path):
     hdr = torchfits.read_header(str(out), 0)
     assert "TARGET" in hdr
     assert hdr["TARGET"] == "DEMO"
+
+
+def test_setkey_rejects_negative_hdu_index(image_fits):
+    result = _run_cli(
+        "setkey",
+        str(image_fits),
+        "--key",
+        "OBJECT",
+        "--value",
+        "DEMO",
+        "--hdu",
+        "-1",
+    )
+    assert result.returncode == 2, result.stderr
+    assert "hdu" in result.stderr.lower()
+
+
+def test_transform_rejects_private_name(image_fits, tmp_path):
+    out = tmp_path / "transformed.fits"
+    result = _run_cli(
+        "transform",
+        str(image_fits),
+        "--name",
+        "_fit_poly_continuum",
+        "-o",
+        str(out),
+    )
+    assert result.returncode != 0
+    assert "unknown transform" in result.stderr.lower()
+
+
+def test_transform_default_constructor(image_fits, tmp_path):
+    out = tmp_path / "transformed.fits"
+    result = _run_cli(
+        "transform",
+        str(image_fits),
+        "--name",
+        "ArcsinhStretch",
+        "-o",
+        str(out),
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+
+
+def test_transform_constructor_kwargs(image_fits, tmp_path):
+    out = tmp_path / "transformed.fits"
+    result = _run_cli(
+        "transform",
+        str(image_fits),
+        "--name",
+        "ArcsinhStretch:a=2.0",
+        "-o",
+        str(out),
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+
+
+def test_transform_rejects_unknown_kwarg(image_fits, tmp_path):
+    out = tmp_path / "transformed.fits"
+    result = _run_cli(
+        "transform",
+        str(image_fits),
+        "--name",
+        "ArcsinhStretch:bogus=1",
+        "-o",
+        str(out),
+    )
+    assert result.returncode == 2, result.stderr
+    assert "unknown kwarg" in result.stderr.lower()
 
 
 def test_http_probe_blocks_internal_ssrf():

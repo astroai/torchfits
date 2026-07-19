@@ -1,8 +1,8 @@
 """CFITSIO-backed FITS I/O surface.
 
 This module owns FITS file reads, writes, HDU operations, header extraction,
-checksum helpers, subset reads, batch reads, table streaming, and FITS cache
-controls. Arrow-native table APIs live in :mod:`torchfits.table`.
+checksum helpers, subset reads, batch reads, and FITS cache controls.
+Arrow-native table APIs live in :mod:`torchfits.table`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import atexit
 import logging as _stdlib_logging
 import os
 import sys
-import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -48,8 +47,6 @@ from ._io_engine.image_meta import (
 )
 from ._io_engine._read_pipeline import read_unified as _read_unified_impl
 from ._io_engine.subset import open_subset_reader as _open_subset_reader_impl
-from ._io_engine.table_api import read_table as _read_table_impl
-from ._io_engine.table_streaming import stream_table as _stream_table_impl
 from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
 from ._io_engine.write_api import insert_hdu as _insert_hdu_impl
 from ._io_engine.write_api import replace_hdu as _replace_hdu_impl
@@ -204,48 +201,6 @@ def read_tensor(
     )
 
 
-def read_table(
-    path: str,
-    hdu: int = 1,
-    columns: list[str] | None = None,
-    start_row: int = 1,
-    num_rows: int = -1,
-    device: str = "cpu",
-    mmap: bool | str = "auto",
-    cache_capacity: int = 10,
-    handle_cache_capacity: int = 16,
-    fast_header: bool = True,
-    return_header: bool = False,
-) -> Any:
-    """Read a FITS table as dataframe columns mapped to tensors.
-
-    .. deprecated:: 1.0.0rc1
-        Prefer :func:`torchfits.table.read_torch` (tensors) or
-        :func:`torchfits.table.read` (Arrow). This root alias remains for
-        compatibility and emits :class:`DeprecationWarning`.
-    """
-    warnings.warn(
-        "torchfits.read_table is deprecated; use torchfits.table.read_torch "
-        "(tensors) or torchfits.table.read (Arrow).",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return _read_table_impl(
-        read,
-        path,
-        hdu=hdu,
-        columns=columns,
-        start_row=start_row,
-        num_rows=num_rows,
-        device=device,
-        mmap=mmap,
-        cache_capacity=cache_capacity,
-        handle_cache_capacity=handle_cache_capacity,
-        fast_header=fast_header,
-        return_header=return_header,
-    )
-
-
 def read_hdus(
     path: str,
     hdus: list[int | str] | tuple[int | str, ...],
@@ -356,57 +311,8 @@ def read_header(path: str, hdu: Any = 0) -> Any:
     return _get_header_impl(path, hdu, autodetect_hdu=_autodetect_hdu_impl)
 
 
-def get_header(path: str, hdu: Any = 0) -> Any:
-    """Read the FITS header for the given HDU as a Header dict-like object.
-
-    .. deprecated:: 1.0.0rc1
-        Prefer :func:`read_header`. This alias remains for compatibility and
-        emits :class:`DeprecationWarning`.
-    """
-    warnings.warn(
-        "torchfits.get_header is deprecated; use torchfits.read_header.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return read_header(path, hdu)
-
-
 def _write_header_cards_if_supported(*args: Any, **kwargs: Any) -> None:
     return _write_header_cards_if_supported_impl(*args, **kwargs)
-
-
-def stream_table(
-    file_path: str,
-    hdu: int = 1,
-    columns: list[str] | None = None,
-    start_row: int = 1,
-    num_rows: int = -1,
-    chunk_rows: int = 65536,
-    mmap: bool = False,
-    max_chunks: int | None = None,
-) -> Any:
-    """Stream FITS table rows as tensor-column chunks.
-
-    .. deprecated:: 1.0.0rc1
-        Prefer :func:`torchfits.table.scan_torch` in new code. This root helper
-        remains for compatibility and emits :class:`DeprecationWarning`.
-    """
-    warnings.warn(
-        "torchfits.stream_table is deprecated; use torchfits.table.scan_torch.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return _stream_table_impl(
-        read_header,
-        file_path,
-        hdu=hdu,
-        columns=columns,
-        start_row=start_row,
-        num_rows=num_rows,
-        chunk_rows=chunk_rows,
-        mmap=mmap,
-        max_chunks=max_chunks,
-    )
 
 
 def read_batch(
@@ -431,21 +337,6 @@ def read_batch(
 def read_batch_info(file_paths: list[str]) -> Any:
     """Inspect shape and dtype consistency across files for batched reading."""
     return _get_batch_info_impl(file_paths)
-
-
-def get_batch_info(file_paths: list[str]) -> Any:
-    """Inspect shape and dtype consistency across files for batched reading.
-
-    .. deprecated:: 1.0.0rc1
-        Prefer :func:`read_batch_info`. This alias remains for compatibility and
-        emits :class:`DeprecationWarning`.
-    """
-    warnings.warn(
-        "torchfits.get_batch_info is deprecated; use torchfits.read_batch_info.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return read_batch_info(file_paths)
 
 
 def get_cache_performance() -> Any:
@@ -503,51 +394,6 @@ def verify_checksums(path: str, hdu: int = 0) -> dict[str, Any]:
     return _verify_checksums_impl(path, hdu=hdu)
 
 
-def read_table_rows(
-    path: str,
-    hdu: int = 1,
-    start_row: int = 1,
-    num_rows: int = 1000,
-    columns: list[str] | None = None,
-    device: str = "cpu",
-    mmap: bool | str = True,
-    cache_capacity: int = 10,
-    handle_cache_capacity: int = 16,
-    fast_header: bool = True,
-    return_header: bool = False,
-) -> Any:
-    """Read a contiguous range of rows from a FITS table HDU.
-
-    .. deprecated:: 1.0.0rc1
-        Prefer :func:`torchfits.table.read_torch` with ``start_row`` /
-        ``num_rows``. Emits :class:`DeprecationWarning`.
-    """
-    warnings.warn(
-        "torchfits.read_table_rows is deprecated; use torchfits.table.read_torch "
-        "with start_row/num_rows.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if not isinstance(hdu, int) or hdu < 0:
-        raise ValueError("hdu must be a non-negative integer")
-    if num_rows <= 0:
-        raise ValueError("num_rows must be > 0 for read_table_rows")
-    return _read_table_impl(
-        read,
-        path,
-        hdu=hdu,
-        columns=columns,
-        start_row=start_row,
-        num_rows=num_rows,
-        device=device,
-        mmap=mmap,
-        cache_capacity=cache_capacity,
-        handle_cache_capacity=handle_cache_capacity,
-        fast_header=fast_header,
-        return_header=return_header,
-    )
-
-
 def _normalize_cpp_table_data(table_dict: dict[str, Any]) -> dict[str, Any]:
     return _normalize_cpp_table_data_impl(table_dict)
 
@@ -557,9 +403,7 @@ __all__ = [
     "clear_cache_subsystem",
     "clear_file_cache",
     "delete_hdu",
-    "get_batch_info",
     "get_cache_performance",
-    "get_header",
     "read_batch_info",
     "read_header",
     "insert_hdu",
@@ -569,11 +413,8 @@ __all__ = [
     "read_batch",
     "read_hdus",
     "read_subset",
-    "read_table",
-    "read_table_rows",
     "read_tensor",
     "replace_hdu",
-    "stream_table",
     "verify_checksums",
     "write",
     "write_checksums",

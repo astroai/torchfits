@@ -78,7 +78,7 @@ public:
             *out_size = 0;
             *out_mtime_ns = 0;
             *out_inode = 0;
-            if (filepath.find('[') != std::string::npos) {
+            if (has_cfitsio_extended_filename_syntax(filepath)) {
                 return;
             }
             struct stat st {};

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import warnings
 from typing import Any, Callable, Optional, Union
 
 from ..header_parser import fast_parse_header, fast_parse_header_cards
@@ -16,6 +18,8 @@ from .caches import (
     set_cached_hdu_type,
 )
 from .paths import cfitsio_base_path
+
+_log = logging.getLogger(__name__)
 
 
 def read_header_fast(file_handle: Any, hdu_index: int, fast_header: bool = True) -> Any:
@@ -148,14 +152,19 @@ def get_header(
             header_string = cpp.read_header_string(handle, hdu_index)
             if header_string:
                 return Header(fast_parse_header_cards(header_string))
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(
+                f"get_header: fast path failed for {path!r} hdu={hdu_index}: {exc}; "
+                "falling back to read_header_dict",
+                RuntimeWarning,
+                stacklevel=3,
+            )
         finally:
             if handle is not None:
                 try:
                     handle.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("get_header: handle close failed: %s", exc)
         return Header(cpp.read_header_dict(path, hdu_index))
 
     if hdu is None or (isinstance(hdu, str) and hdu.strip().lower() == "auto"):
@@ -166,8 +175,13 @@ def get_header(
             try:
                 hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
                 return _read_header(path, hdu)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug(
+                    "get_header: resolve_hdu_name_cached(%r, %r) failed: %s",
+                    path,
+                    hdu,
+                    exc,
+                )
 
         for i in range(100):  # Fallback scan
             try:

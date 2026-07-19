@@ -1,5 +1,4 @@
 import os
-import warnings
 
 import torch
 from astropy.io import fits
@@ -32,25 +31,6 @@ def test_read_header():
         h_named = torchfits.read_header(filename, "IMAGE1")
         assert h_named["HDU1"] == "Value1"
 
-    finally:
-        if os.path.exists(filename):
-            os.remove(filename)
-
-
-def test_get_header_emits_deprecation_warning():
-    filename = "test_read_header_deprecation.fits"
-    hdu0 = fits.PrimaryHDU(data=torch.zeros(2, 2).numpy())
-    fits.HDUList([hdu0]).writeto(filename, overwrite=True)
-    try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            torchfits.get_header(filename, 0)
-        msgs = [
-            str(item.message)
-            for item in caught
-            if issubclass(item.category, DeprecationWarning)
-        ]
-        assert any("get_header is deprecated" in m for m in msgs)
     finally:
         if os.path.exists(filename):
             os.remove(filename)

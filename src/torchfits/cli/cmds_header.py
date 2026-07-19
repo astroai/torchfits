@@ -34,10 +34,9 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     parser.add_argument(
         "--keyword-table",
-        "--fitsort",
         action="store_true",
         dest="keyword_table",
-        help="print a table of selected keywords (--fitsort is a deprecated alias)",
+        help="print a table of selected keywords across files",
     )
     add_emit_format_args(parser)
     parser.set_defaults(func=run)

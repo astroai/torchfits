@@ -8,6 +8,7 @@ including local development, HPC clusters, and cloud platforms.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -187,12 +188,17 @@ class CacheManager:
         """Configure the C++ cache backend."""
         try:
             import torchfits._C as cpp
-
+        except ImportError:
+            return
+        try:
             if hasattr(cpp, "configure_cache"):
                 cpp.configure_cache(self.config.max_files, self.config.max_memory_mb)
-        except (ImportError, AttributeError):
-            # Fallback when C++ module not available or function missing
-            pass
+        except Exception as exc:
+            warnings.warn(
+                f"configure_cpp_cache failed: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive cache statistics, including I/O engine stats."""
@@ -293,14 +299,22 @@ def clear_cache() -> None:
         from ._io_engine.caches import clear_file_cache
 
         clear_file_cache()
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(
+            f"clear_cache: I/O engine clear failed: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     try:
         from ._table.cache import _close_all_cached_handles
 
         _close_all_cached_handles()
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(
+            f"clear_cache: table handle clear failed: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def clear() -> None:

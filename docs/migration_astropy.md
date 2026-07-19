@@ -68,7 +68,7 @@ use `table.read_torch` for tensor columns.
 | 50× repeated 100×100 cutouts (CPU) | 269.20 ms | 13.60 ms (**~20× faster**) |
 | Table read (100k rows, 8 cols, mixed) | 98.48 ms | 5.65 ms (**~17× faster**) |
 
-*Medians from `exhaustive_mps_20260718_180230` (lab MPS, mmap matrix). torchfits
+*Medians from `exhaustive_mps_20260719_065105` (lab MPS, mmap matrix). torchfits
 lags fitsio on some narrow-table predicates and repeated cutouts — see
 [Benchmarks](benchmarks.md#performance-deficits).*
 
@@ -82,7 +82,7 @@ lags fitsio on some narrow-table predicates and repeated cutouts — see
 * **Astropy**: Tables are represented as `astropy.table.Table` or `numpy.recarray`.
 * **torchfits**: FITS tables are dataframes on disk. Default path is
   `torchfits.table.read` → `pyarrow.Table` (portable dataframe). Tensor columns
-  use `table.read_torch` (root alias `read_table`). Native Polars uses
+  use `table.read_torch`. Native Polars uses
   `table.read_polars`. VLAs become Arrow list columns.
 
 ### 3. Thread-Safety & Multi-Processing

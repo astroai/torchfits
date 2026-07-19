@@ -8,7 +8,7 @@ Prefer **correctness** and **measurable performance** over style, a11y drive-bys
 
 Before opening a PR:
 
-1. Read [`docs/jules-ledger.md`](docs/jules-ledger.md) and search recently merged Jules PRs — **do not repeat a theme already landed**.
+1. Read [`.cursor/jules-ledger.md`](.cursor/jules-ledger.md) and search recently merged Jules PRs — **do not repeat a theme already landed**.
 2. Cite evidence: a failing test / assert that fails before and passes after, a CFITSIO or public API contract, or before/after timing from an existing `pixi run bench-*` case (same host, same `case_id`).
 3. One logical change per PR; title names the bug or the bench case.
 4. No new dependencies; no SemVer bumps; no force-push.

@@ -66,7 +66,7 @@ use `table.read_torch` for tensor columns. Namespace stays `table` (FITS name).
 | 50× repeated 100×100 cutouts (CPU) | 18.16 ms | 13.60 ms (**~1.3× faster**) |
 | Table read (100k rows, 8 cols, mixed) | 31.45 ms | 5.65 ms (**~5.6× faster**) |
 
-*Medians from `exhaustive_mps_20260718_180230` (lab MPS, mmap matrix). Linux CUDA
+*Medians from `exhaustive_mps_20260719_065105` (lab MPS, mmap matrix). Linux CUDA
 (`exhaustive_cuda_20260717_042840`) showed **0** torchfits time deficits on that
 host; MPS and CPU still have listed lags — [Benchmarks](benchmarks.md#performance-deficits).*
 

@@ -1212,9 +1212,8 @@ def read_torch(
 ) -> Any:
     """Read a FITS table as dataframe columns mapped to ``torch.Tensor`` values.
 
-    Root alias: :func:`torchfits.read_table` (deprecated). Prefer this
-    ``table.read_torch`` entry point for new code. For Arrow dataframes use
-    :func:`read` / :func:`read_arrow`.
+    Prefer this ``table.read_torch`` entry point for new code. For Arrow
+    dataframes use :func:`read` / :func:`read_arrow`.
     """
     import torchfits
 

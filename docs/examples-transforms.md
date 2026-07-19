@@ -6,7 +6,6 @@ Curated before/after figures. Full API:
 
 ```bash
 pixi run python examples/gallery_images.py
-pixi run python examples/gallery_spectra.py
 pixi run python examples/gallery_tables_lc.py
 # copy only the allowlisted PNGs below into docs/assets/gallery/
 ```
@@ -14,8 +13,7 @@ pixi run python examples/gallery_tables_lc.py
 **Gallery PNG allowlist** (copy from `examples/output/` when refreshing):
 
 - `image_compose_pipeline.png`
-- `spectrum_continuum_normalize.png`, `spectrum_continuum_removal.png`, `spectrum_doppler_shift.png`
-- `lightcurve_sigma_clip.png`, `lightcurve_savgol_folded.png`
+- `lightcurve_sigma_clip.png`, `lightcurve_asymmetric_sigma_clip.png`
 - `table_fits_scale_columns.png`
 - `lupton_rgb_sdss.png` (from `example_lupton_rgb_sdss.py`)
 
@@ -53,39 +51,18 @@ Cutouts live under [Examples → Cutout](examples.md#cutout), not here.
 
 ---
 
-## Spectra and continuum
-
-`gallery_spectra.py` uses the real SDSS DR16 fiber (`sdss_spectrum`) when
-cached, else a synthetic spectrum with strong lines.
-
-```python
-from torchfits.transforms import ContinuumNormalize, ContinuumRemoval, DopplerShift
-
-normed = ContinuumNormalize()(flux)
-residual = ContinuumRemoval()(flux)
-shifted = DopplerShift(z=0.05)(flux)
-```
-
-![Continuum normalize](assets/gallery/spectrum_continuum_normalize.png)
-
-![Continuum removal](assets/gallery/spectrum_continuum_removal.png)
-
-![Doppler shift](assets/gallery/spectrum_doppler_shift.png)
-
----
-
 ## Tables / light curves
 
 ```python
-from torchfits.transforms import SigmaClip1D, SavitzkyGolayFilter
+from torchfits.transforms import AsymmetricSigmaClip, SigmaClip
 
-clean = SigmaClip1D(sigma=3.0)(flux)
-smoothed = SavitzkyGolayFilter(window_length=11, polyorder=2)(flux)
+clean = AsymmetricSigmaClip(n_low=3.0, n_high=3.0)(flux)
+sym = SigmaClip(n_sigma=3.0)(flux)
 ```
 
 ![Light-curve sigma clip](assets/gallery/lightcurve_sigma_clip.png)
 
-![Savgol + phase fold](assets/gallery/lightcurve_savgol_folded.png)
+![Asymmetric sigma clip](assets/gallery/lightcurve_asymmetric_sigma_clip.png)
 
 ![FITS scale columns](assets/gallery/table_fits_scale_columns.png)
 

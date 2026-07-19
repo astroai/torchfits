@@ -48,7 +48,6 @@ def test_docs_reference_existing_local_files() -> None:
         "examples/example_image_dataset.py",
         "examples/example_data_catalogs.py",
         "examples/example_transforms.py",
-        "examples/example_hyperspectral.py",
         "examples/example_image_mef.py",
         "examples/example_polars.py",
         "examples/example_table.py",
@@ -58,11 +57,11 @@ def test_docs_reference_existing_local_files() -> None:
         "benchmarks/bench_all.py",
         "benchmarks/bench_arrow_tables.py",
         "benchmarks/bench_cpp_backend.py",
-        "benchmarks/bench_fast.py",
         "benchmarks/bench_fits_io.py",
         "benchmarks/bench_fitstable_io.py",
         "benchmarks/bench_gpu_transports.py",
         "benchmarks/bench_table.py",
+        "benchmarks/bench_contract.py",
         "scripts/launch_canfar_gpu_bench.sh",
         "scripts/canfar_gpu_bench_incontainer.sh",
         "scripts/canfar_gpu_bench_remote.sh",
@@ -260,9 +259,14 @@ def test_api_md_core_io_signatures_match_live() -> None:
     assert "device" not in subset_sig
     assert "handle_cache_capacity" in subset_sig
 
-    stream_section = _section("stream_table")
-    stream_sig = _first_call_sig(stream_section)
-    assert "file_path" in stream_sig
+    # Table streaming lives in api-tables.md (root stream_table removed).
+    tables_api = (ROOT / "docs" / "api-tables.md").read_text(encoding="utf-8")
+    scan_match = re.search(
+        r"## `table\.scan_torch\(\)`\n(.*?)(?=\n## |\Z)", tables_api, flags=re.S
+    )
+    assert scan_match, "missing section for table.scan_torch"
+    stream_section = scan_match.group(1)
+    assert "batch_size" in stream_section
     assert (
         "dict[str, torch.Tensor]" in stream_section
         or "dict[str, Tensor]" in stream_section
@@ -273,7 +277,8 @@ def test_api_md_core_io_signatures_match_live() -> None:
     assert "table" in read_section.lower() or "tensor" in read_section.lower()
 
     # Live sanity: key helpers remain importable
-    assert callable(torchfits.read_table)
+    assert not hasattr(torchfits, "read_table")
+    assert callable(torchfits.table.read_torch)
     assert callable(torchfits.read_subset)
 
 

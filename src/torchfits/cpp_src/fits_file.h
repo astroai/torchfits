@@ -54,7 +54,6 @@ public:
     std::string get_hdu_type(int hdu_num);
     bool write_hdus(nb::list hdus, bool overwrite);
     bool write_hdus_compressed_images(nb::list hdus, int compression_type);
-    fitsfile* get_fptr() { return fptr_; }
     std::string read_header_to_string(int hdu_num);
 
 private:

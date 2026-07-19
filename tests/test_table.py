@@ -86,15 +86,23 @@ class TestTableReading:
             os.unlink(filepath)
 
     def test_table_streaming_memory_budget(self):
-        """Test streaming read for large tables using stream_table directly."""
+        """Test streaming read for large tables using table.scan_torch directly."""
         filepath, expected_data = self.create_test_table(10000)
 
         try:
-            # Use stream_table to read chunks within memory budget
-            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=1000))
+            # Use scan_torch to read chunks within memory budget
+            chunks = list(torchfits.table.scan_torch(filepath, hdu=1, batch_size=1000))
             total_rows = sum(len(chunk["RA"]) for chunk in chunks)
             assert total_rows == 10000
 
+        finally:
+            os.unlink(filepath)
+
+    def test_scan_torch_rejects_zero_batch_size(self):
+        filepath, _ = self.create_test_table(2)
+        try:
+            with pytest.raises(ValueError, match="batch_size must be > 0"):
+                list(torchfits.table.scan_torch(filepath, hdu=1, batch_size=0))
         finally:
             os.unlink(filepath)
 
@@ -120,13 +128,13 @@ class TestTableReading:
         finally:
             os.unlink(path)
 
-    def test_stream_table_chunks(self):
-        """Test stream_table yields correct total row count."""
+    def test_scan_torch_chunks(self):
+        """Test table.scan_torch yields correct total row count."""
         filepath, _ = self.create_test_table(1234)
 
         try:
             total = 0
-            for chunk in torchfits.stream_table(filepath, hdu=1, chunk_rows=200):
+            for chunk in torchfits.table.scan_torch(filepath, hdu=1, batch_size=200):
                 assert "RA" in chunk
                 total += len(chunk["RA"])
             assert total == 1234
@@ -304,14 +312,14 @@ class TestTablePerformance:
             return f.name
 
     def test_chunked_reading_performance(self):
-        """Test performance of chunked reading via stream_table."""
+        """Test performance of chunked reading via table.scan_torch."""
         import time
 
         filepath = self.create_large_table(50000)
 
         try:
             start_time = time.time()
-            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=5000))
+            chunks = list(torchfits.table.scan_torch(filepath, hdu=1, batch_size=5000))
             total_rows = sum(len(chunk["RA"]) for chunk in chunks)
             streaming_time = time.time() - start_time
 
@@ -322,7 +330,7 @@ class TestTablePerformance:
             os.unlink(filepath)
 
     def test_memory_efficiency(self):
-        """Test memory efficiency of table reading via stream_table."""
+        """Test memory efficiency of table reading via table.scan_torch."""
         import gc
         import psutil
 
@@ -333,7 +341,7 @@ class TestTablePerformance:
             mem_before = process.memory_info().rss / 1024 / 1024  # MB
 
             # Read table in chunks
-            chunks = list(torchfits.stream_table(filepath, hdu=1, chunk_rows=2000))
+            chunks = list(torchfits.table.scan_torch(filepath, hdu=1, batch_size=2000))
             total_rows = sum(len(chunk["RA"]) for chunk in chunks)
 
             mem_after = process.memory_info().rss / 1024 / 1024  # MB

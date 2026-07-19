@@ -1,10 +1,12 @@
 import inspect
-import warnings
 
 import numpy as np
+import pytest
 
 import torchfits
-from torchfits import hdu, table, where
+import torchfits.hdu as hdu
+import torchfits.table as table
+import torchfits.where as where
 
 
 def test_hdu_and_table_public_surfaces_are_importable():
@@ -29,7 +31,6 @@ def test_table_destination_readers_are_public():
     assert "read_torch" in table.__all__
     assert table.read_arrow is table.read
     assert callable(table.read_torch)
-    assert callable(torchfits.read_table)
     assert callable(torchfits.read_header)
 
 
@@ -64,28 +65,42 @@ def test_where_public_surface_matches_table_predicate_semantics():
     assert where.where_columns_from_ast(ast) == ["A", "B"]
 
 
-def test_root_table_helpers_emit_deprecation_warning():
-    path = "/nonexistent_torchfits_deprecation.fits"
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        for call in (
-            lambda: torchfits.read_table(path),
-            lambda: next(torchfits.stream_table(path)),
-            lambda: torchfits.read_table_rows(path),
-            lambda: torchfits.get_header(path),
-            lambda: torchfits.get_batch_info([path]),
-        ):
-            try:
-                call()
-            except Exception:
-                pass
-        msgs = [
-            str(item.message)
-            for item in caught
-            if issubclass(item.category, DeprecationWarning)
-        ]
-    assert any("read_table is deprecated" in m for m in msgs)
-    assert any("stream_table is deprecated" in m for m in msgs)
-    assert any("read_table_rows is deprecated" in m for m in msgs)
-    assert any("get_header is deprecated" in m for m in msgs)
-    assert any("get_batch_info is deprecated" in m for m in msgs)
+def test_removed_root_aliases_are_not_public():
+    removed = (
+        "read_table",
+        "stream_table",
+        "read_table_rows",
+        "get_header",
+        "get_batch_info",
+    )
+    for name in removed:
+        assert name not in torchfits.__all__
+        with pytest.raises(AttributeError, match=name):
+            getattr(torchfits, name)
+
+
+def test_transforms_public_surface_excludes_removed_spectral_names():
+    import torchfits.transforms as transforms
+
+    removed = (
+        "ContinuumNormalize",
+        "ContinuumRemoval",
+        "DopplerShift",
+        "SpectralBinning",
+        "BandMath",
+        "PhaseFold",
+        "SavitzkyGolayFilter",
+        "RunningPercentile",
+        "UpperEnvelopeContinuum",
+        "WaveletDecompose",
+        "AsymmetricLeastSquares",
+        "AlphaShapeContinuum",
+    )
+    for name in removed:
+        assert name not in transforms.__all__
+        with pytest.raises(AttributeError, match=name):
+            getattr(transforms, name)
+
+    assert "AsModule" in transforms.__all__
+    assert "as_module" in transforms.__all__
+    assert callable(transforms.as_module)

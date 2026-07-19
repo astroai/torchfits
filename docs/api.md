@@ -21,10 +21,9 @@ model is a columnar dataframe.
 | Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like |
 
 `table.read_arrow` is an exact synonym of `table.read` (destination-qualified
-spelling). Root `read_table` / `stream_table` / `read_table_rows` are
-**deprecated** compatibility aliases of the `table.*` tensor helpers (emit
-`DeprecationWarning` since 1.0.0rc1). Prefer `table.*` for dataframe workflows
-(`where=`, projection, Polars/Pandas).
+spelling alongside `read_torch` / `read_polars`). Root `read_table` /
+`stream_table` / `read_table_rows` / `get_header` / `get_batch_info` were
+**removed** in 1.0 — use `table.*`, `read_header`, and `read_batch_info`.
 
 ---
 
@@ -56,9 +55,7 @@ spelling). Root `read_table` / `stream_table` / `read_table_rows` are
 | Streaming Polars batches | `table.scan_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | DuckDB SQL | `table.duckdb_query(path, sql, hdu=1)` | [Tables](api-tables.md#duckdb) |
 
-Compatibility helpers (same behavior, lower prominence): `table.read_arrow`
-(= `table.read`); root `read_table` / `read_table_rows` / `stream_table`
-(see [Core I/O](api-core-io.md#read_table)).
+Destination-qualified spelling of `table.read` (same object): `table.read_arrow`.
 
 
 ### ML Training
@@ -78,8 +75,7 @@ Prefer raw I/O until you need epochs/shuffle/workers — see
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |
 | DataLoader + cache defaults | `make_loader(dataset, batch_size=32)` | [Data](api-data.md#make_loader) |
-| Image stretches, normalizers | `from torchfits.transforms import …` | [Transforms](api-transforms.md) |
-| Spectral preprocessing | `ContinuumNormalize`, `DopplerShift`, ... | [Transforms](api-transforms.md) |
+| Image stretches, normalizers, clip | `from torchfits.transforms import …` | [Transforms](api-transforms.md) |
 | Shell inspect / convert | `torchfits info|header|verify|…` | [CLI](cli.md) |
 
 ---
@@ -135,7 +131,7 @@ private until promoted there.
 |---|---|
 | `read_fast(...)` | `read(...)` or `read_tensor(...)` |
 | `read_image(...)` | `read_tensor(...)` |
-| Root transform classes (e.g. `torchfits.SpectralBinning`) | `torchfits.transforms.*` |
+| Root transform classes (e.g. `torchfits.ArcsinhStretch`) | `torchfits.transforms.*` |
 
 Transforms are not re-exported at the package root. Import them from
 `torchfits.transforms`. HDU helpers are available as root names and via

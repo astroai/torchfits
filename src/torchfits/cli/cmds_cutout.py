@@ -34,7 +34,7 @@ def _parse_box(raw: str) -> tuple[int, int, int, int]:
         raise UsageError("--box requires x1,y1,x2,y2")
     try:
         x1, y1, x2, y2 = (int(part) for part in parts)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise UsageError("--box values must be integers") from exc
     return x1, y1, x2, y2
 

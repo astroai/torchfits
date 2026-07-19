@@ -82,7 +82,7 @@ torchfits is a **1.0.0rc** prerelease — see [Changelog](changelog.md) and
 | **Training loop** | hand-rolled Dataset | `FitsImageDataset` + `make_loader` |
 | **Shell tooling** | fitsinfo / fitsheader / … | `torchfits` CLI |
 
-Representative medians from `exhaustive_mps_20260718_180230` (MPS host;
+Representative medians from `exhaustive_mps_20260719_065105` (MPS host;
 methodology and deficits in [Benchmarks](benchmarks.md)).
 
 Docs channels: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·

@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Docs/examples polish (no SemVer bump).
+### Removed
+- Root aliases `read_table`, `stream_table`, `read_table_rows`, `get_header`,
+  `get_batch_info` — use `table.read_torch` / `table.scan_torch` / `read_header` /
+  `read_batch_info`.
+- Spectral and continuum transforms (`spectral.py`, `continuum.py`) — torchfits
+  keeps FITS I/O–adjacent viz/ML preprocess only; spectroscopy analysis moves
+  out of this package.
+- Dead `core.py` / `ChecksumVerifier` — checksums go through `_C` via
+  `checksum_api`.
+- CLI deprecated aliases `--fitsort`, `--bytes`, `--preview` — use
+  `--keyword-table`, `--header-bytes`, `-n`/`--rows`.
+- Deprecated `table_module=` dual-path on cache invalidate/clear.
+
+### Added
+- `transforms.as_module` / `AsModule` — thin `nn.Module` adapter for
+  `nn.Sequential`.
+- CLI `transform --name Class:key=val,...` constructor kwargs.
+- HTTP Range cutouts + vos/vault remote fetch (prior unreleased work).
+
+### Changed
+- Lazy root `__getattr__` uses a lock-backed attribute cache (no `globals()`
+  mutation).
+- Library logger uses `NullHandler` (no import-time StreamHandler).
+- Bench deficit CSV always lists raw lags; `significance` is `noise` or
+  `significant` (floors label only).
+- Removed disconnected `benchmarks/bench_fast.py` and pixi aliases
+  `bench-fast` / `bench-fast-stable` / `bench-core` (use `bench-fits`).
+- Dead private `read_large_table` leftover and unused `_unsigned.py`
+  (unsigned paths live in `_read_pipeline` / `write_api` / `fits_schema`).
+- Table mutation: single `_mutation_cache_barrier` pre/post; dtype maps via
+  `_ensure_dtype_maps()`.
 
 ### Fixed
 - **`lupton_rgb`:** Astropy-parity Lupton asinh mapping (per-pixel peak clip).
@@ -15,9 +45,11 @@ Docs/examples polish (no SemVer bump).
 - **`SubsetReader`:** uncompressed 2D images mmap the data segment once and
   slice+bswap into torch (MegaPipe-class mosaics); CFITSIO `fits_read_subset`
   remains the fallback for compressed / scaled / non-2D.
+- Clearer `TypeError` when inferring FITS TFORM from uint16/uint32/uint64.
 
 ### Docs
-- Slim transform gallery; real Lupton RGB figure; fixed Doppler (`z=`) docs snippet.
+- Slim transform gallery; real Lupton RGB figure; removed spectral/continuum docs.
+- Core I/O docs point at `table.read_torch` / `table.scan_torch` (root aliases gone).
 - User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 + Legacy Survey one-epoch
   CNN train; MegaPipe mosaic collage + cutout timing.
 - Canonical `TORCHFITS_*` env tables in [architecture](architecture.md); slimmed
@@ -46,7 +78,7 @@ Third release candidate for collaborator soak.
 
 ### Agent / Jules
 - `AGENTS.md` + `JULES.md`: weekly Jules retarget to bug/perf-only deep passes;
-  ledger in `docs/jules-ledger.md`; out-of-scope cosmetic PRs.
+  ledger in `.cursor/jules-ledger.md`; out-of-scope cosmetic PRs.
 
 ### Fixed
 - **String HDU / EXTNAME:** `read_tensor` and `read_subset` accept `hdu="EXTNAME"`
@@ -145,7 +177,7 @@ leftover API/docs/CLI, and audit cleanup. SemVer `1.0.0` still waits for soak.
 ## [1.0.0rc1] — 2026-07-17
 
 Release candidate for the 1.0 API. Formal stamp:
-`docs/reviews/release-api-freeze-1.0.0rc1.md`. SemVer `1.0.0` waits for
+`archive/pre-1.0-reviews/release-api-freeze-1.0.0rc1.md`. SemVer `1.0.0` waits for
 post-rc soak; do not treat this tag as the final 1.0.0 freeze.
 
 ### Changed
@@ -216,7 +248,7 @@ post-rc soak; do not treat this tag as the final 1.0.0 freeze.
 ## [1.0b1] — 2026-07-17
 
 Beta freeze of the public FITS → tensor / dataframe story. Not a SemVer 1.0.0
-API freeze; see `docs/reviews/release-api-freeze-1.0b1.md` for rc1 blockers.
+API freeze; see `archive/pre-1.0-reviews/release-api-freeze-1.0b1.md` for rc1 blockers.
 
 ### Added
 
@@ -512,8 +544,8 @@ API freeze; see `docs/reviews/release-api-freeze-1.0b1.md` for rc1 blockers.
 - `_build_d2_matrix` internal helper for the n×n pentadiagonal second-difference
   penalty matrix D^T D used by the Whittaker smoother / AsLS.
 - 27 new tests for the three transforms (201 transforms tests total, all passing).
-- Sections 7–9 in `examples/example_hyperspectral.py` demonstrating
-  `AsymmetricLeastSquares`, `AlphaShapeContinuum`, and `AsymmetricSigmaClip`.
+- Example coverage for `AsymmetricLeastSquares`, `AlphaShapeContinuum`, and
+  `AsymmetricSigmaClip` (later removed with the spectral/continuum hard-cut).
 - All three transforms exported to the root package for direct
   `from torchfits import AsymmetricLeastSquares` access.
 - Documentation for all three transforms in `docs/api.md` and `README.md`

@@ -208,6 +208,8 @@ def test_fitstable_scan_count_uses_header_not_column() -> None:
 
     src_smart = inspect.getsource(m._torchfits_scan_count)
     src_local = inspect.getsource(m._torchfits_scan_count_local)
-    assert "get_header" in src_smart
-    assert "get_header" in src_local
+    assert "read_header" in src_smart
+    assert "read_header" in src_local
     assert "read_table" not in src_local
+    assert "get_header" not in src_smart
+    assert "get_header" not in src_local

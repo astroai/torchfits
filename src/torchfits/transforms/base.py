@@ -63,3 +63,25 @@ class Compose(FITSTransform):
     def __repr__(self) -> str:
         inner = ",\n    ".join(repr(t) for t in self.transforms)
         return f"Compose([\n    {inner}\n])"
+
+
+class AsModule(torch.nn.Module):
+    """Thin ``nn.Module`` adapter around a :class:`FITSTransform`.
+
+    Lets callers write ``torch.nn.Sequential(AsModule(pipeline), model)``.
+    Only the forward pass is exposed; use ``transform.inverse`` for undo.
+    """
+
+    def __init__(self, transform: FITSTransform) -> None:
+        super().__init__()
+        self.transform = transform
+
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.transform.forward(x, mask=mask)  # type: ignore[no-any-return]
+
+
+def as_module(transform: FITSTransform) -> AsModule:
+    """Wrap *transform* as an :class:`AsModule` for ``nn.Sequential``."""
+    return AsModule(transform)

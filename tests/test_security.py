@@ -1,5 +1,43 @@
+import shutil
+
+import numpy as np
 import pytest
+import torch
+from astropy.io import fits
+
 import torchfits
+
+
+def test_image_with_more_than_nine_axes_is_rejected_safely(tmp_path):
+    path = tmp_path / "ten-dimensional.fits"
+    fits.PrimaryHDU(np.zeros((1,) * 10, dtype=np.uint8)).writeto(path)
+
+    with pytest.raises(RuntimeError, match="at most 9 axes"):
+        torchfits.read_tensor(str(path))
+
+
+def test_read_path_with_literal_bracket_in_directory(tmp_path):
+    """Regression (deep review C2): a literal '[' in a directory component
+    (not a trailing CFITSIO extended-filename section) must not be
+    misdetected as extension syntax. CFITSIO's URL-aware `fits_open_file`
+    genuinely fails to parse such paths ("parse error in input file URL"),
+    so torchfits must route them through `fits_open_diskfile` instead.
+    """
+    data = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+    src = tmp_path / "image.fits"
+    torchfits.write(str(src), data, overwrite=True)
+
+    bracket_dir = tmp_path / "[data]"
+    bracket_dir.mkdir()
+    path = str(bracket_dir / "image.fits")
+    shutil.copy(src, path)
+
+    for use_mmap in (True, False):
+        out = torchfits.read(path, mmap=use_mmap)
+        assert torch.equal(out, data), f"mismatch for mmap={use_mmap}"
+
+    hdr = torchfits.read_header(path, 0)
+    assert hdr["NAXIS"] == 2
 
 
 def test_security_cve_cfitsio_command_injection():

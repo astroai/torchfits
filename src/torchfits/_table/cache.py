@@ -31,8 +31,8 @@ def _acquire_cpp_reader(path: str, hdu: int, cpp: Any) -> Any:
 
 
 def _close_all_cached_handles() -> None:
-    """No cached handles are retained; kept for cache-clear API compatibility."""
+    """No-op: table reads open a private CFITSIO handle per call (Option A)."""
 
 
 def _invalidate_caches_for_path(path: str) -> None:  # noqa: ARG001
-    """No cached handles are retained; kept for cache-invalidate API compatibility."""
+    """No-op: no cross-thread table-handle cache to invalidate."""

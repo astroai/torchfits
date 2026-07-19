@@ -69,8 +69,7 @@ assert torchfits.table.read_arrow is torchfits.table.read
 
 ## `table.read_torch()`
 
-Read a FITS table as dataframe columns mapped to `torch.Tensor` values
-(root alias: `torchfits.read_table`).
+Read a FITS table as dataframe columns mapped to `torch.Tensor` values.
 
 ```python
 torchfits.table.read_torch(
@@ -119,8 +118,7 @@ for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
 
 ## `table.scan_torch()`
 
-Stream dataframe rows as tensor-column chunks (prefer this over root
-`stream_table` when you need `device=` / `pin_memory=`).
+Stream dataframe rows as tensor-column chunks.
 
 ```python
 torchfits.table.scan_torch(
@@ -207,7 +205,7 @@ happens in C++ for most table sizes.
 |---|---|
 | `"auto"` (default) | C++ pushdown for large tables; Arrow filter for small tables |
 | `"cpp"` | C++ row reads as torch tensors, converted to Arrow |
-| `"torch"` | `stream_table` chunked path |
+| `"torch"` | `table.scan_torch` chunked path |
 
 ### Environment Tuning
 

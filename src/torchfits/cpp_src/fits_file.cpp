@@ -71,7 +71,7 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
     if (status != 0 || !fptr_) throw std::runtime_error("Could not open FITS file: " + filename_);
     cached_ = false;
     if (mode == 0) shared_meta_ = detail::get_shared_meta_for_path(filename_);
-    const bool has_extension = filename_.find('[') != std::string::npos;
+    const bool has_extension = has_cfitsio_extended_filename_syntax(filename_);
     if (!has_extension) {
         // Private handle owns its own CHDU — do not seed from shared_meta_.
         start_hdu_ = 1;
@@ -199,7 +199,7 @@ const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(in
     int naxis = 0;
     std::array<LONGLONG, 9> naxes_ll{};
     naxes_ll.fill(0);
-    fits_get_img_paramll(fptr_, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+    detail::read_image_params_9d(fptr_, &bitpix, &naxis, naxes_ll, &status);
     if (status != 0) throw std::runtime_error("Could not read image parameters");
     auto inserted = image_info_cache_.emplace(hdu_num, std::make_tuple(bitpix, naxis, naxes_ll));
     if (shared_meta_) {
@@ -218,7 +218,7 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     naxes_ll.fill(0);
     // Direct paramll (skip shared_meta locks) — local FITSFile caches die with
     // the one-shot wrapper anyway.
-    fits_get_img_paramll(fptr_, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+    detail::read_image_params_9d(fptr_, &bitpix, &naxis, naxes_ll, &status);
     if (status != 0) throw std::runtime_error("Could not read image parameters");
     if (naxis == 0) {
         torch::ScalarType dtype;
@@ -315,7 +315,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
     const bool compressed = is_compressed_image_cached(hdu_num);
     if (want_mmap && !compressed && bitpix == BYTE_IMG) {
-        if (filename_.find('[') == std::string::npos) {
+        if (!has_cfitsio_extended_filename_syntax(filename_)) {
             LONGLONG headstart = 0, data_offset = 0, dataend = 0;
             status = 0;
             fits_get_hduaddrll(fptr_, &headstart, &data_offset, &dataend, &status);
@@ -431,9 +431,7 @@ std::vector<std::tuple<std::string, std::string, std::string>> FITSFile::get_hea
         fits_read_keyn(fptr_, i, keyname, value, comment, &status);
         if (status == 0) {
             std::string key_str(keyname), val_str(value), com_str(comment);
-            val_str.erase(std::remove_if(val_str.begin(), val_str.end(), [](unsigned char c) {
-                return c < 32 || c > 126;
-            }), val_str.end());
+            val_str = detail::sanitize_fits_string(val_str);
             if (val_str.length() >= 2 && val_str.front() == '\'') {
                 size_t last_quote = val_str.rfind('\'');
                 if (last_quote != std::string::npos && last_quote > 0) {
@@ -792,7 +790,7 @@ std::string FITSFile::read_header_to_string(int hdu_num) {
 }
 
 bool FITSFile::ensure_raw_fd(size_t required_end) {
-    if (filename_.find('[') != std::string::npos) return false;
+    if (has_cfitsio_extended_filename_syntax(filename_)) return false;
     if (!raw_fd_ready_) {
         raw_fd_ready_ = true;
         raw_fd_ = detail::open_readonly_fd(filename_);
@@ -867,7 +865,7 @@ void SubsetReader::init_from_hdu() {
     // fits_read_subset on large mosaics (page-cache + memcpy, like fitsio memmap).
     const bool compressed = file_.is_compressed_image_cached(hdu_num_);
     if (!compressed && naxis_ == 2 && elem_bytes_ > 0 &&
-        filename_.find('[') == std::string::npos &&
+        !has_cfitsio_extended_filename_syntax(filename_) &&
         filename_.find("://") == std::string::npos) {
         LONGLONG headstart = 0, data_offset = 0, dataend = 0;
         status = 0;

@@ -240,12 +240,6 @@ def _row_from_torch_chunk(chunk: dict[str, Any], row_idx: int) -> dict[str, Any]
     return row
 
 
-def _arrow_batch_row_dict(batch: Any, row_idx: int, device: str) -> dict[str, Any]:
-    """One row from a pyarrow RecordBatch (legacy helper; prefer batch tensors)."""
-    tensor_cols = _tensor_columns_from_record_batch(batch)
-    return _row_from_record_batch(batch, row_idx, tensor_cols, device)
-
-
 # ---------------------------------------------------------------------------
 # FitsTableIterableDataset — constant-memory table streaming
 # ---------------------------------------------------------------------------

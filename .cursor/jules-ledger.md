@@ -9,5 +9,9 @@ Themes already covered by Jules (or integrated Jules PRs). Weekly Jules must
 | hoist inner classes (cosmetic) | #214 | landed — do not repeat |
 | HDU `repr_html` / HTML a11y | #213 / #219 | landed — do not repeat a11y drive-bys |
 | shared cached `fitsfile*` cross-thread | CFITSIO R2 / rc2 | landed (open-per-read) |
+| HTTP Range remote cutouts + vos/vault bridge | main `83c64d4` | landed |
+| SubsetReader mmap cutouts (uncompressed 2D) | main `d4b419c` | landed |
+| Lupton RGB Astropy-parity peak clip | main `91b30b0` | landed |
+| Deep review 1.0 triage (alias/spectral hard-remove, bench honesty) | archive/pre-1.0-reviews/deep_review_1.0.md | executed on main working tree (uncommitted) |
 
 When integrating a Jules PR, append a row here before closing the PR.

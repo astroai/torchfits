@@ -59,7 +59,7 @@ void clear_shared_read_meta_cache() {
 // read_full_cached — fast path using cached CFITSIO handle + SharedReadMeta
 // ---------------------------------------------------------------------------
 torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mmap) {
-    if (path.find('[') != std::string::npos) {
+    if (has_cfitsio_extended_filename_syntax(path)) {
         FITSFile file(path.c_str(), 0);
         return file.read_tensor(hdu_num, use_mmap);
     }
@@ -144,7 +144,8 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
         }
         local->naxes_ll.fill(0);
         status = 0;
-        fits_get_img_paramll(fptr, 9, &local->bitpix, &local->naxis, local->naxes_ll.data(), &status);
+        d::read_image_params_9d(
+            fptr, &local->bitpix, &local->naxis, local->naxes_ll, &status);
         if (status != 0) {
             throw std::runtime_error("Could not read image parameters");
         }
@@ -297,7 +298,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     };
     const std::string hdu_name_key = normalize_hdu_name(hdu_name);
 
-    if (path.find('[') != std::string::npos) {
+    if (has_cfitsio_extended_filename_syntax(path)) {
         FITSFile file(path.c_str(), 0);
         fitsfile* fptr = file.get_fptr();
         int status = 0;
@@ -512,7 +513,7 @@ torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
         std::array<LONGLONG, 9> naxes_ll{};
         d::ScaleDetectionResult scale_info;
         bool compressed = false;
-        fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+        d::read_image_params_9d(fptr, &bitpix, &naxis, naxes_ll, &status);
         if (status != 0) {
             throw std::runtime_error("Could not read image parameters");
         }
@@ -662,7 +663,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         }
         if (!info_cached) {
             status = 0;
-            fits_get_img_paramll(fptr, 9, &bitpix, &naxis, naxes_ll.data(), &status);
+            d::read_image_params_9d(fptr, &bitpix, &naxis, naxes_ll, &status);
             if (status != 0) {
                 close_guard();
                 throw std::runtime_error("Could not read image parameters");
@@ -1560,7 +1561,7 @@ void bind_fits(nb::module_& m) {
         const bool signed_byte_scaled =
             scaled && bitpix == BYTE_IMG && scale_info.bscale == 1.0 && scale_info.bzero == -128.0;
         if (use_mmap && !compressed && bitpix == BYTE_IMG && (!scaled || signed_byte_scaled)) {
-            if (filename.find('[') == std::string::npos) {
+            if (!has_cfitsio_extended_filename_syntax(filename)) {
                 LONGLONG headstart = 0, data_offset = 0, dataend = 0;
                 status = 0;
                 fits_get_hduaddrll(fptr, &headstart, &data_offset, &dataend, &status);

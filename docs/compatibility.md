@@ -29,7 +29,7 @@ Optional: Polars / Pandas / DuckDB via env; astropy / fitsio for test / bench on
 | ML training (`Dataset` / `make_loader`) | Prefer wheel + PyTorch 2.10, or rebuild torchfits from source for your torch minor |
 | Arrow catalogs | Prefer `torchfits.table.read` / `scan` |
 | Tensor columns | Prefer `torchfits.table.read_torch` / `scan_torch` |
-| Root `read_table` / `stream_table` / `read_table_rows` | Deprecated compatibility aliases |
+| Root `read_table` / `stream_table` / `read_table_rows` / `get_header` / `get_batch_info` | **Removed** in 1.0 — use the replacements above / `read_header` / `read_batch_info` |
 
 ## Wheel install smoke
 

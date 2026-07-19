@@ -10,7 +10,8 @@ Use before tagging a beta/final when the release claims **feature-freeze** and *
 
 ## Outputs
 
-Write findings to `docs/reviews/release-api-freeze-<version>.md` with sections:
+Write findings to `archive/pre-1.0-reviews/release-api-freeze-<version>.md`
+(keep product docs under `docs/` free of freeze audit dumps) with sections:
 
 1. **Verdict** — Ship / Ship with notes / Block
 2. **Blocking** — must fix before tag

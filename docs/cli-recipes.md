@@ -66,7 +66,7 @@ torchfits transform "$HH" --name SqrtStretch --out /tmp/hh_sqrt.fits
 torchfits transform "$HH" --name ZScaleNormalize --out /tmp/hh_z.fits
 ```
 
-Continuum / Doppler with parameters → Python gallery
+For parameterized pipelines, use the Python API
 ([Transform gallery](examples-transforms.md)).
 
 ## Compression
@@ -88,7 +88,7 @@ torchfits verify "$HH"
 pixi run python -c "from examples._sample_data import ensure_sample; print(ensure_sample('chandra_events'))"
 export EV=~/.cache/torchfits/samples/chandra_events.fits
 torchfits info "$EV"
-torchfits table "$EV" -e 1 --preview 5
+torchfits table "$EV" -e 1 -n 5
 torchfits convert "$EV" /tmp/events.parquet --to parquet -e 1
 torchfits convert "$EV" /tmp/events.csv --to csv -e 1
 # STILTS-like filter+export (predicate = table.read where=)

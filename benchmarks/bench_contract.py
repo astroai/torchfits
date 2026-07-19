@@ -66,6 +66,7 @@ DEFICIT_COLUMNS = [
     "best_peak_rss_mb",
     "lag_ratio",
     "pct_behind",
+    "significance",
     "n_points",
     "perceived_impact",
 ]
@@ -274,16 +275,17 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
         if lag_ratio is None:
             continue
         min_lag = deficit_min_lag_ratio(domain)
-        # Inclusive table slack: lag == 1.05× is still within policy.
-        if lag_ratio <= min_lag:
-            continue
-        # Timer ε only — reject microscopic float ties, not percent lags.
-        # Arrow tables already have explicit 1.05× slack; do not let a fixed
-        # absolute floor hide sub-ms ratio violations on narrow predicates.
-        if domain != "fitstable" and (tf_time - best_t) < deficit_abs_delta_floor(
+        abs_floor = deficit_abs_delta_floor(
             best_t, case_id=str(torch_row.get("case_id") or "")
-        ):
-            continue
+        )
+        abs_delta = tf_time - best_t
+        # Always emit the row; floors only label significance (never exclude).
+        within_lag = lag_ratio <= min_lag
+        within_abs = domain != "fitstable" and abs_delta < abs_floor
+        if within_lag or within_abs:
+            significance = "noise"
+        else:
+            significance = "significant"
         deficits.append(
             {
                 "run_id": run_id,
@@ -303,6 +305,7 @@ def compute_deficits(rows: list[dict[str, Any]], run_id: str) -> list[dict[str, 
                 "best_peak_rss_mb": _to_float(best_row.get("peak_rss_mb")),
                 "lag_ratio": lag_ratio,
                 "pct_behind": ((lag_ratio - 1.0) * 100.0) if lag_ratio else "",
+                "significance": significance,
                 "n_points": _extract_n_points(torch_row),
                 "perceived_impact": (
                     "ratio_outlier"
@@ -470,7 +473,9 @@ def write_summary(
         f.write(f"- Run ID: `{run_id}`\n")
         f.write(f"- Scopes: `{', '.join(scopes)}`\n")
         f.write(f"- Total normalized rows: `{len(rows)}`\n")
-        f.write(f"- TorchFits deficit rows: `{len(deficits)}`\n")
+        f.write(f"- TorchFits deficit rows (all lags): `{len(deficits)}`\n")
+        significant = [d for d in deficits if d.get("significance") == "significant"]
+        f.write(f"- TorchFits significant deficits: `{len(significant)}`\n")
         try:
             import os
             import socket
@@ -553,7 +558,8 @@ def write_summary(
         large_n_deficits = [
             d
             for d in deficits
-            if (_to_int(d.get("n_points")) or 0) >= LARGE_N_THRESHOLD
+            if d.get("significance") == "significant"
+            and (_to_int(d.get("n_points")) or 0) >= LARGE_N_THRESHOLD
         ]
         if large_n_deficits:
             f.write("Large-N deficits detected:\n\n")
@@ -570,7 +576,8 @@ def write_summary(
         visible_small_deficits = [
             d
             for d in deficits
-            if (_to_int(d.get("n_points")) or 0) < LARGE_N_THRESHOLD
+            if d.get("significance") == "significant"
+            and (_to_int(d.get("n_points")) or 0) < LARGE_N_THRESHOLD
             and str(d.get("perceived_impact")) in {"visible", "ratio_outlier"}
         ]
         f.write("### Small-N Visible Deficits\n\n")

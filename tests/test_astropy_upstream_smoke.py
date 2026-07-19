@@ -140,7 +140,7 @@ def test_astropy_vla_table_mmap_updates_are_explicit(tmp_path) -> None:
 
     # Public reads keep mmap=True ergonomic: VLA reads go through the safe
     # buffered path rather than silently dropping variable-length data.
-    table = torchfits.read_table(path.as_posix(), hdu=1, mmap=True)
+    table = torchfits.table.read_torch(path.as_posix(), hdu=1, mmap=True)
     assert table["VLA"][0].tolist() == [1, 2]
 
     # VLA mmap updates remain explicitly unsupported by design (heap pointer
@@ -265,10 +265,10 @@ def test_astropy_string_mmap_update_pads_to_column_width(tmp_path) -> None:
     # trailing bytes must be ASCII spaces (0x20), so the prefix is exactly
     # the user-provided 4-byte payload.
     # astropy's BinTableHDU.data accessor trims trailing whitespace from
-    # fixed-width CHAR columns, so we use torchfits.read_table (which
+    # fixed-width CHAR columns, so we use torchfits.table.read_torch (which
     # returns the raw uint8 tensor without trimming) to verify the
     # user prefix is followed by ASCII-space (0x20) padding bytes on disk.
-    raw_names = torchfits.read_table(path.as_posix(), hdu=1)["NAME"]
+    raw_names = torchfits.table.read_torch(path.as_posix(), hdu=1)["NAME"]
     raw_names_np = np.asarray(raw_names)
     assert raw_names_np.shape == (2, 8)
     np.testing.assert_array_equal(
