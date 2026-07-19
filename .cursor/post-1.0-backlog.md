@@ -18,8 +18,12 @@ Deferred after the 1.0 triage passes. Do not block the 1.0 tag on these.
   `exhaustive_*_20260719_14*`; see `docs/benchmarks.md`)
 - MegaCam `torchfits_cached` median lags `fitsio_cached` on Round-3 local soak
   (materialize path still leads) — investigate handle reuse vs fitsio cache
-- Narrow-table `predicate_filter` / `read_full` significant lags on CPU/CUDA
-  (fitsio ahead ~1.05–1.28×) — fused `where=` path still not winning every case
+- Narrow-table `read_full` ~1.06–1.15× behind fitsio (small; polish later)
+- **predicate_filter Round-3 investigation (done):** fused `where=` engages.
+  Significant deficits were `specialized` only (tensor vs astropy **numpy**);
+  `smart` already won. Dense `col > 0` (~50% keep) stresses gather; selective
+  tails favor it. Bench now has both ops: `predicate_filter` (dense) and
+  `predicate_filter_selective`. Optional later: C++ high-keep-rate fast path.
 
 ## Round 7 deferrals (safe post-1.0)
 

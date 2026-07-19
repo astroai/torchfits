@@ -16,6 +16,7 @@ import shutil
 import socket
 import tempfile
 import time
+from collections.abc import Callable
 from typing import Any
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -242,6 +243,39 @@ def _choose_numeric_col(
     return columns[0]
 
 
+def _choose_filter_col(columns: list[str], schema: list[tuple[str, str]] | None) -> str:
+    """Prefer a float column when a selective (tail) predicate is used."""
+    if schema:
+        for name, dtype in schema:
+            if dtype in {"f4", "f8"}:
+                return name
+    return _choose_numeric_col(columns, schema)
+
+
+def _col_dtype(col: str, schema: list[tuple[str, str]] | None) -> str | None:
+    if not schema:
+        return None
+    for name, dtype in schema:
+        if name == col:
+            return dtype
+    return None
+
+
+def _dense_predicate(col: str) -> str:
+    """~50% keep on symmetric random ints/floats (``col > 0``)."""
+    return f"{col} > 0"
+
+
+def _selective_predicate(col: str, schema: list[tuple[str, str]] | None) -> str:
+    """Low keep-rate cut (~5–7%) for the fused-gather-friendly regime."""
+    dtype = _col_dtype(col, schema)
+    if dtype in {"f4", "f8"}:
+        return f"{col} > 1.5"  # ~6.7% of N(0,1)
+    if dtype in {"i4", "i8"}:
+        return f"{col} > 900000"  # ~5% of Uniform(-1e6, 1e6)
+    return _dense_predicate(col)
+
+
 def _bench_case(
     *,
     run_id: str,
@@ -262,6 +296,11 @@ def _bench_case(
 
     proj_cols = columns[: min(3, len(columns))]
     num_col = _choose_numeric_col(columns, schema)
+    # Dense filter uses first numeric (historical ``col > 0``); selective prefers float.
+    dense_col = num_col
+    selective_col = _choose_filter_col(columns, schema)
+    dense_pred = _dense_predicate(dense_col)
+    selective_pred = _selective_predicate(selective_col, schema)
     row_slice_start = 1
     row_slice_n = min(10_000, max(100, nrows // 10))
 
@@ -278,6 +317,7 @@ def _bench_case(
             "projection",
             "row_slice",
             "predicate_filter",
+            "predicate_filter_selective",
             "scan_count",
         ]
         if op_rx is not None:
@@ -403,25 +443,21 @@ def _bench_case(
                 _fitsio_row_slice(path, row_slice_start, row_slice_n)
             ),
         },
-        "predicate_filter": {
-            "torchfits": lambda: _torchfits_filter_pushdown(
-                path, col=num_col, mmap=target_memmap, has_pyarrow=has_pyarrow
-            ),
-            "torchfits_specialized": lambda: _torchfits_filter_col_local(
-                path, col=num_col, mmap=target_memmap
-            ),
-            # Specialized peers: single-column project+filter (not full-table mask).
-            "astropy": lambda: _astropy_filter_col(
-                path, col=num_col, memmap=target_memmap
-            ),
-            "astropy_torch": lambda: torch.as_tensor(
-                _astropy_filter_col(path, col=num_col, memmap=target_memmap)
-            ),
-            "fitsio": lambda: _fitsio_filter_col(path, col=num_col),
-            "fitsio_torch": lambda: torch.as_tensor(
-                _fitsio_filter_col(path, col=num_col)
-            ),
-        },
+        # Two keep-rate regimes (do not collapse — fused gather ≠ project+mask):
+        # - predicate_filter: dense ``col > 0`` (~50% keep), historical contract
+        # - predicate_filter_selective: tail cut (~5–7% keep), gather-friendly
+        "predicate_filter": _predicate_method_map(
+            path,
+            col=dense_col,
+            pred=dense_pred,
+            mmap=target_memmap,
+        ),
+        "predicate_filter_selective": _predicate_method_map(
+            path,
+            col=selective_col,
+            pred=selective_pred,
+            mmap=target_memmap,
+        ),
         "scan_count": {
             "torchfits": lambda: _torchfits_scan_count(
                 path, col=num_col, mmap=target_memmap, has_pyarrow=has_pyarrow
@@ -564,18 +600,20 @@ def _astropy_row_slice(path: Path, start_row: int, num_rows: int, *, memmap: boo
         return _astropy_materialize_table(data)
 
 
-def _astropy_filter(path: Path, *, col: str, memmap: bool):
-    with astropy_fits.open(path, memmap=memmap) as hdul:
-        data = hdul[1].data
-        mask = np.asarray(data[col]) > 0
-        return _astropy_materialize_table(data[mask])
+def _numpy_mask(values: np.ndarray, pred: str, col: str) -> np.ndarray:
+    """Evaluate a simple ``{col} > LIT`` predicate for peer filters."""
+    prefix = f"{col} >"
+    if not pred.startswith(prefix):
+        raise ValueError(f"unsupported bench predicate: {pred!r}")
+    lit = float(pred[len(prefix) :].strip())
+    return values > lit
 
 
-def _astropy_filter_col(path: Path, *, col: str, memmap: bool):
-    """Smart-family peer: project one column then filter (matches torchfits)."""
+def _astropy_filter_col(path: Path, *, col: str, pred: str, memmap: bool):
+    """Project one column then filter (numpy; specialized-family peer)."""
     with astropy_fits.open(path, memmap=memmap) as hdul:
         values = np.asarray(hdul[1].data[col])
-        return values[values > 0]
+        return values[_numpy_mask(values, pred, col)]
 
 
 def _astropy_scan_count(path: Path, *, col: str, memmap: bool):
@@ -590,22 +628,11 @@ def _fitsio_row_slice(path: Path, start_row: int, num_rows: int):
     return _fitsio_read_native(path, ext=1, rows=range(start0, stop0))
 
 
-def _fitsio_filter(path: Path, *, col: str):
-    data = _fitsio_read_native(path, ext=1)
-    mask = np.asarray(data[col]) > 0
-    filtered = data[mask]
-    # Column-dict like TorchFits specialized (not a single structured ndarray).
-    return {
-        name: np.ascontiguousarray(filtered[name])
-        for name in (filtered.dtype.names or [])
-    }
-
-
-def _fitsio_filter_col(path: Path, *, col: str):
-    """Smart-family peer: project one column then filter (matches torchfits)."""
+def _fitsio_filter_col(path: Path, *, col: str, pred: str):
+    """Project one column then filter (numpy; specialized-family peer)."""
     data = _fitsio_read_native(path, ext=1, columns=[col])
     values = np.asarray(data[col])
-    return values[values > 0]
+    return values[_numpy_mask(values, pred, col)]
 
 
 def _fitsio_scan_count(path: Path, *, col: str):
@@ -614,39 +641,40 @@ def _fitsio_scan_count(path: Path, *, col: str):
         return int(f[1].get_nrows())
 
 
-def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
-    # Fused C++ filter via read_torch(where=); torch contract vs fitsio_torch peers.
-    _ = has_pyarrow
+def _torchfits_filter_col(path: Path, *, col: str, pred: str, mmap: bool):
+    """Fused one-column project + predicate via ``read_torch(where=)`` (tensor)."""
     data = torchfits.table.read_torch(
         str(path),
         hdu=1,
         columns=[col],
         mmap=mmap,
-        where=f"{col} > 0",
+        where=pred,
         **_TF_NO_CACHE,
     )
     return data[col]
 
 
-def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
-    """Specialized peer: full-table read then row filter (matches astropy/fitsio)."""
-    data = torchfits.table.read_torch(
-        str(path), hdu=1, mmap=mmap, where=f"{col} > 0", **_TF_NO_CACHE
-    )
-    return data
+def _predicate_method_map(
+    path: Path, *, col: str, pred: str, mmap: bool
+) -> dict[str, Callable[[], Any]]:
+    """Smart = tensor peers; specialized = library-native (numpy for astropy/fitsio)."""
 
+    def _ap() -> Any:
+        return _astropy_filter_col(path, col=col, pred=pred, memmap=mmap)
 
-def _torchfits_filter_col_local(path: Path, *, col: str, mmap: bool):
-    """Specialized peer: fused one-column project + predicate (tensor)."""
-    data = torchfits.table.read_torch(
-        str(path),
-        hdu=1,
-        columns=[col],
-        mmap=mmap,
-        where=f"{col} > 0",
-        **_TF_NO_CACHE,
-    )
-    return data[col]
+    def _fi() -> Any:
+        return _fitsio_filter_col(path, col=col, pred=pred)
+
+    return {
+        "torchfits": lambda: _torchfits_filter_col(path, col=col, pred=pred, mmap=mmap),
+        "torchfits_specialized": lambda: _torchfits_filter_col(
+            path, col=col, pred=pred, mmap=mmap
+        ),
+        "astropy": _ap,
+        "astropy_torch": lambda: torch.as_tensor(_ap()),
+        "fitsio": _fi,
+        "fitsio_torch": lambda: torch.as_tensor(_fi()),
+    }
 
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):

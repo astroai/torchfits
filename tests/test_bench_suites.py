@@ -200,6 +200,22 @@ def test_scorecard_ignores_singleton_torchfits_group() -> None:
         assert "1/1" not in text
 
 
+def test_fitstable_filter_has_dense_and_selective_regimes() -> None:
+    """Both keep-rate regimes are first-class ops (not one tuned threshold)."""
+    import inspect
+
+    from benchmarks import bench_fitstable_io as m
+
+    schema = [("id", "i4"), ("flux", "f4"), ("err", "f4"), ("flag", "bool")]
+    assert m._choose_filter_col(["id", "flux", "err", "flag"], schema) == "flux"
+    assert m._dense_predicate("id") == "id > 0"
+    assert m._selective_predicate("flux", schema) == "flux > 1.5"
+    assert m._selective_predicate("id", schema) == "id > 900000"
+    src = inspect.getsource(m._bench_case)
+    assert '"predicate_filter"' in src
+    assert '"predicate_filter_selective"' in src
+
+
 def test_fitstable_scan_count_uses_nrows_not_column() -> None:
     """Specialized scan_count must match peer O(1) NAXIS2 / get_nrows contract."""
     import inspect

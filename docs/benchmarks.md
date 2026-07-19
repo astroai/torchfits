@@ -216,7 +216,7 @@ scope or not yet wired into the published tables.
 | Random / repeated access | Yes | cutouts, `random_ext_full_reads_200`, `open_subset_reader` | MEF random ext reads on selected fixtures |
 | Multi-extension (MEF) | Yes | `mef_*`, `multi_mef_10ext`, MegaCam suite | — |
 | Table full read / projection / slice | Yes | `bench_fitstable_io.py` | — |
-| Table predicate / scan | Yes | `predicate_filter`, `scan_count` | — |
+| Table predicate / scan | Yes | `predicate_filter` (dense ~50% keep), `predicate_filter_selective` (~5–7%), `scan_count` | Both keep-rate regimes; fused gather ≠ project+mask |
 | Table schemas | Partial | mixed / narrow / wide / varlen | typed / ascii at selected row counts |
 | Table GPU vs CPU | Partial | GPU transports / fitstable | Expanding into published tables |
 | Writes / write→compress | Partial | suite expansion | Read-heavy historically; write parity also in tests |
