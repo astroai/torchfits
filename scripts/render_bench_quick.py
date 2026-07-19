@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render quick-bench evidence rows into a markdown table for docs/benchmarks.md.
 
-Reads ``<scope>.json`` files from a directory (default: ``benchmark_results/quick/``)
+Reads ``<scope>.json`` files from a directory (default: ``benchmarks_results/quick/``)
 where each JSON file holds one quick-bench run summary for a given scope
 (``fits`` or ``fitstable``).  The output is a 5-column table suitable for the
 "Latest local quick benchmark evidence" section.
@@ -79,7 +79,7 @@ def main() -> int:
     parser.add_argument(
         "--quick-dir",
         type=Path,
-        default=Path("benchmark_results/quick"),
+        default=Path("benchmarks_results/quick"),
         help="Directory containing per-scope quick-bench JSON files.",
     )
     args = parser.parse_args()

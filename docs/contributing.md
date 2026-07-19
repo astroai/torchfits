@@ -55,12 +55,17 @@ below, stop and add a `[dependencies]` entry in `pixi.toml` (or a feature's
 ```
 src/torchfits/          Python package
 src/torchfits/cpp_src/  C++ native extension (nanobind + CFITSIO)
-extern/cfitsio/         Vendored CFITSIO sources
+extern/cfitsio/         Vendored CFITSIO sources (via extern/vendor.sh)
 tests/                  Unit and integration tests
 benchmarks/             Benchmark scripts and replay gates
-docs/                   Documentation
+docs/                   Documentation (zensical)
+overrides/              Docs theme templates (zensical custom_dir)
 examples/               Runnable example scripts
+scripts/                CI, docs, and bench helpers
 ```
+
+Local-only (gitignored): `build/`, `site/`, `benchmarks_results/` (bench run
+output — publish selected CSVs under `docs/assets/bench/<run-id>/`).
 
 ## Native extension
 

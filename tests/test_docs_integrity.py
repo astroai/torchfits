@@ -82,7 +82,6 @@ def test_docs_reference_existing_local_files() -> None:
 def test_public_docs_do_not_claim_torchfits_owns_sky_domain_features() -> None:
     docs = [
         ROOT / "README.md",
-        ROOT / "MAINTENANCE.md",
         ROOT / "docs" / "api.md",
         ROOT / "docs" / "benchmarks.md",
         ROOT / "docs" / "changelog.md",

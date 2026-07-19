@@ -16,3 +16,6 @@
 
 - id: docs-api-sync
   desc: Root table helpers return dict[str,Tensor]; Arrow path is torchfits.table.*; never document env vars absent from src; integrity tests guard Core I/O signature fences + api.md env table.
+
+- id: package-tree
+  desc: Keep the git tree package-facing — Round-N scorecard CSVs under docs/assets/bench only when published; freeze audits go to .cursor/reviews/ (gitignored); no archive/ of agent dumps.

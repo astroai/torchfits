@@ -7,6 +7,9 @@ __pycache__/
 .pixi/
 .claude/
 .jules/
+.Jules/
+.cursor/reviews/
+archive/
 verify_fix.py
 
 # Editor / Tools
@@ -36,15 +39,16 @@ extern/cfitsio/
 benchmarks_data/
 examples/data_*/
 
-# Logs / local benchmark output
+# Logs / local benchmark output (canonical: benchmarks_results/)
 benchmark_full_output.txt
-benchmark_results/
-benchmark_results_*/
 benchmarks_results/
 benchmarks_results_*/
 bench_results/
-benchmarks/benchmark_results/
 benchmarks/bench_results/
+# legacy misspelling — keep ignored if present locally
+benchmark_results/
+benchmark_results_*/
+benchmarks/benchmark_results/
 benchmarks/replays/
 !benchmarks/replays/upstream_sources.json
 *.log
@@ -72,8 +76,11 @@ benchmarks/find_overflow.py
 # mpl config cache
 mpl-cache-*/
 venv/
+.venv/
 
 .DS_Store
+*.swp
+*~
 
 # uv (not used — pixi is the package manager)
 uv.lock

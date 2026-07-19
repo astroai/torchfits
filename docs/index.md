@@ -74,16 +74,16 @@ torchfits is a **1.0.0rc** prerelease — see [Changelog](changelog.md) and
 
 | | astropy / fitsio | torchfits |
 |---|---|---|
-| **Image read (16 MB, CPU)** | 11.35 ms | **3.85 ms** (~3×) |
-| **Table read (100k rows, mixed)** | 98.48 ms | **5.65 ms** (~17×) |
-| **Repeated cutouts (50×)** | 269 ms | **13.6 ms** (~20× vs astropy; ~parity vs fitsio) |
-| **GPU placement** | manual `.to(device)` | `device="cuda"` |
-| **Table filtering** | Python mask | C++ pushdown |
+| **Image read (16 MB, MPS)** | 8.16 ms / 3.67 ms | **3.85 ms** (~2× vs astropy; ~parity vs fitsio) |
+| **Table read (100k rows, mixed)** | 31.85 ms / 10.44 ms | **2.20 ms** (~15× / ~5×) |
+| **Repeated cutouts (50×)** | 86.01 ms / 5.37 ms | **0.79 ms** (~116× / ~7×) |
+| **GPU placement** | manual `.to(device)` | `device="cuda"` / `"mps"` |
+| **Table filtering** | Python mask | C++ pushdown (`where=`) |
 | **Training loop** | hand-rolled Dataset | `FitsImageDataset` + `make_loader` |
 | **Shell tooling** | fitsinfo / fitsheader / … | `torchfits` CLI |
 
-Representative medians from `exhaustive_mps_20260719_065105` (MPS host;
-methodology and deficits in [Benchmarks](benchmarks.md)).
+Representative medians from Round-3 `exhaustive_mps_20260719_143706`
+(methodology and deficits in [Benchmarks](benchmarks.md)).
 
 Docs channels: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·
 [edge](https://astroai.github.io/torchfits/edge/) (`main` tip).

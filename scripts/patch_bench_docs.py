@@ -188,7 +188,7 @@ def main() -> int:
     parser.add_argument(
         "--quick-dir",
         type=Path,
-        default=_REPO / "benchmark_results" / "quick",
+        default=_REPO / "benchmarks_results" / "quick",
         help="Directory containing per-scope quick-bench JSON files "
         "(`fits.json`, `fitstable.json`). Missing files produce empty rows.",
     )

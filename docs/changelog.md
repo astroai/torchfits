@@ -200,9 +200,8 @@ leftover API/docs/CLI, and audit cleanup. SemVer `1.0.0` still waits for soak.
 
 ## [1.0.0rc1] — 2026-07-17
 
-Release candidate for the 1.0 API. Formal stamp:
-`archive/pre-1.0-reviews/release-api-freeze-1.0.0rc1.md`. SemVer `1.0.0` waits for
-post-rc soak; do not treat this tag as the final 1.0.0 freeze.
+Release candidate for the 1.0 API. SemVer `1.0.0` waits for post-rc soak; do
+not treat this tag as the final 1.0.0 freeze.
 
 ### Changed
 
@@ -272,7 +271,7 @@ post-rc soak; do not treat this tag as the final 1.0.0 freeze.
 ## [1.0b1] — 2026-07-17
 
 Beta freeze of the public FITS → tensor / dataframe story. Not a SemVer 1.0.0
-API freeze; see `archive/pre-1.0-reviews/release-api-freeze-1.0b1.md` for rc1 blockers.
+API freeze (rc line followed for soak + blockers).
 
 ### Added
 
@@ -858,7 +857,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc2...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc3...HEAD
+[1.0.0rc3]: https://github.com/astroai/torchfits/compare/v1.0.0rc2...v1.0.0rc3
 [1.0.0rc2]: https://github.com/astroai/torchfits/compare/v1.0.0rc1...v1.0.0rc2
 [1.0.0rc1]: https://github.com/astroai/torchfits/releases/tag/v1.0.0rc1
 [1.0b1]: https://github.com/astroai/torchfits/releases/tag/v1.0b1

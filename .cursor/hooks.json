@@ -5,6 +5,11 @@
       {
         "command": ".cursor/hooks/harness-session-start.sh"
       }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/harness-stop.sh"
+      }
     ]
   }
 }

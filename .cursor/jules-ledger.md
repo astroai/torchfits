@@ -12,6 +12,6 @@ Themes already covered by Jules (or integrated Jules PRs). Weekly Jules must
 | HTTP Range remote cutouts + vos/vault bridge | main `83c64d4` | landed |
 | SubsetReader mmap cutouts (uncompressed 2D) | main `d4b419c` | landed |
 | Lupton RGB Astropy-parity peak clip | main `91b30b0` | landed |
-| Deep review 1.0 triage (alias/spectral hard-remove, bench honesty) | archive/pre-1.0-reviews/deep_review_1.0.md | executed on main working tree (uncommitted) |
+| Deep review 1.0 triage (alias/spectral hard-remove, bench honesty) | main (pre-1.0 triage) | landed — do not reopen without new repro |
 
 When integrating a Jules PR, append a row here before closing the PR.

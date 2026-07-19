@@ -1,6 +1,6 @@
 # Installation
 
-Latest PyPI tag is **1.0.0rc2** (prerelease). SemVer **1.0.0** waits for
+Latest PyPI tag is **1.0.0rc3** (prerelease). SemVer **1.0.0** waits for
 post-rc soak — treat rc wheels as API-stable, not a final stamp.
 
 torchfits needs **Python 3.10+** and **PyTorch ≥ 2.10**.
@@ -107,12 +107,12 @@ contributing.
 ### Build
 
 ```bash
-git clone https://github.com/sfabbro/torchfits.git
+git clone https://github.com/astroai/torchfits.git
 cd torchfits
 ./extern/vendor.sh      # download vendored CFITSIO sources
 
 # Install the torch minor you want first, then build against it
-pip install "torch>=2.10"   # or a specific 2.11+ build from pytorch.org
+pip install "torch>=2.10"   # wheels are 2.10; for 2.11+ rebuild from source
 pip install --no-build-isolation -e .
 ```
 

@@ -7,8 +7,6 @@ Deferred after the 1.0 triage passes. Do not block the 1.0 tag on these.
 - Skinny `read_*` metadata set + caller wiring (Datasets, image_meta, examples)
 - `open_table_reader`, `table.read_torch(where=)`, thin table dispatch
 - Pass-3 P1/P2 HTTP cutout byteswap/clone; P6 SigmaClip scalar fill; 8.1 end_row hoist
-- Review archive: `archive/pre-1.0-reviews/deep_review_1.0-r3.md`
-
 ## Scope cuts (later)
 
 - Merge dual cache subsystems (`cache.py` vs `_io_engine/caches.py`) — document relationship first
@@ -47,10 +45,14 @@ Deferred after the 1.0 triage passes. Do not block the 1.0 tag on these.
 
 - Header HISTORY/`remove` O(N²) for huge HISTORY lists
 - Split `_table/read.py` mega-function strategies
-- Vestigial `UnifiedCache` shared-handle path cleanup
+- Vestigial `UnifiedCache` shared-handle path cleanup (`get_or_open_cached`
+  unused; all guards `cached=false`; shrink invalidate/clear to what remains)
+- `_table/cache.py` no-op close/invalidate stubs after Option A — delete or fold
 - Broader `except Exception: pass` audit (soft fallthroughs in strategy probes;
   Round-2 glm notes: batch `read_images_batch` silent fallthrough, NAXIS2→0,
   tnull fill swallow, `update_rows` mmap=auto swallow)
+- Install: consider a **2.11+ / 2.13** wheel ABI lane only after scorecard re-soak
+  (today: wheels + pixi stay on **PyTorch 2.10**; source builds allow ≥2.10)
 
 ## Spectroscopy / continuum (not in torchfits)
 
