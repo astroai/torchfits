@@ -4,18 +4,16 @@ User Guide for `torchfits.data`: choose a Dataset, preprocess with
 `torchfits.transforms`, load with `make_loader`, train a small model.
 API details stay in the [Data module](api-data.md) reference.
 
-`make_loader` is a thin factory around `torch.utils.data.DataLoader` plus
-optional cache warm-up when the dataset exposes `.files`. Build a
-`DataLoader` yourself when you already control `collate_fn` /
-`persistent_workers`. See
+`make_loader` wraps `torch.utils.data.DataLoader` and can warm the handle
+cache when the dataset exposes `.files`. Use a plain `DataLoader` when you
+already own `collate_fn` / `persistent_workers`. See
 [`example_make_loader_vs_dataloader.py`](published-examples/example_make_loader_vs_dataloader.py).
 
 ---
 
-## End-to-end: Galaxy Zoo morphology (real FITS)
+## End-to-end: Galaxy Zoo morphology
 
-Adapted from the usual Galaxy Zoo + imaging cutout pattern (labels in a
-FITS table; postage stamps as FITS — not HDF5).
+Train a tiny CNN on real FITS: Galaxy Zoo 1 labels + Legacy Survey cutouts.
 
 | Step | Source |
 |---|---|
@@ -46,31 +44,37 @@ pipeline = Compose(
 dataset = FitsImageDataset(paths, hdu=0, labels=labels, transform=pipeline)
 loader = make_loader(dataset, batch_size=16, num_workers=0, optimize_cache=False)
 
+model = TinyCNN()  # two Conv2d + Linear, defined in the example script
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+loss_fn = torch.nn.CrossEntropyLoss()
+
 for images, batch_labels in loader:
-    logits = model(images)  # TinyCNN in the example script
-    ...
+    optimizer.zero_grad()
+    loss = loss_fn(model(images), batch_labels)
+    loss.backward()
+    optimizer.step()
 ```
-Flow:
+
+The script runs **one full epoch** on CPU, prints loss / accuracy, and writes
+a Lupton RGB sample grid of the cutouts.
 
 1. `table.read` the GZ1 catalog; keep `UNCERTAIN == 0` and spiral or elliptical.
 2. Download LS FITS cutouts into `~/.cache/torchfits/samples/gz_legacy_cutouts/`.
 3. `FitsImageDataset` + `Compose([NanToZero, BackgroundSubtract, ArcsinhStretch, ZScaleNormalize])`.
 4. `make_loader(..., batch_size=16)`.
-5. One epoch of a tiny CNN on CPU; print loss / accuracy.
+5. Train `TinyCNN` for one epoch; print metrics.
 
 ![Lupton RGB sample of Legacy Survey cutouts](assets/gallery/ml_gz_class_grid.png)
 
 Script: [`example_ml_galaxyzoo_legacy.py`](published-examples/example_ml_galaxyzoo_legacy.py).
-Under `TORCHFITS_EXAMPLE_FAST=1` the script skips (exit 0) when cutouts are
-not cached.
+`TORCHFITS_EXAMPLE_FAST=1` skips (exit 0) when cutouts are not cached.
 
 ---
 
 ## Survey mosaic cutouts: CFHT MegaPipe
 
-Public CFHTLS D1 IQ MegaPipe stacks (~20k×21k, ~1.74 GB/band) plus a
-SExtractor catalog with **pixel** `X_IMAGE`/`Y_IMAGE` (no WCS required for
-torchfits cutouts).
+Public CFHTLS D1 IQ MegaPipe stacks (~20k×21k float32, ~1.74 GB/band,
+**uncompressed**) plus a SExtractor catalog with pixel `X_IMAGE`/`Y_IMAGE`.
 
 ```bash
 bash scripts/fetch_cfht_megapipe_sample.sh   # ~5.3 GB once
@@ -81,16 +85,12 @@ pixi run python examples/example_megapipe_cutout_collage.py
 
 The example:
 
-1. Selects 64 gallery stamps with `MAG_AUTO ∈ [17, 22]` (pretty galaxies — not
-   saturated stars that wash out Lupton).
+1. Selects 64 gallery stamps with `MAG_AUTO ∈ [17, 22]`.
 2. Reads matching G/R/I windows with `open_subset_reader`.
-3. Builds Lupton RGB (`Q=8`, `stretch=5`) and writes a full-resolution 8×8
-   collage (512×512, no thumbnail crush).
-4. Times 1000 random 64×64 boxes — **one subprocess per backend** so an earlier
-   reader cannot silently warm the OS page cache for the next.
+3. Builds Lupton RGB (`Q=8`, `stretch=5`) into an 8×8 collage (512×512).
+4. Times 1000 random 64×64 boxes (one subprocess per backend).
 
-Indicative single-pass timing on this machine (1000×64×64, G band; not a
-benchmark median — page cache may still retain the mosaic across processes):
+Indicative single-pass timing on this machine (1000×64×64, G band):
 
 | Backend | Wall | ms/cutout |
 |---|---:|---:|
@@ -99,10 +99,12 @@ benchmark median — page cache may still retain the mosaic across processes):
 | fitsio | 0.20 s | 0.20 |
 | astropy (`memmap`) | 0.17 s | 0.17 |
 
-Takeaway: prefer `open_subset_reader` over repeated `read_subset` (~5× here).
-For tiny windows on an already-cached mosaic, fitsio/astropy memmap slices are
-also competitive — do not claim a false “27× vs fitsio” from an in-process
-timing loop.
+`open_subset_reader` beats repeated `read_subset` (~5× here). On this
+**uncompressed** mosaic, tiny windows are mostly OS page-cache + a memcpy:
+fitsio/astropy `memmap` slices stay cheaper than CFITSIO→torch. That is a
+different workload from the [published scorecards](benchmarks.md) (full HDU
+reads, Rice `.fz` MegaCam cutouts, GPU transports, Arrow tables), where
+torchfits usually leads.
 
 ![MegaPipe gri cutout collage](assets/gallery/megapipe_cutout_collage.png)
 
@@ -119,7 +121,7 @@ Script: [`example_megapipe_cutout_collage.py`](published-examples/example_megapi
 | `FitsSpectrumDataset` | 1D spectra or DESI-style multi-arm layouts |
 | `FitsTableDataset` | Catalog rows as features / labels |
 | `FitsCutoutDataset` | Many pixel windows from one or more mosaics |
-| `Fits*IterableDataset` | 100k+ files; streaming without `__len__` shuffle |
+| `Fits*IterableDataset` | 100k+ files; streaming iterable shards |
 
 Full signatures: [Data module](api-data.md).
 

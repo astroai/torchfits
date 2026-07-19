@@ -11,13 +11,12 @@ Docs/examples polish (no SemVer bump).
 
 ### Fixed
 - **`lupton_rgb`:** Astropy-parity Lupton asinh mapping (per-pixel peak clip).
-  The previous field-wide `/max` crush turned midtones near-black whenever one
-  star saturated — gallery PNGs looked empty.
+  Gallery SDSS / MegaPipe figures regenerated with readable stretch.
 
 ### Docs
 - Slim transform gallery; real Lupton RGB figure; fixed Doppler (`z=`) docs snippet.
-- User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 FITS labels + Legacy Survey
-  FITS cutouts training demo; MegaPipe mosaic collage + honest subprocess timing.
+- User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 + Legacy Survey one-epoch
+  CNN train; MegaPipe mosaic collage + cutout timing vs the scorecard workload.
 - Canonical `TORCHFITS_*` env tables in [architecture](architecture.md); slimmed
   duplicates elsewhere.
 - `release-gate` runs `docs-contract` (example sync + zensical build) and

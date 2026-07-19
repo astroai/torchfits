@@ -93,9 +93,8 @@ smoothed = SavitzkyGolayFilter(window_length=11, polyorder=2)(flux)
 
 ## Lupton asinh RGB (real SDSS)
 
-`lupton_rgb` matches Astropy's Lupton asinh mapping (per-pixel peak clip —
-never a field-wide `/max`, which crushed midtones to near-black). On this
-reprojected SDSS g/r/i sample the object fluxes are faint, so the gallery
+`lupton_rgb` matches Astropy's Lupton asinh mapping (per-pixel peak clip). On
+this reprojected SDSS g/r/i sample the object fluxes are faint, so the gallery
 uses `Q=8, stretch=0.15` (Astropy's default stretch is `5`; tutorials often
 use `0.5`). Reddest band → R:
 

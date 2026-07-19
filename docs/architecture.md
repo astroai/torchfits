@@ -355,19 +355,8 @@ harnesses. Not enforced by the docs-completeness test above.
   `TORCHFITS_CANFAR_POLL_SECS`.
 
 `TORCHFITS_TORCH_ABI` is a compile-time C++ macro (set by CMake from the
-PyTorch build version), not an environment variable — see
+PyTorch build version) — see
 [PyTorch ABI compatibility](#pytorch-abi-compatibility) below.
-
-!!! note "Audit finding: `TORCHFITS_COMPRESSED_PARALLEL*`"
-    `tests/test_compression.py` sets `TORCHFITS_COMPRESSED_PARALLEL`,
-    `TORCHFITS_COMPRESSED_PARALLEL_MIN_PIXELS`, and
-    `TORCHFITS_COMPRESSED_PARALLEL_HCOMPRESS` via `monkeypatch.setenv`, but no
-    `getenv`/`os.environ` read of these names exists anywhere under `src/`.
-    They are not documented here because they do not currently gate any
-    behavior — the tests pass because parallel and serial RICE/HCOMPRESS
-    decompression already produce identical output, not because the env
-    vars flip a code path. Flagged for a follow-up to either wire them up or
-    drop the dead assertions from the test.
 
 ---
 

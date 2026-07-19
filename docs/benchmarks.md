@@ -135,6 +135,11 @@ pixi run bench-megacam
 Outputs land in `benchmarks_results/<run-id>/megacam_results.csv`. Sample
 FITS files are gitignored under `benchmarks_data/cfht_megacam/`.
 
+For **uncompressed** survey mosaics (e.g. CFHTLS MegaPipe float32 stacks),
+tiny random windows are mostly page-cache + memcpy — see the walkthrough in
+[ML with FITS](examples-ml.md#survey-mosaic-cutouts-cfht-megapipe). That path
+is a different comparison than Rice `.fz` or full-HDU scorecard rows.
+
 ## Correctness Gates
 
 | Gate | Command | Validates |
