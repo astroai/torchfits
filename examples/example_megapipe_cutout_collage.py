@@ -170,18 +170,14 @@ def _print_timing_table(path: Path, boxes: list[Box]) -> list[tuple[str, float]]
     """
     workers = {
         "torchfits.read_subset": (
-            "import torchfits\n"
-            "torchfits.read_subset(path, 0, *boxes[0])\n",
-            "for b in boxes:\n"
-            "    torchfits.read_subset(path, 0, *b)\n",
+            "import torchfits\ntorchfits.read_subset(path, 0, *boxes[0])\n",
+            "for b in boxes:\n    torchfits.read_subset(path, 0, *b)\n",
         ),
         "torchfits.open_subset_reader": (
             "import torchfits\n"
             "reader = torchfits.open_subset_reader(path, hdu=0)\n"
             "reader.read_subset(*boxes[0])\n",
-            "for b in boxes:\n"
-            "    reader.read_subset(*b)\n"
-            "reader.close()\n",
+            "for b in boxes:\n    reader.read_subset(*b)\nreader.close()\n",
         ),
         "fitsio": (
             "import fitsio\n"

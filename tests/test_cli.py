@@ -232,9 +232,12 @@ def test_lupton_rgb_astropy_parity():
         err = float(np.abs(ours - ref).max())
         assert err < 1e-6, f"max abs err vs Astropy float={err}"
     except TypeError:
-        ref_u8 = make_lupton_rgb(
-            r.numpy(), g.numpy(), b.numpy(), Q=8.0, stretch=0.5
-        ).astype(np.float64) / 255.0
+        ref_u8 = (
+            make_lupton_rgb(r.numpy(), g.numpy(), b.numpy(), Q=8.0, stretch=0.5).astype(
+                np.float64
+            )
+            / 255.0
+        )
         err = float(np.abs(ours - ref_u8).mean())
         assert err < 0.01, f"mean abs err vs Astropy uint8={err}"
 
