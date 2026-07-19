@@ -68,7 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `read_table_rows` / `get_header` / `get_batch_info`.
 - Core I/O cache section documents root vs `torchfits.cache` layers.
 - Examples: `open_table_reader` + EXTNAME `table.read_torch`.
-- Round-2 scorecard: local MPS `exhaustive_mps_20260719_065105` plus CANFAR staging CPU/CUDA `exhaustive_*_20260719_0838*` (re-soak in progress).
+- Round-3 scorecard (post thin-I/O): MPS `exhaustive_mps_20260719_143706`,
+  CANFAR CPU `exhaustive_cpu_20260719_144337`, CUDA
+  `exhaustive_cuda_20260719_144457`; MegaCam `20260719_075555`; ML
+  `ml_20260719_145743`.
 - Slim transform gallery; real Lupton RGB figure; removed spectral/continuum docs.
 - Core I/O docs point at `table.read_torch` / `table.scan_torch` (root aliases gone).
 - User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 + Legacy Survey one-epoch

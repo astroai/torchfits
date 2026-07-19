@@ -66,10 +66,11 @@ use `table.read_torch` for tensor columns. Namespace stays `table` (FITS name).
 | 50× repeated 100×100 cutouts (CPU) | 18.16 ms | 13.60 ms (**~1.3× faster**) |
 | Table read (100k rows, 8 cols, mixed) | 31.45 ms | 5.65 ms (**~5.6× faster**) |
 
-*Medians from `exhaustive_mps_20260719_065105` (lab MPS, mmap matrix). Linux CUDA
-(`exhaustive_cuda_20260719_083810`) is the current CUDA scorecard host; see
-`docs/benchmarks.md` for deficit honesty on that
-host; MPS and CPU still have listed lags — [Benchmarks](benchmarks.md#performance-deficits).*
+*Medians from Round-3 scorecard (`exhaustive_mps_20260719_143706` / CUDA
+`exhaustive_cuda_20260719_144457`); see [Benchmarks](benchmarks.md) host
+scorecard. Absolute highlight times refresh with each soak — prefer
+`docs/benchmarks.md#performance-highlights` over this migration snapshot when
+numbers disagree.*
 
 ## Key Behavioral Differences
 

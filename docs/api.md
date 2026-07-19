@@ -44,8 +44,8 @@ spelling alongside `read_torch` / `read_polars`). Root `read_table` /
 | Table row count (skinny) | `read_nrows(path, hdu=1)` | [Core I/O](api-core-io.md#read_nrows) |
 | Selected header keys (skinny) | `read_keys(path, keys, hdu=0)` | [Core I/O](api-core-io.md#read_keys) |
 | Image BITPIX+shape (skinny) | `read_shape(path, hdu=0)` | [Core I/O](api-core-io.md#read_shape) |
-| HDU type / count (skinny) | `read_hdu_type` / `read_num_hdus` | [Core I/O](api-core-io.md#read_hdu_type--read_num_hdus--read_extname) |
-| Table colnames / info (skinny) | `read_colnames` / `read_table_info` | [Core I/O](api-core-io.md#read_colnames--read_table_info) |
+| HDU type / count (skinny) | `read_hdu_type` / `read_num_hdus` | [Core I/O](api-core-io.md#skinny-hdu-type-count-extname) |
+| Table colnames / info (skinny) | `read_colnames` / `read_table_info` | [Core I/O](api-core-io.md#skinny-colnames-table-info) |
 | Multi-HDU context manager | `open(path, mode="r")` | [Core I/O](api-core-io.md#open) |
 | Batch-read many files | `read_batch(file_paths, hdu=0)` | [Core I/O](api-core-io.md#read_batch) |
 

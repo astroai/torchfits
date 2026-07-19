@@ -14,7 +14,12 @@ Deferred after the 1.0 triage passes. Do not block the 1.0 tag on these.
 - Merge dual cache subsystems (`cache.py` vs `_io_engine/caches.py`) — document relationship first
 - Collapse Dataset class zoo (`FitsImage*` / `FitsCube*` / …) into fewer constructors
 - CLI trim (`compress` / `decompress` / `arith` vs fpack/numpy)
-- Scorecard / CANFAR re-soak after thin-I/O — **in progress** (local + async CANFAR)
+- Scorecard / CANFAR re-soak after thin-I/O — **done** (Round-3: MPS/CPU/CUDA
+  `exhaustive_*_20260719_14*`; see `docs/benchmarks.md`)
+- MegaCam `torchfits_cached` median lags `fitsio_cached` on Round-3 local soak
+  (materialize path still leads) — investigate handle reuse vs fitsio cache
+- Narrow-table `predicate_filter` / `read_full` significant lags on CPU/CUDA
+  (fitsio ahead ~1.05–1.28×) — fused `where=` path still not winning every case
 
 ## Round 7 deferrals (safe post-1.0)
 

@@ -320,7 +320,9 @@ torchfits.read_shape(path, hdu=0)
 
 **Returns:** `(bitpix, shape)` with torch / row-major `shape`.
 
-## `read_hdu_type()` / `read_num_hdus()` / `read_extname()`
+## Skinny HDU type / count / EXTNAME
+
+`read_hdu_type()` / `read_num_hdus()` / `read_extname()`
 
 ```python
 torchfits.read_hdu_type(path, hdu=0)   # "IMAGE" / "BINARY_TABLE" / ...
@@ -328,7 +330,9 @@ torchfits.read_num_hdus(path)
 torchfits.read_extname(path, hdu=1)    # EXTNAME or None
 ```
 
-## `read_colnames()` / `read_table_info()`
+## Skinny colnames / table info
+
+`read_colnames()` / `read_table_info()`
 
 ```python
 torchfits.read_colnames(path, hdu=1)

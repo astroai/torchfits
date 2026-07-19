@@ -68,9 +68,11 @@ use `table.read_torch` for tensor columns.
 | 50× repeated 100×100 cutouts (CPU) | 269.20 ms | 13.60 ms (**~20× faster**) |
 | Table read (100k rows, 8 cols, mixed) | 98.48 ms | 5.65 ms (**~17× faster**) |
 
-*Medians from `exhaustive_mps_20260719_065105` (lab MPS, mmap matrix). torchfits
-lags fitsio on some narrow-table predicates and repeated cutouts — see
-[Benchmarks](benchmarks.md#performance-deficits).*
+*Medians from Round-3 scorecard (`exhaustive_mps_20260719_143706`); see
+[Benchmarks](benchmarks.md) host scorecard. Absolute highlight times refresh
+with each soak — prefer `docs/benchmarks.md#performance-highlights` when
+numbers disagree. Narrow-table `predicate_filter` and MegaCam
+`torchfits_cached` still lag fitsio on some hosts.*
 
 ## Key Behavioral Differences
 
