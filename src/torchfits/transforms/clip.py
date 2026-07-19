@@ -77,10 +77,10 @@ class SigmaClip(FITSTransform):
             # Pre-allocate working buffers for masked values and zeros
             # to avoid per-iteration torch.zeros_like allocations.
             masked_buf = x.clone()
-            zeros_buf = torch.zeros_like(x)
+            zero = x.new_zeros(())
             for _ in range(self.max_iter):
                 # Zero out masked-out positions, sum, and count.
-                torch.where(internal_mask, x, zeros_buf, out=masked_buf)
+                torch.where(internal_mask, x, zero, out=masked_buf)
                 mask_f = internal_mask.to(x.dtype)
 
                 if len(dims) > 0:
@@ -92,7 +92,7 @@ class SigmaClip(FITSTransform):
                     mean_v_full = _unflatten_result(mean_v, x.shape, dims)
                     # Compute variance using the same buffer
                     masked_buf.sub_(mean_v_full).pow_(2)
-                    torch.where(internal_mask, masked_buf, zeros_buf, out=masked_buf)
+                    torch.where(internal_mask, masked_buf, zero, out=masked_buf)
                     d_flat = _flatten_dims(masked_buf, dims)
                     var = d_flat.sum(dim=-1, keepdim=True) / torch.clamp_min(
                         total_cnt, 1.0
@@ -107,7 +107,7 @@ class SigmaClip(FITSTransform):
                     mean_scalar = (masked_buf.sum() / max(cnt.item(), 1.0)).item()
                     mean_v_full = x.new_full(x.shape, mean_scalar)
                     masked_buf.sub_(mean_scalar).pow_(2)
-                    torch.where(internal_mask, masked_buf, zeros_buf, out=masked_buf)
+                    torch.where(internal_mask, masked_buf, zero, out=masked_buf)
                     var = masked_buf.sum() / max(cnt.item(), 1.0)
                     std_scalar = math.sqrt(max(var.item(), 0.0))
                     std_v_full = x.new_full(x.shape, std_scalar)
@@ -125,7 +125,7 @@ class SigmaClip(FITSTransform):
 
             # Fill clipped values with per-group mean or median
             if self.fill == "mean":
-                torch.where(internal_mask, x, zeros_buf, out=masked_buf)
+                torch.where(internal_mask, x, zero, out=masked_buf)
                 mask_f = internal_mask.to(x.dtype)
                 if len(dims) > 0:
                     xf = _flatten_dims(masked_buf, dims)

@@ -37,6 +37,14 @@ from ._io_engine.hdu_api import get_header as _get_header_impl
 
 from ._io_engine.hdu_api import open_hdulist as _open_hdulist_impl
 from ._io_engine.hdu_api import read_header_fast as _read_header_fast_impl
+from ._io_engine.hdu_api import read_colnames as _read_colnames_impl
+from ._io_engine.hdu_api import read_extname as _read_extname_impl
+from ._io_engine.hdu_api import read_hdu_type as _read_hdu_type_impl
+from ._io_engine.hdu_api import read_keys as _read_keys_impl
+from ._io_engine.hdu_api import read_nrows as _read_nrows_impl
+from ._io_engine.hdu_api import read_num_hdus as _read_num_hdus_impl
+from ._io_engine.hdu_api import read_shape as _read_shape_impl
+from ._io_engine.hdu_api import read_table_info as _read_table_info_impl
 from ._io_engine.image import batch_to_device as _batch_to_device_impl
 from ._io_engine.image import read_hdus as _read_hdus_impl
 from ._io_engine.image import read_image as _read_image_impl
@@ -47,6 +55,7 @@ from ._io_engine.image_meta import (
 )
 from ._io_engine._read_pipeline import read_unified as _read_unified_impl
 from ._io_engine.subset import open_subset_reader as _open_subset_reader_impl
+from ._io_engine.table_reader_api import open_table_reader as _open_table_reader_impl
 from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
 from ._io_engine.write_api import insert_hdu as _insert_hdu_impl
 from ._io_engine.write_api import replace_hdu as _replace_hdu_impl
@@ -239,6 +248,15 @@ def open_subset_reader(path: str, hdu: int | str = 0, device: str = "cpu") -> An
     return _open_subset_reader_impl(path, hdu=hdu, device=device)
 
 
+def open_table_reader(path: str, hdu: int | str = 1) -> Any:
+    """Open a reusable table reader for repeated column/row access on one HDU.
+
+    Filtered reads (``where=``) are not supported on the persistent reader;
+    use :func:`torchfits.table.read_torch` with ``where=`` instead.
+    """
+    return _open_table_reader_impl(path, hdu=hdu)
+
+
 def open(path: str, mode: str = "r") -> HDUList:
     """Open a FITS file and return an HDUList for low-level HDU/header access."""
     return _open_hdulist_impl(path, mode=mode)
@@ -309,6 +327,57 @@ def read_header(path: str, hdu: Any = 0) -> Any:
     Default ``hdu=0``. Pass ``hdu=None`` or ``hdu="auto"`` to autodetect.
     """
     return _get_header_impl(path, hdu, autodetect_hdu=_autodetect_hdu_impl)
+
+
+def read_nrows(path: str, hdu: Any = 1) -> int:
+    """Return table ``NAXIS2`` / row count without materializing the full header.
+
+    Uses CFITSIO ``fits_get_num_rows``. Default ``hdu=1``. For bloated headers
+    prefer this over ``read_header(...).get("NAXIS2")``.
+    """
+    return _read_nrows_impl(path, hdu)
+
+
+def read_keys(path: str, keys: Any, hdu: Any = 0) -> dict[str, Any]:
+    """Read selected header keywords without materializing the full header.
+
+    Uses CFITSIO ``fits_read_keyword`` per key. Missing keys raise.
+    Default ``hdu=0`` matches :func:`read_header`.
+    """
+    return _read_keys_impl(path, keys, hdu=hdu)
+
+
+def read_shape(path: str, hdu: Any = 0) -> tuple[int, tuple[int, ...]]:
+    """Return ``(bitpix, shape)`` without materializing the full header.
+
+    Shape is torch / row-major order. Default ``hdu=0``.
+    """
+    return _read_shape_impl(path, hdu)
+
+
+def read_hdu_type(path: str, hdu: Any = 0) -> str:
+    """Return HDU type (``IMAGE`` / ``BINARY_TABLE`` / …) without a full header dump."""
+    return _read_hdu_type_impl(path, hdu)
+
+
+def read_num_hdus(path: str) -> int:
+    """Return the number of HDUs in ``path`` (one open; no header dump)."""
+    return _read_num_hdus_impl(path)
+
+
+def read_colnames(path: str, hdu: Any = 1) -> list[str]:
+    """Return table column names without materializing the full header."""
+    return _read_colnames_impl(path, hdu)
+
+
+def read_extname(path: str, hdu: Any = 0) -> str | None:
+    """Return ``EXTNAME`` for an HDU, or ``None`` if absent."""
+    return _read_extname_impl(path, hdu)
+
+
+def read_table_info(path: str, hdu: Any = 1) -> dict[str, Any]:
+    """Return ``{nrows, colnames, tforms}`` in one open (no full header dump)."""
+    return _read_table_info_impl(path, hdu)
 
 
 def _write_header_cards_if_supported(*args: Any, **kwargs: Any) -> None:
@@ -404,15 +473,24 @@ __all__ = [
     "clear_file_cache",
     "delete_hdu",
     "get_cache_performance",
-    "read_batch_info",
-    "read_header",
     "insert_hdu",
     "open",
     "open_subset_reader",
+    "open_table_reader",
     "read",
     "read_batch",
+    "read_batch_info",
+    "read_colnames",
+    "read_extname",
+    "read_hdu_type",
+    "read_header",
     "read_hdus",
+    "read_keys",
+    "read_nrows",
+    "read_num_hdus",
+    "read_shape",
     "read_subset",
+    "read_table_info",
     "read_tensor",
     "replace_hdu",
     "verify_checksums",

@@ -346,7 +346,8 @@ The following table showcases median wall-clock times for key FITS tensor and ta
 ## Benchmark category summary
 
 Aggregated wins across every domain and operation in the CANFAR CUDA exhaustive
-(`exhaustive_cuda_20260719_083810`, 4,079 rows, **0** TorchFits deficits).
+(`exhaustive_cuda_20260719_083810`, 4,087 rows; see host scorecard for
+deficit honesty — all lags listed, floors label noise vs significant).
 Category ranges below are the last regenerated aggregation shape; for this
 run’s absolute times prefer [Performance highlights](#performance-highlights)
 and the full table.

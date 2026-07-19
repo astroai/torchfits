@@ -1199,7 +1199,7 @@ def read(
 
 def read_torch(
     path: str,
-    hdu: int = 1,
+    hdu: int | str = 1,
     columns: Optional[list[str]] = None,
     start_row: int = 1,
     num_rows: int = -1,
@@ -1209,11 +1209,16 @@ def read_torch(
     handle_cache_capacity: int = 16,
     fast_header: bool = True,
     return_header: bool = False,
+    where: str | None = None,
 ) -> Any:
     """Read a FITS table as dataframe columns mapped to ``torch.Tensor`` values.
 
     Prefer this ``table.read_torch`` entry point for new code. For Arrow
     dataframes use :func:`read` / :func:`read_arrow`.
+
+    ``hdu`` is an index or EXTNAME (not ``None`` / ``\"auto\"``). Optional
+    ``where`` uses C++ ``read_fits_table_filtered`` for simple numeric
+    predicates (same dialect as ``table.read``).
     """
     import torchfits
 
@@ -1233,6 +1238,7 @@ def read_torch(
         handle_cache_capacity=handle_cache_capacity,
         fast_header=fast_header,
         return_header=return_header,
+        where=where,
     )
 
 

@@ -43,9 +43,11 @@ def main() -> None:
         data, header = torchfits.read(path, hdu=0, return_header=True)
         print(f"read: OBJECT={header['OBJECT']}, EXPTIME={header['EXPTIME']}")
 
-        # Header without loading pixels
+        # Skinny metadata (no full header dump) + full header when needed
+        bitpix, shape = torchfits.read_shape(path, hdu=0)
+        print(f"read_shape: bitpix={bitpix}, shape={shape}")
         hdr = torchfits.read_header(path, hdu=0)
-        print(f"read_header: NAXIS={hdr['NAXIS']}, BITPIX={hdr['BITPIX']}")
+        print(f"read_header: OBJECT={hdr['OBJECT']}, EXPTIME={hdr['EXPTIME']}")
 
         # Write tensor back to FITS
         scaled = data * 2.0

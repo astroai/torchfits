@@ -279,6 +279,84 @@ header = torchfits.read_header("image.fits", hdu=0)
 print(header["EXPTIME"])  # e.g. 300.0
 ```
 
+For bloated headers when you only need a few cards or the row count, prefer
+the skinny helpers below — they skip the full header dump.
+
+## `read_nrows()`
+
+Table row count via CFITSIO `fits_get_num_rows` (no full header materialize).
+
+```python
+torchfits.read_nrows(path, hdu=1)
+```
+
+**Returns:** `int`. Default `hdu=1`. Raises if the HDU is not a table.
+
+```python
+n = torchfits.read_nrows("catalog.fits", hdu=1)
+```
+
+## `read_keys()`
+
+Selected header keywords via CFITSIO `fits_read_keyword` (no full header dump).
+
+```python
+torchfits.read_keys(path, keys, hdu=0)
+```
+
+**Returns:** `dict[str, Any]`. Missing keys raise. Default `hdu=0`.
+
+```python
+meta = torchfits.read_keys("image.fits", ["BITPIX", "NAXIS1", "NAXIS2"], hdu=0)
+```
+
+## `read_shape()`
+
+Image BITPIX + shape via CFITSIO image params (no full header).
+
+```python
+torchfits.read_shape(path, hdu=0)
+```
+
+**Returns:** `(bitpix, shape)` with torch / row-major `shape`.
+
+## `read_hdu_type()` / `read_num_hdus()` / `read_extname()`
+
+```python
+torchfits.read_hdu_type(path, hdu=0)   # "IMAGE" / "BINARY_TABLE" / ...
+torchfits.read_num_hdus(path)
+torchfits.read_extname(path, hdu=1)    # EXTNAME or None
+```
+
+## `read_colnames()` / `read_table_info()`
+
+```python
+torchfits.read_colnames(path, hdu=1)
+torchfits.read_table_info(path, hdu=1)  # {nrows, colnames, tforms}
+```
+
+One open each; no full header dump. Prefer these over `read_header` for
+counts, dims, and a handful of cards.
+
+## `open_table_reader()`
+
+Reusable table handle (open once, many column/row reads). `hdu` accepts an
+integer index or EXTNAME string (default `1`, the usual table location).
+
+```python
+torchfits.open_table_reader(path, hdu=1)
+```
+
+```python
+with torchfits.open_table_reader("catalog.fits", hdu=1) as reader:
+    n = reader.num_rows()
+    cols = reader.read_torch(columns=["RA", "DEC"])
+```
+
+Mirrors `open_subset_reader` for images. There is no handle-based
+filtered/`where=` read; for cold filtered reads use
+`table.read_torch(..., where=...)`, which reopens the file per call.
+
 ---
 
 ## Writes
@@ -335,6 +413,13 @@ result = torchfits.verify_checksums(path, hdu=0)
 
 ## Cache Utilities
 
+Two layers (do not merge in call sites — pick one intentionally):
+
+| Layer | Entry points | Role |
+|---|---|---|
+| Root I/O / CFITSIO handle caches | `get_cache_performance()`, `clear_file_cache(...)` | In-process read-path caches used by `read` / `read_tensor` |
+| `torchfits.cache` manager | `cache.configure_for_environment()`, `cache.get_cache_stats()`, `cache.clear_cache()`, `cache.optimize_for_dataset(...)` | Higher-level training / Dataset warming |
+
 ```python
 # Root I/O cache
 torchfits.get_cache_performance()
@@ -346,6 +431,11 @@ torchfits.cache.get_cache_stats()
 torchfits.cache.clear_cache()
 torchfits.cache.optimize_for_dataset(file_paths, avg_file_size_mb=10.0)
 ```
+
+Advanced (import from `torchfits.io`, not re-exported at package root):
+`cache_subsystem_policy(name)` / `clear_cache_subsystem(name)` inspect or clear
+a named engine subsystem (`"all"` clears every subsystem). Prefer the root /
+`torchfits.cache` helpers above unless you are debugging cache splits.
 
 !!! tip "Training loops"
     Call `torchfits.cache.optimize_for_dataset(paths, avg_file_size_mb=...)`

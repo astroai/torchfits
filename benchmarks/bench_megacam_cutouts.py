@@ -129,14 +129,21 @@ def run_megacam_cutout_rows(
             print(f"[megacam] skip {path.name}: no 2D image HDUs", flush=True)
             continue
         for hdu in hdus[:max_hdus]:
-            header = torchfits.read_header(str(path), hdu=hdu)
-            naxis1, naxis2 = _effective_image_size(header)
+            # Skinny dims: prefer ZNAXIS* when present, else read_shape.
+            try:
+                z = torchfits.read_keys(str(path), ["ZNAXIS1", "ZNAXIS2"], hdu=hdu)
+                naxis1 = int(z.get("ZNAXIS1") or 0)
+                naxis2 = int(z.get("ZNAXIS2") or 0)
+                compressed = naxis1 > 0 and naxis2 > 0
+            except Exception:
+                naxis1 = naxis2 = 0
+                compressed = False
+            if naxis1 < 16 or naxis2 < 16:
+                _bitpix, shape = torchfits.read_shape(str(path), hdu=hdu)
+                if len(shape) >= 2:
+                    naxis2, naxis1 = int(shape[0]), int(shape[1])
             if naxis1 < 16 or naxis2 < 16:
                 continue
-            compressed = bool(
-                int(header.get("ZNAXIS1", 0) or 0)
-                and int(header.get("ZNAXIS2", 0) or 0)
-            )
             coords = _cutout_coords(
                 naxis1, naxis2, n=_CUTOUTS_PER_HDU, seed=hdu + len(path.name)
             )

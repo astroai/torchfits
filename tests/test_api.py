@@ -71,6 +71,15 @@ class TestMainAPI:
         finally:
             os.unlink(filepath)
 
+    def test_read_rejects_unknown_kwargs(self):
+        """Unknown read() kwargs must raise (no silent swallow)."""
+        filepath, _ = self.create_test_fits()
+        try:
+            with pytest.raises(TypeError, match="unexpected keyword"):
+                torchfits.read(filepath, policy="smart")
+        finally:
+            os.unlink(filepath)
+
     def test_read_tensor_basic(self):
         """read_tensor should expose N-dimensional tensor reads."""
         filepath, expected_data = self.create_test_fits()
@@ -523,35 +532,39 @@ class TestTableAPI:
             os.unlink(filepath)
 
     def test_read_torch_rejects_auto_hdu(self):
-        """Specialized table API should require explicit HDU index."""
+        """Specialized table API should require explicit HDU index or EXTNAME."""
         filepath = self.create_test_table(128)
 
         try:
-            with pytest.raises(ValueError, match="non-negative integer"):
-                torchfits.table.read_torch(filepath, hdu="auto")  # type: ignore[arg-type]
+            with pytest.raises(ValueError, match="explicit table HDU"):
+                torchfits.table.read_torch(filepath, hdu="auto")
         finally:
             os.unlink(filepath)
 
     def test_read_torch_rows_rejects_auto_hdu(self):
-        """Specialized table row API should require explicit HDU index."""
+        """Specialized table row API should require explicit HDU index or EXTNAME."""
         filepath = self.create_test_table(128)
 
         try:
-            with pytest.raises(ValueError, match="non-negative integer"):
-                torchfits.table.read_torch(  # type: ignore[arg-type]
+            with pytest.raises(ValueError, match="explicit table HDU"):
+                torchfits.table.read_torch(
                     filepath, hdu="auto", start_row=1, num_rows=5
                 )
         finally:
             os.unlink(filepath)
 
     def test_read_torch_by_extname(self):
-        """read should resolve named table HDUs via EXTNAME."""
+        """read and table.read_torch resolve named table HDUs via EXTNAME."""
         filepath = self.create_test_table(128, extname="CATALOG")
         try:
             data = torchfits.read(filepath, hdu="CATALOG", mode="table")
             assert isinstance(data, dict)
             assert "ID" in data
             assert len(data["ID"]) == 128
+            by_name = torchfits.table.read_torch(
+                filepath, hdu="CATALOG", columns=["ID"]
+            )
+            assert len(by_name["ID"]) == 128
         finally:
             os.unlink(filepath)
 

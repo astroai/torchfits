@@ -62,7 +62,9 @@ def main() -> None:
         tensors = torchfits.table.read_torch(path, hdu=1)
         flux = tensors["FLUX"]
         print(
-            f"\nRead FITS table: OBJECT={torchfits.read_header(path, hdu=1).get('OBJECT')}"
+            f"\nRead FITS table: OBJECT="
+            f"{torchfits.read_keys(path, ['OBJECT'], hdu=1).get('OBJECT')}"
+            f" nrows={torchfits.read_nrows(path, hdu=1)}"
         )
         print(f"  FLUX column shape: {flux.shape}, dtype: {flux.dtype}")
 

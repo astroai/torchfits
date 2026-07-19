@@ -271,8 +271,9 @@ def main() -> int:
     x, y, mag = _parse_cat(cat_path)
     print(f"  sources: {x.numel()}")
 
-    header = torchfits.read_header(str(g_path), hdu=0)
-    naxis1, naxis2 = int(header["NAXIS1"]), int(header["NAXIS2"])
+    _bitpix, shape = torchfits.read_shape(str(g_path), hdu=0)
+    # shape is torch order (ny, nx); FITS NAXIS1/NAXIS2 are (nx, ny)
+    naxis2, naxis1 = int(shape[0]), int(shape[1])
 
     collage_boxes = _select_boxes(
         x, y, mag, collage_n, SIZE, naxis1, naxis2, mode="gallery", seed=0

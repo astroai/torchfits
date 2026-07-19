@@ -37,9 +37,15 @@ spelling alongside `read_torch` / `read_polars`). Root `read_table` /
 | Read image or table (auto-detect) | `read(path, hdu=None, return_header=False)` | [Core I/O](api-core-io.md#read) |
 | Rectangular cutout | `read_subset(path, hdu, x1, y1, x2, y2)` | [Core I/O](api-core-io.md#read_subset) |
 | Repeated cutouts from one file | `open_subset_reader(path, hdu=0)` | [Core I/O](api-core-io.md#open_subset_reader) |
+| Repeated table column reads | `open_table_reader(path, hdu=1)` | [Core I/O](api-core-io.md#open_table_reader) |
 | Multiple HDUs at once | `read_hdus(path, hdus=[0, 1, 2])` | [Core I/O](api-core-io.md#read_hdus) |
 | Write a tensor | `write_tensor(path, tensor, header=None, overwrite=False)` | [Core I/O](api-core-io.md#write_tensor) |
 | Read header only | `read_header(path, hdu=0)` | [Core I/O](api-core-io.md#read_header) |
+| Table row count (skinny) | `read_nrows(path, hdu=1)` | [Core I/O](api-core-io.md#read_nrows) |
+| Selected header keys (skinny) | `read_keys(path, keys, hdu=0)` | [Core I/O](api-core-io.md#read_keys) |
+| Image BITPIX+shape (skinny) | `read_shape(path, hdu=0)` | [Core I/O](api-core-io.md#read_shape) |
+| HDU type / count (skinny) | `read_hdu_type` / `read_num_hdus` | [Core I/O](api-core-io.md#read_hdu_type--read_num_hdus--read_extname) |
+| Table colnames / info (skinny) | `read_colnames` / `read_table_info` | [Core I/O](api-core-io.md#read_colnames--read_table_info) |
 | Multi-HDU context manager | `open(path, mode="r")` | [Core I/O](api-core-io.md#open) |
 | Batch-read many files | `read_batch(file_paths, hdu=0)` | [Core I/O](api-core-io.md#read_batch) |
 
@@ -131,6 +137,11 @@ private until promoted there.
 |---|---|
 | `read_fast(...)` | `read(...)` or `read_tensor(...)` |
 | `read_image(...)` | `read_tensor(...)` |
+| `read_table(...)` (root) | `table.read_torch(...)` or `table.read(...)` |
+| `stream_table(...)` (root) | `table.scan_torch(...)` |
+| `read_table_rows(...)` (root) | `table.read_torch(..., start_row=, num_rows=)` |
+| `get_header(...)` | `read_header(...)` |
+| `get_batch_info(...)` | `read_batch_info(...)` |
 | Root transform classes (e.g. `torchfits.ArcsinhStretch`) | `torchfits.transforms.*` |
 
 Transforms are not re-exported at the package root. Import them from

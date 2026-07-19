@@ -332,7 +332,6 @@ def _bench_case(
                 str(path),
                 hdu=1,
                 mode="table",
-                policy="smart",
                 mmap=target_memmap,
                 **_TF_READ_NO_CACHE,
             ),
@@ -351,7 +350,6 @@ def _bench_case(
                 str(path),
                 hdu=1,
                 mode="table",
-                policy="smart",
                 mmap=target_memmap,
                 columns=proj_cols,
                 **_TF_READ_NO_CACHE,
@@ -379,7 +377,6 @@ def _bench_case(
                 str(path),
                 hdu=1,
                 mode="table",
-                policy="smart",
                 mmap=target_memmap,
                 start_row=row_slice_start,
                 num_rows=row_slice_n,
@@ -618,47 +615,49 @@ def _fitsio_scan_count(path: Path, *, col: str):
 
 
 def _torchfits_filter_pushdown(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
-    # Smart family scores the Tensor contract against fitsio_torch peers —
-    # not Arrow interchange latency vs torch.from_numpy().
+    # Fused C++ filter via read_torch(where=); torch contract vs fitsio_torch peers.
     _ = has_pyarrow
     data = torchfits.table.read_torch(
-        str(path), hdu=1, columns=[col], mmap=mmap, **_TF_NO_CACHE
+        str(path),
+        hdu=1,
+        columns=[col],
+        mmap=mmap,
+        where=f"{col} > 0",
+        **_TF_NO_CACHE,
     )
-    values = data[col]
-    if isinstance(values, torch.Tensor):
-        return values[values > 0]
-    arr = np.asarray(values)
-    return arr[arr > 0]
+    return data[col]
 
 
 def _torchfits_filter_local(path: Path, *, col: str, mmap: bool):
     """Specialized peer: full-table read then row filter (matches astropy/fitsio)."""
-    from torchfits import cpp as _cpp
-
-    data = _cpp.read_fits_table_rows_numpy(str(path), 1, [], 1, -1, bool(mmap))
-    values = np.asarray(data[col])
-    mask = values > 0
-    return {k: np.ascontiguousarray(np.asarray(v)[mask]) for k, v in data.items()}
+    data = torchfits.table.read_torch(
+        str(path), hdu=1, mmap=mmap, where=f"{col} > 0", **_TF_NO_CACHE
+    )
+    return data
 
 
 def _torchfits_filter_col_local(path: Path, *, col: str, mmap: bool):
-    """Specialized peer: one-column project + mask (matches fitsio columns=[col])."""
-    from torchfits import cpp as _cpp
-
-    data = _cpp.read_fits_table_rows_numpy(str(path), 1, [col], 1, -1, bool(mmap))
-    values = np.ascontiguousarray(np.asarray(data[col]))
-    return values[values > 0]
+    """Specialized peer: fused one-column project + predicate (tensor)."""
+    data = torchfits.table.read_torch(
+        str(path),
+        hdu=1,
+        columns=[col],
+        mmap=mmap,
+        where=f"{col} > 0",
+        **_TF_NO_CACHE,
+    )
+    return data[col]
 
 
 def _torchfits_scan_count(path: Path, *, col: str, mmap: bool, has_pyarrow: bool):
     _ = col, mmap, has_pyarrow
-    # Peer contract: NAXIS2 / get_nrows — not a column materialize.
-    return int(torchfits.read_header(str(path), hdu=1).get("NAXIS2", 0))
+    # Peer contract: NAXIS2 / get_nrows — skinny CFITSIO path, not full header.
+    return int(torchfits.read_nrows(str(path), hdu=1))
 
 
 def _torchfits_scan_count_local(path: Path, *, col: str, mmap: bool):
     _ = col, mmap
-    return int(torchfits.read_header(str(path), hdu=1).get("NAXIS2", 0))
+    return int(torchfits.read_nrows(str(path), hdu=1))
 
 
 def _make_row(

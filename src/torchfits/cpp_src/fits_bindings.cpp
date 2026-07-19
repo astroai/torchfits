@@ -2043,6 +2043,280 @@ void bind_fits(nb::module_& m) {
         }
     });
 
+    // Skinny metadata: open → move HDU → structural/key query. No full header dump.
+    m.def(
+        "read_nrows",
+        [](const std::string& filename, int hdu_num) -> long long {
+            nb::gil_scoped_release release;
+            FITSFile file(filename.c_str(), 0);
+            int status = 0;
+            file.ensure_hdu(hdu_num, &status);
+            if (status != 0) {
+                throw std::runtime_error("read_nrows: could not move to HDU");
+            }
+            long nrows = 0;
+            fits_get_num_rows(file.get_fptr(), &nrows, &status);
+            if (status != 0) {
+                char err_text[FLEN_ERRMSG];
+                fits_get_errstatus(status, err_text);
+                throw std::runtime_error(
+                    std::string("read_nrows: ") + err_text +
+                    " (HDU must be a table)");
+            }
+            return static_cast<long long>(nrows);
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"));
+
+    m.def(
+        "read_keys",
+        [](const std::string& filename, int hdu_num,
+           const std::vector<std::string>& keys) -> nb::dict {
+            struct KeyRaw {
+                std::string key;
+                std::string value;
+            };
+            std::vector<KeyRaw> raw;
+            raw.reserve(keys.size());
+            {
+                nb::gil_scoped_release release;
+                FITSFile file(filename.c_str(), 0);
+                int status = 0;
+                file.ensure_hdu(hdu_num, &status);
+                if (status != 0) {
+                    throw std::runtime_error("read_keys: could not move to HDU");
+                }
+                fitsfile* fptr = file.get_fptr();
+                for (const auto& key : keys) {
+                    char value[FLEN_VALUE] = {0};
+                    char comment[FLEN_COMMENT] = {0};
+                    status = 0;
+                    if (fits_read_keyword(
+                            fptr, key.c_str(), value, comment, &status) != 0) {
+                        if (status == KEY_NO_EXIST) {
+                            throw std::runtime_error(
+                                "read_keys: keyword not found: " + key);
+                        }
+                        char err_text[FLEN_ERRMSG];
+                        fits_get_errstatus(status, err_text);
+                        throw std::runtime_error(
+                            std::string("read_keys: ") + err_text + " (" + key +
+                            ")");
+                    }
+                    raw.push_back(
+                        KeyRaw{key, d::sanitize_fits_string(std::string(value))});
+                }
+            }
+            nb::dict out;
+            for (const auto& item : raw) {
+                const std::string& val = item.value;
+                if (val.empty()) {
+                    out[item.key.c_str()] = nb::none();
+                    continue;
+                }
+                if (val == "T") {
+                    out[item.key.c_str()] = true;
+                    continue;
+                }
+                if (val == "F") {
+                    out[item.key.c_str()] = false;
+                    continue;
+                }
+                if (val.front() == '\'') {
+                    std::string s = val;
+                    size_t last_quote = s.rfind('\'');
+                    if (last_quote != std::string::npos && last_quote > 0) {
+                        s = s.substr(1, last_quote - 1);
+                        size_t last_char = s.find_last_not_of(' ');
+                        if (last_char != std::string::npos)
+                            s = s.substr(0, last_char + 1);
+                        else
+                            s.clear();
+                        size_t pos = 0;
+                        while ((pos = s.find("''", pos)) != std::string::npos) {
+                            s.replace(pos, 2, "'");
+                            pos += 1;
+                        }
+                    }
+                    out[item.key.c_str()] = s;
+                    continue;
+                }
+                try {
+                    if (val.find_first_of(".eE") != std::string::npos) {
+                        out[item.key.c_str()] = std::stod(val);
+                    } else {
+                        out[item.key.c_str()] = std::stoll(val);
+                    }
+                } catch (const std::exception&) {
+                    out[item.key.c_str()] = val;
+                }
+            }
+            return out;
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"),
+        nb::arg("keys"));
+
+    m.def(
+        "read_shape",
+        [](const std::string& filename, int hdu_num) -> nb::tuple {
+            int bitpix = 0;
+            int naxis = 0;
+            std::array<LONGLONG, 9> naxes_ll{};
+            naxes_ll.fill(0);
+            {
+                nb::gil_scoped_release release;
+                FITSFile file(filename.c_str(), 0);
+                int status = 0;
+                file.ensure_hdu(hdu_num, &status);
+                if (status != 0) {
+                    throw std::runtime_error("read_shape: could not move to HDU");
+                }
+                d::read_image_params_9d(
+                    file.get_fptr(), &bitpix, &naxis, naxes_ll, &status);
+                if (status != 0) {
+                    char err_text[FLEN_ERRMSG];
+                    fits_get_errstatus(status, err_text);
+                    throw std::runtime_error(std::string("read_shape: ") + err_text);
+                }
+            }
+            nb::list shape;
+            // Torch / row-major order (reverse of FITS NAXISn).
+            for (int i = naxis - 1; i >= 0; --i) {
+                shape.append(static_cast<long long>(naxes_ll[i]));
+            }
+            return nb::make_tuple(bitpix, nb::tuple(shape));
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"));
+
+    m.def(
+        "read_hdu_type",
+        [](const std::string& filename, int hdu_num) -> std::string {
+            nb::gil_scoped_release release;
+            FITSFile file(filename.c_str(), 0);
+            return file.get_hdu_type(hdu_num);
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"));
+
+    m.def(
+        "read_num_hdus",
+        [](const std::string& filename) -> int {
+            nb::gil_scoped_release release;
+            FITSFile file(filename.c_str(), 0);
+            return file.get_num_hdus();
+        },
+        nb::arg("filename"));
+
+    m.def(
+        "read_colnames",
+        [](const std::string& filename, int hdu_num) -> std::vector<std::string> {
+            nb::gil_scoped_release release;
+            FITSFile file(filename.c_str(), 0);
+            int status = 0;
+            file.ensure_hdu(hdu_num, &status);
+            if (status != 0) {
+                throw std::runtime_error("read_colnames: could not move to HDU");
+            }
+            fitsfile* fptr = file.get_fptr();
+            int ncols = 0;
+            fits_get_num_cols(fptr, &ncols, &status);
+            if (status != 0) {
+                char err_text[FLEN_ERRMSG];
+                fits_get_errstatus(status, err_text);
+                throw std::runtime_error(
+                    std::string("read_colnames: ") + err_text +
+                    " (HDU must be a table)");
+            }
+            std::vector<std::string> names;
+            names.reserve(ncols);
+            for (int i = 1; i <= ncols; ++i) {
+                char ttype[FLEN_VALUE];
+                memset(ttype, 0, FLEN_VALUE);
+                char keyname[FLEN_KEYWORD];
+                snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
+                int col_status = 0;
+                fits_read_key(fptr, TSTRING, keyname, ttype, nullptr, &col_status);
+                if (col_status != 0) {
+                    snprintf(ttype, FLEN_VALUE, "COL%d", i);
+                } else {
+                    // Trim trailing spaces from TSTRING.
+                    size_t len = strnlen(ttype, FLEN_VALUE);
+                    while (len > 0 && ttype[len - 1] == ' ') --len;
+                    ttype[len] = '\0';
+                }
+                names.emplace_back(ttype);
+            }
+            return names;
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"));
+
+    m.def(
+        "read_table_info",
+        [](const std::string& filename, int hdu_num) -> nb::dict {
+            long nrows = 0;
+            std::vector<std::string> names;
+            std::vector<std::string> tforms;
+            {
+                nb::gil_scoped_release release;
+                FITSFile file(filename.c_str(), 0);
+                int status = 0;
+                file.ensure_hdu(hdu_num, &status);
+                if (status != 0) {
+                    throw std::runtime_error("read_table_info: could not move to HDU");
+                }
+                fitsfile* fptr = file.get_fptr();
+                fits_get_num_rows(fptr, &nrows, &status);
+                int ncols = 0;
+                if (status == 0) fits_get_num_cols(fptr, &ncols, &status);
+                if (status != 0) {
+                    char err_text[FLEN_ERRMSG];
+                    fits_get_errstatus(status, err_text);
+                    throw std::runtime_error(
+                        std::string("read_table_info: ") + err_text +
+                        " (HDU must be a table)");
+                }
+                names.reserve(ncols);
+                tforms.reserve(ncols);
+                for (int i = 1; i <= ncols; ++i) {
+                    char ttype[FLEN_VALUE];
+                    char tform[FLEN_VALUE];
+                    memset(ttype, 0, FLEN_VALUE);
+                    memset(tform, 0, FLEN_VALUE);
+                    char keyname[FLEN_KEYWORD];
+                    snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
+                    int col_status = 0;
+                    fits_read_key(fptr, TSTRING, keyname, ttype, nullptr, &col_status);
+                    if (col_status != 0) {
+                        snprintf(ttype, FLEN_VALUE, "COL%d", i);
+                    } else {
+                        size_t len = strnlen(ttype, FLEN_VALUE);
+                        while (len > 0 && ttype[len - 1] == ' ') --len;
+                        ttype[len] = '\0';
+                    }
+                    col_status = 0;
+                    snprintf(keyname, FLEN_KEYWORD, "TFORM%d", i);
+                    fits_read_key(fptr, TSTRING, keyname, tform, nullptr, &col_status);
+                    if (col_status == 0) {
+                        size_t len = strnlen(tform, FLEN_VALUE);
+                        while (len > 0 && tform[len - 1] == ' ') --len;
+                        tform[len] = '\0';
+                    }
+                    names.emplace_back(ttype);
+                    tforms.emplace_back(tform);
+                }
+            }
+            nb::dict out;
+            out["nrows"] = static_cast<long long>(nrows);
+            out["colnames"] = names;
+            out["tforms"] = tforms;
+            return out;
+        },
+        nb::arg("filename"),
+        nb::arg("hdu_num"));
+
     m.def("configure_cache", &configure_cache, nb::arg("max_files"), nb::arg("max_memory_mb"));
     m.def("clear_file_cache", &clear_file_cache);
     m.def("invalidate_file_cache", &invalidate_file_cache, nb::arg("path"));

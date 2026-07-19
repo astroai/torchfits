@@ -153,12 +153,13 @@ class FitsTensorDataset(Dataset[Any]):
                 )
             self._labels = list(labels)
         elif label_key is not None:
-            from torchfits import read_header
+            from torchfits import read_keys
 
             self._labels = [
                 int(
-                    read_header(
+                    read_keys(
                         _local_read_path(f, cache_dir=self.cache_dir),
+                        [label_key],
                         hdu=self.hdus[0],
                     )[label_key]
                 )

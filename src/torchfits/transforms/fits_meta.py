@@ -42,6 +42,19 @@ class FITSHeaderScale(FITSTransform):
         bzero = float(header.get("BZERO", 0.0))  # type: ignore[arg-type]
         return cls(bscale=bscale, bzero=bzero)
 
+    @classmethod
+    def from_path(cls, path: str, hdu: int | str = 0) -> FITSHeaderScale:
+        """Construct from skinny ``read_keys`` (no full header dump)."""
+        import torchfits
+
+        vals: dict[str, float] = {"BSCALE": 1.0, "BZERO": 0.0}
+        for name in ("BSCALE", "BZERO"):
+            try:
+                vals[name] = float(torchfits.read_keys(path, [name], hdu=hdu)[name])
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        return cls(bscale=vals["BSCALE"], bzero=vals["BZERO"])
+
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
@@ -295,6 +308,21 @@ class FITSHeaderNormalize(FITSTransform):
             phys_min = self.bzero
             phys_max = 255.0 * self.bscale + self.bzero
             self._in_range = (phys_min, phys_max)
+
+    @classmethod
+    def from_path(
+        cls, path: str, hdu: int | str = 0, *, scale_floats: bool = False
+    ) -> FITSHeaderNormalize:
+        """Construct from skinny ``read_keys`` (no full header dump)."""
+        import torchfits
+
+        keys: dict[str, object] = {}
+        for name, default in (("BITPIX", -32), ("BSCALE", 1.0), ("BZERO", 0.0)):
+            try:
+                keys[name] = torchfits.read_keys(path, [name], hdu=hdu)[name]
+            except RuntimeError:
+                keys[name] = default
+        return cls(keys, scale_floats=scale_floats)
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None

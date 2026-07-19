@@ -40,22 +40,30 @@ All gates must pass.
 
 ## 5. Benchmark evidence
 
-Run the exhaustive benchmark suite:
+Published multi-host scorecard (MPS + CANFAR CPU + CANFAR CUDA):
 
 ```bash
-pixi run bench-all
-pixi run bench-mps    # Apple Silicon (device=mps)
-# Linux CUDA lab (lab profile + auto doc patch):
-pixi run -e bench-gpu bench-exhaustive
+pixi run bench-install
+bash scripts/selfcheck_canfar_launcher.sh
+# Launch CANFAR first (async), then local:
+pixi run bench-exhaustive-canfar-cpu
+pixi run bench-exhaustive-canfar-cuda
+pixi run bench-exhaustive-local
+# After CANFAR finishes:
+bash scripts/fetch_canfar_bench_vos.sh exhaustive_cpu_<stamp>
+bash scripts/fetch_canfar_bench_vos.sh exhaustive_cuda_<stamp>
+pixi run bench-release-scorecard -- \
+  benchmarks_results/exhaustive_mps_<stamp> \
+  benchmarks_results/exhaustive_cpu_<stamp> \
+  benchmarks_results/exhaustive_cuda_<stamp>
 ```
 
-Regenerate the I/O transport table:
+Mirror CSVs into `docs/assets/bench/<run-id>/` and update Published paths in
+`docs/benchmarks.md`. Companion suites: `pixi run bench-megacam`, `bench-ml`.
 
-```bash
-pixi run bench-table-render -- --csv benchmarks_results/<run-id>/results.csv
-```
-
-Manual benchmark refresh: `.github/workflows/bench-report.yml` (`workflow_dispatch` only).
+Quick local smoke (not a published scorecard): `pixi run bench-all` /
+`pixi run bench-mps`. Manual CI refresh: `.github/workflows/bench-report.yml`
+(`workflow_dispatch` only; CPU-only).
 
 Repository: https://github.com/astroai/torchfits.
 

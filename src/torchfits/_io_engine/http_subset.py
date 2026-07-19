@@ -168,21 +168,6 @@ def locate_uncompressed_2d(url: str, hdu: int | str) -> dict[str, Any]:
     raise HttpRangeUnsupported(f"HDU {hdu!r} not found in Range scan")
 
 
-def _bswap_inplace(buf: bytearray, elem_bytes: int) -> None:
-    if elem_bytes <= 1:
-        return
-    mv = memoryview(buf)
-    if elem_bytes == 2:
-        for i in range(0, len(buf), 2):
-            mv[i], mv[i + 1] = mv[i + 1], mv[i]
-    elif elem_bytes == 4:
-        for i in range(0, len(buf), 4):
-            mv[i : i + 4] = bytes(reversed(mv[i : i + 4]))
-    elif elem_bytes == 8:
-        for i in range(0, len(buf), 8):
-            mv[i : i + 8] = bytes(reversed(mv[i : i + 8]))
-
-
 def read_subset_http(
     url: str,
     hdu: int | str,
@@ -217,8 +202,8 @@ def read_subset_http(
         )
     buf = bytearray(raw[:expected])
     # FITS multi-byte values are big-endian; swap only on little-endian hosts.
-    if elem > 1 and sys.byteorder == "little":
-        _bswap_inplace(buf, elem)
-
     full = torch.frombuffer(buf, dtype=dtype).reshape(y2 - y1, naxis1)
-    return full[:, x1:x2].contiguous().clone()
+    if elem > 1 and sys.byteorder == "little":
+        full.numpy().byteswap(True)
+
+    return full[:, x1:x2].contiguous()

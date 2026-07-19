@@ -111,6 +111,9 @@ Quick FITS benchmark sweep:
 pixi run bench-all
 ```
 
+Published multi-host scorecard (release docs): see [Release Checklist](release.md#5-benchmark-evidence)
+(`bench-exhaustive-local` + CANFAR CPU/CUDA + `bench-release-scorecard`).
+
 Include benchmark evidence in PRs that touch performance-sensitive paths.
 
 ## Documentation policy

@@ -21,12 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deprecated `table_module=` dual-path on cache invalidate/clear.
 
 ### Added
+- Skinny metadata: `read_nrows`, `read_keys`, `read_shape`, `read_hdu_type`,
+  `read_num_hdus`, `read_colnames`, `read_extname`, `read_table_info` —
+  CFITSIO structural/key queries without a full header dump.
+- `open_table_reader(path, hdu=1)` — reusable table handle (mirror of
+  `open_subset_reader`).
+- `table.read_torch(..., where=)` — fused C++ project+predicate path.
+- `FITSHeaderScale.from_path` / `FITSHeaderNormalize.from_path` via skinny keys.
 - `transforms.as_module` / `AsModule` — thin `nn.Module` adapter for
   `nn.Sequential`.
 - CLI `transform --name Class:key=val,...` constructor kwargs.
 - HTTP Range cutouts + vos/vault remote fetch (prior unreleased work).
 
 ### Changed
+- `read()` rejects unknown kwargs with `TypeError` (no silent swallow of
+  leftovers like `policy=`).
+- Table `read_torch` uses a thin C++ path (skips `read_unified` image probes).
+- Datasets `label_key`, `get_image_meta`, benches/examples lean on skinny meta.
 - Lazy root `__getattr__` uses a lock-backed attribute cache (no `globals()`
   mutation).
 - Library logger uses `NullHandler` (no import-time StreamHandler).
@@ -40,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_ensure_dtype_maps()`.
 
 ### Fixed
+- HTTP Range cutouts: NumPy view `byteswap(True)` on frombuffer tensor (this
+  torch build has no `Tensor.byteswap`); drop redundant cutout `.clone()`.
+- SigmaClip: 0-d `new_zeros(())` fill for `torch.where(..., out=)` (no
+  `zeros_like` buffer).
+- Filtered table zero-match `where=`: keyed empty tensors (not `{}`).
 - **`lupton_rgb`:** Astropy-parity Lupton asinh mapping (per-pixel peak clip).
   Gallery SDSS / MegaPipe figures regenerated with readable stretch.
 - **`SubsetReader`:** uncompressed 2D images mmap the data segment once and
@@ -48,7 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clearer `TypeError` when inferring FITS TFORM from uint16/uint32/uint64.
 
 ### Docs
-- Round-2 scorecard: local MPS `exhaustive_mps_20260719_065105` plus CANFAR staging CPU/CUDA `exhaustive_*_20260719_0838*`.
+- Removed-names table lists root `read_table` / `stream_table` /
+  `read_table_rows` / `get_header` / `get_batch_info`.
+- Core I/O cache section documents root vs `torchfits.cache` layers.
+- Examples: `open_table_reader` + EXTNAME `table.read_torch`.
+- Round-2 scorecard: local MPS `exhaustive_mps_20260719_065105` plus CANFAR staging CPU/CUDA `exhaustive_*_20260719_0838*` (re-soak in progress).
 - Slim transform gallery; real Lupton RGB figure; removed spectral/continuum docs.
 - Core I/O docs point at `table.read_torch` / `table.scan_torch` (root aliases gone).
 - User Guide [ML with FITS](examples-ml.md): Galaxy Zoo 1 + Legacy Survey one-epoch

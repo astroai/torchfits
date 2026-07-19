@@ -179,7 +179,7 @@ class CPPBackendBenchmark:
 
                 def read_torchfits() -> torch.Tensor:
                     # High-level comparison path.
-                    out = torchfits.read(filepath, hdu=hdu, policy="smart")
+                    out = torchfits.read(filepath, hdu=hdu)
                     tensor = out[0] if isinstance(out, tuple) else out
                     tf_last["tensor_shape"] = list(tensor.shape)
                     tf_last["tensor_dtype"] = str(tensor.dtype)
@@ -359,7 +359,7 @@ class CPPBackendBenchmark:
             if torchfits:
 
                 def tf_cutout() -> torch.Tensor:
-                    out = torchfits.read(cutout_spec, policy="smart")
+                    out = torchfits.read(cutout_spec)
                     return out[0] if isinstance(out, tuple) else out
 
                 tf_stats = self._time_callable(tf_cutout)

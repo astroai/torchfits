@@ -330,9 +330,11 @@ def read_fallback_table(
     if (start_row > 1 or num_rows != -1) and not hasattr(
         cpp_module, "read_fits_table_rows"
     ):
+        end_row = None
         for key, value in table_data.items():
             if isinstance(value, torch.Tensor):
-                end_row = start_row + num_rows - 1 if num_rows != -1 else len(value)
+                if end_row is None:
+                    end_row = start_row + num_rows - 1 if num_rows != -1 else len(value)
                 table_data[key] = value[start_row - 1 : end_row]
 
     if use_cache and cache_key is not None:

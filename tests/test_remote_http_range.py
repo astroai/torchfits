@@ -155,6 +155,14 @@ def test_range_cutout_transfers_row_band_only(http_fits_server):
     assert out.shape == (3, 4)
     expected = np.arange(256 * 256, dtype=np.float32).reshape(256, 256)[1:4, 2:6]
     np.testing.assert_array_equal(out.numpy(), expected)
+    # Ensure the returned tensor uses native byte order (from FITS big-endian)
+    import sys
+
+    sys_byteorder = "<" if sys.byteorder == "little" else ">"
+    assert (
+        out.numpy().dtype.byteorder == "="
+        or out.numpy().dtype.byteorder == sys_byteorder
+    )
     assert Handler.transferred < len(body) // 4
 
 

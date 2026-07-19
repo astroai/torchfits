@@ -2,7 +2,8 @@
 Example: FITS tables as dataframes.
 
 Primary path: ``table.read`` → Arrow (portable dataframe).
-Also: ``table.read_torch`` (tensor columns), streaming, then mutations.
+Also: ``table.read_torch`` (tensor columns), ``open_table_reader``,
+streaming, then mutations.
 """
 
 from __future__ import annotations
@@ -60,6 +61,13 @@ def main() -> None:
         tensors = torchfits.table.read_torch(path, hdu=1)
         print("read_torch columns:", list(tensors.keys()))
         print(f"  ra: {tensors['ra'].tolist()}")
+
+        with torchfits.open_table_reader(path, hdu=1) as reader:
+            chunk = reader.read_torch(columns=["id", "ra"], start_row=1, num_rows=2)
+            print(
+                f"open_table_reader: {reader.num_rows()} rows, "
+                f"first ids={chunk['id'].tolist()}"
+            )
 
         chunks = list(
             torchfits.table.scan_torch(path, hdu=1, batch_size=2, columns=["id"])

@@ -92,6 +92,43 @@ def test_table_read_where_torch_backend(fits_file):
     assert ((mags > 10.0) & (mags < 20.0)).all()
 
 
+def test_read_torch_where_fused(fits_file):
+    import torch
+
+    import torchfits
+
+    data = torchfits.table.read_torch(
+        fits_file, columns=["ID", "MAG"], where="MAG > 50.0"
+    )
+    assert "MAG" in data and "ID" in data
+    assert isinstance(data["MAG"], torch.Tensor)
+    assert data["MAG"].numel() > 0
+    assert bool((data["MAG"] > 50.0).all())
+    # Parity with unfiltered + mask
+    full = torchfits.table.read_torch(fits_file, columns=["MAG"])
+    expected = full["MAG"][full["MAG"] > 50.0]
+    assert data["MAG"].numel() == expected.numel()
+    assert torch.allclose(data["MAG"].cpu(), expected.cpu())
+
+
+def test_read_torch_where_zero_match_keeps_schema(fits_file):
+    """Zero-match where= must return keyed empty tensors, not {}."""
+    import torch
+
+    import torchfits
+
+    data = torchfits.table.read_torch(
+        fits_file, columns=["ID", "MAG"], where="MAG > 1000.0"
+    )
+    assert set(data.keys()) == {"ID", "MAG"}
+    assert isinstance(data["ID"], torch.Tensor)
+    assert isinstance(data["MAG"], torch.Tensor)
+    assert data["ID"].numel() == 0
+    assert data["MAG"].numel() == 0
+    assert data["ID"].shape[0] == 0
+    assert data["MAG"].shape[0] == 0
+
+
 def test_filter_eq(fits_file):
     import torchfits.cpp
 

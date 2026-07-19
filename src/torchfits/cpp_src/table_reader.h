@@ -1366,10 +1366,9 @@ public:
             valid_indices = std::move(local);
         }
 
-        // Gather results
+        // Gather results (num_valid==0 → empty tensors, keyed schema preserved)
         std::unordered_map<std::string, torch::Tensor> result;
         long num_valid = valid_indices.size();
-        if (num_valid == 0) return result;
 
         std::vector<int> out_col_indices;
         if (column_names.empty()) {
@@ -1400,6 +1399,11 @@ public:
 
             auto options = torch::TensorOptions().dtype(col.torch_type);
             torch::Tensor out_tensor = torch::empty(shape, options);
+
+            if (num_valid == 0) {
+                result[col.name] = out_tensor;
+                continue;
+            }
 
             int item_size = 0;
             if (col.type == FITSColumnType::DOUBLE || col.type == FITSColumnType::LONG) item_size = 8;

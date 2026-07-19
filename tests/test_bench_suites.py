@@ -200,7 +200,7 @@ def test_scorecard_ignores_singleton_torchfits_group() -> None:
         assert "1/1" not in text
 
 
-def test_fitstable_scan_count_uses_header_not_column() -> None:
+def test_fitstable_scan_count_uses_nrows_not_column() -> None:
     """Specialized scan_count must match peer O(1) NAXIS2 / get_nrows contract."""
     import inspect
 
@@ -208,8 +208,10 @@ def test_fitstable_scan_count_uses_header_not_column() -> None:
 
     src_smart = inspect.getsource(m._torchfits_scan_count)
     src_local = inspect.getsource(m._torchfits_scan_count_local)
-    assert "read_header" in src_smart
-    assert "read_header" in src_local
+    assert "read_nrows" in src_smart
+    assert "read_nrows" in src_local
+    assert "read_header" not in src_smart
+    assert "read_header" not in src_local
     assert "read_table" not in src_local
     assert "get_header" not in src_smart
     assert "get_header" not in src_local

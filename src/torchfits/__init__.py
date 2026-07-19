@@ -32,10 +32,19 @@ _ROOT_FUNCTIONS: dict[str, tuple[str, str]] = {
     "write": ("torchfits.io", "write"),
     "open": ("torchfits.io", "open"),
     "read_header": ("torchfits.io", "read_header"),
+    "read_colnames": ("torchfits.io", "read_colnames"),
+    "read_extname": ("torchfits.io", "read_extname"),
+    "read_hdu_type": ("torchfits.io", "read_hdu_type"),
+    "read_keys": ("torchfits.io", "read_keys"),
+    "read_nrows": ("torchfits.io", "read_nrows"),
+    "read_num_hdus": ("torchfits.io", "read_num_hdus"),
+    "read_shape": ("torchfits.io", "read_shape"),
+    "read_table_info": ("torchfits.io", "read_table_info"),
     "read_tensor": ("torchfits.io", "read_tensor"),
     "read_hdus": ("torchfits.io", "read_hdus"),
     "read_subset": ("torchfits.io", "read_subset"),
     "open_subset_reader": ("torchfits.io", "open_subset_reader"),
+    "open_table_reader": ("torchfits.io", "open_table_reader"),
     "read_batch": ("torchfits.io", "read_batch"),
     "read_batch_info": ("torchfits.io", "read_batch_info"),
     "get_cache_performance": ("torchfits.io", "get_cache_performance"),
@@ -66,10 +75,19 @@ __all__ = tuple(
         "write",
         "open",
         "read_header",
+        "read_colnames",
+        "read_extname",
+        "read_hdu_type",
+        "read_keys",
+        "read_nrows",
+        "read_num_hdus",
+        "read_shape",
+        "read_table_info",
         "read_tensor",
         "read_hdus",
         "read_subset",
         "open_subset_reader",
+        "open_table_reader",
         "Header",
         "Card",
         "HDUList",
@@ -194,9 +212,18 @@ if TYPE_CHECKING:
     from .io import read_batch_info as read_batch_info
     from .io import get_cache_performance as get_cache_performance
     from .io import read_header as read_header
+    from .io import read_colnames as read_colnames
+    from .io import read_extname as read_extname
+    from .io import read_hdu_type as read_hdu_type
+    from .io import read_keys as read_keys
+    from .io import read_nrows as read_nrows
+    from .io import read_num_hdus as read_num_hdus
+    from .io import read_shape as read_shape
+    from .io import read_table_info as read_table_info
     from .io import insert_hdu as insert_hdu
     from .io import open as open
     from .io import open_subset_reader as open_subset_reader
+    from .io import open_table_reader as open_table_reader
     from .io import read as read
     from .io import read_batch as read_batch
     from .io import read_hdus as read_hdus

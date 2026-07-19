@@ -76,15 +76,24 @@ torchfits.table.read_torch(
     path, hdu=1, columns=None, start_row=1, num_rows=-1,
     device="cpu", mmap="auto", cache_capacity=10,
     handle_cache_capacity=16, fast_header=True, return_header=False,
+    where=None,
 )
 ```
 
 **Returns:** `dict[str, torch.Tensor]`
 
+Optional `where` uses the same simple numeric predicate dialect as
+`table.read` and pushes down via C++ `read_fits_table_filtered`.
+
 ```python
 cols = torchfits.table.read_torch("catalog.fits", hdu=1, columns=["RA", "DEC"])
-# train on cols["RA"], cols["DEC"]
+bright = torchfits.table.read_torch(
+    "catalog.fits", hdu=1, columns=["MAG"], where="MAG < 20"
+)
 ```
+
+For repeated column reads on one file, prefer
+`torchfits.open_table_reader(path, hdu=1)`.
 
 ---
 

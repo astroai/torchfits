@@ -136,6 +136,135 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
         raise RuntimeError(f"Failed to open FITS file '{path}': {exc}") from exc
 
 
+def _resolve_hdu_index(
+    path: str,
+    hdu: Union[int, str, None],
+    *,
+    autodetect_hdu: Callable[[str, int], int],
+) -> int:
+    """Resolve ``hdu`` to a 0-based index (supports ``None`` / ``\"auto\"`` / EXTNAME)."""
+    import torchfits._C as cpp
+
+    if hdu is None or (isinstance(hdu, str) and hdu.strip().lower() == "auto"):
+        return int(autodetect_hdu(path, 16))
+    if isinstance(hdu, int):
+        return int(hdu)
+    if not isinstance(hdu, str):
+        raise TypeError(f"hdu must be int, str, None, or 'auto', got {type(hdu)!r}")
+
+    if hasattr(cpp, "resolve_hdu_name_cached"):
+        try:
+            return int(cpp.resolve_hdu_name_cached(path, hdu))
+        except Exception as exc:
+            _log.debug(
+                "_resolve_hdu_index: resolve_hdu_name_cached(%r, %r) failed: %s",
+                path,
+                hdu,
+                exc,
+            )
+
+    # Skinny fallback: probe EXTNAME only (no full header dump).
+    # Missing EXTNAME (common on primary) must continue, not abort the scan.
+    try:
+        n_hdus = int(cpp.read_num_hdus(path))
+    except Exception:
+        n_hdus = 100
+    for i in range(max(0, n_hdus)):
+        try:
+            keys = cpp.read_keys(path, i, ["EXTNAME"])
+        except Exception:
+            continue
+        if keys.get("EXTNAME") == hdu:
+            return i
+    raise ValueError(f"HDU '{hdu}' not found")
+
+
+def read_nrows(path: str, hdu: Union[int, str, None] = 1) -> int:
+    """Return table row count via CFITSIO ``fits_get_num_rows`` (no full header).
+
+    Default ``hdu=1`` (first extension). Raises if the HDU is not a table.
+    """
+    import torchfits._C as cpp
+
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    return int(cpp.read_nrows(path, hdu_index))
+
+
+def read_keys(
+    path: str,
+    keys: list[str] | tuple[str, ...],
+    hdu: Union[int, str, None] = 0,
+) -> dict[str, Any]:
+    """Read named header keywords via CFITSIO ``fits_read_keyword`` (no full dump).
+
+    Missing keys raise ``RuntimeError``. Default ``hdu=0`` matches ``read_header``.
+    """
+    import torchfits._C as cpp
+
+    if not keys:
+        raise ValueError("keys must be a non-empty sequence of keyword names")
+    key_list = [str(k) for k in keys]
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    return dict(cpp.read_keys(path, hdu_index, key_list))
+
+
+def read_shape(
+    path: str, hdu: Union[int, str, None] = 0
+) -> tuple[int, tuple[int, ...]]:
+    """Return ``(bitpix, shape)`` via CFITSIO image params (no full header).
+
+    ``shape`` is torch / row-major order (reversed NAXISn). Default ``hdu=0``.
+    """
+    import torchfits._C as cpp
+
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    bitpix, shape = cpp.read_shape(path, hdu_index)
+    return int(bitpix), tuple(int(d) for d in shape)
+
+
+def read_hdu_type(path: str, hdu: Union[int, str, None] = 0) -> str:
+    """Return HDU type string (``IMAGE`` / ``BINARY_TABLE`` / …) without full header."""
+    import torchfits._C as cpp
+
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    return str(cpp.read_hdu_type(path, hdu_index))
+
+
+def read_num_hdus(path: str) -> int:
+    """Return number of HDUs in the file (one open; no header dump)."""
+    import torchfits._C as cpp
+
+    return int(cpp.read_num_hdus(path))
+
+
+def read_colnames(path: str, hdu: Union[int, str, None] = 1) -> list[str]:
+    """Return table column names (TTYPEn) without materializing the full header."""
+    import torchfits._C as cpp
+
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    return [str(n) for n in cpp.read_colnames(path, hdu_index)]
+
+
+def read_extname(path: str, hdu: Union[int, str, None] = 0) -> str | None:
+    """Return EXTNAME for an HDU, or None if absent."""
+    try:
+        return read_keys(path, ["EXTNAME"], hdu=hdu).get("EXTNAME")
+    except RuntimeError:
+        return None
+
+
+def read_table_info(path: str, hdu: Union[int, str, None] = 1) -> dict[str, Any]:
+    """One-open table metadata: ``nrows``, ``colnames``, ``tforms``."""
+    import torchfits._C as cpp
+
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    info = dict(cpp.read_table_info(path, hdu_index))
+    info["nrows"] = int(info["nrows"])
+    info["colnames"] = [str(n) for n in info["colnames"]]
+    info["tforms"] = [str(t) for t in info["tforms"]]
+    return info
+
+
 def get_header(
     path: str,
     hdu: Union[int, str, None] = None,
@@ -167,31 +296,6 @@ def get_header(
                     _log.debug("get_header: handle close failed: %s", exc)
         return Header(cpp.read_header_dict(path, hdu_index))
 
-    if hdu is None or (isinstance(hdu, str) and hdu.strip().lower() == "auto"):
-        hdu = autodetect_hdu(path, 16)
-
-    if isinstance(hdu, str):
-        if hasattr(cpp, "resolve_hdu_name_cached"):
-            try:
-                hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
-                return _read_header(path, hdu)
-            except Exception as exc:
-                _log.debug(
-                    "get_header: resolve_hdu_name_cached(%r, %r) failed: %s",
-                    path,
-                    hdu,
-                    exc,
-                )
-
-        for i in range(100):  # Fallback scan
-            try:
-                header = _read_header(path, i)
-                if not header:
-                    break
-                if header.get("EXTNAME") == hdu:
-                    return header
-            except Exception:
-                break
-        raise ValueError(f"HDU '{hdu}' not found")
-
-    return _read_header(path, hdu)
+    return _read_header(
+        path, _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    )

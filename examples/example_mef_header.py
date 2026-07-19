@@ -40,11 +40,11 @@ def main() -> int:
             if extname and hdu_ref == 0 and i > 0:
                 hdu_ref = extname
 
+        bitpix, shape = torchfits.read_shape(str(path), hdu=hdu_ref)
+        print(f"read_shape(hdu={hdu_ref!r}): bitpix={bitpix} shape={shape}")
+        print(f"read_hdu_type: {torchfits.read_hdu_type(str(path), hdu=hdu_ref)}")
         header = torchfits.read_header(str(path), hdu=hdu_ref)
-        print(
-            f"read_header(hdu={hdu_ref!r}): "
-            f"NAXIS={header.get('NAXIS')} BITPIX={header.get('BITPIX')}"
-        )
+        print(f"read_header cards: {len(list(header.keys()))}")
     return 0
 
 

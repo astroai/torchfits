@@ -45,6 +45,43 @@ def _parse_image_meta(header_data: Mapping[str, Any]) -> ImageMeta:
     return (bitpix, naxis, tuple(dims), bscale, bzero, is_compressed)
 
 
+def _skinny_image_meta(path: str, hdu: int, cpp_module: Any) -> ImageMeta | None:
+    """Build ImageMeta via skinny CFITSIO queries (no full header dump)."""
+    try:
+        bitpix, torch_shape = cpp_module.read_shape(path, hdu)
+    except Exception:
+        return None
+    bitpix = int(bitpix)
+    # read_shape returns torch order; ImageMeta dims are FITS NAXIS1..n order.
+    dims = tuple(int(d) for d in reversed(tuple(torch_shape)))
+    naxis = len(dims)
+
+    def _key(name: str, default: Any) -> Any:
+        try:
+            return cpp_module.read_keys(path, hdu, [name])[name]
+        except Exception:
+            return default
+
+    try:
+        bscale = float(_key("BSCALE", 1.0))
+    except Exception:
+        bscale = 1.0
+    try:
+        bzero = float(_key("BZERO", 0.0))
+    except Exception:
+        bzero = 0.0
+
+    zimage = _key("ZIMAGE", False)
+    if isinstance(zimage, str):
+        zimage = zimage.strip().upper() in {"T", "TRUE", "1"}
+    xtension = str(_key("XTENSION", "") or "").strip().upper()
+    has_compression_keys = any(
+        _key(k, None) is not None for k in ("ZCMPTYPE", "ZBITPIX", "ZNAXIS", "ZTILE1")
+    )
+    is_compressed = bool(zimage) or (xtension == "BINTABLE" and has_compression_keys)
+    return (bitpix, naxis, dims, bscale, bzero, is_compressed)
+
+
 def get_image_meta(
     path: str, hdu: int, *, cpp_module: Any | None = None
 ) -> ImageMeta | None:
@@ -59,10 +96,12 @@ def get_image_meta(
     if cached is not None:
         return cast(ImageMeta, cached)
 
-    try:
-        meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))
-    except Exception:
-        meta = None
+    meta = _skinny_image_meta(path, hdu, cpp_module)
+    if meta is None:
+        try:
+            meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))
+        except Exception:
+            meta = None
 
     image_meta_cache[sig] = meta
     while len(image_meta_cache) > 256:

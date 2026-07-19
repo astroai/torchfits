@@ -144,6 +144,12 @@ def _parse_read_options(
     options: ReadOptions | None, kwargs: dict[str, Any]
 ) -> ReadOptions:
     """Merge an explicit ReadOptions with kwargs into a single options object."""
+    unknown = sorted(set(kwargs) - _READ_OPTION_FIELD_NAMES)
+    if unknown:
+        raise TypeError(
+            "read() got unexpected keyword argument(s): "
+            + ", ".join(repr(k) for k in unknown)
+        )
     if options is not None:
         colliding = (set(kwargs) & _READ_OPTION_FIELD_NAMES) - {"mode"}
         if colliding:
