@@ -246,7 +246,9 @@ with our own chunking (`table.scan`). The iterator does not replace those
 paths and would add a callback ABI without helping DataLoader or subset
 readers — so it is neither wrapped nor benchmarked. Prefer extending
 `fits_read_subset` / open-once `SubsetReader` (and cfitsio-direct `cutout_rep`)
-for cutout work, and our table scanners for catalogs.
+for cutout work, and our table scanners for catalogs. For **uncompressed 2D**
+images, `SubsetReader` maps the data segment once and copies cutouts with
+endian swap (CFITSIO remains the fallback for compressed / scaled / nD).
 
 Likewise, `fits_calculator` / `fits_select_rows` / `fits_find_first_row` are
 unused on purpose: torchfits implements its own `where=` grammar and
