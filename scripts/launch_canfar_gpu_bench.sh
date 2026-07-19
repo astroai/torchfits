@@ -63,7 +63,13 @@ if [[ -n "${TORCHFITS_CANFAR_EXISTING_SESSION:-}" ]]; then
   echo "poller resume session_id=${SESSION_ID}" | tee -a "${LAUNCH_LOG}"
 else
   # ponytail: skaha splits cmd args on spaces; tabs keep bash -c script as one token (no $ or &)
-  REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+  # Optional: TORCHFITS_VOS_BUNDLE=vos:.../tree.bundle clones an uploaded git bundle
+  # (lets CANFAR soak an unpushed local commit without a GitHub push).
+  if [[ -n "${TORCHFITS_VOS_BUNDLE:-}" ]]; then
+    REMOTE_PLAIN="vcp ${TORCHFITS_VOS_BUNDLE} /scratch/torchfits.bundle; git clone /scratch/torchfits.bundle ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+  else
+    REMOTE_PLAIN="git clone --depth 1 --branch ${GIT_REF} ${REPO_URL} ${CLONE_DIR}; cd ${CLONE_DIR}; bash scripts/canfar_gpu_bench_incontainer.sh"
+  fi
   REMOTE_CMD="$(printf '%s' "${REMOTE_PLAIN}" | tr ' ' '\t')"
 
   CREATE_LOG="${LOCAL_OUT}/create.log"
