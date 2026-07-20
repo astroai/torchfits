@@ -248,7 +248,7 @@ def _row_from_torch_chunk(chunk: dict[str, Any], row_idx: int) -> dict[str, Any]
 class FitsTableIterableDataset(IterableDataset[Any]):
     """Iterable dataset streaming FITS table rows via ``table.scan``.
 
-    Yields one ``dict[str, Tensor]`` per row. ponytail: workers shard by scan
+    Yields one ``dict[str, Tensor]`` per row. NOTE: workers shard by scan
     batch index (``batch_idx % num_workers``), not by row index — fine for
     large single-file catalogs; uneven if ``batch_size`` ≫ row count.
     """
@@ -345,7 +345,7 @@ CutoutSpec = tuple[str, int, int, int, int, int]
 class FitsCutoutDataset(Dataset[Any]):
     """Map-style dataset for fixed cutouts from one or more FITS images.
 
-    Each ``__getitem__`` calls ``read_subset`` for one window. ponytail:
+    Each ``__getitem__`` calls ``read_subset`` for one window. NOTE:
     same-path cutouts re-open the file each row; use ``open_subset_reader``
     when one mosaic dominates.
     """
@@ -518,7 +518,7 @@ def make_loader(
 
             cache_dir = getattr(dataset, "cache_dir", None)
             # FitsCutoutDataset prefers HTTP Range cutouts — skip full prefetch.
-            if type(dataset).__name__ != "FitsCutoutDataset":
+            if not isinstance(dataset, FitsCutoutDataset):
                 remote = [p for p in file_list if is_remote_url(str(p))]
                 if remote:
                     prefetch_urls(remote, cache_dir=cache_dir)

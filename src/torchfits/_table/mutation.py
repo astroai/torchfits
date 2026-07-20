@@ -53,18 +53,13 @@ def _ensure_dtype_maps() -> None:
 
 
 def _mutation_cache_barrier(path: str) -> None:
-    """Invalidate path-local and global caches around a table mutation.
+    """Invalidate path-local caches around a table mutation.
 
     Called once before and once after the on-disk rewrite/append/delete op
     in each mutation function below, so callers never observe a stale
-    handle or cached read for ``path``.
+    handle or cached read for ``path``. Does not clear unrelated paths.
     """
-    # Imported lazily: torchfits imports this module during package init,
-    # so a top-level `import torchfits` here would be circular.
-    import torchfits
-
     _invalidate_path_caches(path)
-    torchfits.cache.clear()
 
 
 # -- helpers moved from write section (used only by mutation) --------------------
@@ -1112,10 +1107,9 @@ def update_rows(
             f"row_slice expects {num_rows} rows, but update payload has {expected_rows}"
         )
 
-    import torchfits
     import torchfits._C as cpp
 
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
     use_mmap = mmap in (True, "auto", "mmap")
     forced_mmap = mmap in (True, "mmap")
@@ -1129,21 +1123,17 @@ def update_rows(
         has_string = any(isinstance(v, (list, tuple)) for v in normalized.values())
         if not has_string:
             try:
-                torchfits.cache.clear()
                 cpp.update_fits_table_rows_mmap(
                     path, target_hdu, normalized, start_row, num_rows
                 )
-                torchfits.cache.clear()
-                _invalidate_path_caches(path)
+                _mutation_cache_barrier(path)
                 return
             except Exception:
                 if mmap is True:
                     raise
 
-    torchfits.cache.clear()
     cpp.update_fits_table_rows(path, target_hdu, normalized, start_row, num_rows)
-    torchfits.cache.clear()
-    _invalidate_path_caches(path)
+    _mutation_cache_barrier(path)
 
 
 def rename_columns(

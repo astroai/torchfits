@@ -11,7 +11,6 @@ import torch
 
 _TFORM_RE = re.compile(r"^\s*(\d+)?\s*([A-Za-z])")
 _TFORM_VLA_RE = re.compile(r"^\s*(\d+)?\s*([PQ])\s*([A-Za-z])")
-_TFORM_FULL_RE = re.compile(r"(\d*)([PQ]?)([A-Z])")
 
 _UNSIGNED_TZERO_TARGETS: dict[tuple[str, float], torch.dtype] = {
     ("I", 32768.0): torch.uint16,

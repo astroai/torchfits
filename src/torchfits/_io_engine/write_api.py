@@ -25,7 +25,7 @@ def _invalidate_path_caches(path: str) -> None:
     cpp.invalidate_file_cache(path)
     clear_meta = getattr(cpp, "clear_shared_read_meta_cache", None)
     if clear_meta is not None:
-        # ponytail: native shared metadata only exposes a global clear today;
+        # NOTE: native shared metadata only exposes a global clear today;
         # use per-path invalidation when the extension grows that operation.
         clear_meta()
 
@@ -733,25 +733,12 @@ def _sanitize_table_header_for_write(
     header: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Drop FITS structural keywords before delegating table writes to CFITSIO."""
-    skip_keys = {
-        "SIMPLE",
-        "XTENSION",
-        "BITPIX",
-        "NAXIS",
-        "NAXIS1",
-        "NAXIS2",
-        "PCOUNT",
-        "GCOUNT",
-        "TFIELDS",
-        "EXTEND",
-        "THEAP",
-        "DATASUM",
-        "CHECKSUM",
-    }
+    from .._table.write import _TABLE_STRUCTURAL_SKIP_KEYS
+
     out: Dict[str, Any] = {}
     for key, value in dict(header or {}).items():
         key_upper = str(key).upper()
-        if key_upper in skip_keys or key_upper.startswith("NAXIS"):
+        if key_upper in _TABLE_STRUCTURAL_SKIP_KEYS or key_upper.startswith("NAXIS"):
             continue
         out[str(key)] = value
     return out

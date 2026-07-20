@@ -8,6 +8,7 @@ including local development, HPC clusters, and cloud platforms.
 from __future__ import annotations
 
 import os
+import threading
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -75,12 +76,14 @@ def sample_cache_root() -> Path:
 class CacheConfig:
     """Cache configuration for different environments."""
 
-    # NOTE: torch.cuda.is_available() is already cached internally by PyTorch
-    # after the first call, and os.sysconf() is a cheap syscall.  Env-var
-    # checks are cheap dict lookups.  Therefore we do NOT add a separate
-    # cache layer here — it would only break test mocking of these methods.
-    # The structural improvement is extracting detection into named methods
-    # for clarity and testability.
+    # The individual detectors are cheap (cached torch.cuda probe, two
+    # sysconf calls, env-var lookups), but ``for_environment`` is a documented
+    # public entry point that may be called repeatedly.  We memoise the result
+    # keyed by the detection *signature* so identical environments reuse the
+    # same config object.  Keying by signature (rather than a bare
+    # process-lifetime cache) keeps ``for_environment`` correct under test
+    # mocking: patched detectors change the signature and force a fresh build.
+    _ENV_CACHE: dict[tuple[bool, bool, bool, float], "CacheConfig"] = {}
 
     def __init__(
         self,
@@ -93,6 +96,15 @@ class CacheConfig:
         self.max_memory_mb = max_memory_mb
         self.disk_cache_gb = disk_cache_gb
         self.prefetch_enabled = prefetch_enabled
+
+    def copy(self) -> "CacheConfig":
+        """Return an independent, mutable copy of this config."""
+        return CacheConfig(
+            max_files=self.max_files,
+            max_memory_mb=self.max_memory_mb,
+            disk_cache_gb=self.disk_cache_gb,
+            prefetch_enabled=self.prefetch_enabled,
+        )
 
     @staticmethod
     def _detect_gpu() -> bool:
@@ -118,11 +130,28 @@ class CacheConfig:
 
     @classmethod
     def for_environment(cls) -> "CacheConfig":
-        """Auto-detect optimal cache configuration."""
+        """Auto-detect optimal cache configuration (memoised by env signature)."""
         memory_gb = cls._detect_memory_gb()
+        signature = (
+            cls._is_hpc_environment(),
+            cls._is_cloud_environment(),
+            cls._is_gpu_environment(),
+            memory_gb,
+        )
+        cached = cls._ENV_CACHE.get(signature)
+        if cached is not None:
+            return cached
+        config = cls._build_for_signature(memory_gb, signature)
+        cls._ENV_CACHE[signature] = config
+        return config
 
+    @classmethod
+    def _build_for_signature(
+        cls, memory_gb: float, signature: tuple[bool, bool, bool, float]
+    ) -> "CacheConfig":
+        is_hpc, is_cloud, is_gpu, _ = signature
         # Detect environment using the static methods (test-patchable)
-        if cls._is_hpc_environment():
+        if is_hpc:
             # HPC: Large memory, shared filesystem
             return cls(
                 max_files=1000,
@@ -130,7 +159,7 @@ class CacheConfig:
                 disk_cache_gb=50,
                 prefetch_enabled=True,
             )
-        elif cls._is_cloud_environment():
+        elif is_cloud:
             # Cloud: Variable memory, network storage
             return cls(
                 max_files=500,
@@ -138,7 +167,7 @@ class CacheConfig:
                 disk_cache_gb=20,
                 prefetch_enabled=True,
             )
-        elif cls._is_gpu_environment():
+        elif is_gpu:
             # GPU workstation: High memory, fast local storage
             return cls(
                 max_files=200,
@@ -175,7 +204,11 @@ class CacheManager:
     """Advanced cache manager with multiple strategies."""
 
     def __init__(self, config: Optional[CacheConfig] = None):
-        self.config = config or CacheConfig.for_environment()
+        # for_environment() returns a shared, memoised instance; take a private
+        # copy so optimize_for_dataset() mutations never corrupt the cache.
+        self.config = (
+            config if config is not None else CacheConfig.for_environment().copy()
+        )
         self._stats = {
             "hits": 0,
             "misses": 0,
@@ -270,14 +303,18 @@ class CacheManager:
 
 # Global cache manager instance
 _cache_manager = None
+_cache_manager_lock = threading.Lock()
 
 
 def get_cache_manager() -> CacheManager:
     """Get the global cache manager instance."""
     global _cache_manager
     if _cache_manager is None:
-        _cache_manager = CacheManager()
-        _cache_manager.configure_cpp_cache()
+        with _cache_manager_lock:
+            if _cache_manager is None:
+                manager = CacheManager()
+                manager.configure_cpp_cache()
+                _cache_manager = manager
     return _cache_manager
 
 

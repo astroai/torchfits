@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, List, Optional, Type, Union
 
 from torchfits._io_engine.paths import cfitsio_base_path
@@ -13,8 +14,8 @@ from .table_hdu import TableHDU
 from .table_hdu_ref import TableHDURef
 
 
+@dataclass(frozen=True)
 class _HDUInfo:
-    __slots__ = ("index", "type", "header")
     index: int
     type: str
     header: Any
@@ -56,11 +57,9 @@ class HDUList:
                     header_dict = cpp.read_header(handle, i)
                     hdu_type = cpp.get_hdu_type(handle, i)
 
-                    info = _HDUInfo()
-                    info.index = i
-                    info.type = hdu_type
-                    info.header = header_dict
-                    hdu_infos.append(info)
+                    hdu_infos.append(
+                        _HDUInfo(index=i, type=hdu_type, header=header_dict)
+                    )
 
             hdul._file_handle = handle
 
@@ -164,8 +163,7 @@ class HDUList:
             self._file_handle = None
         for hdu in self._hdus:
             if isinstance(hdu, TensorHDU):
-                hdu._file_handle = None
-                hdu._data_view = None
+                hdu.mark_closed()
 
     def write(self, path: str, overwrite: bool = False) -> None:
         from .._io_engine.write_api import _write_hdus_uncompressed

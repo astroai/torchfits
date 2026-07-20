@@ -28,8 +28,13 @@ def stream_table(
     chunk_rows: int = 65536,
     mmap: bool = False,
     max_chunks: Optional[int] = None,
+    total_rows: Optional[int] = None,
 ) -> Iterator[Dict[str, Any]]:
-    """Yield FITS table data in row chunks."""
+    """Yield FITS table data in row chunks.
+
+    ``total_rows`` (``NAXIS2``) may be supplied by callers that already hold the
+    header to skip the redundant ``get_header_func`` read at stream start.
+    """
     import torchfits._C as cpp
 
     if chunk_rows <= 0:
@@ -44,7 +49,8 @@ def stream_table(
         yield result
         return
 
-    total_rows = _total_rows_from_header(get_header_func(file_path, hdu))
+    if total_rows is None:
+        total_rows = _total_rows_from_header(get_header_func(file_path, hdu))
     if total_rows == 0:
         return
 

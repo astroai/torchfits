@@ -61,13 +61,17 @@ def read_batch(
 
 
 def get_batch_info(file_paths: list[str]) -> dict[str, Any]:
-    """Get information about a batch of FITS files."""
-    valid_files = 0
+    """Get information about a batch of FITS files.
+
+    ``existing_files`` counts paths present on disk (``os.path.exists``); it does
+    not open or validate FITS structure.
+    """
+    existing_files = 0
     for path in file_paths:
         try:
             if os.path.exists(path):
-                valid_files += 1
+                existing_files += 1
         except Exception:
             continue
 
-    return {"num_files": len(file_paths), "valid_files": valid_files}
+    return {"num_files": len(file_paths), "existing_files": existing_files}

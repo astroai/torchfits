@@ -118,7 +118,7 @@ def _normalize_where_syntax(where: str) -> str:
     return result
 
 
-def normalize_logical_operators(where: str) -> str:
+def _normalize_logical_operators(where: str) -> str:
     parts: list[str] = re.split(r"('[^']*'|\"[^\"]*\")", where)
     for i in range(0, len(parts), 2):
         s = parts[i]
@@ -130,7 +130,7 @@ def normalize_logical_operators(where: str) -> str:
     return "".join(parts)
 
 
-def normalize_between(where: str) -> str:
+def _normalize_between(where: str) -> str:
     where = re.sub(
         r"\b(\w+)\s+NOT\s+BETWEEN\s+('[^']+'|\"[^\"]+\"|\S+)\s+AND\s+('[^']+'|\"[^\"]+\"|\S+)",
         r"_not_between(\1, \2, \3)",
@@ -146,7 +146,7 @@ def normalize_between(where: str) -> str:
     return where
 
 
-def normalize_nulls(where: str) -> str:
+def _normalize_nulls(where: str) -> str:
     where = re.sub(
         r"\b(\w+)\s+IS\s+NOT\s+NULL\b", r"_isnotnull(\1)", where, flags=re.IGNORECASE
     )
@@ -261,9 +261,9 @@ def _parse_where_expression(where: str) -> tuple[Any, ...]:
         raise ValueError("where must be a non-empty string expression")
     try:
         where_normalized = _normalize_where_syntax(where)
-        where_normalized = normalize_logical_operators(where_normalized)
-        where_normalized = normalize_between(where_normalized)
-        where_normalized = normalize_nulls(where_normalized)
+        where_normalized = _normalize_logical_operators(where_normalized)
+        where_normalized = _normalize_between(where_normalized)
+        where_normalized = _normalize_nulls(where_normalized)
 
         node = ast.parse(where_normalized.strip(), mode="eval")
         return _to_custom_ast(node)

@@ -32,6 +32,7 @@ from torchfits.cache import remote_cache_root
 _REMOTE_PREFIXES = ("http://", "https://")
 _prefetch_lock = threading.Lock()
 _prefetch_threads: dict[str, threading.Thread] = {}
+_prefetch_errors: dict[str, BaseException] = {}
 _download_locks: dict[str, threading.Lock] = {}
 _log = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ def _download(url: str, dest: Path) -> Path:
 
 
 def _download_once(cache_key: str, url: str, dest: Path) -> Path:
-    # ponytail: process-local locks cover Dataset/prefetch threads; use lock files
+    # NOTE: process-local locks cover Dataset/prefetch threads; use lock files
     # if cross-process download-on-demand is added.
     with _prefetch_lock:
         lock = _download_locks.setdefault(cache_key, threading.Lock())
@@ -183,10 +184,15 @@ def resolve_local_path(
     # in-flight download and do not race the same ".partial".
     with _prefetch_lock:
         existing = _prefetch_threads.get(cache_key)
+        prefetch_error = _prefetch_errors.pop(cache_key, None)
     if existing is not None and existing.is_alive():
         existing.join()
+        with _prefetch_lock:
+            prefetch_error = _prefetch_errors.pop(cache_key, None)
         if dest.is_file():
             return str(dest)
+    if prefetch_error is not None:
+        raise prefetch_error
     if not download:
         return str(dest)
     return str(_download_once(cache_key, path, dest))
@@ -209,9 +215,14 @@ def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None
             def _job(u: str = url, d: Path = dest, key: str = cache_key) -> None:
                 try:
                     _download_once(key, u, d)
+                    with _prefetch_lock:
+                        _prefetch_errors.pop(key, None)
                 except Exception as exc:
-                    # ponytail: best-effort prefetch; next resolve retries
-                    _log.warning("prefetch failed for %s: %s", u, exc)
+                    # NOTE: best-effort prefetch; resolve_local_path re-raises
+                    # the stored error instead of retrying opaquely.
+                    with _prefetch_lock:
+                        _prefetch_errors[key] = exc
+                    _log.error("prefetch failed for %s: %s", u, exc)
                     warnings.warn(
                         f"prefetch failed for {u}: {exc}",
                         RuntimeWarning,

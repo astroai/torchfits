@@ -484,7 +484,7 @@ void insert_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long s
         try {
             delete_rows(filename, hdu_num, start_row, num_rows);
         } catch (...) {
-            // ponytail: CFITSIO status may already be poisoned; prefer original error
+            // NOTE: CFITSIO status may already be poisoned; prefer original error
         }
         throw;
     }

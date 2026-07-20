@@ -134,17 +134,24 @@ def _quantile(
 # ---------------------------------------------------------------------------
 
 
-def _upcast_for_precision(x: torch.Tensor) -> torch.Tensor:
-    """Upcast to float64 for numerical stability, skipping if already float64.
+def _upcast_for_precision(x: torch.Tensor, *, precision: str = "auto") -> torch.Tensor:
+    """Upcast for numerical stability.
 
-    For float16/bfloat16, use float32 (sufficient precision, avoids
-    unnecessary 4× memory doubling from float16→float64).
+    ``precision="auto"`` (default): float32 stays float32 (sufficient for
+    visualization stretches); float16/bfloat16 → float32; float64 unchanged.
+    ``precision="float64"`` always upcasts non-float64 inputs to float64.
     """
+    if precision not in ("auto", "float64"):
+        raise ValueError("precision must be 'auto' or 'float64'")
     if x.dtype == torch.float64:
         return x
+    if precision == "float64":
+        return x.double()
     if x.dtype in (torch.float16, torch.bfloat16):
         return x.float()
-    return x.double()
+    if x.dtype == torch.float32:
+        return x
+    return x.float()
 
 
 def safe_arcsinh(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:

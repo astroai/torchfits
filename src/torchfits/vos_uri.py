@@ -6,12 +6,19 @@ _VAULT_ROOT = "vos://cadc.nrc.ca~vault/"
 
 
 def is_vos_path(path: str) -> bool:
+    """True for a VOSpace/vault URI: ``vos://``, ``vos:`` or ``vault:`` followed
+    by a non-empty path, with no embedded whitespace."""
+    if (
+        not isinstance(path, str)
+        or path != path.strip()
+        or any(c.isspace() for c in path)
+    ):
+        return False
     lowered = path.lower()
-    return (
-        lowered.startswith("vos://")
-        or lowered.startswith("vos:")
-        or lowered.startswith("vault:")
-    )
+    for prefix in ("vos://", "vos:", "vault:"):
+        if lowered.startswith(prefix):
+            return len(path) > len(prefix)
+    return False
 
 
 def normalize_vos_uri(path: str) -> str:

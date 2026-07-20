@@ -10,7 +10,7 @@ from astropy.table import Table
 
 import torchfits
 
-# ponytail: avoid pyarrow scanner thread deadlock on some Linux CI runners
+# NOTE: avoid pyarrow scanner thread deadlock on some Linux CI runners
 _CI_FAST = os.environ.get("TORCHFITS_EXAMPLE_FAST") == "1"
 
 

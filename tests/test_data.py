@@ -408,7 +408,7 @@ class TestFitsCutoutDataset:
         assert len(ds.files) == 2
 
     def test_same_file_distinct_cutouts(self, temp_image_dir):
-        """ponytail: re-opens file per row; values must differ per window."""
+        """NOTE: re-opens file per row; values must differ per window."""
         _tmpdir, files = temp_image_dir
         path = files[0]
         ds = FitsCutoutDataset([(path, 0, 0, 0, 8, 8), (path, 0, 8, 8, 16, 16)])

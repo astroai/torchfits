@@ -210,7 +210,7 @@ public:
         for (auto it = cache_.begin(); it != cache_.end();) {
             auto& entry = it->second;
             if (entry.refcount != 0) {
-                // ponytail: retain borrowed handles until their owners release them;
+                // NOTE: retain borrowed handles until their owners release them;
                 // a generation-based cache is only needed if clear-heavy profiling warrants it.
                 entry.stale = true;
                 ++it;

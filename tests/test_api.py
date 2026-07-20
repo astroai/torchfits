@@ -327,7 +327,7 @@ class TestMainAPI:
             # Test batch info
             info = torchfits.read_batch_info(files)
             assert info["num_files"] == 3
-            assert info["valid_files"] == 3
+            assert info["existing_files"] == 3
 
         finally:
             for f in files:

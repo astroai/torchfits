@@ -34,6 +34,10 @@ from .._table.write import _resolve_table_hdu_index_and_columns
 
 logger = logging.getLogger(__name__)
 
+# NOTE: ceiling — full-table torch WHERE materializes all selected columns before
+# masking; above this row count fall through to chunked Arrow-filter instead (P0-1).
+_TORCH_WHERE_MAX_ROWS = 1_000_000
+
 
 def _column_tform_code_and_repeat(tform: Any) -> tuple[str, int] | None:
     return fits_schema.tform_code_and_repeat(tform)
@@ -93,7 +97,7 @@ def _empty_table_with_schema(
             [pa.array([], type=field.type) for field in header_schema],
             schema=header_schema,
         )
-    # ponytail: VLA / unknown TFORM — keep requested names as null columns;
+    # NOTE: VLA / unknown TFORM — keep requested names as null columns;
     # upgrade path is a typed scan-based empty schema when VLA decode is cheap.
     if columns:
         null_schema = pa.schema([pa.field(name, pa.null()) for name in columns])
@@ -116,7 +120,7 @@ def _compile_where_to_simple_predicates(
     """
     try:
         ast = parse_where_expression(where)
-    except Exception:
+    except (ValueError, TypeError, KeyError, RuntimeError):
         return None
 
     predicates: list[tuple[str, str, Any]] = []
@@ -216,13 +220,29 @@ def _try_torch_tensor_where_filter(
             read_cols.append(name)
             seen.add(name)
 
+    n_rows = 0
+    if header is not None:
+        try:
+            n_rows = int(header.get("NAXIS2", 0) or 0)
+        except (TypeError, ValueError):
+            n_rows = 0
+    if n_rows <= 0:
+        try:
+            n_rows = int(cpp.read_nrows(path, hdu))
+        except (AttributeError, TypeError, RuntimeError, OSError, ValueError):
+            n_rows = 0
+    if n_rows > _TORCH_WHERE_MAX_ROWS:
+        return None
+
     try:
-        if mmap:
+        if mmap and _can_use_mmap_row_path_for_full_read(
+            path, hdu, read_cols, header=header
+        ):
             chunk = cpp.read_fits_table(path, hdu, read_cols, True)
         else:
             reader = _acquire_cpp_reader(path, hdu, cpp)
             chunk = reader.read_rows(read_cols, 1, -1)
-    except Exception:
+    except (RuntimeError, OSError, MemoryError, ValueError, TypeError, AttributeError):
         return None
     if not isinstance(chunk, dict) or not chunk:
         return None
@@ -235,7 +255,8 @@ def _try_torch_tensor_where_filter(
                 return None
             part = _torch_cmp_mask(tensor, op, literal)
             mask = part if mask is None else (mask & part)
-    except Exception:
+    except (RuntimeError, TypeError, ValueError) as exc:
+        logger.debug("torch WHERE mask build failed; falling back: %s", exc)
         return None
     if mask is None:
         return None
@@ -426,7 +447,7 @@ def _build_fits_metadata(
 
     try:
         tf_count = int(header.get("TFIELDS", 0))
-    except Exception:
+    except (TypeError, ValueError):
         tf_count = 0
 
     for i in range(1, tf_count + 1):
@@ -481,7 +502,7 @@ def _column_tforms_for_decode(
 
         try:
             header = torchfits.read_header(path, hdu)
-        except Exception:
+        except (OSError, ValueError):
             return {}
     out: dict[str, str] = {}
     for col in fits_schema.iter_table_columns(header, selected=selected_columns):
@@ -501,7 +522,7 @@ def _unsigned_column_dtypes(
 
         try:
             header = torchfits.read_header(path, hdu)
-        except Exception:
+        except (OSError, ValueError):
             return {}
     torch_dtype_map = fits_schema.unsigned_column_dtypes_from_header(header)
     return {
@@ -511,28 +532,37 @@ def _unsigned_column_dtypes(
     }
 
 
-def _can_use_mmap_row_path_for_full_read(
+_FULL_READ_SUPPORTED_CODES = frozenset({"L", "B", "I", "J", "K", "E", "D"})
+
+
+def _can_use_full_read_path(
     path: str,
     hdu: int,
-    selected_columns: Optional[list[str]],
+    columns: Optional[list[str]],
+    *,
+    reject_scaled: bool,
     header: Any = None,
 ) -> bool:
+    """Whether all selected columns are scalar (repeat==1) rows of supported codes.
+
+    ``reject_scaled`` additionally bails out on TSCAL/TZERO columns (needed by the
+    raw mmap row path, which cannot apply scaling; the torch table path can).
+    """
     if header is None:
         import torchfits
 
         try:
             header = torchfits.read_header(path, hdu)
-        except Exception:
+        except (OSError, ValueError):
             return False
     try:
         tf_count = int(header.get("TFIELDS", 0))
-    except Exception:
+    except (TypeError, ValueError):
         return False
     if tf_count <= 0:
         return False
 
-    selected = set(selected_columns) if selected_columns else None
-    supported_codes = {"L", "B", "I", "J", "K", "E", "D"}
+    selected = set(columns) if columns else None
     any_selected = False
 
     for i in range(1, tf_count + 1):
@@ -544,19 +574,32 @@ def _can_use_mmap_row_path_for_full_read(
             continue
         any_selected = True
 
-        if header.get("TSCAL" + si) is not None or header.get("TZERO" + si) is not None:
+        if reject_scaled and (
+            header.get("TSCAL" + si) is not None or header.get("TZERO" + si) is not None
+        ):
             return False
 
         parsed = _column_tform_code_and_repeat(header.get("TFORM" + si))
         if parsed is None:
             return False
         code, repeat = parsed
-        if code not in supported_codes:
+        if code not in _FULL_READ_SUPPORTED_CODES:
             return False
         if repeat != 1:
             return False
 
     return any_selected
+
+
+def _can_use_mmap_row_path_for_full_read(
+    path: str,
+    hdu: int,
+    selected_columns: Optional[list[str]],
+    header: Any = None,
+) -> bool:
+    return _can_use_full_read_path(
+        path, hdu, selected_columns, reject_scaled=True, header=header
+    )
 
 
 def _can_use_torch_table_path_for_full_read(
@@ -565,43 +608,9 @@ def _can_use_torch_table_path_for_full_read(
     selected_columns: Optional[list[str]],
     header: Any = None,
 ) -> bool:
-    if header is None:
-        import torchfits
-
-        try:
-            header = torchfits.read_header(path, hdu)
-        except Exception:
-            return False
-    try:
-        tf_count = int(header.get("TFIELDS", 0))
-    except Exception:
-        return False
-    if tf_count <= 0:
-        return False
-
-    selected = set(selected_columns) if selected_columns else None
-    supported_codes = {"L", "B", "I", "J", "K", "E", "D"}
-    any_selected = False
-
-    for i in range(1, tf_count + 1):
-        si = str(i)
-        name = header.get("TTYPE" + si)
-        if not isinstance(name, str) or not name:
-            continue
-        if selected is not None and name not in selected:
-            continue
-        any_selected = True
-
-        parsed = _column_tform_code_and_repeat(header.get("TFORM" + si))
-        if parsed is None:
-            return False
-        code, repeat = parsed
-        if code not in supported_codes:
-            return False
-        if repeat != 1:
-            return False
-
-    return any_selected
+    return _can_use_full_read_path(
+        path, hdu, selected_columns, reject_scaled=False, header=header
+    )
 
 
 def _iter_chunks_cpp_table(
@@ -625,7 +634,7 @@ def _iter_chunks_cpp_table(
         total_rows = (
             int(float(total_rows)) if isinstance(total_rows, str) else int(total_rows)
         )
-    except Exception:
+    except (TypeError, ValueError):
         total_rows = 0
     if total_rows <= 0:
         return iter(())
@@ -653,7 +662,10 @@ def _iter_chunks_cpp_table(
                         )
                         row += size
                         continue
-                    except Exception:
+                    except (RuntimeError, OSError) as exc:
+                        logger.debug(
+                            "mmap row read failed; falling back to handle read: %s", exc
+                        )
                         can_mmap_rows = False
 
                 if file_handle is None:
@@ -839,7 +851,8 @@ def _try_cpp_where_pushdown(
                 pa, path, hdu, columns, decode_bytes, include_fits_metadata=False
             )
         return pa.Table.from_arrays(arrays, names=names_out)
-    except Exception:
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        logger.debug("CPP WHERE pushdown read failed; falling back: %s", exc)
         return None
 
 
@@ -870,7 +883,7 @@ def _read_table_with_where(
         hdr = torchfits.read_header(path, hdu)
         n_rows = int(hdr.get("NAXIS2", 0))
         header_ok = True
-    except Exception:
+    except (OSError, ValueError, TypeError):
         n_rows = 0
 
     plan = (
@@ -1289,7 +1302,7 @@ def _schema_from_header(
 
     try:
         header = torchfits.read_header(path, hdu)
-    except Exception:
+    except (OSError, ValueError):
         return None
 
     pa = _require_pyarrow()
@@ -1427,29 +1440,35 @@ def _read_cpp_table_chunk(
 
     selected = set(columns) if columns else None
 
-    # Read the header once and pass it to all helper functions to avoid
-    # redundant read_header() calls (each of which hits the C++ cache or
-    # re-reads the FITS header).
+    # Read the header lazily and at most once, reusing it across every helper.
+    # Deferring the read lets a read that fails or returns empty before any
+    # header consumer runs skip the header I/O entirely — the common numeric
+    # path (no decode/metadata/nulls) only touches the header via the
+    # full-read capability check (P2-1).
     import torchfits
 
-    try:
-        _hdr = torchfits.read_header(path, hdu)
-    except (OSError, ValueError):
-        _hdr = None
+    _hdr_memo: list[Any] = []
+
+    def _get_hdr() -> Any:
+        if not _hdr_memo:
+            try:
+                _hdr_memo.append(torchfits.read_header(path, hdu))
+            except (OSError, ValueError):
+                _hdr_memo.append(None)
+        return _hdr_memo[0]
 
     col_tforms = (
-        _column_tforms_for_decode(path, hdu, selected, header=_hdr)
+        _column_tforms_for_decode(path, hdu, selected, header=_get_hdr())
         if decode_bytes
         else None
     )
-    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected, header=_hdr)
     field_meta: dict[str, dict[str, str]] = {}
     table_meta: dict[str, str] = {}
     need_field_meta = include_fits_metadata or apply_fits_nulls
     if need_field_meta:
         try:
             field_meta, table_meta = _build_fits_metadata(
-                path, hdu, selected, header=_hdr
+                path, hdu, selected, header=_get_hdr()
             )
         except (OSError, ValueError):
             pass
@@ -1471,15 +1490,18 @@ def _read_cpp_table_chunk(
         and not decode_bytes
         and not include_fits_metadata
         and not apply_fits_nulls
-        and _can_use_torch_table_path_for_full_read(path, hdu, columns, header=_hdr)
+        and _can_use_torch_table_path_for_full_read(
+            path, hdu, columns, header=_get_hdr()
+        )
     )
     if prefer_torch_full_path:
         if mmap and _can_use_mmap_row_path_for_full_read(
-            path, hdu, columns, header=_hdr
+            path, hdu, columns, header=_get_hdr()
         ):
             try:
                 chunk = cpp.read_fits_table(path, hdu, col_list, True)
-            except Exception:
+            except (RuntimeError, OSError) as exc:
+                logger.debug("mmap full table read failed; retrying: %s", exc)
                 chunk = None
         if chunk is None:
             try:
@@ -1490,11 +1512,12 @@ def _read_cpp_table_chunk(
                     finally:
                         try:
                             file_handle.close()
-                        except Exception:
+                        except (RuntimeError, OSError):
                             pass
                 else:
                     chunk = cpp.read_fits_table(path, hdu, col_list, False)
-            except Exception:
+            except (RuntimeError, OSError) as exc:
+                logger.debug("full table read failed; falling back: %s", exc)
                 chunk = None
 
     if chunk is None and rows is not None:
@@ -1526,7 +1549,8 @@ def _read_cpp_table_chunk(
         try:
             reader = _acquire_cpp_reader(path, hdu, cpp)
             chunk_sorted = _read_ranges_as_chunk(reader, col_list, ranges)
-        except Exception:
+        except (RuntimeError, OSError) as exc:
+            logger.debug("ranged row read failed: %s", exc)
             chunk_sorted = None
         if chunk_sorted is None:
             return None
@@ -1553,7 +1577,8 @@ def _read_cpp_table_chunk(
             else:
                 reader = _acquire_cpp_reader(path, hdu, cpp)
                 chunk = reader.read_rows(col_list, start_row, num_rows)
-        except Exception:
+        except (RuntimeError, OSError) as exc:
+            logger.debug("row-slice table read failed: %s", exc)
             chunk = None
     if chunk is None:
         return None
@@ -1564,6 +1589,7 @@ def _read_cpp_table_chunk(
             pa, path, hdu, columns, decode_bytes, include_fits_metadata
         )
 
+    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected, header=_get_hdr())
     batch = _chunk_to_record_batch(
         chunk,
         decode_bytes,
@@ -1595,13 +1621,23 @@ def scan_torch(
 
     start_row, num_rows = _normalize_row_slice(row_slice)
     use_mmap = mmap
+    _hdr = None
     if use_mmap:
         # Read header once for the capability check.
         try:
             _hdr = torchfits.read_header(path, hdu)
-        except Exception:
+        except (OSError, ValueError):
             _hdr = None
         use_mmap = _can_use_mmap_row_path_for_full_read(path, hdu, columns, header=_hdr)
+
+    # Reuse the already-read header's NAXIS2 so stream_table does not re-read it.
+    total_rows: Optional[int] = None
+    if _hdr is not None:
+        try:
+            _nr = _hdr.get("NAXIS2", 0)
+            total_rows = int(float(_nr)) if isinstance(_nr, str) else int(_nr)
+        except (TypeError, ValueError):
+            total_rows = None
 
     # Lazy import: table_streaming → hdu at module import time is cyclic.
     from .._io_engine.table_streaming import stream_table as _engine_stream_table
@@ -1615,6 +1651,7 @@ def scan_torch(
         num_rows=num_rows,
         chunk_rows=batch_size,
         mmap=use_mmap,
+        total_rows=total_rows,
     ):
         if device == "cpu":
             yield chunk

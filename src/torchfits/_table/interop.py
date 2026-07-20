@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -313,16 +314,23 @@ def to_polars_lazy(
     """
     Convert table data into a Polars LazyFrame for complex expressions.
 
-    .. note::
+    .. deprecated:: 1.0
         This function **materializes** the entire Arrow table eagerly before
         wrapping it in a LazyFrame.  It is *not* a lazy FITS I/O path.
-        For genuine streaming, use :func:`scan_polars` which yields batches
-        without materializing the full table.
+        Use :func:`scan_polars` for genuine streaming; ``to_polars_lazy`` will
+        be removed in 1.1.
 
     Args:
         data: FITS file path, pyarrow.Table, or iterable of pyarrow.RecordBatch.
         rechunk: When True (default False), force Polars to concatenate chunks.
     """
+    warnings.warn(
+        "to_polars_lazy materializes the full table eagerly and is not a lazy "
+        "FITS I/O path; use scan_polars for genuine streaming. "
+        "to_polars_lazy is deprecated and will be removed in 1.1.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     try:
         import polars as pl
     except ImportError as exc:

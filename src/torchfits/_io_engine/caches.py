@@ -18,8 +18,6 @@ _CACHE_STATS_DEFAULT = {
 
 cache_stats: dict[str, int] = dict(_CACHE_STATS_DEFAULT)
 file_cache: OrderedDict[Any, Any] = OrderedDict()
-file_handle_cache: OrderedDict[str, Any] = OrderedDict()
-file_handle_sig_cache: OrderedDict[str, tuple[int, int, int] | None] = OrderedDict()
 image_meta_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
 hdu_type_cache: OrderedDict[tuple[str, int], str | None] = OrderedDict()
 cold_nommap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
@@ -27,7 +25,7 @@ auto_mmap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
 auto_hdu_cache: OrderedDict[Any, Any] = OrderedDict()
 
 # Registry of open HDUList file handles, keyed by real path.
-# ponytail: a list is sufficient while concurrent opens per path stay small;
+# NOTE: a list is sufficient while concurrent opens per path stay small;
 # use weak references if long-lived high-fanout readers ever make this grow.
 _open_hdulist_registry: dict[str, list[tuple[Any, Any]]] = {}
 
@@ -309,14 +307,6 @@ def invalidate_path_caches(path: str) -> None:
     for key in stale_data_keys:
         file_cache.pop(key, None)
 
-    handle = file_handle_cache.pop(path, None)
-    file_handle_sig_cache.pop(path, None)
-    if handle is not None:
-        try:
-            handle.close()
-        except Exception:
-            pass
-
     for key in [key for key in image_meta_cache.keys() if key[0] == path]:
         image_meta_cache.pop(key, None)
     for key in [key for key in hdu_type_cache.keys() if key[0] == path]:
@@ -372,15 +362,6 @@ def clear_python_caches(
     """Clear Python-side root FITS I/O caches."""
     if data:
         file_cache.clear()
-
-    if handles:
-        for _, handle in list(file_handle_cache.items()):
-            try:
-                handle.close()
-            except Exception:
-                pass
-        file_handle_cache.clear()
-        file_handle_sig_cache.clear()
 
     if meta:
         image_meta_cache.clear()

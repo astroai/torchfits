@@ -560,8 +560,7 @@ torch::Tensor read_full_unmapped(const std::string& path, int hdu_num) {
         auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
         LONGLONG nelements = 0;
         if (naxis > 0) {
-            nelements = 1;
-            for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
+            nelements = d::checked_nelements_product(naxes_ll.data(), naxis);
         }
 
         int anynul = 0;
@@ -693,8 +692,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         // Float/double (incl. CompImage): direct CFITSIO→tensor, no mmap/scale probes.
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         if (float_like) {
-            LONGLONG nelements = 1;
-            for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
+            LONGLONG nelements = d::checked_nelements_product(naxes_ll.data(), naxis);
             int64_t torch_shape[9];
             for (int i = 0; i < naxis; ++i)
                 torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
@@ -1637,10 +1635,12 @@ void bind_fits(nb::module_& m) {
         {
             nb::gil_scoped_release release;
             status = 0;
-            LONGLONG nelements = 1;
-            for (size_t d : shape) {
-                nelements *= (LONGLONG) d;
+            std::vector<LONGLONG> dims;
+            dims.reserve(shape.size());
+            for (size_t d_idx : shape) {
+                dims.push_back(static_cast<LONGLONG>(d_idx));
             }
+            LONGLONG nelements = d::checked_nelements_product(dims);
             fits_read_img(fptr, datatype, 1, nelements, nullval_ptr, dst, &anynul, &status);
         }
         if (status != 0) {

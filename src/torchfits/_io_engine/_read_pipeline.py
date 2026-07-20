@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from collections.abc import Callable
 from dataclasses import fields
 from typing import Any, cast
@@ -34,6 +35,17 @@ def _cpp_has(cpp_module: Any, attr: str) -> bool:
         result = hasattr(cpp_module, attr)
         _CPP_ATTR_CACHE[attr] = result
         return result
+
+
+def _clear_cpp_attr_cache() -> None:
+    """Reset the cached ``hasattr(cpp_module, ...)`` results.
+
+    The cache assumes the C++ extension's attribute surface is stable for the
+    process lifetime. Tests that reload the extension (``importlib.reload``) or
+    monkeypatch capability attributes must call this to avoid stale ``False``
+    entries for attributes that are now present.
+    """
+    _CPP_ATTR_CACHE.clear()
 
 
 def _bit_columns_from_header(header: Header | None) -> set[str]:
@@ -149,6 +161,14 @@ def _parse_read_options(
         raise TypeError(
             "read() got unexpected keyword argument(s): "
             + ", ".join(repr(k) for k in unknown)
+        )
+    if "handle_cache_capacity" in kwargs:
+        warnings.warn(
+            "handle_cache_capacity is deprecated and ignored: per-path handle "
+            "caching was removed. Stop passing it; it will be dropped in a future "
+            "release.",
+            DeprecationWarning,
+            stacklevel=3,
         )
     if options is not None:
         colliding = (set(kwargs) & _READ_OPTION_FIELD_NAMES) - {"mode"}
@@ -275,6 +295,7 @@ def read_unified(
             cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
+            strict=bool(kwargs.get("strict", False)),
         )
 
     # Fixed: pass hdu then device (matches function signature order)
@@ -455,6 +476,7 @@ def _read_batch_paths(
     cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
+    strict: bool = False,
 ) -> list[Any]:
     """Dispatch a list of FITS paths through batch C++ or recursive reads."""
     hdu_batch = hdu
@@ -479,8 +501,14 @@ def _read_batch_paths(
             if device != "cpu":
                 data_list = batch_to_device(data_list, device)
             return cast(list[Any], data_list)
-        except Exception:
-            pass
+        except read_exc_types as exc:
+            if strict:
+                raise
+            logger.debug(
+                "read_images_batch failed, falling back per file: %s",
+                exc,
+                exc_info=True,
+            )
 
     data_list = []
     for item_path in path:
@@ -687,6 +715,7 @@ def _read_generic_fast_path(
 ) -> Tensor | None:
     """Try the generic image fast path; return None when fallback is required."""
     _ = cold_nocache
+    _ = read_exc_types  # callers still pass; fallback catch is intentionally narrow
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)
         if scale_on_device and not raw_scale:
@@ -731,7 +760,7 @@ def _read_generic_fast_path(
         return cast(Tensor, data)
     except ValueError:
         raise
-    except read_exc_types as exc:
+    except (RuntimeError, OSError, MemoryError) as exc:
         if force_image:
             raise
         if logger.isEnabledFor(10):

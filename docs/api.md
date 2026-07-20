@@ -13,17 +13,22 @@ model is a columnar dataframe.
 
 ## Which reader?
 
-| Goal | Call | Returns |
-|---|---|---|
-| Image / cube / spectrum | `read_tensor(path, hdu=0)` | `torch.Tensor` |
-| Catalog as dataframe (default) | `table.read(path, hdu=1, where=…)` | `pyarrow.Table` |
-| Dataframe columns as tensors | `table.read_torch(path, hdu=1)` | `dict[str, torch.Tensor]` |
-| Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like |
+| Goal | Call | Returns | mmap default |
+|---|---|---|---|
+| Image / cube / spectrum | `read_tensor(path, hdu=0)` | `torch.Tensor` | `True` |
+| Catalog as dataframe (default) | `table.read(path, hdu=1, where=…)` | `pyarrow.Table` | `True` |
+| Dataframe columns as tensors | `table.read_torch(path, hdu=1)` | `dict[str, torch.Tensor]` | `True` |
+| Native Polars dataframe | `table.read_polars(path, hdu=1)` | Polars DataFrame-like | (via `table.read`) |
 
 `table.read_arrow` is an exact synonym of `table.read` (destination-qualified
 spelling alongside `read_torch` / `read_polars`). Root `read_table` /
 `stream_table` / `read_table_rows` / `get_header` / `get_batch_info` were
 **removed** in 1.0 — use `table.*`, `read_header`, and `read_batch_info`.
+
+**Caches.** Root I/O / CFITSIO handle caches are cleared via
+`clear_file_cache()` / `get_cache_performance()`. Training-oriented sizing and
+warm-up live under `torchfits.cache` (`configure_for_environment`,
+`optimize_for_dataset`, `clear_cache`). See [Core I/O → Cache Utilities](api-core-io.md#cache-utilities).
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import threading
 from typing import Any, Iterator, Optional, Tuple, cast
 
 from torch import Tensor
@@ -26,6 +27,8 @@ class TensorHDU:
         self._hdu_index = hdu_index
         self._source_path = source_path
         self._data_view = DataView(file_handle, hdu_index) if file_handle else None
+        self._closed = False
+        self._io_lock = threading.RLock()
 
     @property
     def data(self) -> DataView:
@@ -37,29 +40,42 @@ class TensorHDU:
     def header(self) -> Header:
         return self._header
 
+    def mark_closed(self) -> None:
+        """Detach file-backed state; safe to call from HDUList.close()."""
+        with self._io_lock:
+            self._closed = True
+            self._file_handle = None
+            self._data_view = None
+
     def to_tensor(self, device: str = "cpu") -> Tensor:
         if self._data is not None:
             return self._data.to(device)
 
-        elif self._file_handle is not None:
+        with self._io_lock:
+            if self._closed or self._file_handle is None:
+                raise RuntimeError(
+                    "TensorHDU file handle is closed; cannot read image data"
+                )
             import torchfits._C as cpp
 
-            return cast(
-                Tensor, cpp.read_full(self._file_handle, self._hdu_index).to(device)
-            )
-        else:
-            raise ValueError(
-                "TensorHDU has no data available. "
-                "Construct it with a file handle, tensor data, or a Header with a source HDU."
-            )
+            handle = self._file_handle
+            hdu_index = self._hdu_index
+            return cast(Tensor, cpp.read_full(handle, hdu_index).to(device))
 
     def chunks(self, chunk_size: Tuple[int, ...]) -> Iterator[Tensor]:
-        import torchfits._C as cpp
+        with self._io_lock:
+            if self._closed or self._file_handle is None:
+                raise RuntimeError(
+                    "TensorHDU file handle is closed; cannot iterate chunks"
+                )
+            import torchfits._C as cpp
 
-        return cast(
-            Iterator[Tensor],
-            cpp.iter_chunks(self._file_handle, self._hdu_index, chunk_size),
-        )
+            handle = self._file_handle
+            hdu_index = self._hdu_index
+            return cast(
+                Iterator[Tensor],
+                cpp.iter_chunks(handle, hdu_index, chunk_size),
+            )
 
     def _get_shape_str(self) -> str:
         if self._data is not None:

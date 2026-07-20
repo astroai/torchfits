@@ -18,7 +18,14 @@ def _read_ranges_as_chunk(
     col_list: list[str],
     ranges: list[tuple[int, int]],
 ) -> dict[str, Any]:
-    """Read multiple row ranges from a TableReader and assemble into one chunk."""
+    """Read multiple row ranges from a TableReader and assemble into one chunk.
+
+    Each ``(start0, length)`` range triggers one ``reader.read_rows`` round-trip
+    to CFITSIO, so callers MUST pass *coalesced* ranges (adjacent/contiguous
+    rows merged into a single range) to avoid N small reads for scattered row
+    lists. The sole caller (``_read_cpp_table_chunk`` in ``read.py``) coalesces
+    sorted rows via ``np.diff`` before calling this helper.
+    """
     import numpy as np
 
     out_sorted: dict[str, Any] = {}

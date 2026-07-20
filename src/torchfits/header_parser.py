@@ -311,35 +311,6 @@ class FastHeaderParser:
         # Add 1 back to end_idx because we searched in quoted_str[1:]
         return quoted_str[1 : end_idx + 1].replace("''", "'").rstrip()
 
-    @classmethod
-    def parse_with_performance_tracking(
-        cls, header_string: str
-    ) -> tuple[Dict[str, Any], dict[str, Any]]:
-        """
-        Parse header with performance metrics.
-
-        Returns:
-            (header_dict, metrics_dict) tuple
-        """
-        import time
-
-        start_time = time.perf_counter()
-        header = cls.parse_header_string(header_string)
-        end_time = time.perf_counter()
-
-        metrics = {
-            "parse_time_ms": (end_time - start_time) * 1000,
-            "header_size_bytes": len(header_string),
-            "num_keywords": len(header),
-            "throughput_kb_per_ms": (
-                len(header_string) / 1024 / ((end_time - start_time) * 1000)
-                if end_time > start_time
-                else 0
-            ),
-        }
-
-        return header, metrics
-
 
 def fast_parse_header(header_string: str) -> Dict[str, Any]:
     """

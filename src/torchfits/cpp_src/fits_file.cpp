@@ -307,8 +307,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     }
     LONGLONG nelements = 0;
     if (naxis > 0) {
-        nelements = 1;
-        for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
+        nelements = torchfits::detail::checked_nelements_product(naxes_ll.data(), naxis);
     }
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i) torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
@@ -337,12 +336,21 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
                             remaining -= static_cast<size_t>(got);
                         }
                         if (ok) return tensor;
-                        void* map_ptr = mmap(nullptr, static_cast<size_t>(raw_file_size_),
-                                             PROT_READ, MAP_SHARED, raw_fd_, 0);
+                        // pread failed mid-loop: mmap only the page-aligned range
+                        // covering [data_offset, data_offset+nbytes), not the whole
+                        // file — a whole-file map can OOM on huge files with a small HDU.
+                        static const long kPageSize = sysconf(_SC_PAGESIZE);
+                        const off_t page_mask = kPageSize > 0 ? static_cast<off_t>(kPageSize - 1) : 0;
+                        const off_t map_page_offset = static_cast<off_t>(data_offset) & ~page_mask;
+                        const size_t map_len = nbytes + static_cast<size_t>(
+                            static_cast<off_t>(data_offset) - map_page_offset);
+                        void* map_ptr = mmap(nullptr, map_len, PROT_READ, MAP_SHARED,
+                                             raw_fd_, map_page_offset);
                         if (map_ptr != MAP_FAILED) {
-                            const uint8_t* src = static_cast<const uint8_t*>(map_ptr) + data_offset;
+                            const uint8_t* src = static_cast<const uint8_t*>(map_ptr) +
+                                (static_cast<off_t>(data_offset) - map_page_offset);
                             std::memcpy(tensor.data_ptr(), src, nbytes);
-                            munmap(map_ptr, static_cast<size_t>(raw_file_size_));
+                            munmap(map_ptr, map_len);
                             return tensor;
                         }
                     }
@@ -399,8 +407,8 @@ bool FITSFile::write_image(nb::ndarray<> tensor, int hdu_num, double bscale, dou
     else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) { bitpix = FLOAT_IMG; datatype = TFLOAT; }
     else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 64) { bitpix = DOUBLE_IMG; datatype = TDOUBLE; }
     else throw std::runtime_error("Unsupported tensor dtype");
-    long nelements = 1;
-    for (long dim : naxes) nelements *= dim;
+    long nelements = static_cast<long>(
+        torchfits::detail::checked_nelements_product(naxes));
     fits_create_img(fptr_, bitpix, naxis, naxes.data(), &status);
     if (status != 0) {
         char err_text[31];
@@ -764,8 +772,8 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             throw std::runtime_error("Error creating compressed image: status=" + std::to_string(status) +
                                      " msg=" + std::string(err_text));
         }
-        long nelements = 1;
-        for (long dim : naxes) nelements *= dim;
+        long nelements = static_cast<long>(
+            torchfits::detail::checked_nelements_product(naxes));
         fits_write_img(fptr_, datatype, 1, nelements, tensor.data(), &status);
         if (status != 0) {
             char err_text[31];

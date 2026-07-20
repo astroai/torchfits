@@ -100,8 +100,6 @@ class SigmaClip(FITSTransform):
                     std_v_full = _unflatten_result(
                         torch.sqrt(torch.clamp_min(var, 0.0)), x.shape, dims
                     )
-                    # Restore buffer for next iteration
-                    masked_buf.copy_(x)
                 else:
                     cnt = mask_f.sum()
                     mean_scalar = (masked_buf.sum() / max(cnt.item(), 1.0)).item()
@@ -111,7 +109,6 @@ class SigmaClip(FITSTransform):
                     var = masked_buf.sum() / max(cnt.item(), 1.0)
                     std_scalar = math.sqrt(max(var.item(), 0.0))
                     std_v_full = x.new_full(x.shape, std_scalar)
-                    masked_buf.copy_(x)
 
                 new_mask = (x >= mean_v_full - self.n_sigma * std_v_full) & (
                     x <= mean_v_full + self.n_sigma * std_v_full

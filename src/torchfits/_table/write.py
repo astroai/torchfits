@@ -153,8 +153,9 @@ def _extract_table_schema_from_header(
     return schema
 
 
-def _sanitize_table_header_for_rewrite(header_map: dict[str, Any]) -> dict[str, Any]:
-    skip_exact = {
+# Structural FITS keywords that must not be copied into rewritten table headers.
+_TABLE_STRUCTURAL_SKIP_KEYS: frozenset[str] = frozenset(
+    {
         "SIMPLE",
         "XTENSION",
         "BITPIX",
@@ -166,15 +167,29 @@ def _sanitize_table_header_for_rewrite(header_map: dict[str, Any]) -> dict[str, 
         "TFIELDS",
         "CHECKSUM",
         "DATASUM",
+        "EXTEND",
+        "THEAP",
     }
-    skip_prefixes = ("TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO")
+)
+_TABLE_COLUMN_SKIP_PREFIXES: tuple[str, ...] = (
+    "TTYPE",
+    "TFORM",
+    "TUNIT",
+    "TDIM",
+    "TNULL",
+    "TSCAL",
+    "TZERO",
+)
+
+
+def _sanitize_table_header_for_rewrite(header_map: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in header_map.items():
         key_s = str(key)
         key_u = key_s.upper()
-        if key_u in skip_exact:
+        if key_u in _TABLE_STRUCTURAL_SKIP_KEYS:
             continue
-        if key_u.startswith(skip_prefixes):
+        if key_u.startswith(_TABLE_COLUMN_SKIP_PREFIXES):
             continue
         out[key_s] = value
     return out

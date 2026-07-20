@@ -65,7 +65,7 @@ def _fast_mode() -> bool:
 class NanToZero(FITSTransform):
     """Replace NaN pixels (Legacy Survey off-footprint gaps) with 0.
 
-    ponytail: not meaningfully invertible; ``inverse`` is identity.
+    NOTE: not meaningfully invertible; ``inverse`` is identity.
     """
 
     def forward(

@@ -41,6 +41,49 @@ inline void validate_image_naxis(int naxis) {
     }
 }
 
+// Checked NAXISn product — unsigned multiply with overflow detection so a
+// pathological header cannot wrap LONGLONG and under-allocate a read buffer.
+inline LONGLONG checked_nelements_product(const LONGLONG* naxes, int naxis) {
+    if (naxis <= 0) {
+        return 0;
+    }
+    unsigned long long product = 1ULL;
+    for (int i = 0; i < naxis; ++i) {
+        const LONGLONG dim = naxes[i];
+        if (dim < 0) {
+            throw std::runtime_error("NAXIS product overflow: negative axis length");
+        }
+        if (dim == 0) {
+            return 0;
+        }
+        const unsigned long long udim = static_cast<unsigned long long>(dim);
+        if (product > std::numeric_limits<unsigned long long>::max() / udim) {
+            throw std::runtime_error("NAXIS product overflow");
+        }
+        product *= udim;
+        // Leave headroom for element size up to 16 bytes (complex128).
+        if (product > static_cast<unsigned long long>(std::numeric_limits<LONGLONG>::max() / 16)) {
+            throw std::runtime_error("NAXIS product overflow");
+        }
+    }
+    return static_cast<LONGLONG>(product);
+}
+
+template <typename DimT>
+inline LONGLONG checked_nelements_product(const std::vector<DimT>& naxes) {
+    if (naxes.empty()) {
+        return 0;
+    }
+    std::array<LONGLONG, 9> buf{};
+    if (naxes.size() > 9) {
+        throw std::runtime_error("NAXIS product overflow: too many axes");
+    }
+    for (size_t i = 0; i < naxes.size(); ++i) {
+        buf[i] = static_cast<LONGLONG>(naxes[i]);
+    }
+    return checked_nelements_product(buf.data(), static_cast<int>(naxes.size()));
+}
+
 inline void read_image_params_9d(
     fitsfile* fptr,
     int* bitpix,
@@ -366,8 +409,7 @@ inline torch::Tensor read_tensor_canonical(
         return torch::empty({0}, torch::TensorOptions().dtype(dtype));
     }
 
-    LONGLONG nelements = 1;
-    for (int i = 0; i < naxis; ++i) nelements *= naxes_ll[i];
+    LONGLONG nelements = checked_nelements_product(naxes_ll.data(), naxis);
 
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i)
