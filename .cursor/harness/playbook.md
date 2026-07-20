@@ -19,3 +19,9 @@
 
 - id: package-tree
   desc: Keep the git tree package-facing — Round-N scorecard CSVs under docs/assets/bench only when published; freeze audits go to .cursor/reviews/ (gitignored); no archive/ of agent dumps.
+
+- id: pixi-test-env-rebuild
+  desc: After C++/native edits, rebuild into the test env with `pixi run -e test -- pip install -e . --no-build-isolation` before pytest — `pixi run dev` only updates the default env.
+
+- id: scorecard-deficit-significance
+  desc: `compute_deficits` always emits lag rows; floors only set `significance` to noise|significant — unit tests must not expect `[]` for under-floor lags.
