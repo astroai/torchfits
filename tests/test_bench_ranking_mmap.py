@@ -137,11 +137,15 @@ def test_timer_epsilon_absorbs_only_clock_noise() -> None:
         ),
     ]
     annotate_rankings(rows)
-    assert compute_deficits(rows, run_id="test") == []
+    noise = compute_deficits(rows, run_id="test")
+    assert len(noise) == 1
+    assert noise[0]["significance"] == "noise"
 
-    rows[0]["time_s"] = 60.0e-3 + 2.5e-4  # 0.25ms — above ε, is a deficit
+    rows[0]["time_s"] = 60.0e-3 + 2.5e-4  # 0.25ms — above ε, is significant
     annotate_rankings(rows)
-    assert len(compute_deficits(rows, run_id="test")) == 1
+    deficits = compute_deficits(rows, run_id="test")
+    assert len(deficits) == 1
+    assert deficits[0]["significance"] == "significant"
 
 
 def test_table_arrow_allows_1_05() -> None:
@@ -166,13 +170,16 @@ def test_table_arrow_allows_1_05() -> None:
         ),
     ]
     annotate_rankings(rows)
-    assert compute_deficits(rows, run_id="test") == []
+    noise = compute_deficits(rows, run_id="test")
+    assert len(noise) == 1
+    assert noise[0]["significance"] == "noise"
 
     rows[0]["time_s"] = 1.06e-3
     annotate_rankings(rows)
     deficits = compute_deficits(rows, run_id="test")
     assert len(deficits) == 1
     assert deficits[0]["domain"] == "fitstable"
+    assert deficits[0]["significance"] == "significant"
 
 
 def test_deficits_require_external_peer() -> None:

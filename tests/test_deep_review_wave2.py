@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 import torch
 
+import torchfits
 from torchfits._hdu.tensor_hdu import TensorHDU
 from torchfits.data import remote as remote_mod
 
@@ -84,3 +85,21 @@ def test_table_data_accessor_preserves_rank():
     hdu = TableHDU({"COL": col})
     acc = TableDataAccessor(hdu)
     assert acc["COL"].shape == (5, 1)
+
+
+def test_pathological_naxis_product_raises(tmp_path):
+    """P2-9: absurd NAXISn values must fail before under-allocating a buffer."""
+    cards = [
+        f"{'SIMPLE':<8}= {'T':>20}",
+        f"{'BITPIX':<8}= {-32:>20}",
+        f"{'NAXIS':<8}= {2:>20}",
+        f"{'NAXIS1':<8}= {2**30:>20}",
+        f"{'NAXIS2':<8}= {2**30:>20}",
+        "END",
+    ]
+    hdr = "".join(c.ljust(80) for c in cards).encode("ascii")
+    hdr += b" " * ((2880 - (len(hdr) % 2880)) % 2880)
+    path = tmp_path / "overflow.fits"
+    path.write_bytes(hdr)
+    with pytest.raises(RuntimeError, match="NAXIS product overflow"):
+        torchfits.read_tensor(str(path), hdu=0)
