@@ -79,14 +79,21 @@ def _run_example(name: str) -> tuple[bool, str]:
     env = os.environ.copy()
     if os.environ.get("GITHUB_ACTIONS"):
         env["TORCHFITS_EXAMPLE_FAST"] = "1"
-    result = subprocess.run(
-        [*_python_cmd(), path],
-        cwd=".",
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
+    # Keep the Galaxy Zoo smoke path bounded: full DEFAULT_GZ_N=200 cutout
+    # downloads routinely exceed the runner timeout on a cold cache.
+    if name == "example_ml_galaxyzoo_legacy.py":
+        env.setdefault("GZ_N", "8")
+    try:
+        result = subprocess.run(
+            [*_python_cmd(), path],
+            cwd=".",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return False, f"timeout after {timeout}s: {exc}"
     if result.returncode == 0:
         return True, ""
 

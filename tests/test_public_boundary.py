@@ -26,12 +26,23 @@ def test_hdu_and_table_public_surfaces_are_importable():
     assert "read_fast" not in io.__all__
 
 
-def test_table_destination_readers_are_public():
+def test_table_destination_readers_are_public(tmp_path):
     assert "read_arrow" in table.__all__
     assert "read_torch" in table.__all__
     assert table.read_arrow is table.read
     assert callable(table.read_torch)
     assert callable(torchfits.read_header)
+
+    path = tmp_path / "boundary_table.fits"
+    torchfits.table.write(
+        str(path),
+        {"ID": np.array([1, 2, 3], dtype=np.int64)},
+        overwrite=True,
+    )
+    via_read = table.read(str(path), hdu=1)
+    via_arrow = table.read_arrow(str(path), hdu=1)
+    assert via_read.num_rows == via_arrow.num_rows == 3
+    assert via_read.column("ID").to_pylist() == via_arrow.column("ID").to_pylist()
 
 
 def test_torch_frame_is_not_part_of_the_fits_hdu_surface():

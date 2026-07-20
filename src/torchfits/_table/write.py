@@ -9,7 +9,8 @@ from typing import Any
 
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 
-# Internal helpers re-exported on torchfits.io for mutation/write paths.
+# Internal write/mutation helpers re-exported on torchfits.io (not a public API).
+# Crossing _table → io → _io_engine is intentional package-internal wiring.
 from ..io import _normalize_cpp_table_data, _write_header_cards_if_supported
 
 _log = logging.getLogger(__name__)
@@ -244,6 +245,12 @@ def _rewrite_table_hdu_with_schema(
 def _resolve_table_hdu_index_and_columns(
     path: str, hdu: int | str
 ) -> tuple[int, dict[str, Any], list[str], dict[str, str]]:
+    """Resolve table HDU index + column metadata for write/mutation/read helpers.
+
+    Lives in ``_table.write`` (not ``_table.read``) so ``read`` / ``mutation``
+    can import it without a write↔read cycle. Keep it here; do not move to
+    ``read.py``.
+    """
     import torchfits._C as cpp
 
     handle = cpp.open_fits_file(path, "r")
