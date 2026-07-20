@@ -118,6 +118,9 @@ def _write_header_cards_if_supported(
     if writer is None:
         return
     _invalidate_path_caches(path)
+    # Invalidate both before and after the C++ header-card write:
+    #  - Before: ensure no stale handle/metadata races with writing new cards.
+    #  - After:  ensure the next reader picks up the freshly-written header.
     writer(path, int(hdu), list(header_obj.cards))
     _invalidate_path_caches(path)
 

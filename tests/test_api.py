@@ -135,18 +135,6 @@ class TestMainAPI:
         finally:
             os.unlink(filepath)
 
-    def test_read_tensor_handle_cache_flag(self):
-        """read_tensor should accept explicit handle-cache control."""
-        filepath, _ = self.create_test_fits(shape=(96, 96), dtype=np.float32)
-        try:
-            a = torchfits.read_tensor(filepath, hdu=0, mmap=False, handle_cache=True)
-            b = torchfits.read_tensor(filepath, hdu=0, mmap=False, handle_cache=False)
-            torch.testing.assert_close(a, b)
-            with pytest.raises(ValueError, match="handle_cache must be bool"):
-                torchfits.read_tensor(filepath, hdu=0, mmap=False, handle_cache="yes")  # type: ignore[arg-type]
-        finally:
-            os.unlink(filepath)
-
     def test_read_device(self):
         """Test reading to different devices."""
         filepath, expected_data = self.create_test_fits()
@@ -197,14 +185,13 @@ class TestMainAPI:
             os.unlink(filepath)
 
     def test_read_by_extname_without_handle_cache(self):
-        """Named HDU reads should work even when handle caching is disabled."""
+        """Named HDU reads should work."""
         filepath, expected_data, extname = self.create_test_fits_with_named_ext()
         try:
             result = torchfits.read(
                 filepath,
                 hdu=extname,
                 mmap=False,
-                handle_cache_capacity=0,
             )
             assert isinstance(result, torch.Tensor)
             np.testing.assert_allclose(result.numpy(), expected_data, rtol=1e-5)

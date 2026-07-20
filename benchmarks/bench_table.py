@@ -16,8 +16,13 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import fitsio  # noqa: E402
-from astropy.io import fits as astropy_fits  # noqa: E402
-from astropy.table import Table  # noqa: E402
+
+try:
+    from astropy.io import fits as astropy_fits  # noqa: E402
+    from astropy.table import Table  # noqa: E402
+except ImportError:  # pragma: no cover
+    print("bench_table: astropy is required; pip install astropy", file=sys.stderr)
+    raise SystemExit(0) from None
 
 import torchfits  # noqa: E402
 

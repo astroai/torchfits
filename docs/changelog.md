@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0rc4] — 2026-07-20
+
+Fourth release candidate for collaborator soak after prep / deep-review cleanup.
+
 ### Removed
 - Root aliases `read_table`, `stream_table`, `read_table_rows`, `get_header`,
   `get_batch_info` — use `table.read_torch` / `table.scan_torch` / `read_header` /
@@ -19,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI deprecated aliases `--fitsort`, `--bytes`, `--preview` — use
   `--keyword-table`, `--header-bytes`, `-n`/`--rows`.
 - Deprecated `table_module=` dual-path on cache invalidate/clear.
+- `table.to_polars_lazy` — use `scan_polars` or `to_polars(...).lazy()`.
+- `torchfits.cli.rgb` shim — import `lupton_rgb` / `write_rgb_image` from
+  `torchfits.transforms`.
+- No-op `handle_cache=` on `read_tensor` and `handle_cache_capacity=` on
+  `read_subset` (persistent reuse stays on `open_subset_reader`).
 
 ### Added
 - Skinny metadata: `read_nrows`, `read_keys`, `read_shape`, `read_hdu_type`,
@@ -32,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nn.Sequential`.
 - CLI `transform --name Class:key=val,...` constructor kwargs.
 - HTTP Range cutouts + vos/vault remote fetch (prior unreleased work).
+- Public `TensorHDU.shape_str` / `dtype_str`; optional `FitsTableDataset(labels=)`.
 
 ### Changed
 - `read()` rejects unknown kwargs with `TypeError` (no silent swallow of
@@ -49,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (unsigned paths live in `_read_pipeline` / `write_api` / `fits_schema`).
 - Table mutation: single `_mutation_cache_barrier` pre/post; dtype maps via
   `_ensure_dtype_maps()`.
+- `FitsTableDataset.__getitem__` returns `(row_dict, label)` for
+  `make_loader` / `fits_collate_fn` parity with image datasets.
+- Lupton examples/docs use `lupton_rgb(r=..., g=..., b=...)` (reddest → R).
+- Example smoke runner auto-discovers `examples/*.py` (skips `_*.py` helpers).
+- DataView BITPIX 64 → `torch.int64`; C++ `write_image` supports int8/int64.
 
 ### Fixed
 - HTTP Range cutouts: NumPy view `byteswap(True)` on frombuffer tensor (this
@@ -62,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slice+bswap into torch (MegaPipe-class mosaics); CFITSIO `fits_read_subset`
   remains the fallback for compressed / scaled / non-2D.
 - Clearer `TypeError` when inferring FITS TFORM from uint16/uint32/uint64.
+- `LogStretch.inverse` clamps exponents to avoid float overflow.
+- Remote prefetch bookkeeping cleaned after completed downloads (locks retained).
+- WHERE `BETWEEN` boundaries no longer use bare `\S+` (operators/parens).
+- `fast_parse_header_cards` / `Header` keep empty comments as `""` (not `"None"`).
+- Deep-review P0–P4 harden (WHERE OOM gate, batch exception narrowing, HDU close
+  race, prefetch errors, mutation cache barrier, NAXIS overflow guard).
 
 ### Docs
 - Removed-names table lists root `read_table` / `stream_table` /
@@ -857,7 +878,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc3...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.0.0rc4...HEAD
+[1.0.0rc4]: https://github.com/astroai/torchfits/compare/v1.0.0rc3...v1.0.0rc4
 [1.0.0rc3]: https://github.com/astroai/torchfits/compare/v1.0.0rc2...v1.0.0rc3
 [1.0.0rc2]: https://github.com/astroai/torchfits/compare/v1.0.0rc1...v1.0.0rc2
 [1.0.0rc1]: https://github.com/astroai/torchfits/releases/tag/v1.0.0rc1

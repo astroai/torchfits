@@ -267,6 +267,10 @@ def _register_open_hdulist(path: str, handle: Any, hdulist: Any) -> None:
     except Exception:
         real = os.path.abspath(path)
     _open_hdulist_registry.setdefault(real, []).append((handle, hdulist))
+    try:
+        hdulist._registry_key = real
+    except Exception:
+        pass
 
 
 def _close_hdulist_for_path(path: str) -> None:
@@ -290,6 +294,7 @@ def _close_hdulist_for_path(path: str) -> None:
         # Prevent double-close when HDUList.__exit__ calls close() later.
         try:
             hdulist._file_handle = None
+            hdulist._registry_key = None
         except Exception:
             pass
 

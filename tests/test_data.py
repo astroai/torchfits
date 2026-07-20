@@ -292,41 +292,44 @@ class TestFitsTableDataset:
 
     def test_getitem_returns_dict(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file)
-        row = ds[0]
+        row, label = ds[0]
         assert isinstance(row, dict)
+        assert isinstance(label, torch.Tensor)
+        assert label.dtype == torch.long
         assert "flux" in row
         assert "mag" in row
         assert isinstance(row["flux"], torch.Tensor)
 
     def test_getitem_correct_values(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file)
-        row = ds[0]
+        row, label = ds[0]
         assert row["flux"].item() == pytest.approx(1.0)
         assert row["mag"].item() == pytest.approx(10.0)
+        assert label.item() == 0
 
     def test_getitem_different_rows(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file)
-        r0 = ds[0]["flux"].item()
-        r3 = ds[3]["flux"].item()
+        r0 = ds[0][0]["flux"].item()
+        r3 = ds[3][0]["flux"].item()
         assert r0 != r3
 
     def test_column_projection(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file, columns=["flux"])
-        row = ds[0]
+        row, _label = ds[0]
         assert set(row.keys()) == {"flux"}
 
     def test_where_filter(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file, where="flux > 4.0")
         assert len(ds) == 4
-        assert ds[0]["flux"].item() == pytest.approx(5.0)
-        assert ds[-1]["flux"].item() == pytest.approx(8.0)
+        assert ds[0][0]["flux"].item() == pytest.approx(5.0)
+        assert ds[-1][0]["flux"].item() == pytest.approx(8.0)
 
     def test_transform_applied(self, temp_table_file):
         ds = FitsTableDataset(
             temp_table_file,
             transform=lambda row: {k: v * 0.0 for k, v in row.items()},
         )
-        row = ds[0]
+        row, _label = ds[0]
         assert row["flux"].item() == 0.0
         assert row["mag"].item() == 0.0
 
@@ -341,7 +344,8 @@ class TestFitsTableDataset:
             temp_table_file, columns=["flux", "mag"], where="mag < 14.0"
         )
         assert len(ds) == 4
-        assert set(ds[0].keys()) == {"flux", "mag"}
+        row, _label = ds[0]
+        assert set(row.keys()) == {"flux", "mag"}
 
     def test_empty_where_result(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file, where="flux > 999.0")
@@ -350,8 +354,9 @@ class TestFitsTableDataset:
     def test_integration_with_dataloader(self, temp_table_file):
         ds = FitsTableDataset(temp_table_file, columns=["flux", "mag"])
         loader = DataLoader(ds, batch_size=4, collate_fn=fits_collate_fn)
-        for batch in loader:
+        for batch, labels in loader:
             assert isinstance(batch, dict)
+            assert isinstance(labels, torch.Tensor)
             for key in batch:
                 assert batch[key].shape[0] <= 4
             break

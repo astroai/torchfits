@@ -5,11 +5,11 @@ forward-looking only.
 
 ## Current focus (toward 1.0.0)
 
-Ship SemVer **1.0.0** after soak on the `1.0.0rc*` line. Deep-review triage
-(hard-removed root aliases, deleted continuum/spectral transforms, bench
-honesty) is in the working tree; larger scope cuts (cache merge, dataset zoo,
-CLI trim) stay deferred. rc tags are API-stable previews; SemVer `1.0.0`
-still waits for post-rc soak.
+**`1.0.0rc4`** is the collaborator soak tag (`pip install "torchfits==1.0.0rc4"`).
+Prep / deep-review cleanup (hard removals, `(row, label)` table datasets,
+BITPIX int8/int64 write, header/prefetch fixes) ships in that cut. SemVer
+**`1.0.0`** waits for post-rc feedback. Larger scope cuts (cache merge,
+dataset zoo, CLI trim) stay deferred.
 
 ## Parity tiers
 
@@ -22,18 +22,27 @@ still waits for post-rc soak.
 
 ## Near-term (through 1.0.0)
 
-- Finish soak on the triage working tree; tag only after `ci-local` green on a clean commit
+- Soak `1.0.0rc4` with collaborators; fold feedback before SemVer `1.0.0`
 - Benchmark honesty: tensor vs table domains, CPU↔GPU deficits visible, CFITSIO-direct in the exhaustive table, MegaCam multi-cutout suite
 - CLI depth: HIERARCH keys, batch header edit, honest `verify` scope, real RGB demos
 - Publish exhaustive CSVs with release artifacts for user analysis
 
 ## Deferred (cosmetic / low priority)
 
-From the rc1 static audits (not blocking rc2):
+From the rc1 static audits (not blocking rc4):
 
 - F1–F5 stylistic / macOS sysctl / CTYPE5 / END HISTORY notes
 - C3 fold `insert_rows`+`update_rows` into one CFITSIO open (perf only)
 - E5–E6 bench CSV cosmetics
+
+### Deferred from prep review (not 1.0 blockers)
+
+- M1 dtype-validation dedup across `write_api` / `mutation`
+- M4 `HDUList.fromfile` fallback loop cleanup; M6/M7 cache naming / test isolation
+- L2 Header `_mutate()` helper; L4 WHERE LRU sizing for dynamic literals
+- T1–T5/T7 test-harness polish; E2/E5/E6 example assertion depth
+- B1 lambda default-binding in benches; B4/B6–B8 bench suite consolidation
+- R2-10/R2-11 CLI transform / private-import nits; S6 cross-import comment
 
 ## 1.1 candidates
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torchfits
-from torchfits._hdu.header import Header
+from torchfits.hdu import Header
 
 from .common import EXIT_OK, IoError, UsageError, add_hdu_arg, resolve_paths
 

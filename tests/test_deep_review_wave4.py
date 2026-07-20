@@ -41,7 +41,7 @@ def test_read_cpp_table_chunk_defers_header_when_read_fails():
 
 # --- P2-2: PNG export uses the fast numpy path and stays valid --------------
 def test_write_rgb_image_produces_valid_png(tmp_path):
-    from torchfits.cli.rgb import write_rgb_image
+    from torchfits.transforms.rgb import write_rgb_image
 
     rgb = torch.rand(3, 4, 3)  # H=3, W=4, 3 channels
     out = tmp_path / "preview.png"

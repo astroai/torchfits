@@ -24,7 +24,7 @@ preprocess; call transforms yourself when exploring a single file.
 | 2D images / multi-band | Any | `FitsImageDataset` | Peer; multi-band HDUs → `[C,H,W]` |
 | 3D+ cubes | Any | `FitsCubeDataset` | Peer; optional `slice_index` |
 | 1D / multi-arm spectra | Any | `FitsSpectrumDataset` | Peer; `layout=` dict/stack/concat; DESI `row=` |
-| One table HDU | Fits in RAM | `FitsTableDataset` | Row-indexed `dict[str, Tensor]` with predicate pushdown |
+| One table HDU | Fits in RAM | `FitsTableDataset` | Row-indexed `(dict[str, Tensor], label)` with predicate pushdown |
 | One table HDU | Too large for RAM | `FitsTableIterableDataset` | Constant-memory streaming via `table.scan` |
 | Fixed `(path, hdu, x, y, size)` cutouts | Any | `FitsCutoutDataset` | Patch training from a mosaic |
 | One-off inspect / write / Arrow analysis | — | Core I/O / Tables | No Dataset needed |
@@ -267,6 +267,7 @@ ds = FitsTableDataset(
     hdu=1,
     columns=["RA", "DEC", "MAG_G"],
     where="MAG_G < 20",        # predicate pushdown at load time
+    labels=[0, 1, 0, 1, ...],  # optional per-row labels (default 0)
     transform=None,
 )
 ```
@@ -277,11 +278,12 @@ ds = FitsTableDataset(
 | `hdu` | `int` | `1` | Table HDU index |
 | `columns` | `list[str]` or `None` | `None` | Column names (None = all) |
 | `where` | `str` or `None` | `None` | SQL-like predicate for row filtering |
+| `labels` | `list[int]` or `None` | `None` | Per-row integer labels (default 0 when omitted) |
 | `transform` | `callable` or `None` | `None` | Applied to each row dict |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
 
-**Returns per item:** `dict[str, Tensor | Any]` — one row as a column-name-keyed dict.
+**Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and `torch.long` label.
 
 !!! info "When to use"
     Use for catalogs up to a few million rows that fit in memory. The
@@ -321,6 +323,15 @@ ds = FitsTableIterableDataset(
 
 **Returns per item:** `dict[str, Tensor | Any]` — one row.
 
+!!! warning "where= performance"
+    The ``where=`` path uses ``table.scan()`` which yields Arrow
+    ``RecordBatch`` objects and converts each row to Python individually.
+    This is slower than the non-``where=`` path which uses
+    ``table.scan_torch`` for direct tensor-column chunks. For
+    performance-sensitive filtered streaming on large catalogs, consider
+    reading the full table with ``table.scan_torch`` and filtering in
+    PyTorch.
+
 !!! info "When to use"
     Use for large catalogs that don't fit in memory. Workers shard by scan
     batch index (`batch_idx % num_workers == worker_id`), so each row is
@@ -351,7 +362,11 @@ Accepts `(path, hdu, x, y, size)` or `(path, hdu, x1, y1, x2, y2)` tuples.
 | `device` | `str` | `"cpu"` | Torch device |
 | `add_channel_dim` | `bool` | `True` | Prepend channel dimension |
 
-**Returns per item:** `Tensor`
+**Returns per item:** `Tensor` — raw cutout tensor without a label. This dataset
+is unsupervised by design (it has no `labels` parameter). For supervised
+patch classification, subclass `FitsCutoutDataset` and override
+`__getitem__` to return `(tensor, label)`, or create a custom `Dataset`
+that pairs `read_subset` calls with labels.
 
 !!! info "When to use"
     Use for patch training from a mosaic. Each cutout uses **pixel coordinates**
@@ -421,6 +436,7 @@ Default collation function for torchfits datasets:
 - `list[Tensor]` → stacked `Tensor` (all must have the same shape)
 - `list[(Tensor, Tensor)]` → `(stacked_images, stacked_labels)`
 - `list[dict[str, Tensor]]` → `dict[str, stacked_Tensor]`
+- `list[(dict[str, Tensor], Tensor)]` → `(stacked_dict, stacked_labels)`
 
 All tensors in a batch must have identical shapes — `torch.stack` is used
 under the hood. Raises `ValueError` on non-tensor columns (strings, VLA

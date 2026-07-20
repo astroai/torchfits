@@ -13,7 +13,8 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 import torchfits  # noqa: E402
-from torchfits.cli.rgb import lupton_rgb, write_rgb_image  # noqa: E402
+from torchfits.transforms.rgb import write_rgb_image  # noqa: E402
+from torchfits.transforms import lupton_rgb  # noqa: E402
 
 
 def _band(h: int, w: int, cx: float, cy: float, amp: float) -> torch.Tensor:

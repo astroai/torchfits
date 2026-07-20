@@ -852,18 +852,6 @@ def test_cpp_vla_returns_flat_tuple():
         os.unlink(path)
 
 
-def test_to_polars_lazy_expression():
-    pytest.importorskip("pyarrow")
-    pl = pytest.importorskip("polars")
-    path = _make_table_file()
-    try:
-        lf = torchfits.table.to_polars_lazy(path, hdu=1, decode_bytes=True)
-        out = lf.filter(pl.col("ID") >= 2).select(pl.col("ID")).collect()
-        assert out["ID"].to_list() == [2, 3]
-    finally:
-        os.unlink(path)
-
-
 def test_read_polars_basic():
     """read_polars should return a FITSPolarsFrame with data and metadata."""
     pytest.importorskip("pyarrow")

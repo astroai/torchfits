@@ -71,6 +71,12 @@ def find_first_hdu(
                 try:
                     shape = file_handle.get_shape(i)
                 except Exception:
+                    _log.debug(
+                        "get_shape failed for %r HDU %s; skipping IMAGE candidate",
+                        path,
+                        i,
+                        exc_info=True,
+                    )
                     shape = []
                 if shape and all(int(dim) > 0 for dim in shape):
                     return i
@@ -168,7 +174,7 @@ def _resolve_hdu_index(
     try:
         n_hdus = int(cpp.read_num_hdus(path))
     except Exception:
-        n_hdus = 100
+        n_hdus = 1024
     for i in range(max(0, n_hdus)):
         try:
             keys = cpp.read_keys(path, i, ["EXTNAME"])

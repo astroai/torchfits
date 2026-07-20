@@ -10,7 +10,7 @@
 with a multi-threaded C++ engine (vendored CFITSIO). Optional datasets,
 transforms, and a `torchfits` CLI sit on top.
 
-**Current:** [1.0.0rc3](https://pypi.org/project/torchfits/) (prerelease).
+**Current:** [1.0.0rc4](https://pypi.org/project/torchfits/) (prerelease).
 Docs: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·
 [edge](https://astroai.github.io/torchfits/edge/) (`main` tip).
 

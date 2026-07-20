@@ -130,15 +130,24 @@ def _normalize_logical_operators(where: str) -> str:
     return "".join(parts)
 
 
+# Numeric literal or bare-word pattern used for BETWEEN boundary values.
+# Prefer explicit numeric/word matching over bare \S+ to avoid accidentally
+# capturing comparison operators or parentheses in pathological expressions.
+_BOUNDARY_VALUE = r"('[^']*'|\"[^\"]*\"|[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\w+)"
+
+
 def _normalize_between(where: str) -> str:
     where = re.sub(
-        r"\b(\w+)\s+NOT\s+BETWEEN\s+('[^']+'|\"[^\"]+\"|\S+)\s+AND\s+('[^']+'|\"[^\"]+\"|\S+)",
+        r"\b(\w+)\s+NOT\s+BETWEEN\s+"
+        + _BOUNDARY_VALUE
+        + r"\s+AND\s+"
+        + _BOUNDARY_VALUE,
         r"_not_between(\1, \2, \3)",
         where,
         flags=re.IGNORECASE,
     )
     where = re.sub(
-        r"\b(\w+)\s+BETWEEN\s+('[^']+'|\"[^\"]+\"|\S+)\s+AND\s+('[^']+'|\"[^\"]+\"|\S+)",
+        r"\b(\w+)\s+BETWEEN\s+" + _BOUNDARY_VALUE + r"\s+AND\s+" + _BOUNDARY_VALUE,
         r"_between(\1, \2, \3)",
         where,
         flags=re.IGNORECASE,

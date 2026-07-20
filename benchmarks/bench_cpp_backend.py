@@ -196,7 +196,6 @@ class CPPBackendBenchmark:
                         filepath,
                         hdu=hdu,
                         mmap=(not compressed),
-                        handle_cache=True,
                     )
 
                 tf_spec_stats = self._time_callable(read_torchfits_specialized)

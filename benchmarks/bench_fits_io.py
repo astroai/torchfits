@@ -314,8 +314,10 @@ class FITSBenchmarkSuite:
             }
             # One Tensor-peer schedule so smart/specialized share fitsio_torch
             # samples (no cross-schedule invented losses). Clone so the peer owns
-            # storage like torchfits. Astropy CompImage stays off the CFITSIO
-            # round-robin (~10× poison).
+            # storage like torchfits. Astropy CompImageHDU uses Python-level
+            # decompression (~10× slower than CFITSIO tile decode) — excluded
+            # from tensor peers on compressed files to avoid poisoning the
+            # CFITSIO-parity round-robin.
             smart_runs = max(runs, 21) if file_type == "compressed" else runs
             tensor_peers = {
                 "torchfits": methods["torchfits"],
@@ -405,8 +407,8 @@ class FITSBenchmarkSuite:
 
             methods = {
                 "torchfits": tf_cutout,
-                "astropy_torch": lambda: torch.from_numpy(astropy_cutout()),
-                "fitsio_torch": lambda: torch.from_numpy(fitsio_cutout()),
+                "astropy_torch": lambda fn=astropy_cutout: torch.from_numpy(fn()),
+                "fitsio_torch": lambda fn=fitsio_cutout: torch.from_numpy(fn()),
                 "torchfits_specialized": tf_cutout,
                 "astropy": astropy_cutout,
                 "fitsio": fitsio_cutout,
@@ -519,11 +521,11 @@ class FITSBenchmarkSuite:
         methods = {
             # Match fitsio's open-once FITS handle: persistent subset reader.
             "torchfits": tf_repeated_cutout_persistent,
-            "astropy_torch": lambda: torch.from_numpy(
-                np.array(astropy_repeated_cutout())
+            "astropy_torch": lambda fn=astropy_repeated_cutout: torch.from_numpy(
+                np.array(fn())
             ),
-            "fitsio_torch": lambda: torch.from_numpy(
-                np.array(fitsio_repeated_cutout())
+            "fitsio_torch": lambda fn=fitsio_repeated_cutout: torch.from_numpy(
+                np.array(fn())
             ),
             "torchfits_specialized": tf_repeated_cutout_persistent,
             "astropy": astropy_repeated_cutout,
@@ -606,8 +608,8 @@ class FITSBenchmarkSuite:
 
         methods = {
             "torchfits": torchfits_sequence,
-            "astropy_torch": lambda: torch.from_numpy(astropy_sequence()),
-            "fitsio_torch": lambda: torch.from_numpy(fitsio_sequence()),
+            "astropy_torch": lambda fn=astropy_sequence: torch.from_numpy(fn()),
+            "fitsio_torch": lambda fn=fitsio_sequence: torch.from_numpy(fn()),
             "torchfits_specialized": torchfits_sequence,
             "astropy": astropy_sequence,
             "fitsio": fitsio_sequence,
@@ -801,7 +803,7 @@ def _normalize_legacy_rows(
             continue
 
         operation = str(raw.get("operation", "read_full"))
-        case_id = f"{raw.get('filename')}::{operation}"
+        case_id = f"{raw.get('filename')}:{operation}"
         case_label = f"{raw.get('filename')} [{operation}]"
         metadata = {
             "file_type": raw.get("file_type"),
@@ -910,7 +912,7 @@ def _benchmark_headers(
         if file_type == "table":
             continue
         hdu = _hdu_for_file_type(file_type)
-        case_id = f"{name}::header_read"
+        case_id = f"{name}:header_read"
         case_label = f"{name} [header_read]"
 
         def _tf_header():

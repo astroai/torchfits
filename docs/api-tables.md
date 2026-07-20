@@ -212,7 +212,7 @@ happens in C++ for most table sizes.
 
 | Backend | Behavior |
 |---|---|
-| `"auto"` (default) | C++ pushdown for large tables; Arrow filter for small tables |
+| `"auto"` (default) | C++ pushdown when (a) no VLA columns in projection and (b) `backend="cpp"` or (`backend="auto"` and `mmap=True`); Arrow filter otherwise |
 | `"cpp"` | C++ row reads as torch tensors, converted to Arrow |
 | `"torch"` | `table.scan_torch` chunked path |
 
@@ -279,16 +279,17 @@ df = torchfits.table.read_polars("catalog.fits", hdu=1)
 for batch in torchfits.table.scan_polars("catalog.fits", hdu=1):
     process(batch)  # pl.DataFrame
 
-# Materialize then wrap as LazyFrame
-lazy = torchfits.table.to_polars_lazy("catalog.fits", hdu=1)
+# Eager Polars then LazyFrame (materializes once)
+lazy = torchfits.table.to_polars("catalog.fits", hdu=1).lazy()
 
 # From table dict
 polars_df = torchfits.to_polars(table_dict, decode_bytes=True)
 ```
 
 !!! tip "True streaming"
-    `scan_polars()` is the genuine streaming path. `to_polars_lazy()`
-    materializes the entire table first, then wraps as `LazyFrame`.
+    `scan_polars()` yields one DataFrame per batch without building the full
+    table. For a LazyFrame over an already-materialized table, use
+    `to_polars(...).lazy()` or `pl.concat(scan_polars(...)).lazy()`.
 
 !!! info "rechunk=False default"
     All Polars conversion functions default to `rechunk=False`. Pass

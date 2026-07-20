@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import subprocess
@@ -10,37 +11,48 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Examples that must succeed in the default dev environment.
-REQUIRED = [
-    "example_image.py",
-    "example_image_cutouts.py",
-    "example_image_cube.py",
-    "example_image_mef.py",
-    "example_image_dataset.py",
-    "example_data_catalogs.py",
-    "example_transforms.py",
-    "example_table.py",
-    "example_table_interop.py",
-    "example_table_recipes.py",
-    "example_time_series.py",
-    "gallery_images.py",
-    "gallery_tables_lc.py",
-    "example_m13_stack.py",
-    "example_mef_header.py",
-    "example_cutout_wcs_write.py",
-    "example_lupton_rgb_sdss.py",
-    "example_manga_logcube.py",
-    "example_megacam_mef_cutouts.py",
-    "example_custom_transform.py",
-    "example_make_loader_vs_dataloader.py",
-    "example_megapipe_cutout_collage.py",
-    "example_ml_galaxyzoo_legacy.py",
-]
+# Examples explicitly excluded from auto-discovery (e.g., they require
+# external data not available in CI, or are run via a different path).
+_EXCLUDE = {
+    "desi_shaped_spectrum.py",  # requires DESI data download
+    "cli/make_rgb_demo.py",  # auxiliary script, not a standalone example
+    "test_examples.py",  # this file
+}
 
 # Optional-deps examples: pass if they exit 0 or print a known skip message.
-OPTIONAL = [
+OPTIONAL = {
     "example_polars.py",
-]
+}
+
+
+def _discover_examples() -> list[str]:
+    """Discover all example scripts via glob, excluding test-runner and aux files."""
+    patterns = [
+        os.path.join(SCRIPT_DIR, "*.py"),
+        os.path.join(SCRIPT_DIR, "cli", "*.py"),
+    ]
+    discovered: list[str] = []
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern)):
+            name = (
+                os.path.basename(path)
+                if "cli" not in pattern
+                else os.path.join("cli", os.path.basename(path))
+            )
+            base = os.path.basename(name)
+            if base.startswith("_") or name in _EXCLUDE:
+                continue
+            discovered.append(name)
+    return discovered
+
+
+def _example_path(name: str) -> str:
+    base_dir = "examples" if os.path.isdir("examples") else SCRIPT_DIR
+    path = os.path.join(base_dir, name)
+    if not os.path.exists(path):
+        path = os.path.join(SCRIPT_DIR, name)
+    return path
+
 
 # Per-example timeout overrides (seconds); default is 180.
 TIMEOUTS = {
@@ -56,14 +68,6 @@ def _python_cmd() -> list[str]:
     if shutil.which("pixi"):
         return ["pixi", "run", "python"]
     return [sys.executable]
-
-
-def _example_path(name: str) -> str:
-    base_dir = "examples" if os.path.isdir("examples") else SCRIPT_DIR
-    path = os.path.join(base_dir, name)
-    if not os.path.exists(path):
-        path = os.path.join(SCRIPT_DIR, name)
-    return path
 
 
 def _run_example(name: str) -> tuple[bool, str]:
@@ -99,7 +103,15 @@ def main() -> int:
     print(f"Running examples from: {os.getcwd()}")
     success = True
 
-    for name in REQUIRED + OPTIONAL:
+    required = [n for n in _discover_examples() if n not in OPTIONAL]
+    optional = [n for n in _discover_examples() if n in OPTIONAL]
+    all_examples = required + optional
+
+    print(
+        f"Discovered {len(all_examples)} examples ({len(required)} required, {len(optional)} optional)\n"
+    )
+
+    for name in all_examples:
         print(f"\n{'=' * 60}\n{name}\n{'=' * 60}")
         ok, detail = _run_example(name)
         if ok:

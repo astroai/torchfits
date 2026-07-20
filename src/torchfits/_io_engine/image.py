@@ -31,7 +31,7 @@ def batch_to_device(
 
 
 def validate_read_image_args(
-    path: str, hdu: int | str, mmap: bool, handle_cache: bool, device: str
+    path: str, hdu: int | str, mmap: bool, device: str
 ) -> None:
     """Validate arguments for low-level read_image."""
     if not isinstance(path, str) or not path:
@@ -53,30 +53,20 @@ def validate_read_image_args(
         )
     if not isinstance(mmap, bool):
         raise ValueError("read_image requires explicit mmap=True/False")
-    if not isinstance(handle_cache, bool):
-        raise ValueError("handle_cache must be bool")
     if device not in ["cpu", "cuda", "mps"] and not device.startswith("cuda:"):
         raise ValueError("device must be 'cpu', 'cuda', 'mps' or 'cuda:N'")
 
 
 def dispatch_read_image_cpp(
-    cpp: Any, path: str, hdu: int, mmap: bool, handle_cache: bool, raw_scale: bool
+    cpp: Any, path: str, hdu: int, mmap: bool, raw_scale: bool
 ) -> Tensor:
-    """Dispatch the correct C++ function for low-level image reading.
-
-    One-shot full-image reads always use thin ``read_full`` / raw variants.
-    ``handle_cache`` is reserved for persistent subset readers — routing
-    one-shot reads through ``read_full_cached`` lost to fitsio+from_numpy.
-    Cold scorecard paths prefer ``read_full_nocache`` (no handle-pool lock).
-    """
+    """Dispatch the correct C++ function for low-level image reading."""
     if raw_scale:
         if not mmap and hasattr(cpp, "read_full_unmapped_raw"):
             return cast(Tensor, cpp.read_full_unmapped_raw(path, hdu))
         if hasattr(cpp, "read_full_raw"):
             return cast(Tensor, cpp.read_full_raw(path, hdu, mmap))
         return cast(Tensor, cpp.read_full(path, hdu, mmap))
-    if not handle_cache and hasattr(cpp, "read_full_nocache"):
-        return cast(Tensor, cpp.read_full_nocache(path, hdu, mmap))
     return cast(Tensor, cpp.read_full(path, hdu, mmap))
 
 
@@ -85,7 +75,6 @@ def read_image(
     hdu: int | str = 0,
     device: str = "cpu",
     mmap: bool = True,
-    handle_cache: bool = True,
     fp16: bool = False,
     bf16: bool = False,
     raw_scale: bool = False,
@@ -93,7 +82,7 @@ def read_image(
     fallback_get_header: Callable[[str, int], Header] | None = None,
 ) -> Union[Tensor, Tuple[Tensor, Header]]:
     """Read image data through a direct low-level path."""
-    validate_read_image_args(path, hdu, mmap, handle_cache, device)
+    validate_read_image_args(path, hdu, mmap, device)
 
     if isinstance(hdu, str):
         if hasattr(_cpp, "resolve_hdu_name_cached"):
@@ -101,7 +90,7 @@ def read_image(
         else:
             raise ValueError("named HDUs require resolve_hdu_name_cached support")
 
-    data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, handle_cache, raw_scale)
+    data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, raw_scale)
 
     if fp16:
         data = data.to(torch.float16)

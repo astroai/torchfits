@@ -28,6 +28,7 @@ class HDUList:
         self._hdus: List[Union[TensorHDU, TableHDU, TableHDURef]] = hdus or []
         self._file_handle = None
         self._extname_idx: Optional[dict[str, int]] = None
+        self._registry_key: Optional[str] = None
 
     @classmethod
     def fromfile(cls, path: str, mode: str = "r") -> "HDUList":
@@ -146,17 +147,31 @@ class HDUList:
             try:
                 from .._io_engine.caches import _open_hdulist_registry
 
-                for real_path, entries in list(_open_hdulist_registry.items()):
+                key = self._registry_key
+                if key is not None:
+                    entries = _open_hdulist_registry.get(key, [])
                     remaining = [
                         entry for entry in entries if entry[0] is not self._file_handle
                     ]
-                    if len(remaining) == len(entries):
-                        continue
-                    if remaining:
-                        _open_hdulist_registry[real_path] = remaining
-                    else:
-                        _open_hdulist_registry.pop(real_path, None)
-                    break
+                    if not remaining:
+                        _open_hdulist_registry.pop(key, None)
+                    elif len(remaining) != len(entries):
+                        _open_hdulist_registry[key] = remaining
+                    self._registry_key = None
+                else:
+                    for real_path, entries in list(_open_hdulist_registry.items()):
+                        remaining = [
+                            entry
+                            for entry in entries
+                            if entry[0] is not self._file_handle
+                        ]
+                        if len(remaining) == len(entries):
+                            continue
+                        if remaining:
+                            _open_hdulist_registry[real_path] = remaining
+                        else:
+                            _open_hdulist_registry.pop(real_path, None)
+                        break
             except Exception:
                 pass
             self._file_handle.close()

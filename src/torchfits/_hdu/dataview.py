@@ -12,6 +12,7 @@ _BITPIX_TO_DTYPE: dict[int, torch.dtype] = {
     8: torch.uint8,
     16: torch.int16,
     32: torch.int32,
+    64: torch.int64,
     -32: torch.float32,
     -64: torch.float64,
 }

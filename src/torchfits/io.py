@@ -187,7 +187,6 @@ def read_tensor(
     hdu: int | str = 0,
     device: str = "cpu",
     mmap: bool = True,
-    handle_cache: bool = True,
     fp16: bool = False,
     bf16: bool = False,
     raw_scale: bool = False,
@@ -201,7 +200,6 @@ def read_tensor(
         hdu=hdu,
         device=device,
         mmap=mmap,
-        handle_cache=handle_cache,
         fp16=fp16,
         bf16=bf16,
         raw_scale=raw_scale,
@@ -231,14 +229,8 @@ def read_subset(
     y1: int,
     x2: int,
     y2: int,
-    handle_cache_capacity: int = 16,
 ) -> Any:
-    """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU.
-
-    Thin open-once path (SubsetReader). ``handle_cache_capacity`` kept for API
-    compatibility; persistent reuse belongs on :func:`open_subset_reader`.
-    """
-    _ = handle_cache_capacity
+    """Read a rectangular pixel subset (x1:y1, x2:y2) from an image HDU."""
     with open_subset_reader(path, hdu=hdu) as reader:
         return reader.read_subset(x1, y1, x2, y2)
 

@@ -380,7 +380,7 @@ model = nn.Sequential(as_module(ArcsinhStretch(a=0.1)), nn.Linear(64, 10))
 Only the forward pass is exposed; call `transform.inverse` on the wrapped
 instance for undo.
 
-### `lupton_rgb(i, r, g, *, Q=8.0, stretch=0.15)`
+### `lupton_rgb(r, g, b, *, Q=8.0, stretch=0.5)`
 
 Lupton asinh RGB from three single-band tensors (same shape). Returns a
 `[H, W, 3]` float tensor in `[0, 1]`. Matches Astropy's

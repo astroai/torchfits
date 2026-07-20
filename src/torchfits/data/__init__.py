@@ -18,6 +18,7 @@ See [API Reference — Data Module](api.md#data-module).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Iterator, Sequence
 
 import torch
@@ -33,6 +34,8 @@ from .datasets import (
 )
 from .remote import is_remote_url, prefetch_urls, resolve_local_path
 
+_log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # FitsTableDataset — row-indexable table catalog
 # ---------------------------------------------------------------------------
@@ -41,7 +44,8 @@ from .remote import is_remote_url, prefetch_urls, resolve_local_path
 class FitsTableDataset(Dataset[Any]):
     """Map-style dataset for row-indexable FITS binary tables.
 
-    Each ``__getitem__`` returns a ``dict[str, Tensor]`` for one row.
+    Each ``__getitem__`` returns a ``(row_dict, label)`` tuple where *label*
+    is a ``torch.long`` tensor (zero when no ``labels`` are provided).
     Supports column projection and ``where=`` pushdown for filtered access.
     **Loads the full filtered table at ``__init__``** — small/medium catalogs
     only; use :class:`FitsTableIterableDataset` for large files.
@@ -56,6 +60,8 @@ class FitsTableDataset(Dataset[Any]):
         Column names to read.  None reads all columns.
     where : str or None
         FITS WHERE expression for row filtering (e.g. ``"MAG < 20"``).
+    labels : list[int] or None
+        Per-row integer labels (default 0 when omitted).
     transform : callable or None
         Optional transform applied to the row dict.
     device : str
@@ -70,6 +76,7 @@ class FitsTableDataset(Dataset[Any]):
         hdu: int = 1,
         columns: list[str] | None = None,
         where: str | None = None,
+        labels: list[int] | None = None,
         transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = "auto",
@@ -98,14 +105,25 @@ class FitsTableDataset(Dataset[Any]):
                 self._n_rows = len(v)
                 break
 
+        if labels is not None:
+            if len(labels) != self._n_rows:
+                raise ValueError(
+                    f"labels length {len(labels)} != n_rows {self._n_rows}"
+                )
+            self._labels: list[int] | None = list(labels)
+        else:
+            self._labels = None
+
     def __len__(self) -> int:
         return self._n_rows
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
         row = {k: v[idx] for k, v in self._data.items()}
         if self.transform is not None:
             row = self.transform(row)
-        return row
+        label_val = 0 if self._labels is None else self._labels[idx]
+        label = torch.tensor(label_val, dtype=torch.long)
+        return row, label
 
     def __repr__(self) -> str:
         return (
@@ -149,7 +167,11 @@ def _eager_table_columns(
             if chunk:
                 return _move_table_chunk(_normalize_cpp_chunk(chunk), device)
         except Exception:
-            pass
+            _log.debug(
+                "C++ table read failed for %r, falling back to pyarrow",
+                path,
+                exc_info=True,
+            )
 
     import torchfits.table
     import pyarrow.types as pt
@@ -409,6 +431,8 @@ def fits_collate_fn(
 
     - Lists of ``dict[str, Tensor]`` are stacked per key.
     - Lists of ``Tensor`` are stacked with ``torch.stack``.
+    - Lists of ``(dict[str, Tensor], Tensor)`` (table row, label) pairs are
+      stacked into ``(dict, labels)``.
     - Lists of ``(Tensor, Tensor)`` (image, label) pairs are stacked into
       ``(images, labels)`` tuples.
     - Ragged / VLA columns raise ``ValueError``.
@@ -440,6 +464,20 @@ def fits_collate_fn(
         return out
 
     if isinstance(first, tuple) and len(first) == 2:
+        if isinstance(first[0], dict):
+            # (dict[str, Tensor], Tensor) — table rows with labels
+            stacked: dict[str, torch.Tensor] = {}
+            for key in first[0]:
+                values = [s[0][key] for s in batch]
+                if not all(isinstance(v, torch.Tensor) for v in values):
+                    raise ValueError(
+                        f"Cannot collate non-tensor column {key!r}. "
+                        f"Drop string/VLA columns or supply a custom collate_fn."
+                    )
+                stacked[key] = torch.stack(values)
+            labels = torch.stack([s[1] for s in batch])
+            return stacked, labels
+        # (Tensor, Tensor) — image, label pairs
         images = torch.stack([s[0] for s in batch])
         labels = torch.stack([s[1] for s in batch])
         return images, labels

@@ -85,7 +85,12 @@ class LogStretch(FITSTransform):
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         orig_dtype = x.dtype
-        val = torch.pow(10.0, _upcast_for_precision(x) * self._norm).sub_(1.0)
+        x_up = _upcast_for_precision(x)
+        # Clamp the exponent to avoid overflow: 10^37.9 leaves headroom for
+        # float32 (max ~3.4e38), 10^308 for float64.
+        max_safe_exp = 37.9 if x_up.dtype == torch.float32 else 308.0
+        exponent = (x_up * self._norm).clamp_max(max_safe_exp)
+        val = torch.pow(10.0, exponent).sub_(1.0)
         return val.div_(self.a).to(orig_dtype)
 
     def __repr__(self) -> str:

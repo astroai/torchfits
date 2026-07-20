@@ -2,7 +2,7 @@
 
 `torchfits` covers FITS file I/O (IMAGE HDUs → tensors, tables → dataframes,
 headers, compression) and ML helpers (`torchfits.data`, `torchfits.transforms`).
-Sky-domain modelling is out of scope. Current line: **1.0.0rc** (prerelease).
+Sky-domain modelling is out of scope. Current line: **1.0.0rc4** (prerelease).
 
 **FITS images → tensors. FITS tables → dataframes** (Arrow by default;
 Polars/Pandas one call away; tensor columns when you train). In code the

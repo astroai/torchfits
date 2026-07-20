@@ -8,6 +8,8 @@ import tempfile
 from typing import Any
 
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
+
+# Internal helpers re-exported on torchfits.io for mutation/write paths.
 from ..io import _normalize_cpp_table_data, _write_header_cards_if_supported
 
 _log = logging.getLogger(__name__)

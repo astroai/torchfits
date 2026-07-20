@@ -26,6 +26,12 @@ torchfits.read(path, hdu=0, device="cpu", mmap="auto", mode="auto",
 **Returns:** `torch.Tensor` (images), `dict[str, torch.Tensor]` (tables), or
 tuple if `return_header=True`.
 
+!!! warning "options=" vs kwargs"
+    ``options=`` (a `ReadOptions` instance) and individual keyword arguments
+    (``fp16=``, ``mmap=``, etc.) are **mutually exclusive** — passing both
+    raises a ``TypeError``. Pick one style: either ``options=ReadOptions(...)``
+    or ``read(..., mmap=True, fp16=False)``.
+
 !!! tip "When to mmap"
     Mmap helps large **local** IMAGE HDUs and repeated cutouts. Prefer
     `mmap=False` with multi-worker `DataLoader` on the same files if handle
@@ -54,7 +60,7 @@ columns = torchfits.read("catalog.fits", hdu=1)
 Read any N-dimensional FITS array directly as a PyTorch Tensor.
 
 ```python
-torchfits.read_tensor(path, hdu=0, device="cpu", mmap=True, handle_cache=True,
+torchfits.read_tensor(path, hdu=0, device="cpu", mmap=True,
                       fp16=False, bf16=False, raw_scale=False,
                       return_header=False, fallback_get_header=None)
 ```
@@ -65,7 +71,6 @@ torchfits.read_tensor(path, hdu=0, device="cpu", mmap=True, handle_cache=True,
 | `hdu` | `int` or `str` | `0` | HDU index or EXTNAME (required) |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
 | `mmap` | `bool` | `True` | Memory-mapped reads (faster for repeated access) |
-| `handle_cache` | `bool` | `True` | Cache the open FITS handle |
 | `fp16` | `bool` | `False` | Read as float16 |
 | `bf16` | `bool` | `False` | Read as bfloat16 |
 | `raw_scale` | `bool` | `False` | Skip BSCALE/BZERO, return native storage dtype |
@@ -105,7 +110,7 @@ window applies to the trailing `(y, x)` axes; the leading depth axis is kept
 in full.
 
 ```python
-torchfits.read_subset(path, hdu, x1, y1, x2, y2, handle_cache_capacity=16)
+torchfits.read_subset(path, hdu, x1, y1, x2, y2)
 ```
 
 | Parameter | Type | Default | Description |
@@ -260,6 +265,12 @@ torchfits `open` surface yet.
     memory-mapped pages and **not persisted to disk** until you call
     `hdul.flush()`. Always flush before closing the context manager if
     you modified data in-place.
+
+!!! info "EXTNAME lookup returns first match"
+    When indexing by EXTNAME (`hdul["SCI"]`), only the **first** HDU with
+    that name is returned. FITS files with duplicate EXTNAMEs (e.g.,
+    multi-chip detectors with repeated ``SCI`` extensions) must use
+    numeric indices for the second and subsequent occurrences.
 
 ---
 

@@ -251,12 +251,12 @@ def test_api_md_core_io_signatures_match_live() -> None:
     assert "scale_on_device" not in read_tensor_sig, (
         "read_tensor must not document scale_on_device (that belongs to read(..., scale_on_device=) / kwargs)"
     )
-    assert "handle_cache" in read_tensor_sig
+    assert "mmap" in read_tensor_sig
 
     subset_section = _section("read_subset")
     subset_sig = _first_call_sig(subset_section)
     assert "device" not in subset_sig
-    assert "handle_cache_capacity" in subset_sig
+    assert "x1" in subset_sig
 
     # Table streaming lives in api-tables.md (root stream_table removed).
     tables_api = (ROOT / "docs" / "api-tables.md").read_text(encoding="utf-8")

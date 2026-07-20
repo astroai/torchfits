@@ -10,7 +10,7 @@ import torchfits
 from torchfits import table as tf_table
 
 from .common import EXIT_OK, IoError, UsageError, add_hdu_arg
-from .rgb import lupton_rgb, write_rgb_image
+from torchfits.transforms.rgb import lupton_rgb, write_rgb_image
 
 _TABLE_FORMATS = ("parquet", "csv", "tsv", "arrow", "fits")
 _ALL_FORMATS = (*_TABLE_FORMATS, "png")

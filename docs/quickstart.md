@@ -1,6 +1,6 @@
 # Quick Start
 
-Get up and running with torchfits in minutes. Current PyPI line is **1.0.0rc**
+Get up and running with torchfits in minutes. Current PyPI line is **1.0.0rc4**
 (prerelease); see [Changelog](changelog.md) for release notes.
 
 ## Install

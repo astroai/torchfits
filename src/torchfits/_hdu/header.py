@@ -34,7 +34,11 @@ class Header(dict[str, Any]):
                 for card in cards:
                     if type(card) is tuple and len(card) == 3:
                         key, value, comment = card
-                        card_obj = Card(str(key), value, str(comment))
+                        card_obj = Card(
+                            str(key),
+                            value,
+                            "" if comment is None else str(comment),
+                        )
                         append(card_obj)
                         if key not in {"HISTORY", "COMMENT"}:
                             setitem(key, value)
@@ -101,14 +105,24 @@ class Header(dict[str, Any]):
         return res
 
     def popitem(self) -> tuple[str, Any]:
-        res = super().popitem()
-        key = str(res[0])
+        key, value = super().popitem()
+        key_s = str(key)
+        # Prefer the card whose value matches the mapping entry we just popped
+        # (insert() can leave duplicate keys; first-key linear search is wrong).
+        match_idx: int | None = None
         for idx, card in enumerate(self._cards):
-            if card.key == key:
-                del self._cards[idx]
+            if card.key == key_s and card.value == value:
+                match_idx = idx
                 break
+        if match_idx is None:
+            for idx, card in enumerate(self._cards):
+                if card.key == key_s:
+                    match_idx = idx
+                    break
+        if match_idx is not None:
+            del self._cards[match_idx]
         self._version += 1
-        return res
+        return key_s, value
 
     def setdefault(self, key: str, default: Any = None) -> Any:
         key_s = str(key)
@@ -190,7 +204,7 @@ class Header(dict[str, Any]):
             comment = ""
         else:
             raise ValueError("card tuples must have 2 or 3 items")
-        return Card(str(key), value, str(comment))
+        return Card(str(key), value, "" if comment is None else str(comment))
 
     def _append_card(
         self, card: Card, *, update_mapping: bool, bump: bool = True

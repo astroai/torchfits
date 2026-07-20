@@ -7,7 +7,6 @@ import warnings
 from collections.abc import Callable
 from dataclasses import fields
 from typing import Any, cast
-import unittest.mock as _unittest_mock
 
 import torch
 from torch import Tensor
@@ -26,6 +25,21 @@ _CPP_ATTR_CACHE: dict[
 _READ_OPTION_FIELD_NAMES: frozenset[str] = frozenset(
     f.name for f in fields(ReadOptions)
 )
+
+
+def _is_cpp_module_mocked(cpp_module: Any) -> bool:
+    """Detect if *cpp_module* (or its ``read_full``) is a mock object.
+
+    Avoid importing ``unittest.mock``. Mock objects set ``_mock_name`` when
+    instantiated; real extension modules never carry this attribute. Covers
+    both ``patch("torchfits.cpp", ...)`` (module mocked) and patching only
+    ``read_full`` on a real module. The CPU fast path is skipped for mocks so
+    tests that patch the C++ module fall through to the generic/fallback path.
+    """
+    if getattr(cpp_module, "_mock_name", None) is not None:
+        return True
+    read_full = getattr(cpp_module, "read_full", None)
+    return getattr(read_full, "_mock_name", None) is not None
 
 
 def _cpp_has(cpp_module: Any, attr: str) -> bool:
@@ -352,9 +366,7 @@ def read_unified(
         )
 
     # --- strategy 1: CPU image fast path ---
-    cpp_is_mocked = isinstance(
-        getattr(cpp_module, "read_full", None), _unittest_mock.Mock
-    )
+    cpp_is_mocked = _is_cpp_module_mocked(cpp_module)
 
     if (
         scale_on_device

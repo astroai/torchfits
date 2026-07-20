@@ -69,7 +69,7 @@ torchfits header image.fits -k OBJECT -f json
 
 ## Why torchfits?
 
-torchfits is a **1.0.0rc** prerelease — see [Changelog](changelog.md) and
+torchfits is a **1.0.0rc4** prerelease — see [Changelog](changelog.md) and
 [Benchmarks](benchmarks.md#performance-deficits) for scope and known lags.
 
 | | astropy / fitsio | torchfits |

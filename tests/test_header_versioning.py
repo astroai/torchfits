@@ -1,4 +1,5 @@
 from torchfits.hdu import Header
+from torchfits.header_parser import fast_parse_header_cards
 
 
 def test_header_versioning():
@@ -27,3 +28,20 @@ def test_header_versioning():
 
     h.clear()
     assert h._version == 7
+
+
+def test_fast_parse_header_cards_empty_comment_is_str():
+    """Cards without '/' must get comment '' (not None → Header 'None')."""
+    cards = [
+        "SIMPLE  =                    T / file does conform to FITS standard             ",
+        "BITPIX  =                   16                                                  ",
+        "END                                                                             ",
+    ]
+    header_string = "".join(c.ljust(80) for c in cards)
+    parsed = fast_parse_header_cards(header_string)
+    by_key = {k: (v, c) for k, v, c in parsed}
+    assert by_key["SIMPLE"][1] != ""
+    assert by_key["BITPIX"][1] == ""
+    h = Header(parsed)
+    bitpix_cards = [c for c in h.cards if c.key == "BITPIX"]
+    assert bitpix_cards and bitpix_cards[0].comment == ""

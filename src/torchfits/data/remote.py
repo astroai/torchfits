@@ -166,6 +166,19 @@ def _download_once(cache_key: str, url: str, dest: Path) -> Path:
         return _download(url, dest)
 
 
+def _cleanup_cache_key(cache_key: str) -> None:
+    """Remove per-key download bookkeeping after a completed transfer.
+
+    Does NOT pop from ``_download_locks`` — those Lock objects are tiny and
+    removing them creates a race window where two threads could enter
+    ``_download_once`` with different locks and download the same file in
+    parallel, corrupting ``.partial``.
+    """
+    with _prefetch_lock:
+        _prefetch_threads.pop(cache_key, None)
+        _prefetch_errors.pop(cache_key, None)
+
+
 def resolve_local_path(
     path: str,
     *,
@@ -179,6 +192,7 @@ def resolve_local_path(
     cache_key = normalize_vos_uri(path) if is_vos_path(path) else path
     dest = cache_path_for_url(cache_key, cache_dir=cache_dir)
     if dest.is_file():
+        _cleanup_cache_key(cache_key)
         return str(dest)
     # Prefetch threads are keyed by cache_key so vos:/vault: aliases share one
     # in-flight download and do not race the same ".partial".
@@ -190,12 +204,15 @@ def resolve_local_path(
         with _prefetch_lock:
             prefetch_error = _prefetch_errors.pop(cache_key, None)
         if dest.is_file():
+            _cleanup_cache_key(cache_key)
             return str(dest)
     if prefetch_error is not None:
         raise prefetch_error
     if not download:
         return str(dest)
-    return str(_download_once(cache_key, path, dest))
+    result = str(_download_once(cache_key, path, dest))
+    _cleanup_cache_key(cache_key)
+    return result
 
 
 def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None:

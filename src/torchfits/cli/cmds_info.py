@@ -38,8 +38,8 @@ def _info_record(path: str, index: int, hdu: Any) -> dict[str, Any]:
         "type": hdu_type_name(header, hdu),
     }
     if record["type"] == "IMAGE":
-        shape = getattr(hdu, "_get_shape_str", lambda: None)()
-        dtype = getattr(hdu, "_get_dtype_str", lambda: None)()
+        shape = getattr(hdu, "shape_str", None)
+        dtype = getattr(hdu, "dtype_str", None)
         if shape is not None:
             record["shape"] = shape
         if dtype is not None:

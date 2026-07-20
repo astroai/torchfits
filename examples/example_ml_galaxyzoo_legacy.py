@@ -34,7 +34,7 @@ from examples._sample_data import (  # noqa: E402
 
 import torchfits  # noqa: E402
 from torchfits import table as tf_table  # noqa: E402
-from torchfits.cli.rgb import write_rgb_image  # noqa: E402
+from torchfits.transforms.rgb import write_rgb_image  # noqa: E402
 from torchfits.data import FitsImageDataset, make_loader  # noqa: E402
 from torchfits.transforms import (  # noqa: E402
     ArcsinhStretch,
@@ -137,7 +137,7 @@ def _save_class_grid(paths: list[Path], labels: list[int]) -> None:
         img = torch.nan_to_num(img, nan=0.0)
         # Legacy Survey fits-cutout bands=grz → [g,r,z]; Lupton wants R,G,B = z,r,g
         g, r, z = img[0], img[1], img[2]
-        tiles.append(lupton_rgb(z, r, g, Q=8.0, stretch=0.3).float())
+        tiles.append(lupton_rgb(r=z, g=r, b=g, Q=8.0, stretch=0.3).float())
     cols = 4
     rows = (n + cols - 1) // cols
     canvas = torch.zeros((rows * SIZE, cols * SIZE, 3), dtype=torch.float32)

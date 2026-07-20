@@ -105,6 +105,16 @@ class TensorHDU:
             return str(bitpix)
         return "unknown"
 
+    @property
+    def shape_str(self) -> str:
+        """Public accessor for the human-readable shape string."""
+        return self._get_shape_str()
+
+    @property
+    def dtype_str(self) -> str:
+        """Public accessor for the human-readable dtype string."""
+        return self._get_dtype_str()
+
     def __repr__(self) -> str:
         name = self.header.get("EXTNAME", "PRIMARY")
         return f"TensorHDU(name='{name}', shape={self._get_shape_str()}, dtype={self._get_dtype_str()})"

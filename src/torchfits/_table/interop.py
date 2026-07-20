@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -305,41 +304,6 @@ def to_polars(
     return pl.from_arrow(data, rechunk=rechunk)
 
 
-def to_polars_lazy(
-    data: str | Any | Iterable[Any],
-    *,
-    rechunk: bool = False,
-    **kwargs: Any,
-) -> Any:
-    """
-    Convert table data into a Polars LazyFrame for complex expressions.
-
-    .. deprecated:: 1.0
-        This function **materializes** the entire Arrow table eagerly before
-        wrapping it in a LazyFrame.  It is *not* a lazy FITS I/O path.
-        Use :func:`scan_polars` for genuine streaming; ``to_polars_lazy`` will
-        be removed in 1.1.
-
-    Args:
-        data: FITS file path, pyarrow.Table, or iterable of pyarrow.RecordBatch.
-        rechunk: When True (default False), force Polars to concatenate chunks.
-    """
-    warnings.warn(
-        "to_polars_lazy materializes the full table eagerly and is not a lazy "
-        "FITS I/O path; use scan_polars for genuine streaming. "
-        "to_polars_lazy is deprecated and will be removed in 1.1.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    try:
-        import polars as pl
-    except ImportError as exc:
-        raise ImportError("polars is required for to_polars_lazy conversion") from exc
-
-    table = _materialize_arrow_table(data, **kwargs)
-    return pl.from_arrow(table, rechunk=rechunk).lazy()  # type: ignore[union-attr]
-
-
 def scan_polars(
     path: str,
     *,
@@ -349,10 +313,10 @@ def scan_polars(
 ) -> Iterator[Any]:
     """Stream FITS table data as Polars DataFrames, one batch at a time.
 
-    Unlike :func:`to_polars_lazy`, this is a genuine streaming path: it yields
-    one ``pl.DataFrame`` per internal batch without materializing the entire
-    table.  Use this for large FITS tables that do not fit comfortably in
-    memory or when you want to process chunks incrementally.
+    This is a genuine streaming path: it yields one ``pl.DataFrame`` per
+    internal batch without materializing the entire table.  Use this for large
+    FITS tables that do not fit comfortably in memory or when you want to
+    process chunks incrementally.
 
     Args:
         path: FITS file path.

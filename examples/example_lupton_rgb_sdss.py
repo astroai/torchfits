@@ -1,6 +1,7 @@
 """Example: Lupton+ (2004) asinh RGB from reprojected SDSS g/r/i cutouts.
 
-Astropy's convention maps the reddest band to R: ``lupton_rgb(i, r, g)``.
+The function signature is ``lupton_rgb(r, g, b)``. Astropy convention maps
+the reddest band (i) to the R channel, so we pass ``r=i, g=r, b=g``.
 The sample images ship ``.fits.bz2``; CFITSIO doesn't decompress bzip2, so
 this example inflates them to a temp ``.fits`` file first. Skips cleanly if
 the samples aren't cached (fetch via ``bash scripts/fetch_example_samples.sh``).
@@ -24,7 +25,7 @@ from examples._sample_data import try_ensure_sample  # noqa: E402
 import torch  # noqa: E402
 
 import torchfits  # noqa: E402
-from torchfits.cli.rgb import write_rgb_image  # noqa: E402
+from torchfits.transforms.rgb import write_rgb_image  # noqa: E402
 from torchfits.transforms import lupton_rgb  # noqa: E402
 
 
@@ -67,8 +68,8 @@ def main() -> int:
 
     # stretch=0.15: this SDSS sample's object fluxes sit near ~0.1–1 counts;
     # Astropy tutorials often use 0.5, but that leaves this field near-black in a
-    # browser. The mapping itself is Astropy-parity (see lupton_rgb).
-    rgb = lupton_rgb(i, r, g, Q=8.0, stretch=0.15)
+    # browser. The mapping itself is Astropy-parity: r=i (reddest → R), g=r, b=g.
+    rgb = lupton_rgb(r=i, g=r, b=g, Q=8.0, stretch=0.15)
     luma = (rgb.clamp(0, 1) * 255).mean(dim=-1)
     print(
         f"lupton_rgb: shape={tuple(rgb.shape)} "

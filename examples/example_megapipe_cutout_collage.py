@@ -30,7 +30,8 @@ from examples._sample_data import megapipe_dir  # noqa: E402
 import torch  # noqa: E402
 
 import torchfits  # noqa: E402
-from torchfits.cli.rgb import lupton_rgb, write_rgb_image  # noqa: E402
+from torchfits.transforms.rgb import write_rgb_image  # noqa: E402
+from torchfits.transforms import lupton_rgb  # noqa: E402
 
 FETCH_CMD = "bash scripts/fetch_cfht_megapipe_sample.sh"
 SIZE = 64
@@ -303,9 +304,10 @@ def main() -> int:
         f"{time.perf_counter() - t0:.2f}s"
     )
 
-    # Astropy-default stretch=5 suits mag~17–22 MegaPipe stamps.
+    # lupton_rgb(r, g, b): Astropy convention maps reddest band (i) → R channel.
+    # stretch=5 suits mag~17–22 MegaPipe stamps.
     rgb_list = [
-        lupton_rgb(i_c, r_c, g_c, Q=8.0, stretch=5.0)
+        lupton_rgb(r=i_c, g=r_c, b=g_c, Q=8.0, stretch=5.0)
         for g_c, r_c, i_c in zip(g_cuts, r_cuts, i_cuts, strict=True)
     ]
 

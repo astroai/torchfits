@@ -73,9 +73,7 @@ def run(args: argparse.Namespace) -> int:
         public = set(tf_transforms.__all__)
         if name not in public:
             raise UsageError(f"unknown transform: {name}")
-        cls = getattr(tf_transforms, name, None)
-        if cls is None or not callable(cls):
-            raise UsageError(f"unknown transform: {name}")
+        cls = getattr(tf_transforms, name)
         if kwargs:
             valid_params = set(inspect.signature(cls).parameters)
             unknown = sorted(set(kwargs) - valid_params)

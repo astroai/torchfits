@@ -73,12 +73,12 @@ sym = SigmaClip(n_sigma=3.0)(flux)
 `lupton_rgb` matches Astropy's Lupton asinh mapping (per-pixel peak clip). On
 this reprojected SDSS g/r/i sample the object fluxes are faint, so the gallery
 uses `Q=8, stretch=0.15` (Astropy's default stretch is `5`; tutorials often
-use `0.5`). Reddest band → R:
+use `0.5`). Astropy convention maps the reddest band (i) to the R channel:
 
 ```python
 from torchfits.transforms import lupton_rgb
 
-rgb = lupton_rgb(i, r, g, Q=8.0, stretch=0.15)
+rgb = lupton_rgb(r=i, g=r, b=g, Q=8.0, stretch=0.15)
 ```
 
 ![Lupton RGB from SDSS g/r/i](assets/gallery/lupton_rgb_sdss.png)

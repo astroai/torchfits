@@ -84,9 +84,12 @@ def main() -> None:
                 print("Polars not installed; skipping LazyFrame recipe")
             else:
                 summary = (
-                    torchfits.table.to_polars_lazy(
-                        catalog_file.name, hdu=1, decode_bytes=True
+                    pl.concat(
+                        torchfits.table.scan_polars(
+                            catalog_file.name, hdu=1, decode_bytes=True
+                        )
                     )
+                    .lazy()
                     .filter(pl.col("MAG_G").is_not_null())
                     .group_by("BAND")
                     .agg(

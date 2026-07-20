@@ -1,5 +1,5 @@
 """
-Example: Polars integration via torchfits.table.to_polars and to_polars_lazy.
+Example: Polars integration via torchfits.table.to_polars, read_polars, and scan_polars.
 """
 
 import os
@@ -63,11 +63,10 @@ def main() -> None:
         print(f"  Column metadata (flux_g): {result.field_meta.get('flux_g', {})}")
         print(result.head(3))
 
-        # LazyFrame for complex aggregations
-        # NOTE: to_polars_lazy materializes the full table eagerly.
-        # For large tables, use scan_polars() for genuine streaming.
+        # LazyFrame for complex aggregations via scan_polars
         summary = (
-            torchfits.table.to_polars_lazy(path, hdu=1)
+            pl.concat(torchfits.table.scan_polars(path, hdu=1))
+            .lazy()
             .filter(pl.col("flux_g") > 500)
             .group_by("class")
             .agg(

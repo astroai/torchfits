@@ -325,59 +325,29 @@ def fast_parse_header(header_string: str) -> Dict[str, Any]:
     return FastHeaderParser.parse_header_string(header_string)
 
 
-def fast_parse_header_cards(header_string: str) -> list[tuple[str, Any, str]]:
-    """
-    Parse a raw FITS header string into ordered ``(keyword, value, comment)`` cards.
+def fast_parse_header_cards(
+    header_string: str,
+) -> list[tuple[str, Any, str]]:
+    """Parse a FITS header string into a list of (keyword, value, comment) tuples.
 
-    This preserves repeated HISTORY/COMMENT cards and keeps typed FITS scalar
-    values available to ``Header`` callers.
-    """
-    if not header_string:
-        return []
+    Args:
+        header_string: Raw header string from C++ fits_hdr2str()
 
+    Returns:
+        List of ``(keyword, value, comment)`` tuples. ``comment`` is ``""``
+        when no comment separator was found on the card.
+    """
     cards: list[tuple[str, Any, str]] = []
-    for i in range(0, len(header_string), 80):
+    str_len = len(header_string)
+    for i in range(0, str_len, 80):
         card = header_string[i : i + 80]
         if card.startswith("END     "):
             break
-        key, value, comment = FastHeaderParser._parse_card(card)
-        if key:
-            cards.append((key, value, "" if comment is None else str(comment)))
+        if not card or card.isspace():
+            continue
+        if len(card) < 80:
+            card = card.ljust(80)
+        kw, val, comment = FastHeaderParser._parse_card(card)
+        if kw is not None:
+            cards.append((kw, val, "" if comment is None else str(comment)))
     return cards
-
-
-def benchmark_header_parsing(
-    header_string: str, num_iterations: int = 100
-) -> Dict[str, float]:
-    """
-    Benchmark header parsing performance.
-
-    Args:
-        header_string: Header string to parse
-        num_iterations: Number of parsing iterations
-
-    Returns:
-        Performance metrics dictionary
-    """
-    import time
-
-    # Warmup
-    FastHeaderParser.parse_header_string(header_string)
-
-    # Benchmark
-    start_time = time.perf_counter()
-    for _ in range(num_iterations):
-        FastHeaderParser.parse_header_string(header_string)
-    end_time = time.perf_counter()
-
-    total_time = end_time - start_time
-    avg_time_ms = (total_time / num_iterations) * 1000
-    throughput_headers_per_sec = num_iterations / total_time
-
-    return {
-        "avg_parse_time_ms": avg_time_ms,
-        "throughput_headers_per_sec": throughput_headers_per_sec,
-        "total_time_s": total_time,
-        "header_size_bytes": len(header_string),
-        "num_iterations": num_iterations,
-    }

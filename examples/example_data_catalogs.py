@@ -39,7 +39,7 @@ def main() -> None:
         # Map-style table: eager load, random access by row index
         table_ds = FitsTableDataset(table_path, columns=["flux", "mag"])
         print(f"FitsTableDataset rows: {len(table_ds)}")
-        row0 = table_ds[0]
+        row0, label0 = table_ds[0]
         print(f"  row0 flux={row0['flux'].item():.1f}, mag={row0['mag'].item():.1f}")
 
         # Iterable table: constant memory via table.scan
