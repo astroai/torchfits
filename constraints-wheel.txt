@@ -1,0 +1,4 @@
+# Pin the published-wheel ABI lane. Source installs still allow torch>=2.10
+# via pyproject.toml; cibuildwheel must not resolve torch 2.11+ at build time
+# or the extension ABI check fails against the 2.10 test/runtime pin.
+torch>=2.10,<2.11

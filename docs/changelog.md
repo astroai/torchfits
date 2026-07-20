@@ -81,6 +81,8 @@ Fourth release candidate for collaborator soak after prep / deep-review cleanup.
 - Remote prefetch bookkeeping cleaned after completed downloads (locks retained).
 - WHERE `BETWEEN` boundaries no longer use bare `\S+` (operators/parens).
 - `fast_parse_header_cards` / `Header` keep empty comments as `""` (not `"None"`).
+- Wheel builds pin torch 2.10 ABI (`--no-build-isolation` + before-build install)
+  so release smoke no longer fails against a 2.13-built extension.
 - Deep-review P0–P4 harden (WHERE OOM gate, batch exception narrowing, HDU close
   race, prefetch errors, mutation cache barrier, NAXIS overflow guard).
 

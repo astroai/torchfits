@@ -22,7 +22,9 @@ dataset zoo, CLI trim) stay deferred.
 
 ## Near-term (through 1.0.0)
 
-- Soak `1.0.0rc4` with collaborators; fold feedback before SemVer `1.0.0`
+- Republish `1.0.0rc4` wheels with torch 2.10 ABI pin in cibuildwheel (tag
+  retarget after wheel workflow fix); soak with collaborators
+- Fold soak feedback before SemVer `1.0.0`
 - Benchmark honesty: tensor vs table domains, CPU↔GPU deficits visible, CFITSIO-direct in the exhaustive table, MegaCam multi-cutout suite
 - CLI depth: HIERARCH keys, batch header edit, honest `verify` scope, real RGB demos
 - Publish exhaustive CSVs with release artifacts for user analysis

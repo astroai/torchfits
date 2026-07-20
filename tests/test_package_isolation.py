@@ -41,6 +41,16 @@ def test_native_torch_abi_range_is_consistent() -> None:
         assert 'pip install "torch>=2.10,<2.11"' in workflow
         assert "pip install torch " not in workflow
 
+    wheel_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "build_wheels.yml"
+    ).read_text(encoding="utf-8")
+    assert "CIBW_BUILD_FRONTEND" in wheel_workflow
+    assert "--no-build-isolation" in wheel_workflow
+    assert (REPO_ROOT / "constraints-wheel.txt").is_file()
+    assert "torch>=2.10,<2.11" in (REPO_ROOT / "constraints-wheel.txt").read_text(
+        encoding="utf-8"
+    )
+
     cmake = (PACKAGE_ROOT / "cpp_src" / "CMakeLists.txt").read_text(encoding="utf-8")
     bindings = (PACKAGE_ROOT / "cpp_src" / "bindings.cpp").read_text(encoding="utf-8")
     assert "TORCHFITS_BUILD_TORCH_VERSION" in cmake
