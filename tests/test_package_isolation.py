@@ -67,6 +67,7 @@ def test_native_torch_abi_range_is_consistent() -> None:
 
 def test_native_extension_rejects_mismatched_torch_runtime() -> None:
     import torch
+
     expected_abi = ".".join(torch.__version__.split(".")[:2])
     script = """
 import torch
@@ -77,7 +78,9 @@ import torchfits._C
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
     assert result.returncode != 0
-    assert f"built for PyTorch {expected_abi}.x but found PyTorch 9.99.0" in result.stderr
+    assert (
+        f"built for PyTorch {expected_abi}.x but found PyTorch 9.99.0" in result.stderr
+    )
 
 
 def test_torchfits_source_does_not_reference_torchsky() -> None:
