@@ -25,3 +25,6 @@
 
 - id: scorecard-deficit-significance
   desc: `compute_deficits` always emits lag rows; floors only set `significance` to noise|significant — unit tests must not expect `[]` for under-floor lags.
+
+- id: int16-robust-quantize
+  desc: Skewed float→int16 loss is write/quantize (BSCALE/BZERO or TSCAL/TZERO); use write(..., quantize="robust") / table.write quantize= — never default global min→max (poloka).

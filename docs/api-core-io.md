@@ -129,10 +129,12 @@ remote cache first, then cut out locally.
 stamp = torchfits.read_subset("mosaic.fits", hdu=0, x1=0, y1=0, x2=256, y2=256)
 ```
 
-CFITSIO image sections on the path (1-based inclusive), e.g.
-`read_tensor("mosaic.fits[1:256,1:256]")`, are passed through to CFITSIO.
-Prefer `read_subset` / CLI `--box` for torchfits-native 0-based half-open
-windows. Do not stack a path section with `read_subset` coordinates.
+CFITSIO image sections on the path (1-based inclusive) work the same way
+users expect from `imcopy` / CFITSIO, e.g.
+`read_tensor("mosaic.fits[1:256,1:256]")` or
+`torchfits cutout 'mosaic.fits[1:256,1:256]' out.fits`. For Python /
+NumPy-style windows use `read_subset` or CLI `--box` (0-based half-open).
+Do not stack a path section with `read_subset` / `--box` on the same call.
 Binspec / complex CFITSIO filters are not a certified torchfits surface —
 use `table.read(..., where=)` for catalog predicates.
 
@@ -381,7 +383,8 @@ filtered/`where=` read; for cold filtered reads use
 Write a tensor, numpy array, dict table, or HDUList to FITS.
 
 ```python
-torchfits.write(path, data, header=None, overwrite=False, compress=False)
+torchfits.write(path, data, header=None, overwrite=False, compress=False,
+                quantize=None)
 ```
 
 | Parameter | Type | Default | Description |
@@ -391,17 +394,28 @@ torchfits.write(path, data, header=None, overwrite=False, compress=False)
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
 | `compress` | `bool` or `str` | `False` | `True`, `"gzip"`, `"rice"`, etc. |
+| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
+
+!!! tip "Skewed float → int16"
+    Linear min→max packing onto int16 wastes codes on rare extremes. Prefer
+    native float (`quantize=None`). When size forces int16, use
+    `quantize="robust"` (default percentiles `lo_q=0.1`, `hi_q=99.9` + clip)
+    or a dict `{"lo_q", "hi_q", "keep_zero"}` — not global min/max. Same helper
+    packs table columns via `table.write(..., quantize=)`. See
+    [`example_quantize_int16.py`](published-examples/example_quantize_int16.py).
 
 ### `write_tensor()`
 
 Write a single PyTorch Tensor to a FITS image extension.
 
 ```python
-torchfits.write_tensor(path, tensor, header=None, overwrite=False, compress=False)
+torchfits.write_tensor(path, tensor, header=None, overwrite=False, compress=False,
+                       quantize=None)
 ```
 
 ```python
 torchfits.write_tensor("out.fits", tensor, header={"OBJECT": "M31"}, overwrite=True)
+torchfits.write_tensor("packed.fits", tensor, quantize="robust", overwrite=True)
 ```
 
 ---

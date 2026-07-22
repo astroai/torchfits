@@ -849,29 +849,35 @@ void SubsetReader::init_from_hdu() {
     const auto scale = file_.get_scale_info_for_hdu(hdu_num_);
     // Match full-image logical dtypes — do not float-promote signed-byte /
     // unsigned integer conventions (that lost to fitsio int8 cutouts).
+    // Keep mmap eligible for the three FITS integer conventions (same as
+    // read_tensor_canonical); only arbitrary BSCALE/BZERO falls back to
+    // fits_read_subset float promotion.
     if (scale.scaled && bitpix == BYTE_IMG && scale.bscale == 1.0 && scale.bzero == -128.0) {
-        dtype_ = torch::kInt8; datatype_ = TSBYTE; return;
-    }
-    if (scale.scaled && bitpix == SHORT_IMG && scale.bscale == 1.0 && scale.bzero == 32768.0) {
-        dtype_ = torch::kUInt16; datatype_ = TUSHORT; return;
-    }
-    if (scale.scaled && bitpix == LONG_IMG && scale.bscale == 1.0 && scale.bzero == 2147483648.0) {
-        dtype_ = torch::kUInt32; datatype_ = TUINT; return;
-    }
-    if (scale.scaled) {
+        dtype_ = torch::kInt8; datatype_ = TSBYTE; elem_bytes_ = 1;
+        mmap_conv_ = MmapConv::SignedByte;
+    } else if (scale.scaled && bitpix == SHORT_IMG && scale.bscale == 1.0 &&
+               scale.bzero == 32768.0) {
+        dtype_ = torch::kUInt16; datatype_ = TUSHORT; elem_bytes_ = 2;
+        mmap_conv_ = MmapConv::UInt16;
+    } else if (scale.scaled && bitpix == LONG_IMG && scale.bscale == 1.0 &&
+               scale.bzero == 2147483648.0) {
+        dtype_ = torch::kUInt32; datatype_ = TUINT; elem_bytes_ = 4;
+        mmap_conv_ = MmapConv::UInt32;
+    } else if (scale.scaled) {
         dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
-    }
-    switch (bitpix) {
-        case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      elem_bytes_ = 1; break;
-        case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     elem_bytes_ = 2; break;
-        case LONG_IMG:     dtype_ = torch::kInt32;  datatype_ = TINT;       elem_bytes_ = 4; break;
-        case LONGLONG_IMG: dtype_ = torch::kInt64;  datatype_ = TLONGLONG;  elem_bytes_ = 8; break;
-        case FLOAT_IMG:    dtype_ = torch::kFloat32; datatype_ = TFLOAT;    elem_bytes_ = 4; break;
-        case DOUBLE_IMG:   dtype_ = torch::kFloat64; datatype_ = TDOUBLE;   elem_bytes_ = 8; break;
-        default: throw std::runtime_error("Unsupported BITPIX");
+    } else {
+        switch (bitpix) {
+            case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      elem_bytes_ = 1; break;
+            case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     elem_bytes_ = 2; break;
+            case LONG_IMG:     dtype_ = torch::kInt32;  datatype_ = TINT;       elem_bytes_ = 4; break;
+            case LONGLONG_IMG: dtype_ = torch::kInt64;  datatype_ = TLONGLONG;  elem_bytes_ = 8; break;
+            case FLOAT_IMG:    dtype_ = torch::kFloat32; datatype_ = TFLOAT;    elem_bytes_ = 4; break;
+            case DOUBLE_IMG:   dtype_ = torch::kFloat64; datatype_ = TDOUBLE;   elem_bytes_ = 8; break;
+            default: throw std::runtime_error("Unsupported BITPIX");
+        }
     }
 
-    // Uncompressed primary/local 2D image: row pread + endian swap beats
+    // Uncompressed primary/local 2D image: row mmap + endian swap beats
     // fits_read_subset on large mosaics (page-cache + memcpy, like fitsio memmap).
     const bool compressed = file_.is_compressed_image_cached(hdu_num_);
     if (!compressed && naxis_ == 2 && elem_bytes_ > 0 &&
@@ -883,6 +889,8 @@ void SubsetReader::init_from_hdu() {
         if (status == 0 && data_offset > 0) {
             data_offset_ = data_offset;
             raw_fast_ok_ = true;
+            // Amortize first-cutout latency for the open_subset_reader hot path.
+            (void)ensure_data_mmap();
         }
     }
 }
@@ -938,6 +946,7 @@ bool SubsetReader::try_read_via_mmap(
     const size_t row_bytes = static_cast<size_t>(width) * elem_bytes_;
     uint8_t* base = static_cast<uint8_t*>(out.data_ptr());
     const bool swap = host_is_little_endian() && elem_bytes_ > 1;
+    const size_t n = static_cast<size_t>(width);
 
     for (long y = y1; y < y2; ++y) {
         const uint8_t* src =
@@ -945,23 +954,53 @@ bool SubsetReader::try_read_via_mmap(
             (static_cast<size_t>(y) * static_cast<size_t>(naxis1) + static_cast<size_t>(x1)) *
                 elem_bytes_;
         uint8_t* dst_row = base + static_cast<size_t>(y - y1) * row_bytes;
-        if (!swap || elem_bytes_ == 1) {
+        if (elem_bytes_ == 1) {
             std::memcpy(dst_row, src, row_bytes);
+            if (mmap_conv_ == MmapConv::SignedByte) {
+                detail::_xor_sign_bit_u8(dst_row, row_bytes);
+            }
         } else if (elem_bytes_ == 2) {
-            internal::bswap16_copy(
-                reinterpret_cast<const uint16_t*>(src),
-                reinterpret_cast<uint16_t*>(dst_row),
-                static_cast<size_t>(width));
+            auto* dst16 = reinterpret_cast<uint16_t*>(dst_row);
+            const auto* src16 = reinterpret_cast<const uint16_t*>(src);
+            if (mmap_conv_ == MmapConv::UInt16) {
+                if (swap) {
+                    internal::bswap16_copy_u16_offset(
+                        src16, dst16, n, static_cast<uint16_t>(32768));
+                } else {
+                    for (size_t i = 0; i < n; ++i) {
+                        dst16[i] = static_cast<uint16_t>(src16[i] + 32768);
+                    }
+                }
+            } else if (swap) {
+                internal::bswap16_copy(src16, dst16, n);
+            } else {
+                std::memcpy(dst_row, src, row_bytes);
+            }
         } else if (elem_bytes_ == 4) {
-            internal::bswap32_copy(
-                reinterpret_cast<const uint32_t*>(src),
-                reinterpret_cast<uint32_t*>(dst_row),
-                static_cast<size_t>(width));
+            auto* dst32 = reinterpret_cast<uint32_t*>(dst_row);
+            const auto* src32 = reinterpret_cast<const uint32_t*>(src);
+            if (mmap_conv_ == MmapConv::UInt32) {
+                if (swap) {
+                    internal::bswap32_copy_u32_offset(src32, dst32, n, 2147483648u);
+                } else {
+                    for (size_t i = 0; i < n; ++i) {
+                        dst32[i] = src32[i] + 2147483648u;
+                    }
+                }
+            } else if (swap) {
+                internal::bswap32_copy(src32, dst32, n);
+            } else {
+                std::memcpy(dst_row, src, row_bytes);
+            }
         } else if (elem_bytes_ == 8) {
-            internal::bswap64_copy(
-                reinterpret_cast<const uint64_t*>(src),
-                reinterpret_cast<uint64_t*>(dst_row),
-                static_cast<size_t>(width));
+            if (swap) {
+                internal::bswap64_copy(
+                    reinterpret_cast<const uint64_t*>(src),
+                    reinterpret_cast<uint64_t*>(dst_row),
+                    n);
+            } else {
+                std::memcpy(dst_row, src, row_bytes);
+            }
         } else {
             return false;
         }

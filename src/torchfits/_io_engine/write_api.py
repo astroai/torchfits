@@ -15,6 +15,11 @@ from torch import Tensor
 from ..hdu import HDUList, Header, TableHDU, TableHDURef, TensorHDU
 from .caches import invalidate_path_caches as _invalidate_io_path_caches
 from .hdu_api import open_hdulist
+from .quantize import (
+    parse_image_quantize_spec,
+    parse_table_quantize_spec,
+    quantize_int16_robust,
+)
 
 
 def _invalidate_path_caches(path: str) -> None:
@@ -72,14 +77,100 @@ def _unsigned_image_storage_for_fits_write(
     return tensor, {}
 
 
+def _apply_image_quantize(
+    tensor: Tensor,
+    header: Optional[Dict[str, Any]],
+    quantize: Any,
+) -> tuple[Tensor, Optional[Dict[str, Any]]]:
+    """Opt-in robust int16 pack for float images (any NAXIS).
+
+    Returns storage int16 codes plus BSCALE/BZERO. Default ``quantize=None``
+    leaves float tensors as BITPIX=-32/-64.
+    """
+    opts = parse_image_quantize_spec(quantize)
+    if opts is None:
+        return tensor, header
+    if not isinstance(tensor, Tensor):
+        raise TypeError("quantize= requires a torch.Tensor image")
+    if not tensor.is_floating_point():
+        raise TypeError(
+            f"quantize= requires a floating-point image tensor, got dtype={tensor.dtype}"
+        )
+    packed = quantize_int16_robust(
+        tensor, lo_q=opts.lo_q, hi_q=opts.hi_q, keep_zero=opts.keep_zero
+    )
+    extra = {"BSCALE": packed.scale, "BZERO": packed.zero}
+    return packed.codes, _merge_fits_write_header(header, extra)
+
+
 def _image_hdu_dict_for_fits_write(
-    tensor: Tensor, header: Optional[Dict[str, Any]] = None
+    tensor: Tensor,
+    header: Optional[Dict[str, Any]] = None,
+    *,
+    quantize: Any = None,
 ) -> Dict[str, Any]:
+    tensor, header = _apply_image_quantize(tensor, header, quantize)
     data, extra_header = _unsigned_image_storage_for_fits_write(tensor)
     hdu_dict: Dict[str, Any] = {"data": data}
     if header or extra_header:
         hdu_dict["header"] = _merge_fits_write_header(header, extra_header)
     return hdu_dict
+
+
+def _prepare_quantized_table_data_for_write(
+    table_dict: Dict[str, Any],
+    quantize: Any,
+    schema: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]], bool]:
+    """Pack selected float columns to int16 + TSCAL/TZERO via robust quantize."""
+    if quantize is None or quantize is False:
+        return table_dict, schema, False
+
+    columns = [str(name) for name in table_dict.keys()]
+    per_col = parse_table_quantize_spec(quantize, columns, data=table_dict)
+    if not per_col:
+        return table_dict, schema, False
+
+    out: Dict[str, Any] = dict(table_dict)
+    prepared_schema: Dict[str, Dict[str, Any]] = {
+        str(name): dict(meta or {}) for name, meta in (schema or {}).items()
+    }
+    changed = False
+
+    for name, opts in per_col.items():
+        value = out[name]
+        if isinstance(value, Tensor):
+            tensor = value
+        else:
+            import numpy as np
+
+            arr = np.asarray(value)
+            if not np.issubdtype(arr.dtype, np.floating):
+                raise TypeError(
+                    f"quantize column {name!r} must be floating-point, got dtype={arr.dtype}"
+                )
+            tensor = torch.as_tensor(arr, dtype=torch.float64)
+        if not tensor.is_floating_point():
+            raise TypeError(
+                f"quantize column {name!r} must be floating-point, got dtype={tensor.dtype}"
+            )
+        packed = quantize_int16_robust(
+            tensor, lo_q=opts.lo_q, hi_q=opts.hi_q, keep_zero=opts.keep_zero
+        )
+        out[name] = packed.codes
+        meta = prepared_schema.setdefault(name, {})
+        meta["format"] = _unsigned_table_tform(packed.codes, "I")
+        meta["bscale"] = float(packed.scale)
+        meta["bzero"] = float(packed.zero)
+        changed = True
+
+    if not changed:
+        return table_dict, schema, False
+
+    ordered_schema: Dict[str, Dict[str, Any]] = {}
+    for name in out:
+        ordered_schema[name] = prepared_schema.get(name, {})
+    return out, ordered_schema, True
 
 
 def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
@@ -131,6 +222,7 @@ def write(
     header: Optional[Header | Dict[str, Any]] = None,
     overwrite: bool = False,
     compress: Union[bool, str] = False,
+    quantize: Any = None,
 ) -> None:
     """Write data to FITS file.
 
@@ -140,6 +232,11 @@ def write(
         header: Optional FITS header dictionary
         overwrite: Whether to overwrite existing files
         compress: Whether to use tile compression (Rice algorithm)
+        quantize: Opt-in robust int16 packing for float images or table
+            columns. ``None`` (default) keeps native float storage.
+            For images: ``\"robust\"`` or ``{\"lo_q\", \"hi_q\", \"keep_zero\"}``.
+            For dict tables: ``\"robust\"`` (all float columns) or
+            ``{\"col\": \"robust\" | opts}``.
 
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
@@ -169,6 +266,7 @@ def write(
                 header=header,
                 overwrite=False,
                 compress=compress,
+                quantize=quantize,
             )
             os.chmod(temp_path, original_mode)
             os.replace(temp_path, target)
@@ -192,6 +290,7 @@ def write(
         if compress:
             compressed_hdus: List[Any] = []
             if isinstance(data, Tensor):
+                data, header = _apply_image_quantize(data, header, quantize)
                 img, img_header = _unsigned_image_storage_for_fits_write(data)
                 compressed_hdus = [
                     TensorHDU(
@@ -245,6 +344,11 @@ def write(
 
         if isinstance(data, dict) and "data" not in data:
             data, table_schema, _ = _prepare_unsigned_table_data_for_write(data)
+            data, q_schema, q_changed = _prepare_quantized_table_data_for_write(
+                data, quantize, table_schema
+            )
+            if q_changed:
+                table_schema = q_schema
             if _can_use_cpp_table_writer(data):
                 data = _normalize_cpp_table_data(data)
                 header_obj: Header = Header(header) if header else Header()
@@ -265,9 +369,16 @@ def write(
             )
 
         if isinstance(data, Tensor):
-            hdus_to_write.append(_image_hdu_dict_for_fits_write(data, header))
+            hdus_to_write.append(
+                _image_hdu_dict_for_fits_write(data, header, quantize=quantize)
+            )
 
         elif hasattr(data, "__iter__") and not isinstance(data, (str, Tensor)):
+            if quantize is not None:
+                raise ValueError(
+                    "quantize= is supported for a single image tensor or dict table, "
+                    "not multi-HDU sequences"
+                )
             for item in data:
                 if isinstance(item, dict):
                     if "data" in item:

@@ -4,6 +4,10 @@
 headers, compression) and ML helpers (`torchfits.data`, `torchfits.transforms`).
 Sky-domain modelling is out of scope. Current line: **1.0.0rc4** (prerelease).
 
+For job-oriented patterns (which API for which task), start with
+[Python workflows](python-workflows.md). This page lists signatures, defaults,
+and edge cases.
+
 **FITS images → tensors. FITS tables → dataframes** (Arrow by default;
 Polars/Pandas one call away; tensor columns when you train). In code the
 namespace is `torchfits.table` because that is the FITS name; the object
@@ -44,7 +48,7 @@ warm-up live under `torchfits.cache` (`configure_for_environment`,
 | Repeated cutouts from one file | `open_subset_reader(path, hdu=0)` | [Core I/O](api-core-io.md#open_subset_reader) |
 | Repeated table column reads | `open_table_reader(path, hdu=1)` | [Core I/O](api-core-io.md#open_table_reader) |
 | Multiple HDUs at once | `read_hdus(path, hdus=[0, 1, 2])` | [Core I/O](api-core-io.md#read_hdus) |
-| Write a tensor | `write_tensor(path, tensor, header=None, overwrite=False)` | [Core I/O](api-core-io.md#write_tensor) |
+| Write a tensor | `write_tensor(path, tensor, ..., quantize=None)` | [Core I/O](api-core-io.md#write_tensor) |
 | Read header only | `read_header(path, hdu=0)` | [Core I/O](api-core-io.md#read_header) |
 | Table row count (skinny) | `read_nrows(path, hdu=1)` | [Core I/O](api-core-io.md#read_nrows) |
 | Selected header keys (skinny) | `read_keys(path, keys, hdu=0)` | [Core I/O](api-core-io.md#read_keys) |

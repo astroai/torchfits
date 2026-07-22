@@ -15,15 +15,16 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser = subparsers.add_parser("cutout", help="extract a pixel box to a FITS file")
     parser.add_argument(
         "input",
-        help="input FITS image path (optional CFITSIO section, e.g. img.fits[10:100,20:200])",
+        help="FITS path; CFITSIO image section OK "
+        "(1-based inclusive), e.g. img.fits[10:100,20:200]",
     )
     add_out_arg(parser, help="output FITS path")
     add_hdu_arg(parser, type=int, default=0, help="source HDU index")
     parser.add_argument(
         "--box",
         default=None,
-        help="pixel box as x1,y1,x2,y2 (Python slice end, exclusive); "
-        "omit when input uses a CFITSIO image section",
+        help="alt pixel box x1,y1,x2,y2 (0-based half-open); "
+        "omit when the path already has a CFITSIO section",
     )
     parser.set_defaults(func=run)
 
@@ -48,8 +49,8 @@ def run(args: argparse.Namespace) -> int:
         )
     if not sectioned and args.box is None:
         raise UsageError(
-            "cutout needs --box x1,y1,x2,y2 or a CFITSIO section "
-            "(e.g. image.fits[10:100,20:200])"
+            "cutout needs a CFITSIO section "
+            "(e.g. image.fits[10:100,20:200]) or --box x1,y1,x2,y2"
         )
 
     if sectioned:

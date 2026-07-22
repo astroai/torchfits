@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Opt-in robust float→int16 packing: `write` / `write_tensor(..., quantize=)` and
+  `table.write(..., quantize=)` (`"robust"` or `{"lo_q","hi_q","keep_zero"}`).
+  Default remains native float (`BITPIX=-32` / float `TFORM`).
+- Example: `examples/example_quantize_int16.py`.
+
+### Changed
+- `open_subset_reader` mmap path covers unsigned FITS conventions (BZERO/BSCALE).
+- Warm `read_shape` hits shared image-info cache; `read_header` caches cards LRU.
+
+### Fixed
+- Table int16 columns with `TSCAL`/`TZERO`: disable CFITSIO auto-scale on read
+  before casting, then apply scale in memory (avoids int16 overflow).
+
 ## [1.0.0rc4] — 2026-07-20
 
 Fourth release candidate for collaborator soak after prep / deep-review cleanup.

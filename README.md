@@ -60,10 +60,15 @@ torchfits cutout 'science.fits[100:256,100:256]' cutout.fits
 
 | | |
 |---|---|
-| [Documentation](https://astroai.github.io/torchfits/) | Quickstart, API, CLI, galleries |
+| [Documentation](https://astroai.github.io/torchfits/) | Quick start, Python workflows, API, CLI |
+| [Python workflows](https://astroai.github.io/torchfits/python-workflows/) | Which API for images, tables, cutouts, training |
 | [Examples](https://astroai.github.io/torchfits/examples/) | Runnable scripts + transform plots |
 | [Benchmarks](https://astroai.github.io/torchfits/benchmarks/) | Methodology and scorecards |
 | [Changelog](https://astroai.github.io/torchfits/changelog/) | Release notes |
+
+Coding agents can use the docs site or this repo; humans should still skim
+[Quick start](https://astroai.github.io/torchfits/quickstart/) or
+[Python workflows](https://astroai.github.io/torchfits/python-workflows/).
 
 ## Develop
 

@@ -11,9 +11,11 @@ from ..header_parser import fast_parse_header, fast_parse_header_cards
 from ..hdu import HDUList, Header
 
 from .caches import (
+    _HEADER_CARDS_CACHE_MAX,
     auto_hdu_cache,
     get_cached_handle,
     get_cached_hdu_type,
+    header_cards_cache,
     path_signature,
     set_cached_hdu_type,
 )
@@ -280,13 +282,30 @@ def get_header(
     """Get the header of a FITS file."""
     import torchfits._C as cpp
 
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    sig = path_signature(path)
+    cache_key = (path, hdu_index)
+    cached = header_cards_cache.get(cache_key)
+    if cached is not None:
+        cached_sig, cards = cached
+        if sig is None or cached_sig is None or cached_sig == sig:
+            header_cards_cache.move_to_end(cache_key)
+            # Fresh Header so callers can mutate without poisoning the cache.
+            return Header(list(cards))
+        header_cards_cache.pop(cache_key, None)
+
     def _read_header(path: str, hdu_index: int) -> Header:
         handle = None
         try:
             handle = cpp.open_fits_file(path, "r")
             header_string = cpp.read_header_string(handle, hdu_index)
             if header_string:
-                return Header(fast_parse_header_cards(header_string))
+                cards = fast_parse_header_cards(header_string)
+                header_cards_cache[cache_key] = (sig, tuple(cards))
+                header_cards_cache.move_to_end(cache_key)
+                while len(header_cards_cache) > _HEADER_CARDS_CACHE_MAX:
+                    header_cards_cache.popitem(last=False)
+                return Header(cards)
         except Exception as exc:
             warnings.warn(
                 f"get_header: fast path failed for {path!r} hdu={hdu_index}: {exc}; "
@@ -302,6 +321,4 @@ def get_header(
                     _log.debug("get_header: handle close failed: %s", exc)
         return Header(cpp.read_header_dict(path, hdu_index))
 
-    return _read_header(
-        path, _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    )
+    return _read_header(path, hdu_index)

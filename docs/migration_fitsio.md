@@ -3,7 +3,8 @@
 Side-by-side replacements for common **FITS I/O** tasks. fitsio remains the
 right tool for some metadata workflows; torchfits targets tensor pipelines and
 PyTorch training. See [Benchmarks](benchmarks.md#performance-deficits) for cases
-where fitsio still wins on narrow table predicates.
+where fitsio still wins on narrow table predicates. For torchfits-native job
+patterns, see [Python workflows](python-workflows.md).
 
 ## Reading an image
 

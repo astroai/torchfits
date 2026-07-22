@@ -19,10 +19,15 @@ _CACHE_STATS_DEFAULT = {
 cache_stats: dict[str, int] = dict(_CACHE_STATS_DEFAULT)
 file_cache: OrderedDict[Any, Any] = OrderedDict()
 image_meta_cache: OrderedDict[tuple[str, int], Any] = OrderedDict()
+# (path, hdu) -> (path_signature, cards tuple) for repeated read_header.
+header_cards_cache: OrderedDict[
+    tuple[str, int], tuple[Any, tuple[tuple[str, Any, str], ...]]
+] = OrderedDict()
 hdu_type_cache: OrderedDict[tuple[str, int], str | None] = OrderedDict()
 cold_nommap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
 auto_mmap_cache: OrderedDict[tuple[str, int], bool] = OrderedDict()
 auto_hdu_cache: OrderedDict[Any, Any] = OrderedDict()
+_HEADER_CARDS_CACHE_MAX = 128
 
 # Registry of open HDUList file handles, keyed by real path.
 # NOTE: a list is sufficient while concurrent opens per path stay small;
@@ -314,6 +319,8 @@ def invalidate_path_caches(path: str) -> None:
 
     for key in [key for key in image_meta_cache.keys() if key[0] == path]:
         image_meta_cache.pop(key, None)
+    for key in [key for key in header_cards_cache.keys() if key[0] == path]:
+        header_cards_cache.pop(key, None)
     for key in [key for key in hdu_type_cache.keys() if key[0] == path]:
         hdu_type_cache.pop(key, None)
     for key in [key for key in cold_nommap_cache.keys() if key[0] == path]:
@@ -370,6 +377,7 @@ def clear_python_caches(
 
     if meta:
         image_meta_cache.clear()
+        header_cards_cache.clear()
         cold_nommap_cache.clear()
         auto_mmap_cache.clear()
 

@@ -52,7 +52,8 @@ torchfits stats /tmp/hh_plus.fits -e 0
 ## Cutout / copy
 
 ```bash
-torchfits cutout "$HH" /tmp/hh_cut.fits -e 0 --box 100,100,256,256
+torchfits cutout "${HH}[101:256,101:256]" /tmp/hh_cut.fits
+torchfits cutout "$HH" /tmp/hh_cut_box.fits -e 0 --box 100,100,256,256
 torchfits copy "$HH" /tmp/hh_copy.fits
 ```
 
@@ -67,7 +68,8 @@ torchfits transform "$HH" --name ZScaleNormalize --out /tmp/hh_z.fits
 ```
 
 For parameterized pipelines, use the Python API
-([Transform gallery](examples-transforms.md)).
+([Python workflows](python-workflows.md),
+[Transform gallery](examples-transforms.md)).
 
 ## Compression
 

@@ -19,6 +19,11 @@ Wheels, source builds, GPU / accelerator notes.
 `read_tensor`, table filters, DataLoader.
 </li>
 <li markdown>
+[Python workflows](python-workflows.md)
+
+Which API for images, tables, cutouts, training — between Quick start and the reference.
+</li>
+<li markdown>
 [CLI](cli.md)
 
 `info`, `header`, `verify`, `cutout`, …

@@ -153,6 +153,7 @@ read by name.
 
 ## What's Next?
 
+- [Python workflows](python-workflows.md) — job-oriented guide (images, tables, cutouts, training)
 - [Core I/O](api-core-io.md) — `read_tensor`, `read_subset`, writes, headers
 - [Tables](api-tables.md) — `table.read`, pushdown, Polars/DuckDB
 - [ML with FITS](examples-ml.md) — Datasets, `make_loader`, Galaxy Zoo + MegaPipe examples

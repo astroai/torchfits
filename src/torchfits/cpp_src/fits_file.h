@@ -104,6 +104,10 @@ private:
     size_t elem_bytes_ = 0;
     bool raw_fast_ok_ = false;
     bool closed_ = false;
+    // FITS integer conventions applied after mmap endian swap (0 = none).
+    // signed-byte: XOR 0x80; uint16: +32768; uint32: +2147483648.
+    enum class MmapConv : uint8_t { None, SignedByte, UInt16, UInt32 };
+    MmapConv mmap_conv_ = MmapConv::None;
     // Uncompressed 2D mosaic fast path: map data once, slice+bswap per cutout.
     void* map_ptr_ = nullptr;
     size_t map_len_ = 0;

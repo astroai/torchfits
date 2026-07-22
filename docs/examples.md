@@ -1,9 +1,10 @@
 # Examples
 
 Short worked examples with real outputs. Runnable scripts live in the repo
-Runnable scripts live in the repo `examples/` tree; docs builds copy them to
-[`published-examples/`](published-examples/README.md) for the site. Smoke suite:
-
+`examples/` tree; docs builds copy them to
+[`published-examples/`](published-examples/README.md) for the site. For which
+API to pick before opening a script, see [Python workflows](python-workflows.md).
+Smoke suite:
 
 ```bash
 pixi run python examples/test_examples.py
@@ -76,6 +77,28 @@ Script: [`example_image.py`](published-examples/example_image.py).
 
 ---
 
+## Pack float → int16 (opt-in)
+
+Default write keeps native float. When size forces `BITPIX=16` /
+`TFORM=I`, use percentile bulk packing instead of global min→max:
+
+```python
+import torchfits
+
+torchfits.write_tensor("packed.fits", tensor, quantize="robust", overwrite=True)
+torchfits.table.write(
+    "table.fits",
+    {"ID": ids, "FLUX": flux},
+    quantize={"FLUX": "robust"},
+    overwrite=True,
+)
+```
+
+Script: [`example_quantize_int16.py`](published-examples/example_quantize_int16.py).
+API: [Core I/O `write`](api-core-io.md#write), [Tables `table.write`](api-tables.md#tablewrite).
+
+---
+
 ## Filter a table
 
 ```python
@@ -102,8 +125,8 @@ filters the real Chandra events table (`energy > 5000`) when cached.
 
 ## Cutout
 
-torchfits `--box` is 0-based half-open. CFITSIO sections on the path also work
-(1-based inclusive).
+CLI users: CFITSIO path sections (1-based inclusive). Python /
+`--box`: 0-based half-open (same as `read_subset`). Do not mix the two.
 
 ```python
 cut = torchfits.read_subset("horsehead.fits", 0, 100, 100, 356, 356)
@@ -115,6 +138,7 @@ torch.Size([256, 256]) 8402.0
 ```
 
 ```bash
+torchfits cutout 'horsehead.fits[101:356,101:356]' cutout.fits
 torchfits cutout horsehead.fits cutout.fits --box 100,100,356,356
 torchfits info cutout.fits --hdu 0
 ```
@@ -183,6 +207,7 @@ Recipes: [CLI recipes](cli-recipes.md). Shell demo:
 | Script | Demonstrates |
 |---|---|
 | [`example_image.py`](published-examples/example_image.py) | read / write round-trip |
+| [`example_quantize_int16.py`](published-examples/example_quantize_int16.py) | `quantize="robust"` image + table packing |
 | [`example_image_cutouts.py`](published-examples/example_image_cutouts.py) | `read_subset`, `open_subset_reader` |
 | [`example_image_cube.py`](published-examples/example_image_cube.py) | 3D cubes |
 | [`example_image_mef.py`](published-examples/example_image_mef.py) | MEF `open` / `read_hdus` |

@@ -2,7 +2,8 @@
 
 User Guide for `torchfits.data`: choose a Dataset, preprocess with
 `torchfits.transforms`, load with `make_loader`, train a small model.
-API details stay in the [Data module](api-data.md) reference.
+API details stay in the [Data module](api-data.md) reference. For a shorter
+“which Dataset?” overview, see [Python workflows → Training](python-workflows.md#training-loops).
 
 `make_loader` wraps `torch.utils.data.DataLoader` and can warm the handle
 cache when the dataset exposes `.files`. Use a plain `DataLoader` when you
@@ -102,9 +103,10 @@ Indicative timing on this machine (1000×64×64, G band, uncompressed float32):
 
 `open_subset_reader` maps the uncompressed data segment once and does
 row slice + endian swap into a torch tensor — same class of work as fitsio /
-Astropy memmap cutouts, with CFITSIO only on the fallback path (compressed /
-scaled / non-2D). Prefer it over repeated `read_subset` for many windows from
-one mosaic. Rice `.fz` / full-HDU / GPU numbers stay on the
+Astropy memmap cutouts, including FITS integer conventions (``uint16`` /
+signed-byte ``BZERO``). CFITSIO remains the fallback for compressed, arbitrary
+``BSCALE``/``BZERO``, or non-2D HDUs. Prefer it over repeated `read_subset` for
+many windows from one mosaic. Rice `.fz` / full-HDU / GPU numbers stay on the
 [scorecards](benchmarks.md).
 
 ![MegaPipe gri cutout collage](assets/gallery/megapipe_cutout_collage.png)

@@ -2166,18 +2166,32 @@ void bind_fits(nb::module_& m) {
             naxes_ll.fill(0);
             {
                 nb::gil_scoped_release release;
-                FITSFile file(filename.c_str(), 0);
-                int status = 0;
-                file.ensure_hdu(hdu_num, &status);
-                if (status != 0) {
-                    throw std::runtime_error("read_shape: could not move to HDU");
+                // Warm SharedReadMeta: skip CFITSIO open when image params
+                // were already populated by a prior read / SubsetReader.
+                auto meta = d::get_shared_meta_for_path(filename);
+                bool hit = false;
+                if (meta) {
+                    std::lock_guard<std::mutex> lock(meta->mutex);
+                    auto it = meta->image_info_cache.find(hdu_num);
+                    if (it != meta->image_info_cache.end()) {
+                        bitpix = std::get<0>(it->second);
+                        naxis = std::get<1>(it->second);
+                        naxes_ll = std::get<2>(it->second);
+                        hit = true;
+                    }
                 }
-                d::read_image_params_9d(
-                    file.get_fptr(), &bitpix, &naxis, naxes_ll, &status);
-                if (status != 0) {
-                    char err_text[FLEN_ERRMSG];
-                    fits_get_errstatus(status, err_text);
-                    throw std::runtime_error(std::string("read_shape: ") + err_text);
+                if (!hit) {
+                    FITSFile file(filename.c_str(), 0);
+                    int status = 0;
+                    file.ensure_hdu(hdu_num, &status);
+                    if (status != 0) {
+                        throw std::runtime_error("read_shape: could not move to HDU");
+                    }
+                    // get_image_info populates per-handle + SharedReadMeta caches.
+                    const auto& info = file.get_image_info(hdu_num);
+                    bitpix = std::get<0>(info);
+                    naxis = std::get<1>(info);
+                    naxes_ll = std::get<2>(info);
                 }
             }
             nb::list shape;

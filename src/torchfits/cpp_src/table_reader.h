@@ -618,6 +618,13 @@ public:
                         fprintf(stderr, "Reading col %d (%s), type %d, datatype %d, rows %ld\n",
                                 col_idx+1, col.name.c_str(), (int)col.type, datatype, num_rows);
                         #endif
+                        // Raw storage codes: apply TSCAL/TZERO in-memory below.
+                        // Leaving CFITSIO auto-scale on overflows int destinations
+                        // when physical values exceed the storage type range.
+                        {
+                            int scale_status = 0;
+                            fits_set_tscale(fptr_, col_idx + 1, 1.0, 0.0, &scale_status);
+                        }
                         fits_read_col(fptr_, datatype, col_idx + 1, start_row, firstelem, nelements,
                                       nullptr, tensor.data_ptr(), nullptr, &status);
                     }

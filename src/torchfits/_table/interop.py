@@ -414,33 +414,39 @@ def read_polars(
     arrow_table = read(path, **kwargs)
 
     # Extract FITS metadata from the Arrow schema before conversion.
-    field_meta: dict[str, dict[str, str]] = {}
-    table_meta: dict[str, str] = {}
-    schema = arrow_table.schema
-
-    if schema.metadata:
-        for key, value in schema.metadata.items():
-            if isinstance(key, bytes):
-                key = key.decode("utf-8")
-            if isinstance(value, bytes):
-                value = value.decode("utf-8")
-            table_meta[key] = value
-
-    for i in range(len(schema)):
-        pa_field = schema.field(i)
-        md = pa_field.metadata
-        if not md:
-            continue
-        entry: dict[str, str] = {}
-        for k, v in md.items():
-            ks = k.decode("utf-8") if isinstance(k, bytes) else str(k)
-            vs = v.decode("utf-8") if isinstance(v, bytes) else str(v)
-            entry[ks] = vs
-        if entry:
-            field_meta[pa_field.name] = entry
+    field_meta, table_meta = _fits_meta_from_arrow_schema(arrow_table.schema)
 
     df = pl.from_arrow(arrow_table, rechunk=rechunk)
     return FITSPolarsFrame(frame=df, field_meta=field_meta, table_meta=table_meta)
+
+
+def _fits_meta_from_arrow_schema(
+    schema: Any,
+) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    """Decode Arrow schema/field metadata into FITS string maps."""
+    table_meta: dict[str, str] = {}
+    field_meta: dict[str, dict[str, str]] = {}
+
+    md = schema.metadata
+    if md:
+        decode = _decode_meta_bytes
+        table_meta = {decode(k): decode(v) for k, v in md.items()}
+
+    names = schema.names
+    for i, name in enumerate(names):
+        fmd = schema.field(i).metadata
+        if not fmd:
+            continue
+        entry = {_decode_meta_bytes(k): _decode_meta_bytes(v) for k, v in fmd.items()}
+        if entry:
+            field_meta[name] = entry
+    return field_meta, table_meta
+
+
+def _decode_meta_bytes(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
 
 
 def to_duckdb(

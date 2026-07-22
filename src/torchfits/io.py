@@ -260,10 +260,20 @@ def write(
     header: Header | dict[str, Any] | None = None,
     overwrite: bool = False,
     compress: bool | str = False,
+    quantize: Any = None,
 ) -> None:
-    """Write a tensor or numpy array to a FITS file (primary or image extension)."""
+    """Write a tensor or numpy array to a FITS file (primary or image extension).
+
+    ``quantize=\"robust\"`` (or a ``lo_q``/``hi_q`` dict) packs float images to
+    ``BITPIX=16`` with robust ``BSCALE``/``BZERO``. Default keeps native float.
+    """
     return _write_impl(
-        path, data, header=header, overwrite=overwrite, compress=compress
+        path,
+        data,
+        header=header,
+        overwrite=overwrite,
+        compress=compress,
+        quantize=quantize,
     )
 
 
@@ -273,13 +283,21 @@ def write_tensor(
     header: Any = None,
     overwrite: bool = False,
     compress: bool | str = False,
+    quantize: Any = None,
 ) -> None:
     """Write a single PyTorch Tensor directly to a FITS image extension."""
     import torch
 
     if not isinstance(tensor, torch.Tensor):
         raise TypeError("tensor must be a torch.Tensor")
-    return write(path, tensor, header=header, overwrite=overwrite, compress=compress)
+    return write(
+        path,
+        tensor,
+        header=header,
+        overwrite=overwrite,
+        compress=compress,
+        quantize=quantize,
+    )
 
 
 def insert_hdu(

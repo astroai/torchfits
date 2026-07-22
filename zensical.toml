@@ -28,6 +28,7 @@ nav = [
   {"User Guide" = [
     "cli.md",
     "cli-recipes.md",
+    "python-workflows.md",
     "examples.md",
     "examples-transforms.md",
     "examples-ml.md",

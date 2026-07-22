@@ -25,7 +25,14 @@ def write(
     overwrite: bool = False,
     extname: str | None = None,
     table_type: str = "binary",
+    quantize: Any = None,
 ) -> None:
+    """Write a columnar dict as a FITS table.
+
+    ``quantize=\"robust\"`` packs all float columns to ``TFORM=I`` with
+    ``TSCAL``/``TZERO``. Pass ``{\"col\": \"robust\"}`` (or per-column option
+    dicts) to select columns. Default keeps native float ``TFORM``.
+    """
     if not isinstance(data, dict) or not data:
         raise ValueError("data must be a non-empty dictionary")
     table_kind = str(table_type).lower().strip()
@@ -33,6 +40,8 @@ def write(
         raise ValueError("table_type must be 'binary' or 'ascii'")
     if schema is not None and not isinstance(schema, dict):
         raise TypeError("schema must be a dictionary when provided")
+    if quantize is not None and table_kind == "ascii":
+        raise ValueError("quantize= is only supported for binary tables")
     hdr: dict[str, Any] | None = None
     if extname is not None:
         hdr = dict(header or {})
@@ -40,13 +49,19 @@ def write(
     else:
         hdr = header
     import torchfits
-    from .._io_engine.write_api import _prepare_unsigned_table_data_for_write
+    from .._io_engine.write_api import (
+        _prepare_quantized_table_data_for_write,
+        _prepare_unsigned_table_data_for_write,
+    )
 
     data, schema, unsigned_converted = _prepare_unsigned_table_data_for_write(
         data, schema
     )
+    data, schema, quantized = _prepare_quantized_table_data_for_write(
+        data, quantize, schema
+    )
 
-    if schema or unsigned_converted or table_kind == "ascii":
+    if schema or unsigned_converted or quantized or table_kind == "ascii":
         import torchfits._C as cpp
 
         _invalidate_path_caches(path)
@@ -64,7 +79,13 @@ def write(
         _invalidate_path_caches(path)
         return
 
-    torchfits.write(path, data, header=hdr if hdr else None, overwrite=overwrite)
+    torchfits.write(
+        path,
+        data,
+        header=hdr if hdr else None,
+        overwrite=overwrite,
+        quantize=quantize,
+    )
 
 
 def _header_cards_to_mapping(header_cards: Any) -> dict[str, Any]:

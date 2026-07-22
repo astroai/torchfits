@@ -23,8 +23,8 @@ pip install torchfits
 This also installs the `torchfits` CLI (`torchfits --help`). See the
 [CLI guide](cli.md).
 
-**Next steps:** [Quick start](quickstart.md), [Examples](examples.md),
-[API reference](api.md)
+**Next steps:** [Quick start](quickstart.md), [Python workflows](python-workflows.md),
+[Examples](examples.md), [API reference](api.md)
 
 ### GPU / accelerator (one recipe)
 

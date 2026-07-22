@@ -2,7 +2,8 @@
 
 Side-by-side replacements for common **FITS I/O** tasks. torchfits covers
 tensor/dataframe FITS I/O — see [Parity](parity.md) for the full matrix. For
-runnable workflows, start with [Examples](examples.md).
+torchfits-native job patterns, see [Python workflows](python-workflows.md).
+For runnable workflows, start with [Examples](examples.md).
 
 ## Reading an image
 

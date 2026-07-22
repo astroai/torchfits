@@ -29,7 +29,8 @@ HTTP timeout.
 Each CLI invocation pays a **PyTorch / extension import** (~0.8–1 s on typical
 laptops) before any FITS work. That dominates wall time versus gnuastro or
 raw CFITSIO tools for tiny files. Prefer the in-process Python API for tight
-loops; use the CLI for shell pipelines and one-shot inspection.
+loops ([Python workflows](python-workflows.md)); use the CLI for shell
+pipelines and one-shot inspection.
 
 ## Install and help
 
@@ -48,8 +49,8 @@ torchfits header science.fits -k OBJECT -f json
 torchfits verify science.fits
 torchfits stats science.fits -e 0 -f jsonl
 torchfits table catalog.fits -e 1 -n 5
-torchfits cutout science.fits -o cutout.fits -e 0 --box 100,100,256,256
 torchfits cutout 'science.fits[100:256,100:256]' cutout.fits
+torchfits cutout science.fits -o cutout.fits -e 0 --box 100,100,256,256
 torchfits convert catalog.fits -o out.parquet -e 1
 torchfits convert catalog.fits out.csv -e 1
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "flux > 2" -c ra,dec,flux
@@ -114,19 +115,19 @@ accept:
 
 ### `cutout`
 
-Two equivalent ways to extract a pixel box:
+Same job, two syntaxes (do not combine them):
 
-- **`--box x1,y1,x2,y2`** — torchfits 0-based, half-open (Python slice end).
-- **CFITSIO image section** on the path — 1-based inclusive, e.g.
-  `torchfits cutout 'img.fits[10:100,20:200]' out.fits`.
+- **CFITSIO image section** on the path (1-based inclusive) — what most
+  `imcopy` / CFITSIO users already type:
+  `torchfits cutout 'img.fits[10:100,20:200]' out.fits`
+- **`--box x1,y1,x2,y2`** — torchfits 0-based half-open (same coords as
+  `read_subset`):
+  `torchfits cutout img.fits -o out.fits --box 9,19,100,200`
 
-- Supported/smoke-tested: image pixel sections via path (cutout CLI / `read_tensor`).
-- Prefer torchfits APIs for the same jobs when available: `--box` / `read_subset`,
-  `hdu=` / EXTNAME indexing, `table.read(..., where=)`.
-- Not certified: path HDU selectors (`file.fits[1]` / `[EVENTS]` via `open`),
-  binspec/histogram filenames, complex column filters as a substitute for
-  `where=`, remote URL extended forms beyond existing `probe`, stacking
-  section+`--box`.
+Supported/smoke-tested: image pixel sections via path (cutout CLI /
+`read_tensor`). Not certified: path HDU selectors (`file.fits[1]` /
+`[EVENTS]` via `open`), binspec/histogram filenames, stacking
+section+`--box`, or using path filters instead of `table.read(..., where=)`.
 
 ### `verify`
 

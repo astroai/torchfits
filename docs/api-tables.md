@@ -169,7 +169,8 @@ Write a columnar dictionary as a FITS binary or ASCII table.
 
 ```python
 torchfits.table.write(path, data, *, schema=None, header=None,
-                      overwrite=False, extname=None, table_type="binary")
+                      overwrite=False, extname=None, table_type="binary",
+                      quantize=None)
 ```
 
 | Parameter | Type | Default | Description |
@@ -179,9 +180,16 @@ torchfits.table.write(path, data, *, schema=None, header=None,
 | `header` | `dict` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
+| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. |
 
 ```python
 torchfits.table.write("out.fits", {"RA": ra, "DEC": dec}, overwrite=True)
+torchfits.table.write(
+    "packed.fits",
+    {"ID": ids, "FLUX": flux},
+    quantize={"FLUX": "robust"},
+    overwrite=True,
+)
 ```
 
 ---
