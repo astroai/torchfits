@@ -21,10 +21,13 @@
   desc: Keep the git tree package-facing — Round-N scorecard CSVs under docs/assets/bench only when published; freeze audits go to .cursor/reviews/ (gitignored); no archive/ of agent dumps.
 
 - id: pixi-test-env-rebuild
-  desc: After C++/native edits, rebuild into the test env with `pixi run -e test -- pip install -e . --no-build-isolation` before pytest — `pixi run dev` only updates the default env.
+  desc: After C++/native edits, rebuild every pixi env you will run — `pixi run -e test -- pip install -e . --no-build-isolation` before pytest, and `pixi run -- pip install -e . --no-build-isolation` (or `pixi run dev`) before `pixi run python` example smoke; default and test envs do not share the extension.
 
 - id: scorecard-deficit-significance
   desc: `compute_deficits` always emits lag rows; floors only set `significance` to noise|significant — unit tests must not expect `[]` for under-floor lags.
 
 - id: int16-robust-quantize
   desc: Skewed float→int16 loss is write/quantize (BSCALE/BZERO or TSCAL/TZERO); use write(..., quantize="robust") / table.write quantize= — never default global min→max (poloka).
+
+- id: cli-j-vs-J
+  desc: CLI -j/--jobs = torch.set_num_threads; -J/--file-jobs = ThreadPool across files (each worker caps ATen to 1) — never fan out files with ATen alone.

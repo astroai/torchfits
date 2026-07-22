@@ -6,9 +6,10 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**torchfits** is FITS I/O for PyTorch: images and tables as tensors / Arrow,
-with a multi-threaded C++ engine (vendored CFITSIO). Optional datasets,
-transforms, and a `torchfits` CLI sit on top.
+**torchfits** is high-performance FITS I/O: read and write FITS as tensors and
+tables — cutouts, filters, and a shell CLI (C++ engine, vendored CFITSIO).
+Optional datasets / transforms sit on top; you do not need an ML workflow to
+benefit.
 
 **Current:** [1.0.0rc4](https://pypi.org/project/torchfits/) (prerelease).
 Docs: [stable](https://astroai.github.io/torchfits/) (latest `v*` tag) ·
@@ -21,7 +22,8 @@ pip install torchfits
 ```
 
 Requires **Python 3.10+** and **PyTorch ≥ 2.10**. Pre-built wheels for Linux
-x86_64 and macOS arm64 (CFITSIO is vendored). Source / GPU notes:
+x86_64 and macOS arm64 (CFITSIO is vendored). For a thin **CPU-only** install
+(no CUDA libraries), use the PyTorch CPU wheel index — see
 [Install](https://astroai.github.io/torchfits/install/).
 
 ## At a glance

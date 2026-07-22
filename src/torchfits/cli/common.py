@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
-from typing import Any, Iterable, Iterator, TextIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any, Callable, Iterable, Iterator, TextIO, TypeVar
+
+import torch
 
 EXIT_OK = 0
 EXIT_DIFF = 1
@@ -14,6 +19,18 @@ EXIT_VERIFY_FAIL = 4
 
 _REMOTE_PREFIXES = ("http://", "https://", "vos://", "vos:", "vault:")
 _EMIT_FORMATS = ("text", "json", "jsonl")
+_SPLIT_MODES = ("file", "hdu")
+_JOBS_HELP = (
+    "PyTorch intra-op threads (default: 0 = CPU count). "
+    "Use -J/--file-jobs for multi-file fan-out."
+)
+_FILE_JOBS_HELP = (
+    "parallel file workers via a Python thread pool (default: 0 = CPU count "
+    "when ≥2 files, else 1). Caps PyTorch intra-op threads to 1 per worker."
+)
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 class CliError(Exception):
@@ -161,6 +178,108 @@ def add_keyword_arg(parser: Any, **kwargs: Any) -> None:
         "filter to keyword(s); repeat for multiple",
     )
     parser.add_argument("-k", "--keyword", **kwargs)
+
+
+def add_jobs_arg(parser: Any) -> None:
+    """Add ``-j`` / ``--jobs`` controlling PyTorch intra-op threads."""
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=0,
+        metavar="N",
+        help=_JOBS_HELP,
+    )
+
+
+def configure_torch_jobs(jobs: int) -> int:
+    """Resolve ``0`` → CPU count and apply ``torch.set_num_threads``."""
+    if jobs < 0:
+        raise UsageError("--jobs must be >= 0 (0 = CPU count)")
+    resolved = max(1, os.cpu_count() or 1) if jobs == 0 else jobs
+    torch.set_num_threads(resolved)
+    return resolved
+
+
+def add_file_jobs_arg(parser: Any) -> None:
+    """Add ``-J`` / ``--file-jobs`` for multi-file ThreadPool fan-out."""
+    parser.add_argument(
+        "-J",
+        "--file-jobs",
+        type=int,
+        default=0,
+        metavar="N",
+        help=_FILE_JOBS_HELP,
+    )
+
+
+def resolve_file_jobs(jobs: int, n_paths: int) -> int:
+    """Resolve ``-J``: serial for one path; ``0`` → CPU count when multi-file."""
+    if jobs < 0:
+        raise UsageError("--file-jobs must be >= 0 (0 = CPU count when ≥2 files)")
+    if n_paths <= 1:
+        return 1
+    if jobs == 0:
+        return max(1, os.cpu_count() or 1)
+    return min(jobs, n_paths)
+
+
+def run_file_jobs(
+    items: list[T],
+    fn: Callable[[T], R],
+    jobs: int,
+) -> list[R]:
+    """Run ``fn`` over ``items`` serially or via a thread pool.
+
+    When ``jobs > 1``, each worker caps ``torch.set_num_threads(1)`` so ATen
+    does not oversubscribe beside CFITSIO I/O. Results keep input order.
+    On the first worker failure, remaining futures are cancelled (best-effort).
+    """
+    if not items:
+        return []
+    workers = max(1, min(jobs, len(items)))
+    if workers == 1:
+        return [fn(item) for item in items]
+
+    def _worker(item: T) -> R:
+        torch.set_num_threads(1)
+        return fn(item)
+
+    ordered: dict[int, R] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_worker, item): idx for idx, item in enumerate(items)}
+        try:
+            for fut in as_completed(futures):
+                ordered[futures[fut]] = fut.result()
+        except BaseException:
+            for pending in futures:
+                pending.cancel()
+            raise
+    return [ordered[i] for i in range(len(items))]
+
+
+def ensure_unique_basenames(paths: list[str], *, label: str = "inputs") -> None:
+    """Reject multi-file batches whose basenames would collide under ``--out-dir``."""
+    seen: dict[str, str] = {}
+    for path in paths:
+        name = Path(path).name
+        prior = seen.get(name)
+        if prior is not None:
+            raise UsageError(
+                f"duplicate basename under --out-dir for {label}: {name!r} "
+                f"({prior} and {path})"
+            )
+        seen[name] = path
+
+
+def add_split_arg(parser: Any) -> None:
+    """Add ``--split {file,hdu}`` for per-file vs per-HDU outputs."""
+    parser.add_argument(
+        "--split",
+        choices=_SPLIT_MODES,
+        default="file",
+        help="output granularity: one file per input (file) or per image HDU (hdu)",
+    )
 
 
 def add_emit_format_args(parser: Any) -> None:

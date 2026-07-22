@@ -11,34 +11,43 @@ Confirm the version triplet matches in:
 - `src/torchfits/__init__.py` (`__version__`)
 
 For native wheels, also confirm the PyTorch minor-version range is identical in
-the build-system, project runtime, and Pixi build/host/run dependencies.
+the build-system, project runtime, and Pixi build/host/run dependencies
+(wheels stay on the **2.10** ABI lane unless a new lane is intentionally cut).
 
 ## 2. Changelog
 
 Finalize the entry in `docs/changelog.md`. Follow [Keep a Changelog](https://keepachangelog.com/) format.
 
-## 3. Tests
+## 3. Tests and gates
 
 ```bash
+pixi run preflight-push
 pixi run test
+pixi run ci-local
 pixi run release-gate
 ```
 
-All tests must pass. `release-gate` runs upstream parity smoke tests, docs
-integrity checks, and the runnable example scripts.
+All must pass. `release-gate` runs upstream parity smoke tests, docs integrity
+checks, the docs contract (`docs-contract` + `docs-links`), and the runnable
+example scripts.
 
-## 4. Correctness gates
+## 4. Public-API freeze (SemVer 1.0 / breaking cuts)
 
-Run FITS upstream parity gates:
+Before tagging a SemVer `1.0.0` (or any intentional breaking cut), run the
+release API freeze review under
+`.cursor/skills/release-api-freeze-review/` and fix drift between
+`docs/api*.md` and the exported surface.
+
+## 5. Correctness gates
+
+Covered by `release-gate`; re-run narrowly if needed:
 
 ```bash
 pixi run pytest tests/test_fitsio_upstream_smoke.py tests/test_astropy_upstream_smoke.py -q
 pixi run pytest tests/test_package_isolation.py tests/test_docs_integrity.py -q
 ```
 
-All gates must pass.
-
-## 5. Benchmark evidence
+## 6. Benchmark evidence
 
 Published multi-host scorecard (MPS + CANFAR CPU + CANFAR CUDA):
 
@@ -67,13 +76,13 @@ Quick local smoke (not a published scorecard): `pixi run bench-all` /
 
 Repository: https://github.com/astroai/torchfits.
 
-**PyPI trusted publishing:** register `astroai/torchfits` before **v0.7.0** (final).
-`0.5.0b1` was published from the pre-transfer repo; no retroactive re-publish needed.
+**PyPI trusted publishing:** `astroai/torchfits` is registered; tag pushes
+trigger `.github/workflows/build_wheels.yml`.
 
 Do not make new performance claims unless the benchmark run is archived and the
 comparison target is listed in `docs/parity.md`.
 
-## 6. Parity and docs contract
+## 7. Parity and docs contract
 
 - [ ] `docs/parity.md` marks every major FITS feature as supported, partial,
       unsupported, or out of scope.
@@ -81,8 +90,10 @@ comparison target is listed in `docs/parity.md`.
       that justify comparator claims.
 - [ ] README and docs do not claim torchfits ownership of WCS, sphere geometry,
       HEALPix, or sky-domain simulation.
+- [ ] Install docs still document CPU-only (no CUDA libs) and GPU torch index
+      recipes.
 
-## 7. Local artifact check (optional)
+## 8. Local artifact check (optional)
 
 ```bash
 bash scripts/clean_install_smoke.sh
@@ -93,7 +104,7 @@ twine check dist/*
 
 Smoke-test the wheel in a fresh virtualenv (the script does this).
 
-## 8. Tag and push
+## 9. Tag and push
 
 ```bash
 git add -A
@@ -102,7 +113,7 @@ git tag vX.Y.Z
 git push origin main --tags
 ```
 
-## 9. Publish
+## 10. Publish
 
 Create a GitHub release for `vX.Y.Z` with **user-facing** notes (not an
 internal checklist). Prefer writing the body yourself over
@@ -124,7 +135,7 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
 2. Builds wheels on Linux and macOS plus sdist.
 3. Uploads to [PyPI](https://pypi.org/project/torchfits/) via trusted publishing.
 
-## 10. Post-release verification
+## 11. Post-release verification
 
 - [ ] `pip install torchfits==X.Y.Z` works in a fresh environment.
 - [ ] `import torchfits; print(torchfits.__version__)` shows correct version.

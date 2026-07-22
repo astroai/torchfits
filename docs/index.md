@@ -1,6 +1,6 @@
 ---
 template: home.html
-title: FITS I/O for PyTorch
+title: FITS I/O for tensors and tables
 ---
 
 <div class="tf-below" markdown>
@@ -11,7 +11,7 @@ title: FITS I/O for PyTorch
 <li markdown>
 [Install](install.md)
 
-Wheels, source builds, GPU / accelerator notes.
+Wheels, CPU-only (no CUDA libs), GPU / accelerator notes.
 </li>
 <li markdown>
 [Quick start](quickstart.md)
@@ -69,8 +69,15 @@ loader = make_loader(FitsImageDataset("images/*.fits"), batch_size=32)
 
 ```bash
 torchfits info image.fits
-torchfits header image.fits -k OBJECT -f json
+torchfits header image.fits
 ```
+
+## Not only for ML
+
+You do not need a training loop — or even a GPU — to want torchfits. The same
+C++ engine powers fast catalog filters (`where=`), cutouts, MEF inspection, and
+the `torchfits` CLI. Stay on CPU tensors, export Arrow / Parquet / CSV, and
+ignore the Dataset helpers if you are not doing deep learning.
 
 ## Why torchfits?
 

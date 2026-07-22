@@ -42,11 +42,18 @@ torchfits header /tmp/hh_edit.fits -k TARGET
 torchfits header "$HH" /tmp/hh_edit.fits --keyword-table -k OBJECT -k NAXIS1
 ```
 
-## Constant image arithmetic
+## Image arithmetic (imarith-style)
 
 ```bash
+# Scalar
 torchfits arith "$HH" --op add --value 100 --out /tmp/hh_plus.fits
 torchfits stats /tmp/hh_plus.fits -e 0
+
+# Image–image (second path is operand B)
+torchfits arith "$HH" /tmp/hh_plus.fits --op mul -o /tmp/hh_prod.fits
+
+# Multi-file A × scalar (-J fans out across files)
+# torchfits arith a.fits b.fits --op mul --value 2 --out-dir /tmp/scaled -J 0
 ```
 
 ## Cutout / copy

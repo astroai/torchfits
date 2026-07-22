@@ -45,6 +45,7 @@ torchfits convert --help
 
 ```bash
 torchfits info science.fits
+torchfits header science.fits                 # all HDUs, fitsheader-style text
 torchfits header science.fits -k OBJECT -f json
 torchfits verify science.fits
 torchfits stats science.fits -e 0 -f jsonl
@@ -56,6 +57,11 @@ torchfits convert catalog.fits out.csv -e 1
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "flux > 2" -c ra,dec,flux
 torchfits convert r.fits g.fits b.fits -o rgb.png
 torchfits copy science.fits -o science_copy.fits
+torchfits compress science.fits -o science.fits.fz
+torchfits compress *.fits --out-dir /tmp/fz -J 0   # -J = file workers
+torchfits compress mef.fits --split hdu --out-dir /tmp/fz_hdus
+torchfits arith a.fits b.fits --op mul -o product.fits
+torchfits arith mef.fits --op mul --value 2 -e 0,1 -o mef_x2.fits
 torchfits table catalog.fits -e 1 -n 10
 torchfits probe https://example.edu/file.fits --header-bytes 5760 --timeout 30
 ```
@@ -83,7 +89,7 @@ printf '%s\n' *.fits | torchfits header --stdin --keyword-table -k OBJECT -k NAX
 | Command | What it does |
 |---------|----------------|
 | `info` | list HDUs (type, shape, rows) |
-| `header` | dump cards; `-k` filter; `--keyword-table` multi-file table |
+| `header` | dump all HDUs (fitsheader-style text); `-k` filter; `--keyword-table` |
 | `verify` | check `DATASUM` / `CHECKSUM` |
 | `stats` | image min / max / mean |
 | `table` | Arrow schema + preview rows |
@@ -92,15 +98,37 @@ printf '%s\n' *.fits | torchfits header --stdin --keyword-table -k OBJECT -k NAX
 | `probe` | local = `info`; HTTP(S)/vos = header peek (`--header-bytes` / `--timeout`) |
 | `diff` | compare two files (exit 1 if they differ) |
 | `copy` | MEF-preserving FITS → FITS copy |
-| `arith` | image ±×÷ by a constant |
-| `compress` / `decompress` | tile-compress or expand image HDUs |
+| `arith` | image ±×÷ scalar **or** second image; multi-HDU / multi-file |
+| `compress` / `decompress` | tile-compress or expand; `--out-dir`; `--split file|hdu` |
 | `transform` | apply a named `torchfits.transforms` class |
 | `setkey` | set one header keyword |
 
 ### Multi-extension FITS (MEF)
 
-Most commands walk **all HDUs** by default. Narrow with `-e 0,1,2`.
-JSONL mode emits one record per `(file, hdu)`.
+Most commands walk **all HDUs** by default (including `header`). Narrow with
+`-e 0,1,2`. JSONL mode emits one record per `(file, hdu)`.
+
+### Parallelism / cores
+
+Two knobs (orthogonal):
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `-j` / `--jobs` | PyTorch **intra-op** threads (`torch.set_num_threads`) | `0` = CPU count |
+| `-J` / `--file-jobs` | **Python thread pool across files** | `0` = CPU count when ≥2 files, else 1 |
+
+- **`-j`**: tensor work inside a file (e.g. `arith` stacked HDUs, `stats` reductions).
+- **`-J`**: fan-out across input files for `compress` / `decompress` / `verify` /
+  `stats` / `arith`. Each file worker caps ATen to 1 thread so CFITSIO I/O is
+  not oversubscribed. Prefer this over ProcessPool (avoids N× torch import tax).
+- **`compress` / `decompress`**:
+  - `--split file` (default): one output MEF per input (`-o` / `--out-dir`).
+  - `--split hdu`: one output per **image** HDU
+    (`{stem}_hdu00.fits`, `_hdu01`, … under `--out-dir`; required; width grows
+    past two digits when needed). Narrow with `-e`. Non-image HDUs are skipped.
+- **`arith`**: CFITSIO-style imarith — `--value` scalar **or** image B
+  (`a.fits b.fits -o out` / `--operand2`); multi-HDU same-shape → stack+ATen;
+  multi-file A via `--out-dir` + `-J`.
 
 ### Output formats
 
@@ -167,11 +195,26 @@ torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42" -e all
 torchfits setkey *.fits --rename OBJECT=TARGET -e 0 --out-dir /tmp/edited
 ```
 
-### `header --keyword-table`
+### `header`
 
-Print a keyword table across many files:
+Default text mode prints every HDU in fitsheader / listhead style:
+
+```text
+# HDU 0 (PRIMARY) in science.fits:
+SIMPLE  =                    T / file does conform to FITS standard
+BITPIX  =                  -32 / number of bits per data pixel
+...
+
+# HDU 1 (SCI) in science.fits:
+XTENSION= 'IMAGE'              / IMAGE extension
+```
+
+Use `-e` to select HDUs, `-k` to filter keywords, or `-f json` / `jsonl` for
+structured output. `--keyword-table` prints a keyword table across many files:
 
 ```bash
+torchfits header science.fits
+torchfits header science.fits -e 1 -k OBJECT
 torchfits header *.fits --keyword-table -k OBJECT -k DATE-OBS
 torchfits header *.fits --keyword-table -k BITPIX -f json
 ```
@@ -242,7 +285,7 @@ compressed remotes download into the cache first (same as `read_subset`).
 | `cutout` | `astcrop`, CFITSIO sections |
 | `convert` | `astconvertt` / STILTS-like filter+export; Lupton RGB preview |
 | `copy` | `fitscopy` / `imcopy` |
-| `arith` | `imarith` (constant operand) |
+| `arith` | `imarith` (scalar **or** image–image) |
 | `compress` / `decompress` | `fpack` / `funpack` |
 | `transform` | `imfunction`-style stretches / named transforms |
 | `setkey` | `modhead` / `hedit`-style set + rename (MEF / multi-file) |

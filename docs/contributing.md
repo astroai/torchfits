@@ -6,10 +6,22 @@
 git clone https://github.com/astroai/torchfits.git
 cd torchfits
 pixi install
-pixi run test
+pixi run preflight-push   # fast gate while editing
+pixi run test             # full unit suite
 ```
 
-The project uses [pixi](https://pixi.sh/) for environment management, [ruff](https://github.com/astral-sh/ruff) for linting, and [pytest](https://docs.pytest.org/) for testing.
+The project uses [pixi](https://pixi.sh/) for environment management,
+[ruff](https://github.com/astral-sh/ruff) for linting, and
+[pytest](https://docs.pytest.org/) for testing. Agent conventions live in
+[`AGENTS.md`](https://github.com/astroai/torchfits/blob/main/AGENTS.md).
+
+## Verify tiers
+
+| When | Command |
+|------|---------|
+| During edits | `pixi run preflight-push` |
+| Before push / PR | `pixi run ci-local` |
+| Before tag | `pixi run release-gate` |
 
 ## Dependency policy
 
@@ -75,11 +87,16 @@ The C++ extension is built by [scikit-build-core](https://scikit-build-core.read
 ./extern/vendor.sh
 ```
 
-Rebuild after C++ changes:
+Rebuild after C++ changes (default and test envs do **not** share the
+extension — rebuild each env you will run):
 
 ```bash
-pip install -e . --no-build-isolation
+pixi run -- pip install -e . --no-build-isolation
+pixi run -e test -- pip install -e . --no-build-isolation
 ```
+
+Or `pixi run dev` when you want the default-env editable install used by
+example smoke tasks.
 
 ### C++ code conventions
 
@@ -93,16 +110,18 @@ pip install -e . --no-build-isolation
 Minimum before a PR:
 
 ```bash
-pixi run pytest tests/test_api.py tests/test_table.py -q
+pixi run preflight-push
+pixi run -e test -- pytest tests/test_api.py tests/test_table.py tests/test_cli.py -q
 ```
 
-Full suite:
+Full suite / pre-push:
 
 ```bash
 pixi run test
+pixi run ci-local
 ```
 
-Upstream parity gates (require comparison libraries):
+Upstream parity + docs contract (also part of the release gate):
 
 ```bash
 pixi run release-gate
@@ -140,8 +159,9 @@ Include benchmark evidence in PRs that touch performance-sensitive paths.
 
 - Keep PRs focused on a single concern.
 - Include tests for behavior changes.
-- Run `pixi run lint` and fix issues before submitting.
+- Run `pixi run preflight-push` (and `pixi run ci-local` before merge/push).
 - Do not commit local scratch files, benchmark artifacts, or `.env` files.
+- Docs must match the public façade; do not document env vars absent from `src/`.
 
 ## Release process
 

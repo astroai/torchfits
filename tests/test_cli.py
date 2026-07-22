@@ -63,6 +63,98 @@ def test_header_keyword(image_fits):
     assert any(row["keyword"] == "BITPIX" for row in payload)
 
 
+def test_header_text_dumps_all_hdus_formatted(tmp_path):
+    path = tmp_path / "mef.fits"
+    a = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    b = torch.arange(4, dtype=torch.float32).reshape(2, 2) + 10
+    torchfits.write(str(path), [a, b], overwrite=True)
+
+    result = _run_cli("header", str(path))
+    assert result.returncode == 0, result.stderr
+    assert f"# HDU 0 (PRIMARY) in {path}:" in result.stdout
+    assert f"# HDU 1 (HDU1) in {path}:" in result.stdout
+    assert "SIMPLE  =" in result.stdout
+    assert "XTENSION=" in result.stdout
+    assert "SIMPLE  =                    T" in result.stdout
+    # Text mode should not use the old file:hdu prefix / repr quoting style.
+    assert f"{path}:0 " not in result.stdout
+    assert "SIMPLE  = 'T'" not in result.stdout
+
+
+def test_compress_jobs_help_and_multi_out_dir(image_fits, tmp_path):
+    help_result = _run_cli("compress", "--help")
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--jobs" in help_result.stdout
+    assert "--file-jobs" in help_result.stdout
+    assert "--split" in help_result.stdout
+    assert "pytorch" in help_result.stdout.lower()
+    assert "intra-op" in help_result.stdout.lower()
+
+    other = tmp_path / "other.fits"
+    torchfits.write(
+        str(other),
+        torch.arange(16, dtype=torch.float32).reshape(4, 4),
+        overwrite=True,
+    )
+    out_dir = tmp_path / "fz"
+    result = _run_cli(
+        "compress",
+        str(image_fits),
+        str(other),
+        "--out-dir",
+        str(out_dir),
+        "-j",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / image_fits.name).is_file()
+    assert (out_dir / other.name).is_file()
+
+
+def test_compress_split_hdu_mef(tmp_path):
+    path = tmp_path / "mef.fits"
+    a = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    b = torch.arange(4, dtype=torch.float32).reshape(2, 2) + 10
+    torchfits.write(str(path), [a, b], overwrite=True)
+
+    out_dir = tmp_path / "by_hdu"
+    result = _run_cli(
+        "compress",
+        str(path),
+        "--split",
+        "hdu",
+        "--out-dir",
+        str(out_dir),
+        "-j",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    out0 = out_dir / "mef_hdu00.fits"
+    out1 = out_dir / "mef_hdu01.fits"
+    assert out0.is_file()
+    assert out1.is_file()
+    # Compressed write uses empty primary + CompImage at HDU 1.
+    t0 = torchfits.read_tensor(str(out0), hdu=1)
+    t1 = torchfits.read_tensor(str(out1), hdu=1)
+    assert t0.shape == (2, 2)
+    assert t1.shape == (2, 2)
+
+    dec_dir = tmp_path / "decoded"
+    dec = _run_cli(
+        "decompress",
+        str(out0),
+        str(out1),
+        "--out-dir",
+        str(dec_dir),
+        "-j",
+        "1",
+    )
+    assert dec.returncode == 0, dec.stderr
+    assert (dec_dir / out0.name).is_file()
+    assert (dec_dir / out1.name).is_file()
+    assert torchfits.read_tensor(str(dec_dir / out0.name), hdu=1).shape == (2, 2)
+
+
 def test_verify_without_checksums(image_fits):
     result = _run_cli("verify", str(image_fits), "--json")
     # No checksum keywords → ok=True, exit 0 (not corrupt, just unverified).
@@ -150,6 +242,101 @@ def test_arith_add(image_fits, tmp_path):
     tensor = torchfits.read_tensor(str(out), hdu=0)
     expected = torchfits.read_tensor(str(image_fits), hdu=0) + 1.0
     assert torch.allclose(tensor, expected)
+
+
+def test_arith_image_image_and_mef_stack(tmp_path):
+    a_path = tmp_path / "a.fits"
+    b_path = tmp_path / "b.fits"
+    mef_path = tmp_path / "mef.fits"
+    a = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    b = torch.ones(2, 2, dtype=torch.float32) * 3
+    torchfits.write(str(a_path), a, overwrite=True)
+    torchfits.write(str(b_path), b, overwrite=True)
+    torchfits.write(
+        str(mef_path),
+        [
+            {"data": a, "header": {"OBJECT": "A0"}},
+            {"data": a + 1, "header": {"OBJECT": "A1"}},
+        ],
+        overwrite=True,
+    )
+
+    out = tmp_path / "mul.fits"
+    result = _run_cli("arith", str(a_path), str(b_path), "--op", "mul", "-o", str(out))
+    assert result.returncode == 0, result.stderr
+    assert torch.allclose(torchfits.read_tensor(str(out), hdu=0), a * b)
+
+    mef_out = tmp_path / "mef_mul.fits"
+    result = _run_cli(
+        "arith",
+        str(mef_path),
+        "--op",
+        "mul",
+        "--value",
+        "2",
+        "-e",
+        "0,1",
+        "-o",
+        str(mef_out),
+        "-j",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert torch.allclose(torchfits.read_tensor(str(mef_out), hdu=0), a * 2)
+    assert torch.allclose(torchfits.read_tensor(str(mef_out), hdu=1), (a + 1) * 2)
+    assert torchfits.read_header(str(mef_out), 0).get("OBJECT") == "A0"
+    assert torchfits.read_header(str(mef_out), 1).get("OBJECT") == "A1"
+
+
+def test_compress_rejects_duplicate_out_basenames(tmp_path):
+    d1 = tmp_path / "d1"
+    d2 = tmp_path / "d2"
+    d1.mkdir()
+    d2.mkdir()
+    a = d1 / "same.fits"
+    b = d2 / "same.fits"
+    data = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    torchfits.write(str(a), data, overwrite=True)
+    torchfits.write(str(b), data, overwrite=True)
+    result = _run_cli(
+        "compress", str(a), str(b), "--out-dir", str(tmp_path / "out"), "-J", "1"
+    )
+    assert result.returncode == 2, result.stderr
+    assert "duplicate basename" in result.stderr.lower()
+
+
+def test_arith_multi_file_out_dir(image_fits, tmp_path):
+    other = tmp_path / "other.fits"
+    torchfits.write(
+        str(other),
+        torch.arange(16, dtype=torch.float32).reshape(4, 4) + 1,
+        overwrite=True,
+    )
+    out_dir = tmp_path / "arith_out"
+    result = _run_cli(
+        "arith",
+        str(image_fits),
+        str(other),
+        "--op",
+        "add",
+        "--value",
+        "1",
+        "--out-dir",
+        str(out_dir),
+        "-J",
+        "2",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / image_fits.name).is_file()
+    assert (out_dir / other.name).is_file()
+
+
+def test_verify_file_jobs_help(image_fits):
+    help_result = _run_cli("verify", "--help")
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--file-jobs" in help_result.stdout
+    result = _run_cli("verify", str(image_fits), "-J", "1", "--json")
+    assert result.returncode == 0, result.stderr
 
 
 def test_diff_same_file(image_fits):

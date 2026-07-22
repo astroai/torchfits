@@ -26,10 +26,23 @@ This also installs the `torchfits` CLI (`torchfits --help`). See the
 **Next steps:** [Quick start](quickstart.md), [Python workflows](python-workflows.md),
 [Examples](examples.md), [API reference](api.md)
 
-### GPU / accelerator (one recipe)
+### CPU-only (no CUDA libraries)
 
-PyTorch provides CPU, CUDA, and MPS in the **same** `torch` package — choose
-the wheel index once, then install torchfits:
+Prefer this when you do not need NVIDIA GPUs. The **CPU** PyTorch wheel is much
+thinner — it does **not** pull the CUDA runtime / cuDNN stack into the env:
+
+```bash
+pip install "torch>=2.10,<2.11" --index-url https://download.pytorch.org/whl/cpu
+pip install torchfits
+```
+
+torchfits itself has no CUDA build artifact. You still get tensors (on `cpu`),
+Arrow tables, cutouts, and the full CLI. Skip `device="cuda"` / CUDA checks.
+
+### GPU / accelerator
+
+PyTorch provides CPU, CUDA, and MPS via different wheel indexes — choose one,
+then install torchfits:
 
 ```bash
 # CUDA (pick the current CUDA build from pytorch.org; example: cu128)
@@ -37,9 +50,6 @@ pip install "torch>=2.10,<2.11" --index-url https://download.pytorch.org/whl/cu1
 
 # Apple Silicon MPS — default macOS torch wheel includes MPS
 pip install "torch>=2.10,<2.11"
-
-# CPU-only
-pip install "torch>=2.10,<2.11" --index-url https://download.pytorch.org/whl/cpu
 ```
 
 Then:

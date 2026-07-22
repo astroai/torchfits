@@ -1,6 +1,6 @@
 [project]
 site_name = "torchfits"
-site_description = "High-performance FITS I/O to PyTorch tensors and dataframes (FITS tables as columnar catalogs)."
+site_description = "High-performance FITS I/O: read and write FITS as tensors and tables — cutouts, filters, and a shell CLI."
 site_url = "https://astroai.github.io/torchfits/"
 repo_url = "https://github.com/astroai/torchfits"
 repo_name = "astroai/torchfits"

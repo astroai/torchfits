@@ -12,10 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `table.write(..., quantize=)` (`"robust"` or `{"lo_q","hi_q","keep_zero"}`).
   Default remains native float (`BITPIX=-32` / float `TFORM`).
 - Example: `examples/example_quantize_int16.py`.
+- CLI `compress` / `decompress`: multiple inputs via `--out-dir`; `--split
+  file|hdu` (one output per file or per image HDU); `-j/--jobs` = PyTorch
+  intra-op threads; `-J/--file-jobs` = multi-file thread pool.
+- CLI `-J/--file-jobs` on `verify` / `stats` / `arith` (and compress).
+- CLI `arith`: image–image operand, multi-HDU stack+ATen, multi-file `--out-dir`.
+- Docs: CPU-only (no CUDA libs) install recipe; “not only for ML” blurb;
+  roadmap **2.0** native engine / GPU-direct (drop CFITSIO).
 
 ### Changed
 - `open_subset_reader` mmap path covers unsigned FITS conventions (BZERO/BSCALE).
 - Warm `read_shape` hits shared image-info cache; `read_header` caches cards LRU.
+- Landing one-liner + transparent nav/favicon logos; contributing / release
+  checklists aligned with verify tiers (`preflight-push` / `ci-local` /
+  `release-gate`).
+- `torchfits header` text mode dumps **all HDUs** in fitsheader-style blocks.
+- CLI parallelism docs: `-j` (torch) vs `-J` (file workers).
 
 ### Fixed
 - Table int16 columns with `TSCAL`/`TZERO`: disable CFITSIO auto-scale on read
