@@ -64,6 +64,9 @@ from ._io_engine.write_api import (
     _normalize_cpp_table_data as _normalize_cpp_table_data_impl,
 )
 from ._io_engine.write_api import (
+    _delete_header_key_if_supported as _delete_header_key_if_supported_impl,
+)
+from ._io_engine.write_api import (
     _write_header_cards_if_supported as _write_header_cards_if_supported_impl,
 )
 
@@ -392,6 +395,10 @@ def read_table_info(path: str, hdu: Any = 1) -> dict[str, Any]:
 
 def _write_header_cards_if_supported(*args: Any, **kwargs: Any) -> None:
     return _write_header_cards_if_supported_impl(*args, **kwargs)
+
+
+def _delete_header_key_if_supported(*args: Any, **kwargs: Any) -> None:
+    return _delete_header_key_if_supported_impl(*args, **kwargs)
 
 
 def read_batch(

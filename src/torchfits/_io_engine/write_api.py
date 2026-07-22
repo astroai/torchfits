@@ -216,6 +216,18 @@ def _write_header_cards_if_supported(
     _invalidate_path_caches(path)
 
 
+def _delete_header_key_if_supported(path: str, hdu: int, key: str) -> None:
+    """Delete one non-structural header keyword via CFITSIO ``fits_delete_key``."""
+    import torchfits._C as cpp
+
+    deleter = getattr(cpp, "delete_hdu_header_key", None)
+    if deleter is None:
+        raise RuntimeError("delete_hdu_header_key is unavailable in this build")
+    _invalidate_path_caches(path)
+    deleter(path, int(hdu), str(key))
+    _invalidate_path_caches(path)
+
+
 def write(
     path: str | os.PathLike[str],
     data: Any,

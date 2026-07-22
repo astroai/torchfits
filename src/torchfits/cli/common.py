@@ -11,6 +11,8 @@ from typing import Any, Callable, Iterable, Iterator, TextIO, TypeVar
 
 import torch
 
+from torchfits._io_engine.paths import cfitsio_base_path
+
 EXIT_OK = 0
 EXIT_DIFF = 1
 EXIT_USAGE = 2
@@ -262,7 +264,7 @@ def ensure_unique_basenames(paths: list[str], *, label: str = "inputs") -> None:
     """Reject multi-file batches whose basenames would collide under ``--out-dir``."""
     seen: dict[str, str] = {}
     for path in paths:
-        name = Path(path).name
+        name = Path(cfitsio_base_path(path)).name
         prior = seen.get(name)
         if prior is not None:
             raise UsageError(
@@ -270,6 +272,20 @@ def ensure_unique_basenames(paths: list[str], *, label: str = "inputs") -> None:
                 f"({prior} and {path})"
             )
         seen[name] = path
+
+
+def ensure_unique_split_stems(paths: list[str], *, label: str = "inputs") -> None:
+    """Reject ``--split hdu`` batches whose ``{stem}_hduNN`` outputs would collide."""
+    seen: dict[str, str] = {}
+    for path in paths:
+        stem = Path(cfitsio_base_path(path)).stem
+        prior = seen.get(stem)
+        if prior is not None:
+            raise UsageError(
+                f"duplicate stem under --split hdu for {label}: {stem!r} "
+                f"({prior} and {path})"
+            )
+        seen[stem] = path
 
 
 def expand_at_list_paths(paths: list[str]) -> list[str]:
@@ -312,7 +328,10 @@ def resolve_batch_io_pairs(
         ensure_unique_basenames(paths)
         directory = Path(out_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        return [(path, str(directory / Path(path).name)) for path in paths]
+        return [
+            (path, str(directory / Path(cfitsio_base_path(path)).name))
+            for path in paths
+        ]
 
     if out_flag:
         if len(paths) != 1:

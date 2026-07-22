@@ -850,6 +850,86 @@ def test_setkey_delete_and_at_list(image_fits, tmp_path):
         assert "OBJECT" in hdr
 
 
+def test_setkey_delete_preserves_tile_compression(tmp_path):
+    path = tmp_path / "rice.fits"
+    torchfits.write(
+        str(path),
+        torch.arange(16, dtype=torch.float32).reshape(4, 4),
+        header={"OBJECT": "KEEP", "FOO": 1},
+        overwrite=True,
+        compress="RICE_1",
+    )
+    before = torchfits.read_header(str(path), 1)
+    assert str(before.get("ZCMPTYPE", "")).upper().startswith("RICE")
+    result = _run_cli("setkey", str(path), "--delete", "FOO", "-e", "1")
+    assert result.returncode == 0, result.stderr
+    after = torchfits.read_header(str(path), 1)
+    assert "FOO" not in after
+    assert after.get("OBJECT") == "KEEP"
+    assert str(after.get("ZCMPTYPE", "")).upper().startswith("RICE")
+    assert str(after.get("XTENSION", "")).upper() == "BINTABLE"
+
+
+def test_setkey_rejects_duplicate_inplace_paths(image_fits):
+    result = _run_cli(
+        "setkey",
+        str(image_fits),
+        str(image_fits),
+        "--key",
+        "OBJECT",
+        "--value",
+        "X",
+        "-J",
+        "2",
+    )
+    assert result.returncode == 2, result.stderr
+    assert "duplicate" in result.stderr.lower()
+
+
+def test_compress_split_hdu_rejects_stem_collision(tmp_path):
+    a = tmp_path / "same.fits"
+    b = tmp_path / "same.fit"
+    data = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    torchfits.write(str(a), data, overwrite=True)
+    torchfits.write(str(b), data + 1, overwrite=True)
+    result = _run_cli(
+        "compress",
+        str(a),
+        str(b),
+        "--split",
+        "hdu",
+        "--out-dir",
+        str(tmp_path / "out"),
+        "-J",
+        "1",
+    )
+    assert result.returncode == 2, result.stderr
+    assert "stem" in result.stderr.lower()
+
+
+def test_cutout_batch_out_dir_strips_section(image_fits, tmp_path):
+    out_dir = tmp_path / "cuts"
+    other = tmp_path / "other.fits"
+    torchfits.write(
+        str(other),
+        torch.arange(16, dtype=torch.float32).reshape(4, 4),
+        overwrite=True,
+    )
+    result = _run_cli(
+        "cutout",
+        f"{image_fits}[1:2,1:2]",
+        f"{other}[1:2,1:2]",
+        "--out-dir",
+        str(out_dir),
+        "-J",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / image_fits.name).is_file()
+    assert (out_dir / other.name).is_file()
+    assert not any("[" in p.name for p in out_dir.iterdir())
+
+
 def test_setkey_rejects_negative_hdu_index(image_fits):
     result = _run_cli(
         "setkey",

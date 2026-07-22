@@ -71,6 +71,7 @@ __all__ = (
     "write_fits_table",
     "write_hdu_checksums",
     "write_hdu_header_cards",
+    "delete_hdu_header_key",
 )
 
 globals().update({name: getattr(_C, name) for name in __all__})

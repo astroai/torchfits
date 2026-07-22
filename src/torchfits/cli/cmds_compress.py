@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 import torchfits
+from torchfits._io_engine.paths import cfitsio_base_path
 
 from .common import (
     EXIT_OK,
@@ -18,6 +19,7 @@ from .common import (
     add_split_arg,
     configure_torch_jobs,
     ensure_unique_basenames,
+    ensure_unique_split_stems,
     hdu_type_name,
     resolve_file_jobs,
     run_file_jobs,
@@ -140,7 +142,7 @@ def _hdu_width(indices: list[int]) -> int:
 def _hdu_output_path(
     out_dir: Path, input_path: str, hdu_index: int, *, width: int
 ) -> str:
-    stem = Path(input_path).stem
+    stem = Path(cfitsio_base_path(input_path)).stem
     return str(out_dir / f"{stem}_hdu{hdu_index:0{width}d}.fits")
 
 
@@ -203,6 +205,7 @@ def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool | str) -> Non
     out_dir.mkdir(parents=True, exist_ok=True)
     inputs = [str(p) for p in args.paths]
     ensure_unique_basenames(inputs)
+    ensure_unique_split_stems(inputs)
     file_jobs = resolve_file_jobs(int(args.file_jobs), len(inputs))
     if file_jobs == 1:
         configure_torch_jobs(int(args.jobs))

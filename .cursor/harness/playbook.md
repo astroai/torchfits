@@ -31,3 +31,6 @@
 
 - id: cli-j-vs-J
   desc: CLI -j/--jobs = torch.set_num_threads; -J/--file-jobs = ThreadPool across files (each worker caps ATen to 1) — never fan out files with ATen alone.
+
+- id: setkey-no-rewrite
+  desc: setkey delete/rename must use CFITSIO fits_delete_key (+ binary copy for --out), never HDUList.write rewrite — rewrite decompresses CompImage and leaves stale Z* cards.

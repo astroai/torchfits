@@ -1943,6 +1943,41 @@ void bind_fits(nb::module_& m) {
         }
     }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("cards"));
 
+    m.def("delete_hdu_header_key", [](const std::string& path, int hdu_num, const std::string& key) {
+        fitsfile* fptr = nullptr;
+        int status = 0;
+        check_fits_filename_security(path);
+        fits_open_file(&fptr, path.c_str(), 1 /* READWRITE */, &status);
+        if (status != 0 || !fptr) {
+            throw std::runtime_error("Could not open FITS file for header-key deletion");
+        }
+        fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
+        if (status != 0) {
+            int close_status = 0;
+            fits_close_file(fptr, &close_status);
+            throw std::runtime_error("Could not move to HDU for header-key deletion");
+        }
+        std::string sanitized = d::sanitize_fits_key(key);
+        std::string key_upper = sanitized;
+        std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (key_upper == "END" || key_upper == "SIMPLE" || key_upper == "XTENSION" ||
+            key_upper == "BITPIX" || key_upper == "NAXIS" || key_upper == "EXTEND" ||
+            key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
+            key_upper == "THEAP" || key_upper == "DATASUM" || key_upper == "CHECKSUM" ||
+            key_upper.rfind("NAXIS", 0) == 0) {
+            int close_status = 0;
+            fits_close_file(fptr, &close_status);
+            throw std::runtime_error("Refusing to delete structural FITS keyword: " + sanitized);
+        }
+        fits_delete_key(fptr, sanitized.c_str(), &status);
+        int close_status = 0;
+        fits_close_file(fptr, &close_status);
+        if (status != 0 || close_status != 0) {
+            throw std::runtime_error("Failed to delete FITS header keyword: " + sanitized);
+        }
+    }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("key"));
+
     m.def("open_and_read_headers", [](const std::string& path, int mode) {
         nb::gil_scoped_release release;
         auto result = open_and_read_headers(path, mode);

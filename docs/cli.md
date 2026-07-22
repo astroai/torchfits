@@ -193,8 +193,8 @@ JSON/JSONL output adds a `"status"` field (`"ok"`, `"no_checksums"`,
 
 Set, rename, or delete header keywords. Supports short cards, **HIERARCH** /
 long names, `-e all` (or a comma list), `@list` path files, and multiple files
-(`--out-dir` + `-J`). Deletes and renames rewrite the FITS (in-place via a
-temp file) so the old key is actually removed.
+(`--out-dir` + `-J`). Edits use CFITSIO card update/delete (binary copy when
+writing to a new path), so tile-compressed HDUs stay compressed.
 
 ```bash
 torchfits setkey science.fits -k OBJECT --value NGC1234

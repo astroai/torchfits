@@ -9,6 +9,7 @@ from typing import Any, Callable
 import torch
 
 import torchfits
+from torchfits._io_engine.paths import cfitsio_base_path
 
 from .common import (
     EXIT_OK,
@@ -20,6 +21,7 @@ from .common import (
     add_split_arg,
     configure_torch_jobs,
     ensure_unique_basenames,
+    ensure_unique_split_stems,
     hdu_type_name,
     resolve_file_jobs,
     run_file_jobs,
@@ -253,7 +255,7 @@ def _arith_one_file(
             raise UsageError("--split hdu requires --out-dir")
         out_dir.mkdir(parents=True, exist_ok=True)
         width = _hdu_width(indices)
-        stem = Path(path_a).stem
+        stem = Path(cfitsio_base_path(path_a)).stem
         for index, result, header in zip(indices, results, headers, strict=True):
             dest = out_dir / f"{stem}_hdu{index:0{width}d}.fits"
             torchfits.write_tensor(str(dest), result, header=header, overwrite=True)
@@ -293,6 +295,8 @@ def run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else None
     if out_dir is not None:
         ensure_unique_basenames(a_paths)
+        if args.split == "hdu":
+            ensure_unique_split_stems(a_paths)
         out_dir.mkdir(parents=True, exist_ok=True)
 
     def _one(path_a: str) -> None:
