@@ -97,11 +97,11 @@ printf '%s\n' *.fits | torchfits header --stdin --keyword-table -k OBJECT -k NAX
 | `convert` | table → Parquet/CSV/TSV/Arrow/FITS; filter with `--where`; Lupton RGB → PNG |
 | `probe` | local = `info`; HTTP(S)/vos = header peek (`--header-bytes` / `--timeout`) |
 | `diff` | compare two files (exit 1 if they differ) |
-| `copy` | MEF-preserving FITS → FITS copy |
+| `copy` | MEF-preserving FITS → FITS copy; multi-file `--out-dir` + `-J` |
 | `arith` | image ±×÷ scalar **or** second image; multi-HDU / multi-file |
-| `compress` / `decompress` | tile-compress or expand; `--out-dir`; `--split file|hdu` |
-| `transform` | apply a named `torchfits.transforms` class |
-| `setkey` | set one header keyword |
+| `compress` / `decompress` | tile-compress or expand; `--algorithm`; `--out-dir`; `--split file|hdu` |
+| `transform` / `cutout` | named transforms / pixel box; multi-file `--out-dir` + `-J` |
+| `setkey` | set / rename / `--delete`; `@list` paths; `--out-dir` + `-J` |
 
 ### Multi-extension FITS (MEF)
 
@@ -119,9 +119,11 @@ Two knobs (orthogonal):
 
 - **`-j`**: tensor work inside a file (e.g. `arith` stacked HDUs, `stats` reductions).
 - **`-J`**: fan-out across input files for `compress` / `decompress` / `verify` /
-  `stats` / `arith`. Each file worker caps ATen to 1 thread so CFITSIO I/O is
-  not oversubscribed. Prefer this over ProcessPool (avoids N× torch import tax).
+  `stats` / `arith` / `copy` / `transform` / `cutout` / `setkey`. Each file
+  worker caps ATen to 1 thread so CFITSIO I/O is not oversubscribed.
 - **`compress` / `decompress`**:
+  - `--algorithm` on compress (default `RICE_1`; also `GZIP_1`, `GZIP_2`,
+    `HCOMPRESS_1`, …) — same strings as `write(..., compress=)`.
   - `--split file` (default): one output MEF per input (`-o` / `--out-dir`).
   - `--split hdu`: one output per **image** HDU
     (`{stem}_hdu00.fits`, `_hdu01`, … under `--out-dir`; required; width grows
@@ -129,6 +131,9 @@ Two knobs (orthogonal):
 - **`arith`**: CFITSIO-style imarith — `--value` scalar **or** image B
   (`a.fits b.fits -o out` / `--operand2`); multi-HDU same-shape → stack+ATen;
   multi-file A via `--out-dir` + `-J`.
+- **`stats`**: `min` / `max` / `mean` / `std` / `median` (population std).
+- **`copy` / `transform` / `cutout`**: batch via `--out-dir` + `-J` (or
+  `INPUT OUTPUT` / `-o` for one file).
 
 ### Output formats
 
@@ -186,13 +191,16 @@ JSON/JSONL output adds a `"status"` field (`"ok"`, `"no_checksums"`,
 
 ### `setkey`
 
-Set or rename header keywords. Supports short cards, **HIERARCH** / long names,
-`-e all` (or a comma list), and multiple files (`--out-dir` for copies).
+Set, rename, or delete header keywords. Supports short cards, **HIERARCH** /
+long names, `-e all` (or a comma list), `@list` path files, and multiple files
+(`--out-dir` + `-J`). Deletes and renames rewrite the FITS (in-place via a
+temp file) so the old key is actually removed.
 
 ```bash
 torchfits setkey science.fits -k OBJECT --value NGC1234
 torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42" -e all
 torchfits setkey *.fits --rename OBJECT=TARGET -e 0 --out-dir /tmp/edited
+torchfits setkey @paths.txt --delete FOO --out-dir /tmp/edited -J 0
 ```
 
 ### `header`
@@ -209,12 +217,14 @@ BITPIX  =                  -32 / number of bits per data pixel
 XTENSION= 'IMAGE'              / IMAGE extension
 ```
 
-Use `-e` to select HDUs, `-k` to filter keywords, or `-f json` / `jsonl` for
-structured output. `--keyword-table` prints a keyword table across many files:
+Use `-e` to select HDUs, `-k` to filter keywords (shell-style wildcards like
+`NAXIS*`), or `-f json` / `jsonl` for structured output. `--keyword-table`
+prints a keyword table across many files (wildcards expand to matching columns):
 
 ```bash
 torchfits header science.fits
 torchfits header science.fits -e 1 -k OBJECT
+torchfits header science.fits -k 'NAXIS*'
 torchfits header *.fits --keyword-table -k OBJECT -k DATE-OBS
 torchfits header *.fits --keyword-table -k BITPIX -f json
 ```
@@ -288,7 +298,7 @@ compressed remotes download into the cache first (same as `read_subset`).
 | `arith` | `imarith` (scalar **or** image–image) |
 | `compress` / `decompress` | `fpack` / `funpack` |
 | `transform` | `imfunction`-style stretches / named transforms |
-| `setkey` | `modhead` / `hedit`-style set + rename (MEF / multi-file) |
+| `setkey` | `modhead` / `hedit`-style set + rename + delete (MEF / `@list`) |
 | `probe` | local `info` + remote header peek |
 
 Step-by-step shell recipes (HorseHead, Chandra events): [CLI recipes](cli-recipes.md).

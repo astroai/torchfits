@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intra-op threads; `-J/--file-jobs` = multi-file thread pool.
 - CLI `-J/--file-jobs` on `verify` / `stats` / `arith` (and compress).
 - CLI `arith`: image–image operand, multi-HDU stack+ATen, multi-file `--out-dir`.
+- CLI Wave 2: batch `copy` / `transform` / `cutout` via `--out-dir` + `-J`;
+  `stats` `std`/`median`; `compress --algorithm`; `header -k` wildcards;
+  `setkey --delete` / `@list` (delete/rename rewrite so keys are removed).
 - Docs: CPU-only (no CUDA libs) install recipe; “not only for ML” blurb;
   roadmap **2.0** native engine / GPU-direct (drop CFITSIO).
 
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `release-gate`).
 - `torchfits header` text mode dumps **all HDUs** in fitsheader-style blocks.
 - CLI parallelism docs: `-j` (torch) vs `-J` (file workers).
+- `setkey --rename` now removes the old keyword (full rewrite path).
 
 ### Fixed
 - Table int16 columns with `TSCAL`/`TZERO`: disable CFITSIO auto-scale on read

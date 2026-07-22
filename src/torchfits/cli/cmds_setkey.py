@@ -1,26 +1,45 @@
-"""``torchfits setkey`` — set or rename FITS header keywords (MEF / multi-file)."""
+"""``torchfits setkey`` — set, rename, or delete FITS header keywords."""
 
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import torchfits
 from torchfits.hdu import Header
 
-from .common import EXIT_OK, IoError, UsageError, add_hdu_arg, resolve_paths
+from .common import (
+    EXIT_OK,
+    IoError,
+    UsageError,
+    add_file_jobs_arg,
+    add_hdu_arg,
+    ensure_unique_basenames,
+    expand_at_list_paths,
+    resolve_file_jobs,
+    resolve_paths,
+    run_file_jobs,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser(
         "setkey",
-        help="set or rename a FITS header keyword (supports HIERARCH / MEF / files)",
+        help="set, rename, or delete a FITS header keyword (MEF / multi-file)",
+        description=(
+            "Set (--key/--value), rename (--rename OLD=NEW), or delete (--delete KEY) "
+            "header keywords. Paths may include @list files. "
+            "-J fans out across files; deletes/renames rewrite the FITS (card updates "
+            "cannot remove keys)."
+        ),
     )
     parser.add_argument(
         "inputs",
         nargs="+",
-        help="input FITS path(s); use --stdin for a path list",
+        help="input FITS path(s); @list expands one path per line; --stdin adds more",
     )
     parser.add_argument(
         "--stdin",
@@ -38,6 +57,13 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         metavar="OLD=NEW",
         help="rename a keyword (e.g. --rename OBJECT=TARGET)",
     )
+    parser.add_argument(
+        "--delete",
+        metavar="KEY",
+        action="append",
+        default=None,
+        help="delete keyword(s); repeatable",
+    )
     add_hdu_arg(
         parser,
         default="0",
@@ -52,6 +78,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--out-dir",
         help="write edited copies into this directory (multi-file)",
     )
+    add_file_jobs_arg(parser)
     parser.set_defaults(func=run)
 
 
@@ -97,42 +124,143 @@ def _parse_hdus(spec: str, n_hdus: int) -> list[int]:
     return out
 
 
-def _apply_edits(
+def _apply_header_edits(
+    header: Header,
+    *,
     path: str,
+    hdu: int,
+    key: str | None,
+    value: str | None,
+    rename: str | None,
+    delete_keys: list[str],
+) -> None:
+    for raw in delete_keys:
+        del_key = _normalize_keyword(raw)
+        if del_key not in header:
+            raise IoError(f"{path}[{hdu}]: missing keyword {del_key}")
+        del header[del_key]
+    if rename:
+        if "=" not in rename:
+            raise UsageError("--rename must be OLD=NEW")
+        old_raw, _, new_raw = rename.partition("=")
+        old_key = _normalize_keyword(old_raw)
+        new_key = _normalize_keyword(new_raw)
+        if old_key not in header:
+            raise IoError(f"{path}[{hdu}]: missing keyword {old_key}")
+        header[new_key] = header[old_key]
+        del header[old_key]
+    if key is not None:
+        if value is None:
+            raise UsageError("--value is required with --key")
+        header[_normalize_keyword(key)] = _parse_value(value)
+
+
+def _edit_via_rewrite(
+    src: str,
+    dest: str,
     *,
     hdu_spec: str,
     key: str | None,
     value: str | None,
     rename: str | None,
+    delete_keys: list[str],
 ) -> None:
+    """Mutate headers in memory and rewrite (required for delete/rename)."""
+    with torchfits.open(src) as hdul:
+        for hdu in _parse_hdus(hdu_spec, len(hdul)):
+            _apply_header_edits(
+                hdul[hdu].header,
+                path=src,
+                hdu=hdu,
+                key=key,
+                value=value,
+                rename=rename,
+                delete_keys=delete_keys,
+            )
+        if os.path.abspath(dest) == os.path.abspath(src):
+            fd, tmp = tempfile.mkstemp(
+                suffix=".fits", prefix=".torchfits-setkey-", dir=str(Path(src).parent)
+            )
+            os.close(fd)
+            try:
+                hdul.write(tmp, overwrite=True)
+                os.replace(tmp, dest)
+            except Exception:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
+        else:
+            hdul.write(dest, overwrite=True)
+
+
+def _edit_via_update(
+    path: str,
+    *,
+    hdu_spec: str,
+    key: str | None,
+    value: str | None,
+) -> None:
+    """Fast path: update/add cards without rewriting pixel/table data."""
     with torchfits.open(path) as hdul:
         n_hdus = len(hdul)
     for hdu in _parse_hdus(hdu_spec, n_hdus):
         header = Header(torchfits.read_header(path, hdu))
-        if rename:
-            if "=" not in rename:
-                raise UsageError("--rename must be OLD=NEW")
-            old_raw, _, new_raw = rename.partition("=")
-            old_key = _normalize_keyword(old_raw)
-            new_key = _normalize_keyword(new_raw)
-            if old_key not in header:
-                raise IoError(f"{path}[{hdu}]: missing keyword {old_key}")
-            header[new_key] = header[old_key]
-            del header[old_key]
-        if key is not None:
-            if value is None:
-                raise UsageError("--value is required with --key")
-            header[_normalize_keyword(key)] = _parse_value(value)
+        _apply_header_edits(
+            header,
+            path=path,
+            hdu=hdu,
+            key=key,
+            value=value,
+            rename=None,
+            delete_keys=[],
+        )
         torchfits.io._write_header_cards_if_supported(path, hdu, header)
 
 
+def _edit_one(
+    job: tuple[str, str, argparse.Namespace, list[str], bool],
+) -> None:
+    src, dest, args, delete_keys, needs_rewrite = job
+    try:
+        if needs_rewrite:
+            _edit_via_rewrite(
+                src,
+                dest,
+                hdu_spec=args.hdu,
+                key=args.key,
+                value=args.value,
+                rename=args.rename,
+                delete_keys=delete_keys,
+            )
+            return
+        if dest != src:
+            with torchfits.open(src) as hdul:
+                hdul.write(dest, overwrite=True)
+            target = dest
+        else:
+            target = src
+        _edit_via_update(
+            target,
+            hdu_spec=args.hdu,
+            key=args.key,
+            value=args.value,
+        )
+    except UsageError:
+        raise
+    except IoError:
+        raise
+    except Exception as exc:
+        raise IoError(f"{src}: {exc}") from exc
+
+
 def run(args: argparse.Namespace) -> int:
-    if not args.key and not args.rename:
-        raise UsageError("provide --key/--value and/or --rename OLD=NEW")
-    if args.key and args.value is None and not args.rename:
+    delete_keys = list(args.delete or [])
+    if not args.key and not args.rename and not delete_keys:
+        raise UsageError("provide --key/--value, --rename OLD=NEW, and/or --delete KEY")
+    if args.key and args.value is None and not args.rename and not delete_keys:
         raise UsageError("--value is required with --key")
 
-    paths = resolve_paths(args.inputs, use_stdin=args.stdin)
+    paths = expand_at_list_paths(resolve_paths(args.inputs, use_stdin=args.stdin))
     if args.out and len(paths) != 1:
         raise UsageError("--out requires exactly one input path")
     if args.out_dir and args.out:
@@ -140,31 +268,20 @@ def run(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out_dir) if args.out_dir else None
     if out_dir is not None:
+        ensure_unique_basenames(paths)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        for src in paths:
-            if out_dir is not None:
-                dest = str(out_dir / Path(src).name)
-                with torchfits.open(src) as hdul:
-                    hdul.write(dest, overwrite=True)
-                target = dest
-            elif args.out:
-                if args.out != src:
-                    with torchfits.open(src) as hdul:
-                        hdul.write(args.out, overwrite=True)
-                target = args.out
-            else:
-                target = src
-            _apply_edits(
-                target,
-                hdu_spec=args.hdu,
-                key=args.key,
-                value=args.value,
-                rename=args.rename,
-            )
-    except UsageError:
-        raise
-    except Exception as exc:
-        raise IoError(str(exc)) from exc
+    needs_rewrite = bool(delete_keys or args.rename)
+    jobs: list[tuple[str, str, argparse.Namespace, list[str], bool]] = []
+    for src in paths:
+        if out_dir is not None:
+            dest = str(out_dir / Path(src).name)
+        elif args.out:
+            dest = str(args.out)
+        else:
+            dest = src
+        jobs.append((src, dest, args, delete_keys, needs_rewrite))
+
+    file_jobs = resolve_file_jobs(int(args.file_jobs), len(jobs))
+    run_file_jobs(jobs, _edit_one, file_jobs)
     return EXIT_OK

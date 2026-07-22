@@ -6,23 +6,58 @@ import argparse
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError, add_out_arg, resolve_out_path
+from .common import (
+    EXIT_OK,
+    IoError,
+    UsageError,
+    add_file_jobs_arg,
+    resolve_batch_io_pairs,
+    resolve_file_jobs,
+    run_file_jobs,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("copy", help="copy FITS file(s) preserving HDUs")
-    parser.add_argument("input", help="input FITS path")
-    add_out_arg(parser, help="output FITS path")
+    parser = subparsers.add_parser(
+        "copy",
+        help="copy FITS file(s) preserving HDUs",
+        description=(
+            "MEF-preserving FITS→FITS copy. "
+            "Multiple inputs need --out-dir; -J fans out across files."
+        ),
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        help="INPUT [OUTPUT], or multiple INPUTs with --out-dir",
+    )
+    parser.add_argument("-o", "--out", default=None, help="output FITS path")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="directory for outputs when copying multiple inputs",
+    )
+    add_file_jobs_arg(parser)
     parser.set_defaults(func=run)
 
 
-def run(args: argparse.Namespace) -> int:
-    output = resolve_out_path(args)
+def _copy_one(pair: tuple[str, str]) -> None:
+    input_path, output_path = pair
     try:
-        with torchfits.open(args.input) as hdul:
-            hdul.write(output, overwrite=True)
+        with torchfits.open(input_path) as hdul:
+            hdul.write(output_path, overwrite=True)
     except UsageError:
         raise
     except Exception as exc:
-        raise IoError(f"{args.input}: {exc}") from exc
+        raise IoError(f"{input_path}: {exc}") from exc
+
+
+def run(args: argparse.Namespace) -> int:
+    pairs = resolve_batch_io_pairs(
+        [str(p) for p in args.paths],
+        out=args.out,
+        out_dir=args.out_dir,
+    )
+    file_jobs = resolve_file_jobs(int(args.file_jobs), len(pairs))
+    run_file_jobs(pairs, _copy_one, file_jobs)
     return EXIT_OK

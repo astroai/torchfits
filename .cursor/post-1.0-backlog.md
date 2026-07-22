@@ -11,14 +11,13 @@ Deferred after the 1.0 triage passes. Do not block the 1.0 tag on these.
 
 - Merge dual cache subsystems (`cache.py` vs `_io_engine/caches.py`) — document relationship first
 - Collapse Dataset class zoo (`FitsImage*` / `FitsCube*` / …) into fewer constructors
-- CLI trim (`compress` / `decompress` / `arith` vs fpack/numpy) — partially
-  addressed (Wave 1: `-J` file jobs + imarith-class `arith`). Remaining
-  **Wave 2:** batch `copy`/`transform`/`cutout` + `--out-dir`/`-J`; `stats`
-  std/median; compress algorithm string from write API; `header` keyword
-  wildcards; `setkey --delete` / `@list`. **Wave 3:** thin fitsverify
-  subprocess helper (not silent expand of checksum verify); fpack
-  tile/dither/`-i2f`; WCS/catalog cutouts; `imexpr`/full STILTS — **not**
-  CFITSIO HTTPS drivers (keep own HTTP + SSRF).
+- CLI trim (`compress` / `decompress` / `arith` vs fpack/numpy) — Waves 1–2
+  shipped (`-j`/`-J`, imarith-class `arith`, batch copy/transform/cutout,
+  stats std/median, compress `--algorithm`, header wildcards, setkey
+  `--delete`/`@list`). **Wave 3:** thin fitsverify subprocess helper (not
+  silent expand of checksum verify); fpack tile/dither/`-i2f`; WCS/catalog
+  cutouts; `imexpr`/full STILTS — **not** CFITSIO HTTPS drivers (keep own
+  HTTP + SSRF).
 - Scorecard / CANFAR re-soak after thin-I/O — **done** (Round-3: MPS/CPU/CUDA
   `exhaustive_*_20260719_14*`; see `docs/benchmarks.md`)
 - MegaCam `torchfits_cached` median lags `fitsio_cached` on Round-3 local soak

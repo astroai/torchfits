@@ -55,10 +55,19 @@ def add_compress_parser(
         description=(
             "Tile-compress image HDUs (Rice by default via CFITSIO). "
             "-j = PyTorch intra-op threads; -J = parallel file workers. "
-            "Use --split hdu --out-dir for one file per image HDU."
+            "Use --split hdu --out-dir for one file per image HDU; "
+            "--algorithm selects the codec."
         ),
     )
     _add_shared_args(parser)
+    parser.add_argument(
+        "--algorithm",
+        default="RICE_1",
+        help=(
+            "compression algorithm (default: RICE_1); "
+            "also RICE, GZIP_1, GZIP_2, HCOMPRESS_1"
+        ),
+    )
     parser.set_defaults(func=run_compress)
 
 
@@ -106,7 +115,12 @@ def _resolve_file_pairs(args: argparse.Namespace) -> list[tuple[str, str]]:
     raise UsageError("multiple inputs require --out-dir")
 
 
-def _rewrite_file(input_path: str, output_path: str, *, compress: bool) -> None:
+def _rewrite_file(
+    input_path: str,
+    output_path: str,
+    *,
+    compress: bool | str,
+) -> None:
     try:
         with torchfits.open(input_path) as hdul:
             torchfits.write(output_path, hdul, overwrite=True, compress=compress)
@@ -135,7 +149,7 @@ def _rewrite_one_input_split_hdu(
     out_dir: Path,
     hdu: str | None,
     *,
-    compress: bool,
+    compress: bool | str,
 ) -> int:
     """Compress/decompress image HDUs from one input; return count written."""
     try:
@@ -179,7 +193,7 @@ def _rewrite_one_input_split_hdu(
     return written
 
 
-def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool) -> None:
+def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool | str) -> None:
     if not args.out_dir:
         raise UsageError("--split hdu requires --out-dir")
     if args.out:
@@ -203,7 +217,7 @@ def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool) -> None:
         raise IoError("no image HDUs to process")
 
 
-def _run_rewrite(args: argparse.Namespace, *, compress: bool) -> int:
+def _run_rewrite(args: argparse.Namespace, *, compress: bool | str) -> int:
     split = getattr(args, "split", "file")
     if split == "hdu":
         _rewrite_split_hdu(args, compress=compress)
@@ -222,7 +236,8 @@ def _run_rewrite(args: argparse.Namespace, *, compress: bool) -> int:
 
 
 def run_compress(args: argparse.Namespace) -> int:
-    return _run_rewrite(args, compress=True)
+    algo = str(getattr(args, "algorithm", "RICE_1") or "RICE_1").strip() or "RICE_1"
+    return _run_rewrite(args, compress=algo)
 
 
 def run_decompress(args: argparse.Namespace) -> int:

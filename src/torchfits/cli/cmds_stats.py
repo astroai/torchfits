@@ -31,9 +31,9 @@ from .common import (
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser(
         "stats",
-        help="image min/max/mean via read_tensor",
+        help="image min/max/mean/std/median via read_tensor",
         description=(
-            "Image min/max/mean. "
+            "Image min/max/mean/std/median. "
             "-j = PyTorch intra-op threads; -J = parallel file workers."
         ),
     )
@@ -66,6 +66,7 @@ def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
         if not isinstance(tensor, torch.Tensor):
             raise IoError(f"{path}:{index} read_tensor did not return a tensor")
         header = headers[index]
+        flat = tensor.float().reshape(-1)
         records.append(
             {
                 "file": path,
@@ -75,7 +76,9 @@ def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
                 "dtype": str(tensor.dtype).replace("torch.", ""),
                 "min": float(tensor.min()),
                 "max": float(tensor.max()),
-                "mean": float(tensor.float().mean()),
+                "mean": float(flat.mean()),
+                "std": float(flat.std(unbiased=False)),
+                "median": float(flat.median()),
             }
         )
     return records

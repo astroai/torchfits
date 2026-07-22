@@ -272,6 +272,62 @@ def ensure_unique_basenames(paths: list[str], *, label: str = "inputs") -> None:
         seen[name] = path
 
 
+def expand_at_list_paths(paths: list[str]) -> list[str]:
+    """Expand classic ``@file`` path lists (one path per line, ``#`` comments)."""
+    expanded: list[str] = []
+    for item in paths:
+        if not item.startswith("@") or len(item) == 1:
+            expanded.append(item)
+            continue
+        list_path = item[1:]
+        try:
+            text = Path(list_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise IoError(f"cannot read path list {list_path}: {exc}") from exc
+        for line in text.splitlines():
+            entry = line.strip()
+            if entry and not entry.startswith("#"):
+                expanded.append(entry)
+    if not expanded:
+        raise UsageError("no input paths after expanding @list files")
+    return expanded
+
+
+def resolve_batch_io_pairs(
+    paths: list[str],
+    *,
+    out: str | None,
+    out_dir: str | None,
+    positional_output: str | None = None,
+) -> list[tuple[str, str]]:
+    """Resolve ``INPUT [OUTPUT]``, ``-o``, or multi-input ``--out-dir`` pairs."""
+    if out and positional_output and out != positional_output:
+        raise UsageError("conflicting output paths: use either -o/--out or positional")
+    out_flag = out or positional_output
+
+    if out_dir and out_flag:
+        raise UsageError("use either --out-dir or -o/--out, not both")
+
+    if out_dir:
+        ensure_unique_basenames(paths)
+        directory = Path(out_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        return [(path, str(directory / Path(path).name)) for path in paths]
+
+    if out_flag:
+        if len(paths) != 1:
+            raise UsageError("-o/--out requires exactly one input path")
+        return [(paths[0], str(out_flag))]
+
+    if len(paths) == 2:
+        return [(paths[0], paths[1])]
+
+    if len(paths) == 1:
+        raise UsageError("output path required (-o/--out or positional OUTPUT)")
+
+    raise UsageError("multiple inputs require --out-dir")
+
+
 def add_split_arg(parser: Any) -> None:
     """Add ``--split {file,hdu}`` for per-file vs per-HDU outputs."""
     parser.add_argument(

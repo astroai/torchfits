@@ -5,20 +5,43 @@ from __future__ import annotations
 import argparse
 
 import torchfits
-
 from torchfits._io_engine.paths import has_cfitsio_filter
 
-from .common import EXIT_OK, UsageError, add_hdu_arg, add_out_arg, resolve_out_path
+from .common import (
+    EXIT_OK,
+    IoError,
+    UsageError,
+    add_file_jobs_arg,
+    add_hdu_arg,
+    resolve_batch_io_pairs,
+    resolve_file_jobs,
+    run_file_jobs,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("cutout", help="extract a pixel box to a FITS file")
-    parser.add_argument(
-        "input",
-        help="FITS path; CFITSIO image section OK "
-        "(1-based inclusive), e.g. img.fits[10:100,20:200]",
+    parser = subparsers.add_parser(
+        "cutout",
+        help="extract a pixel box to a FITS file",
+        description=(
+            "Pixel box extraction. Multiple inputs need --out-dir and a shared "
+            "--box (or each path may carry its own CFITSIO section); -J fans out."
+        ),
     )
-    add_out_arg(parser, help="output FITS path")
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        help=(
+            "INPUT [OUTPUT], or multiple INPUTs with --out-dir; "
+            "CFITSIO image section OK on each path"
+        ),
+    )
+    parser.add_argument("-o", "--out", default=None, help="output FITS path")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="directory for outputs when cutting multiple inputs",
+    )
     add_hdu_arg(parser, type=int, default=0, help="source HDU index")
     parser.add_argument(
         "--box",
@@ -26,6 +49,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         help="alt pixel box x1,y1,x2,y2 (0-based half-open); "
         "omit when the path already has a CFITSIO section",
     )
+    add_file_jobs_arg(parser)
     parser.set_defaults(func=run)
 
 
@@ -40,25 +64,48 @@ def _parse_box(raw: str) -> tuple[int, int, int, int]:
     return x1, y1, x2, y2
 
 
-def run(args: argparse.Namespace) -> int:
-    output = resolve_out_path(args)
-    sectioned = has_cfitsio_filter(args.input)
-    if sectioned and args.box is not None:
+def _cutout_one(
+    pair: tuple[str, str],
+    *,
+    hdu: int,
+    box: str | None,
+) -> None:
+    input_path, output_path = pair
+    sectioned = has_cfitsio_filter(input_path)
+    if sectioned and box is not None:
         raise UsageError(
             "pass either a CFITSIO image section in the path or --box, not both"
         )
-    if not sectioned and args.box is None:
+    if not sectioned and box is None:
         raise UsageError(
             "cutout needs a CFITSIO section "
             "(e.g. image.fits[10:100,20:200]) or --box x1,y1,x2,y2"
         )
+    try:
+        if sectioned:
+            tensor = torchfits.read_tensor(input_path, hdu=hdu)
+        else:
+            assert box is not None  # guarded above
+            x1, y1, x2, y2 = _parse_box(box)
+            tensor = torchfits.read_subset(input_path, hdu, x1, y1, x2, y2)
+        header = torchfits.read_header(input_path, hdu)
+        torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
+    except UsageError:
+        raise
+    except Exception as exc:
+        raise IoError(f"{input_path}: {exc}") from exc
 
-    if sectioned:
-        # CFITSIO parses the image section at open; pass path through unchanged.
-        tensor = torchfits.read_tensor(args.input, hdu=args.hdu)
-    else:
-        x1, y1, x2, y2 = _parse_box(args.box)
-        tensor = torchfits.read_subset(args.input, args.hdu, x1, y1, x2, y2)
-    header = torchfits.read_header(args.input, args.hdu)
-    torchfits.write_tensor(output, tensor, header=header, overwrite=True)
+
+def run(args: argparse.Namespace) -> int:
+    pairs = resolve_batch_io_pairs(
+        [str(p) for p in args.paths],
+        out=args.out,
+        out_dir=args.out_dir,
+    )
+    file_jobs = resolve_file_jobs(int(args.file_jobs), len(pairs))
+    run_file_jobs(
+        pairs,
+        lambda pair: _cutout_one(pair, hdu=int(args.hdu), box=args.box),
+        file_jobs,
+    )
     return EXIT_OK

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 from typing import Any
 
 import torchfits
@@ -37,7 +38,10 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     add_hdu_arg(parser)
     add_keyword_arg(
         parser,
-        help="filter to keyword(s); repeat for multiple; required with --keyword-table",
+        help=(
+            "filter to keyword(s); supports wildcards (e.g. NAXIS*); "
+            "repeat for multiple; required with --keyword-table"
+        ),
     )
     parser.add_argument(
         "--keyword-table",
@@ -57,13 +61,50 @@ def _header_lookup(header: Any) -> dict[str, Any]:
     return {str(card.key).upper(): card.value for card in header.cards}
 
 
+def _pattern_has_wildcards(pattern: str) -> bool:
+    return any(ch in pattern for ch in "*?[")
+
+
+def _keyword_matches(card_key: str, patterns: list[str]) -> bool:
+    upper = str(card_key).upper()
+    for pattern in patterns:
+        pat = pattern.upper()
+        if _pattern_has_wildcards(pat):
+            if fnmatch.fnmatchcase(upper, pat):
+                return True
+        elif upper == pat:
+            return True
+    return False
+
+
+def _expand_keyword_columns(headers: list[Any], patterns: list[str]) -> list[str]:
+    """Resolve -k patterns to concrete column names (wildcards → matched keys)."""
+    columns: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        pat = pattern.upper()
+        if not _pattern_has_wildcards(pat):
+            if pat not in seen:
+                columns.append(pat)
+                seen.add(pat)
+            continue
+        matched: list[str] = []
+        for header in headers:
+            for card in header.cards:
+                key = str(card.key).upper()
+                if key not in seen and fnmatch.fnmatchcase(key, pat):
+                    matched.append(key)
+                    seen.add(key)
+        columns.extend(sorted(matched))
+    return columns
+
+
 def _card_records(
     path: str, index: int, header: Any, *, keywords: list[str] | None
 ) -> list[dict[str, Any]]:
     cards = list(header.cards)
     if keywords:
-        wanted = {key.upper() for key in keywords}
-        cards = [card for card in cards if str(card.key).upper() in wanted]
+        cards = [card for card in cards if _keyword_matches(str(card.key), keywords)]
     return [
         {
             "file": path,
@@ -168,8 +209,9 @@ def _print_headers_text(
         )
         cards = list(header.cards)
         if keywords:
-            wanted = {key.upper() for key in keywords}
-            cards = [card for card in cards if str(card.key).upper() in wanted]
+            cards = [
+                card for card in cards if _keyword_matches(str(card.key), keywords)
+            ]
         if not first_block:
             print()
         first_block = False
@@ -190,22 +232,30 @@ def run(args: argparse.Namespace) -> int:
         _print_headers_text(paths, args.hdu, keywords=keywords or None)
         return EXIT_OK
 
-    records: list[dict[str, Any]] = []
+    pairs: list[tuple[str, int, Any]] = []
     for path, index, hdu in iter_file_hdu_pairs(paths, args.hdu):
         header = (
             hdu.header if hasattr(hdu, "header") else torchfits.read_header(path, index)
         )
+        pairs.append((path, index, header))
+
+    columns = (
+        _expand_keyword_columns([header for _, _, header in pairs], keywords)
+        if args.keyword_table
+        else keywords
+    )
+
+    records: list[dict[str, Any]] = []
+    for path, index, header in pairs:
         if args.keyword_table:
-            records.append(
-                _keyword_table_record(path, index, header, keywords=keywords)
-            )
+            records.append(_keyword_table_record(path, index, header, keywords=columns))
         else:
             records.extend(
                 _card_records(path, index, header, keywords=keywords or None)
             )
 
     if args.keyword_table and fmt == "text":
-        _print_keyword_table(records, keywords)
+        _print_keyword_table(records, columns)
         return EXIT_OK
 
     emit_records(records, format=fmt)

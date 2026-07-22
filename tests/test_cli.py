@@ -750,6 +750,104 @@ def test_setkey_hierarch_and_rename(image_fits, tmp_path):
     hdr = torchfits.read_header(str(out), 0)
     assert "TARGET" in hdr
     assert hdr["TARGET"] == "DEMO"
+    assert "OBJECT" not in hdr
+
+
+def test_copy_batch_out_dir(image_fits, tmp_path):
+    other = tmp_path / "other.fits"
+    torchfits.write(
+        str(other),
+        torch.arange(16, dtype=torch.float32).reshape(4, 4),
+        overwrite=True,
+    )
+    out_dir = tmp_path / "copies"
+    result = _run_cli(
+        "copy",
+        str(image_fits),
+        str(other),
+        "--out-dir",
+        str(out_dir),
+        "-J",
+        "2",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / image_fits.name).is_file()
+    assert (out_dir / other.name).is_file()
+
+
+def test_stats_std_median_json(image_fits):
+    result = _run_cli("stats", str(image_fits), "--json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert "std" in payload[0]
+    assert "median" in payload[0]
+    tensor = torchfits.read_tensor(str(image_fits), hdu=0).float().reshape(-1)
+    assert payload[0]["std"] == pytest.approx(float(tensor.std(unbiased=False)))
+    assert payload[0]["median"] == pytest.approx(float(tensor.median()))
+
+
+def test_compress_algorithm_gzip(image_fits, tmp_path):
+    out = tmp_path / "gzip.fits"
+    result = _run_cli(
+        "compress",
+        str(image_fits),
+        str(out),
+        "--algorithm",
+        "GZIP_1",
+        "-j",
+        "1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.is_file()
+    hdr = torchfits.read_header(str(out), 1)
+    zimage = str(hdr.get("ZIMAGE", "")).upper()
+    zcmptype = str(hdr.get("ZCMPTYPE", "")).upper()
+    assert zimage in {"T", "TRUE", "1"} or "GZIP" in zcmptype
+
+
+def test_header_keyword_wildcard(image_fits):
+    result = _run_cli("header", str(image_fits), "--keyword", "NAXIS*", "--json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    keys = {row["keyword"] for row in payload}
+    assert "NAXIS" in keys
+    assert "NAXIS1" in keys
+    assert "NAXIS2" in keys
+
+
+def test_setkey_delete_and_at_list(image_fits, tmp_path):
+    a = tmp_path / "a.fits"
+    b = tmp_path / "b.fits"
+    torchfits.write(
+        str(a),
+        torch.ones(2, 2),
+        header={"OBJECT": "A", "FOO": 1},
+        overwrite=True,
+    )
+    torchfits.write(
+        str(b),
+        torch.ones(2, 2),
+        header={"OBJECT": "B", "FOO": 2},
+        overwrite=True,
+    )
+    list_file = tmp_path / "paths.txt"
+    list_file.write_text(f"{a}\n# comment\n{b}\n", encoding="utf-8")
+    out_dir = tmp_path / "edited"
+    result = _run_cli(
+        "setkey",
+        f"@{list_file}",
+        "--delete",
+        "FOO",
+        "--out-dir",
+        str(out_dir),
+        "-J",
+        "2",
+    )
+    assert result.returncode == 0, result.stderr
+    for name in (a.name, b.name):
+        hdr = torchfits.read_header(str(out_dir / name), 0)
+        assert "FOO" not in hdr
+        assert "OBJECT" in hdr
 
 
 def test_setkey_rejects_negative_hdu_index(image_fits):
