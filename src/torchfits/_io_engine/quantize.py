@@ -14,7 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-import numpy as np
+import sys
+if 'numpy' not in sys.modules:
+    import numpy as np
+else:
+    np = sys.modules['numpy']
+
 import torch
 from torch import Tensor
 
