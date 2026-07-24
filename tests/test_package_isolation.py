@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 try:
     import tomllib
@@ -67,6 +67,7 @@ def test_native_torch_abi_range_is_consistent() -> None:
 
 def test_native_extension_rejects_mismatched_torch_runtime() -> None:
     import torch
+
     major, minor = torch.__version__.split(".")[:2]
     expected_abi = f"{major}.{minor}.x"
     # Guarantee a mismatch by offsetting the minor version
@@ -82,7 +83,10 @@ import torchfits._C
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
     assert result.returncode != 0
-    assert f"built for PyTorch {expected_abi} but found PyTorch {fake_version}" in result.stderr
+    assert (
+        f"built for PyTorch {expected_abi} but found PyTorch {fake_version}"
+        in result.stderr
+    )
 
 
 def test_torchfits_source_does_not_reference_torchsky() -> None:
