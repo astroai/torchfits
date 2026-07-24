@@ -11,10 +11,16 @@ as a default — it is the failure mode this helper avoids.
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
-import numpy as np
+if "numpy" not in sys.modules:
+    import numpy as np
+else:
+    np = sys.modules["numpy"]
+
 import torch
 from torch import Tensor
 
