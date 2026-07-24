@@ -66,16 +66,23 @@ def test_native_torch_abi_range_is_consistent() -> None:
 
 
 def test_native_extension_rejects_mismatched_torch_runtime() -> None:
-    script = """
+    import torch
+    major, minor = torch.__version__.split(".")[:2]
+    expected_abi = f"{major}.{minor}.x"
+    # Guarantee a mismatch by offsetting the minor version
+    fake_minor = int(minor) + 1 if int(minor) < 99 else int(minor) - 1
+    fake_version = f"{major}.{fake_minor}.0"
+
+    script = f"""
 import torch
-torch.__version__ = "2.11.0"
+torch.__version__ = "{fake_version}"
 import torchfits._C
 """
     result = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
     assert result.returncode != 0
-    assert "built for PyTorch 2.10.x but found PyTorch 2.11.0" in result.stderr
+    assert f"built for PyTorch {expected_abi} but found PyTorch {fake_version}" in result.stderr
 
 
 def test_torchfits_source_does_not_reference_torchsky() -> None:
