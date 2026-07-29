@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-import numpy as np
 import torch
 from torch import Tensor
 
@@ -143,7 +142,7 @@ def parse_table_quantize_spec(
 
 
 def _as_work_flat(
-    values: Tensor | np.ndarray,
+    values: Tensor | Any,
 ) -> tuple[Any, tuple[int, ...], torch.device]:
     """Return contiguous float flat view (float32 preferred), shape, device.
 
@@ -161,6 +160,7 @@ def _as_work_flat(
         host = values.detach().to(device="cpu", dtype=work_dtype).reshape(-1)
         return host.numpy(), tuple(values.shape), values.device
 
+    import numpy as np
     arr = np.asarray(values)
     if arr.size == 0:
         raise ValueError("quantize_int16_robust: empty array")
@@ -193,8 +193,9 @@ def _percentile_sample(finite: np.ndarray, lo_q: float, hi_q: float) -> np.ndarr
     return finite[::step]
 
 
-def _pack_codes(physical: np.ndarray, scale: float, zero: float) -> np.ndarray:
+def _pack_codes(physical: Any, scale: float, zero: float) -> Any:
     """Round physical → int16 codes; clip to effective short range."""
+    import numpy as np
     inv = 1.0 / scale
     codes_f = np.empty(physical.shape, dtype=np.float64)
     np.subtract(physical, zero, out=codes_f)
@@ -205,7 +206,7 @@ def _pack_codes(physical: np.ndarray, scale: float, zero: float) -> np.ndarray:
 
 
 def quantize_int16_robust(
-    values: Tensor | np.ndarray,
+    values: Tensor | Any,
     *,
     lo_q: float = 0.1,
     hi_q: float = 99.9,
@@ -218,6 +219,7 @@ def quantize_int16_robust(
     Shape is preserved. Endpoint identity: ``lo`` → code ``-32766``, ``hi`` →
     ``32765`` (poloka ±2 margin).
     """
+    import numpy as np
     if not (0.0 <= lo_q < hi_q <= 100.0):
         raise ValueError(
             f"lo_q/hi_q must satisfy 0 <= lo_q < hi_q <= 100, got {lo_q!r}, {hi_q!r}"
@@ -301,8 +303,9 @@ def quantize_int16_robust(
     )
 
 
-def quantize_int16_minmax(values: Tensor | np.ndarray) -> QuantizeInt16Result:
+def quantize_int16_minmax(values: Tensor | Any) -> QuantizeInt16Result:
     """Poloka-style global min→max pack (for tests / comparison only)."""
+    import numpy as np
     flat, shape, device = _as_work_flat(values)
     finite_mask = np.isfinite(flat)
     finite = flat if bool(finite_mask.all()) else flat[finite_mask]
