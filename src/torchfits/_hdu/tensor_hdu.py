@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import html
 import threading
-from typing import Any, Iterator, Optional, Tuple, cast
+from collections.abc import Iterator
+from typing import Any, cast
 
 from torch import Tensor
 
+from .dataview import _BITPIX_TO_DTYPE, DataView
 from .header import Header
-from .dataview import DataView, _BITPIX_TO_DTYPE
 
 
 class TensorHDU:
     def __init__(
         self,
-        data: Optional[Tensor] = None,
-        header: Optional[Header] = None,
+        data: Tensor | None = None,
+        header: Header | None = None,
         file_handle: Any = None,
         hdu_index: int = 0,
-        source_path: Optional[str] = None,
+        source_path: str | None = None,
     ):
         self._data = data
         self._header = header or Header()
@@ -62,7 +63,7 @@ class TensorHDU:
             hdu_index = self._hdu_index
             return cast(Tensor, cpp.read_full(handle, hdu_index).to(device))
 
-    def chunks(self, chunk_size: Tuple[int, ...]) -> Iterator[Tensor]:
+    def chunks(self, chunk_size: tuple[int, ...]) -> Iterator[Tensor]:
         with self._io_lock:
             if self._closed or self._file_handle is None:
                 raise RuntimeError(

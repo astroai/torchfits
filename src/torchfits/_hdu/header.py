@@ -60,7 +60,7 @@ class Header(dict[str, Any]):
             card_value = value
             comment = ""
         self._set_card(str(key), card_value, str(comment), bump=False)
-        self._version += 1
+        self._bump_version()
 
     def __delitem__(self, key: str) -> None:
         # HISTORY/COMMENT (and any duplicated key) must clear all cards; a single
@@ -81,12 +81,12 @@ class Header(dict[str, Any]):
                 comment = ""
             self._set_card(str(key), card_value, str(comment), bump=False)
         if other:
-            self._version += 1
+            self._bump_version()
 
     def clear(self) -> None:
         super().clear()
         self._cards.clear()
-        self._version += 1
+        self._bump_version()
 
     def pop(self, *args: Any) -> Any:
         if not args:
@@ -106,7 +106,7 @@ class Header(dict[str, Any]):
         # Mapping entry is gone; drop every card for that key (HISTORY/COMMENT
         # and any insert()-created duplicates).
         self._cards = [c for c in self._cards if c.key != key_s]
-        self._version += 1
+        self._bump_version()
         return key_s, value
 
     def setdefault(self, key: str, default: Any = None) -> Any:
@@ -116,7 +116,7 @@ class Header(dict[str, Any]):
         else:
             self._set_card(key_s, default, "", bump=False)
             res = default
-        self._version += 1
+        self._bump_version()
         return res
 
     def add_history(self, value: Any) -> None:
@@ -144,7 +144,7 @@ class Header(dict[str, Any]):
         parsed = self._coerce_card(card)
         self._cards.insert(int(index), parsed)
         self._set_mapping_for_card(parsed)
-        self._version += 1
+        self._bump_version()
 
     def remove(
         self,
@@ -165,7 +165,7 @@ class Header(dict[str, Any]):
         else:
             del self._cards[matches[0]]
         self._rebuild_mapping_for_key(key_s)
-        self._version += 1
+        self._bump_version()
 
     def card(self, key: str) -> Card:
         key_s = str(key)
@@ -200,7 +200,7 @@ class Header(dict[str, Any]):
         if update_mapping:
             self._set_mapping_for_card(card)
         if bump:
-            self._version += 1
+            self._bump_version()
 
     def _set_card(self, key: str, value: Any, comment: str, *, bump: bool) -> None:
         card = Card(key, value, comment)
@@ -218,7 +218,14 @@ class Header(dict[str, Any]):
 
         super().__setitem__(key, value)
         if bump:
-            self._version += 1
+            self._bump_version()
+
+    def _bump_version(self) -> None:
+        self._version += 1
+        callbacks = getattr(self, "_on_version_changed", None)
+        if callbacks is not None:
+            for cb in callbacks:
+                cb()
 
     def _set_mapping_for_card(self, card: Card) -> None:
         super().__setitem__(card.key, card.value)

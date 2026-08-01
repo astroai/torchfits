@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, List, Optional, Type, Union
+from typing import Any
 
 from torchfits._io_engine.paths import (
     cfitsio_base_path,
@@ -13,9 +13,9 @@ from torchfits._io_engine.paths import (
 )
 
 from .header import Header
-from .tensor_hdu import TensorHDU
 from .table_hdu import TableHDU
 from .table_hdu_ref import TableHDURef
+from .tensor_hdu import TensorHDU
 
 
 @dataclass(frozen=True)
@@ -27,15 +27,15 @@ class _HDUInfo:
 
 class HDUList:
     def __init__(
-        self, hdus: Optional[List[Union[TensorHDU, TableHDU, TableHDURef]]] = None
+        self, hdus: list[TensorHDU | TableHDU | TableHDURef] | None = None
     ):
-        self._hdus: List[Union[TensorHDU, TableHDU, TableHDURef]] = hdus or []
+        self._hdus: list[TensorHDU | TableHDU | TableHDURef] = hdus or []
         self._file_handle = None
-        self._extname_idx: Optional[dict[str, int]] = None
-        self._registry_key: Optional[str] = None
+        self._extname_idx: dict[str, int] | None = None
+        self._registry_key: str | None = None
 
     @classmethod
-    def fromfile(cls, path: str, mode: str = "r") -> "HDUList":
+    def fromfile(cls, path: str, mode: str = "r") -> HDUList:
         if not path or not isinstance(path, str):
             raise ValueError("Path must be a non-empty string")
 
@@ -110,14 +110,14 @@ class HDUList:
                     hdul._file_handle.close()
                 except Exception:
                     pass
-            raise RuntimeError(f"Failed to open FITS file '{path}': {str(e)}") from e
+            raise RuntimeError(f"Failed to open FITS file '{path}': {e!s}") from e
 
     def __len__(self) -> int:
         return len(self._hdus)
 
     def __getitem__(
-        self, key: Union[int, str]
-    ) -> Union[TensorHDU, TableHDU, TableHDURef]:
+        self, key: int | str
+    ) -> TensorHDU | TableHDU | TableHDURef:
         if isinstance(key, int):
             return self._hdus[key]
 
@@ -139,8 +139,8 @@ class HDUList:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
         self.close()
@@ -195,7 +195,7 @@ class HDUList:
 
         _write_hdus_uncompressed(path, list(self._hdus), overwrite)
 
-    def append(self, hdu: Union[TensorHDU, TableHDU]) -> None:
+    def append(self, hdu: TensorHDU | TableHDU) -> None:
         self._hdus.append(hdu)
         self._extname_idx = None
 

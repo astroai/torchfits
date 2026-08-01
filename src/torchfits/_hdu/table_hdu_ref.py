@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import html
-from typing import Any, Dict, Iterator, List, Optional, Union
+from collections.abc import Iterator
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -13,7 +14,7 @@ from .table_hdu import TableHDU
 
 
 class _TableHDURefDataWrapper:
-    def __init__(self, parent: "TableHDURef"):
+    def __init__(self, parent: TableHDURef):
         self._parent = parent
 
     def __getitem__(self, key: str) -> Any:
@@ -30,18 +31,19 @@ class TableHDURef:
     def __init__(
         self,
         *,
-        header: Optional[Header] = None,
-        source_path: Optional[str] = None,
-        source_hdu: Optional[int] = None,
-        columns: Optional[List[str]] = None,
-        row_slice: Optional[slice | tuple[int, int]] = None,
+        header: Header | None = None,
+        source_path: str | None = None,
+        source_hdu: int | None = None,
+        columns: list[str] | None = None,
+        row_slice: slice | tuple[int, int] | None = None,
     ):
         self.header = header or Header()
         self._source_path = source_path
         self._source_hdu = source_hdu
-        self._columns: Optional[tuple[str, ...]] = tuple(columns) if columns else None
+        self._columns: tuple[str, ...] | None = tuple(columns) if columns else None
         self._row_slice = row_slice
         self._all_columns_cache: tuple[str, ...] | None = None
+        self._all_columns_cache_version = -1
 
     def _require_source(self) -> tuple[str, int]:
         if not self._source_path or self._source_hdu is None:
@@ -64,8 +66,7 @@ class TableHDURef:
             start = 0 if self._row_slice.start is None else int(self._row_slice.start)
             stop = self._row_slice.stop
         start = int(start)
-        if start < 0:
-            start = 0
+        start = max(start, 0)
         if stop is None:
             return max(0, total - start)
         stop = int(stop)
@@ -80,7 +81,8 @@ class TableHDURef:
         if self._columns is not None:
             return list(self._columns)
 
-        if self._all_columns_cache is not None:
+        version = getattr(self.header, "_version", -1)
+        if self._all_columns_cache is not None and self._all_columns_cache_version == version:
             return list(self._all_columns_cache)
         try:
             n = int(self.header.get("TFIELDS", 0))
@@ -94,17 +96,18 @@ class TableHDURef:
             else:
                 out.append(f"COL{i}")
         self._all_columns_cache = tuple(out)
+        self._all_columns_cache_version = version
         return out
 
     @property
-    def string_columns(self) -> List[str]:
+    def string_columns(self) -> list[str]:
         from ..fits_schema import string_column_names
 
         selected = set(self._columns) if self._columns is not None else None
         return string_column_names(self.header, selected=selected)
 
     @property
-    def schema(self) -> Dict[str, Any]:
+    def schema(self) -> dict[str, Any]:
         from ..fits_schema import build_table_schema_dict
 
         return build_table_schema_dict(
@@ -114,7 +117,7 @@ class TableHDURef:
             ),
         )
 
-    def select(self, cols: List[str]) -> "TableHDURef":
+    def select(self, cols: list[str]) -> TableHDURef:
         if not isinstance(cols, list) or not all(isinstance(c, str) for c in cols):
             raise TypeError("cols must be a list[str]")
         return TableHDURef(
@@ -125,7 +128,7 @@ class TableHDURef:
             row_slice=self._row_slice,
         )
 
-    def head(self, n: int) -> "TableHDURef":
+    def head(self, n: int) -> TableHDURef:
         if n < 0:
             raise ValueError("n must be >= 0")
         return TableHDURef(
@@ -136,11 +139,11 @@ class TableHDURef:
             row_slice=slice(0, n),
         )
 
-    def filter(self, condition: str) -> "TableHDU":
+    def filter(self, condition: str) -> TableHDU:
         return self.materialize().filter(condition)
 
     def _normalize_row_slice(
-        self, row_slice: Optional[slice | tuple[int, int]]
+        self, row_slice: slice | tuple[int, int] | None
     ) -> tuple[int, int]:
         if row_slice is None:
             return 1, -1
@@ -172,11 +175,11 @@ class TableHDURef:
     def read(
         self,
         *,
-        columns: Optional[List[str]] = None,
-        row_slice: Optional[slice | tuple[int, int]] = None,
+        columns: list[str] | None = None,
+        row_slice: slice | tuple[int, int] | None = None,
         mmap: bool = True,
         device: str = "cpu",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         import torchfits
 
         path, hdu = self._require_source()
@@ -199,7 +202,7 @@ class TableHDURef:
             cache_capacity=0,
         )
 
-    def materialize(self, *, mmap: bool = True, device: str = "cpu") -> "TableHDU":
+    def materialize(self, *, mmap: bool = True, device: str = "cpu") -> TableHDU:
         data = self.read(mmap=mmap, device=device)
         return TableHDU(
             data,
@@ -243,7 +246,7 @@ class TableHDURef:
 
     def get_string_column(
         self, name: str, encoding: str = "ascii", strip: bool = True
-    ) -> List[str]:
+    ) -> list[str]:
         value = self[name]
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -255,15 +258,15 @@ class TableHDURef:
 
         return decode_byte_tensor(value, encoding=encoding, strip=strip)
 
-    def get_vla_column(self, name: str) -> List[Tensor]:
+    def get_vla_column(self, name: str) -> list[Tensor]:
         value = self[name]
         if isinstance(value, list):
             return value
         raise KeyError(f"Column '{name}' is not a VLA list")
 
-    def get_vla_lengths(self, name: str) -> List[int]:
+    def get_vla_lengths(self, name: str) -> list[int]:
         values = self.get_vla_column(name)
-        lengths: List[int] = []
+        lengths: list[int] = []
         for item in values:
             if isinstance(item, torch.Tensor):
                 lengths.append(int(item.numel()))
@@ -274,8 +277,8 @@ class TableHDURef:
         return lengths
 
     @property
-    def vla_lengths(self) -> Dict[str, List[int]]:
-        out: Dict[str, List[int]] = {}
+    def vla_lengths(self) -> dict[str, list[int]]:
+        out: dict[str, list[int]] = {}
         for col in self.schema.get("vla_columns", []):
             try:
                 out[col] = self.get_vla_lengths(col)
@@ -323,8 +326,9 @@ class TableHDURef:
             **kwargs,
         )
 
-    def _refresh_file_view(self) -> "TableHDURef":
+    def _refresh_file_view(self) -> TableHDURef:
         import torchfits._C as cpp
+
         from .._io_engine.caches import invalidate_path_caches
         from .._io_engine.paths import guard_fits_path
 
@@ -346,7 +350,7 @@ class TableHDURef:
                 pass
         return TableHDURef(header=header, source_path=path, source_hdu=hdu)
 
-    def append_rows_file(self, rows: Dict[str, Any]) -> "TableHDURef":
+    def append_rows_file(self, rows: dict[str, Any]) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
@@ -358,14 +362,14 @@ class TableHDURef:
         name: str,
         values: Any,
         *,
-        index: Optional[int] = None,
-        format: Optional[str] = None,
-        unit: Optional[str] = None,
-        dim: Optional[str] = None,
-        tnull: Optional[Any] = None,
-        tscal: Optional[float] = None,
-        tzero: Optional[float] = None,
-    ) -> "TableHDURef":
+        index: int | None = None,
+        format: str | None = None,
+        unit: str | None = None,
+        dim: str | None = None,
+        tnull: Any | None = None,
+        tscal: float | None = None,
+        tzero: float | None = None,
+    ) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
@@ -424,13 +428,13 @@ class TableHDURef:
         name: str,
         values: Any,
         *,
-        format: Optional[str] = None,
-        unit: Optional[str] = None,
-        dim: Optional[str] = None,
-        tnull: Optional[Any] = None,
-        tscal: Optional[float] = None,
-        tzero: Optional[float] = None,
-    ) -> "TableHDURef":
+        format: str | None = None,
+        unit: str | None = None,
+        dim: str | None = None,
+        tnull: Any | None = None,
+        tscal: float | None = None,
+        tzero: float | None = None,
+    ) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
@@ -465,7 +469,7 @@ class TableHDURef:
             header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
         )
 
-    def insert_rows_file(self, rows: Dict[str, Any], *, row: int) -> "TableHDURef":
+    def insert_rows_file(self, rows: dict[str, Any], *, row: int) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
@@ -473,8 +477,8 @@ class TableHDURef:
         return self._refresh_file_view()
 
     def delete_rows_file(
-        self, row_slice: Union[int, slice, tuple[int, int]]
-    ) -> "TableHDURef":
+        self, row_slice: int | slice | tuple[int, int]
+    ) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
@@ -483,25 +487,25 @@ class TableHDURef:
 
     def update_rows_file(
         self,
-        rows: Dict[str, Any],
-        row_slice: Union[slice, tuple[int, int]],
+        rows: dict[str, Any],
+        row_slice: slice | tuple[int, int],
         *,
-        mmap: Union[bool, str] = "auto",
-    ) -> "TableHDURef":
+        mmap: bool | str = "auto",
+    ) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
         torchfits.table.update_rows(path, rows, row_slice=row_slice, hdu=hdu, mmap=mmap)
         return self._refresh_file_view()
 
-    def rename_columns_file(self, mapping: Dict[str, str]) -> "TableHDURef":
+    def rename_columns_file(self, mapping: dict[str, str]) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
         torchfits.table.rename_columns(path, mapping, hdu=hdu)
         return self._refresh_file_view()
 
-    def drop_columns_file(self, columns: List[str]) -> "TableHDURef":
+    def drop_columns_file(self, columns: list[str]) -> TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()

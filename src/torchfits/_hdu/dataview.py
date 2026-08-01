@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Tuple, cast
+from typing import Any, cast
 
 import torch
 from torch import Tensor
-
 
 _BITPIX_TO_DTYPE: dict[int, torch.dtype] = {
     8: torch.uint8,
@@ -24,7 +23,7 @@ class DataView:
         self._index = hdu_index
 
     @property
-    def shape(self) -> Tuple[int, ...]:
+    def shape(self) -> tuple[int, ...]:
         return tuple(self._handle.get_shape(self._index))
 
     @property

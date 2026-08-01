@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import functools
 import html
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 import torch
 from torch import Tensor
-
 
 from .header import Header
 
@@ -42,10 +42,10 @@ class TableHDU:
     def __init__(
         self,
         tensor_dict: dict[str, Any],
-        col_stats: Optional[dict[str, Any]] = None,
-        header: Optional[Header] = None,
-        source_path: Optional[str] = None,
-        source_hdu: Optional[int] = None,
+        col_stats: dict[str, Any] | None = None,
+        header: Header | None = None,
+        source_path: str | None = None,
+        source_hdu: int | None = None,
     ):
         import numpy as np
 
@@ -69,9 +69,39 @@ class TableHDU:
         self._raw_data = tensor_dict or {}
         self._source_path = source_path
         self._source_hdu = source_hdu
+        self._header: Header | None = None
         self.header = header or Header()
 
-    def _get_string_columns(self, header: Optional[Header]) -> set[str]:
+    @property
+    def header(self) -> Header:
+        if self._header is None:
+            self._header = Header()
+        return self._header
+
+    @header.setter
+    def header(self, new_header: Header) -> None:
+        if self._header is not None:
+            # Safely remove this HDU's cache invalidation from the old header's observers
+            observers = getattr(self._header, "_on_version_changed", [])
+            if self._invalidate_caches in observers:
+                observers.remove(self._invalidate_caches)
+
+        self._header = new_header
+
+        # Register a callback to safely invalidate cached_property caches
+        # when the underlying Header is mutated in-place.
+        if not hasattr(self._header, "_on_version_changed"):
+            self._header._on_version_changed = []  # type: ignore[attr-defined]
+        self._header._on_version_changed.append(self._invalidate_caches)  # type: ignore[attr-defined]
+        self._invalidate_caches()
+
+    def _invalidate_caches(self) -> None:
+        d = self.__dict__
+        d.pop("string_columns", None)
+        d.pop("schema", None)
+        d.pop("num_rows", None)
+
+    def _get_string_columns(self, header: Header | None) -> set[str]:
         if not header:
             return set()
         from ..fits_schema import string_column_names
@@ -81,29 +111,29 @@ class TableHDU:
     # ⚡ Bolt: Cache string column derivation to avoid redundant header parsing and
     # string extraction on repeated access (e.g., during loops or schema validations).
     @functools.cached_property
-    def string_columns(self) -> List[str]:
+    def string_columns(self) -> list[str]:
         return sorted(self._get_string_columns(self.header))
 
     # ⚡ Bolt: Cache schema building to prevent O(N) header traversals
     # for TTYPE*/TFORM* keys on every property access.
     @functools.cached_property
-    def schema(self) -> Dict[str, Any]:
+    def schema(self) -> dict[str, Any]:
         return self._build_schema()
 
-    def _build_schema(self) -> Dict[str, Any]:
+    def _build_schema(self) -> dict[str, Any]:
         from ..fits_schema import build_table_schema_dict
 
         return build_table_schema_dict(self.header)
 
-    def get_vla_column(self, name: str) -> List[Tensor]:
+    def get_vla_column(self, name: str) -> list[Tensor]:
         value = self._raw_data.get(name)
         if isinstance(value, list):
             return value
         raise KeyError(f"Column '{name}' is not a VLA list")
 
-    def get_vla_lengths(self, name: str) -> List[int]:
+    def get_vla_lengths(self, name: str) -> list[int]:
         values = self.get_vla_column(name)
-        lengths: List[int] = []
+        lengths: list[int] = []
         for item in values:
             if isinstance(item, torch.Tensor):
                 lengths.append(int(item.numel()))
@@ -114,8 +144,8 @@ class TableHDU:
         return lengths
 
     @property
-    def vla_lengths(self) -> Dict[str, List[int]]:
-        out: Dict[str, List[int]] = {}
+    def vla_lengths(self) -> dict[str, list[int]]:
+        out: dict[str, list[int]] = {}
         for col in self.schema.get("vla_columns", []):
             try:
                 out[col] = self.get_vla_lengths(col)
@@ -125,7 +155,7 @@ class TableHDU:
 
     def get_string_column(
         self, name: str, encoding: str = "ascii", strip: bool = True
-    ) -> List[str]:
+    ) -> list[str]:
         value = self._raw_data.get(name)
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -166,15 +196,15 @@ class TableHDU:
         return TableDataAccessor(self)
 
     @property
-    def columns(self) -> List[str]:
+    def columns(self) -> list[str]:
         return [str(k) for k in self._raw_data.keys()]
 
     @property
-    def col_names(self) -> List[str]:
+    def col_names(self) -> list[str]:
         return self.columns
 
     @property
-    def feat_types(self) -> Dict[str, str]:
+    def feat_types(self) -> dict[str, str]:
         types = {}
         for name, value in self._raw_data.items():
             if isinstance(value, torch.Tensor):
@@ -186,11 +216,11 @@ class TableHDU:
                 types[str(name)] = "categorical"
         return types
 
-    def select(self, cols: List[str]) -> "TableHDU":
+    def select(self, cols: list[str]) -> TableHDU:
         selected_dict = {k: v for k, v in self._raw_data.items() if str(k) in cols}
         return TableHDU(selected_dict, {}, self.header)
 
-    def filter(self, condition: str) -> "TableHDU":
+    def filter(self, condition: str) -> TableHDU:
         import numpy as np
 
         if not isinstance(condition, str) or not condition.strip():
@@ -204,7 +234,7 @@ class TableHDU:
         if num_rows <= 0:
             return self
 
-        eval_locals: Dict[str, Any] = {}
+        eval_locals: dict[str, Any] = {}
         for name, value in data_map.items():
             if (
                 isinstance(value, torch.Tensor)
@@ -257,7 +287,7 @@ class TableHDU:
                     f"Filter produced mask of length {mask.shape[0]}, expected {num_rows}"
                 )
 
-        filtered: Dict[str, Any] = {}
+        filtered: dict[str, Any] = {}
         for name, value in data_map.items():
             if (
                 isinstance(value, torch.Tensor)
@@ -287,13 +317,11 @@ class TableHDU:
             source_hdu=self._source_hdu,
         )
 
-    def head(self, n: int) -> "TableHDU":
+    def head(self, n: int) -> TableHDU:
         if self._raw_data:
-            new_dict: Dict[str, Any] = {}
+            new_dict: dict[str, Any] = {}
             for k, v in self._raw_data.items():
-                if isinstance(v, torch.Tensor) and v.dim() > 0:
-                    new_dict[k] = v[:n]
-                elif isinstance(v, list):
+                if isinstance(v, torch.Tensor) and v.dim() > 0 or isinstance(v, list):
                     new_dict[k] = v[:n]
                 else:
                     new_dict[k] = v
@@ -382,7 +410,7 @@ class TableHDU:
             f"Unsupported column type for append in '{name}': {type(old_value)}"
         )
 
-    def add_column(self, name: str, values: Any, overwrite: bool = False) -> "TableHDU":
+    def add_column(self, name: str, values: Any, overwrite: bool = False) -> TableHDU:
         if not isinstance(name, str) or not name:
             raise ValueError("name must be a non-empty string")
 
@@ -403,7 +431,7 @@ class TableHDU:
             source_hdu=self._source_hdu,
         )
 
-    def drop_columns(self, columns: List[str]) -> "TableHDU":
+    def drop_columns(self, columns: list[str]) -> TableHDU:
         if not columns:
             return self
         to_drop = {str(c) for c in columns}
@@ -420,7 +448,7 @@ class TableHDU:
             source_hdu=self._source_hdu,
         )
 
-    def rename_column(self, old_name: str, new_name: str) -> "TableHDU":
+    def rename_column(self, old_name: str, new_name: str) -> TableHDU:
         if not isinstance(old_name, str) or not old_name:
             raise ValueError("old_name must be a non-empty string")
         if not isinstance(new_name, str) or not new_name:
@@ -434,7 +462,7 @@ class TableHDU:
         if new_name in raw:
             raise KeyError(f"Column '{new_name}' already exists")
 
-        renamed: Dict[str, Any] = {}
+        renamed: dict[str, Any] = {}
         for key, value in raw.items():
             renamed[new_name if key == old_name else key] = value
         return TableHDU(
@@ -445,7 +473,7 @@ class TableHDU:
             source_hdu=self._source_hdu,
         )
 
-    def append_rows(self, rows: Dict[str, Any]) -> "TableHDU":
+    def append_rows(self, rows: dict[str, Any]) -> TableHDU:
         if not isinstance(rows, dict) or not rows:
             raise ValueError("rows must be a non-empty dictionary")
 
@@ -468,8 +496,8 @@ class TableHDU:
                 f"append_rows requires exactly matching columns; missing={missing}, extra={extra}"
             )
 
-        appended: Dict[str, Any] = {}
-        append_rows_count: Optional[int] = None
+        appended: dict[str, Any] = {}
+        append_rows_count: int | None = None
         for name in raw.keys():
             new_count = self._value_num_rows(rows[name])
             if append_rows_count is None:
@@ -493,10 +521,10 @@ class TableHDU:
             return self._raw_data[col_name]
         raise KeyError(f"Column '{col_name}' not found")
 
-    def materialize(self) -> "TableHDU":
+    def materialize(self) -> TableHDU:
         return self
 
-    def to_tensor_dict(self) -> Dict[str, Any]:
+    def to_tensor_dict(self) -> dict[str, Any]:
         return {
             str(k): v for k, v in self._raw_data.items() if isinstance(v, torch.Tensor)
         }
@@ -505,18 +533,16 @@ class TableHDU:
         if self._raw_data:
             total_rows = self.num_rows
             for start in range(0, total_rows, batch_size):
-                batch: Dict[str, Any] = {}
+                batch: dict[str, Any] = {}
                 for k, v in self._raw_data.items():
-                    if isinstance(v, torch.Tensor):
-                        batch[str(k)] = v[start : start + batch_size]
-                    elif isinstance(v, list):
+                    if isinstance(v, torch.Tensor) or isinstance(v, list):
                         batch[str(k)] = v[start : start + batch_size]
                     else:
                         batch[str(k)] = v
                 yield batch
 
     @classmethod
-    def from_fits(cls, file_path: str, hdu_index: int = 1) -> "TableHDU":
+    def from_fits(cls, file_path: str, hdu_index: int = 1) -> TableHDU:
         if not file_path or not isinstance(file_path, str):
             raise ValueError("file_path must be a non-empty string")
 
@@ -541,11 +567,11 @@ class TableHDU:
             return cls(
                 tensor_dict, {}, header, source_path=file_path, source_hdu=hdu_index
             )
-        except (IOError, RuntimeError) as e:
+        except (OSError, RuntimeError) as e:
             from ..logging import logger
 
             logger.error(
-                f"Failed to read table from {file_path}[{hdu_index}]: {str(e)}"
+                f"Failed to read table from {file_path}[{hdu_index}]: {e!s}"
             )
             raise RuntimeError(
                 f"Failed to read table from {file_path}[{hdu_index}]: {e}"
@@ -554,7 +580,7 @@ class TableHDU:
             from ..logging import logger
 
             logger.critical(
-                f"Unexpected error reading {file_path}[{hdu_index}]: {str(e)}"
+                f"Unexpected error reading {file_path}[{hdu_index}]: {e!s}"
             )
             raise
 
