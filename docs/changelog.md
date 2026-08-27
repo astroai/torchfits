@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `quantize=` on `HDUList` + `compress=` raises instead of being ignored (H28).
 - Linux wheels install `bzip2-devel` in manylinux so `HAS_BZIP2` matches
   macOS (H20).
-- Sanitizer CI seeds the uv venv with pip and quotes cmake
+- Sanitizer CI uses the pixi `test` env (not uv) and quotes cmake
   define flags so bash does not split on `;`.
 
 ### Docs
