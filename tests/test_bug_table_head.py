@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from torchfits.hdu import Header, TableHDU, TableHDURef
 
 def test_tablehduref_head():
