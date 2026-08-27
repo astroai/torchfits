@@ -219,7 +219,7 @@ _COMPRESSION_HEADER_KEYS = frozenset(
         "ZNAXIS",
         "ZPCOUNT",
         "ZGCOUNT",
-        "ZHECKSUM",
+        "ZCHECKSUM",
         "ZDATASUM",
         "ZQUANTIZ",
         "ZBLANK",

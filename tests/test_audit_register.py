@@ -233,6 +233,9 @@ def test_replace_hdu_strips_stale_zimage(tmp_path: Path) -> None:
     torchfits.replace_hdu(path.as_posix(), 1, torch.ones(16, 16) * 7)
     hdr = torchfits.read_header(path.as_posix(), 1)
     assert "ZIMAGE" not in hdr
+    assert "ZCMPTYPE" not in hdr
+    assert "ZCHECKSUM" not in hdr
+    assert "ZDATASUM" not in hdr
     got = torchfits.read(path.as_posix(), hdu=1)
     assert torch.allclose(got.cpu(), torch.ones(16, 16) * 7)
 
