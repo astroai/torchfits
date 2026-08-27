@@ -41,7 +41,15 @@ jobs:
           CC: clang
           CXX: clang++
         run: |
-          .venv-san/bin/python -m pip install -e . --no-build-isolation --no-deps --config-settings=cmake.args=-DCMAKE_CXX_FLAGS=-fsanitize=address\ -fsanitize=undefined\ -fno-omit-frame-pointer\ -shared-libasan;-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address
+          # `-shared-libasan` is Linux clang; Apple clang links the ASan dylib
+          # from `-fsanitize=address` and rejects that flag.
+          cxx_flags="-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer"
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            cxx_flags="${cxx_flags} -shared-libasan"
+          fi
+          .venv-san/bin/python -m pip install -e . --no-build-isolation --no-deps \
+            --config-settings=cmake.define.CMAKE_CXX_FLAGS="${cxx_flags}" \
+            --config-settings=cmake.define.CMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
         shell: bash
       - name: Native-heavy smoke under sanitizers
         env:
