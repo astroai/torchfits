@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `quantize=` on `HDUList` + `compress=` raises instead of being ignored (H28).
 - Linux wheels install `bzip2-devel` in manylinux so `HAS_BZIP2` matches
   macOS (H20).
+- Sanitizer CI seeds the uv venv with pip so the ASan build can run.
 
 ### Docs
 - Benchmark headline cites git-mirrored `exhaustive_*_20260807_013736`
