@@ -54,3 +54,42 @@ def test_tablehdu_head_numpy():
 
     hdu3 = hdu.head(-2)
     assert hdu3["x"].shape[0] == 8
+
+
+def test_tablehduref_head_compose_stride():
+    header = Header()
+    header["TFIELDS"] = 1
+    header["TTYPE1"] = "x"
+    header["TFORM1"] = "1D"
+    header["NAXIS2"] = 100
+
+    ref_stride = TableHDURef(
+        header=header,
+        source_path="dummy.fits",
+        source_hdu=1,
+        row_slice=slice(10, 90, 2),
+    )
+
+    h1 = ref_stride.head(10)
+    assert h1._row_slice == slice(10, 30, 2)
+
+    h2 = ref_stride.head(-2)
+    assert h2._row_slice == slice(10, 86, 2)
+
+
+def test_tablehduref_head_compose_tuple():
+    header = Header()
+    header["TFIELDS"] = 1
+    header["TTYPE1"] = "x"
+    header["TFORM1"] = "1D"
+    header["NAXIS2"] = 100
+
+    ref = TableHDURef(
+        header=header, source_path="dummy.fits", source_hdu=1, row_slice=(10, 90)
+    )
+
+    h1 = ref.head(10)
+    assert h1._row_slice == (10, 20)
+
+    h2 = ref.head(-2)
+    assert h2._row_slice == (10, 88)

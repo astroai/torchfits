@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Document the data-state contract, IVAR/mask and ML data features
 - examples: Add an end-to-end ML training-loop example
 - agents: Work on the fork's main, no feature branches
+- changelog: Record the IO, header and C++ engine audit
 
 ## [1.1.3] — 2026-09-09
 

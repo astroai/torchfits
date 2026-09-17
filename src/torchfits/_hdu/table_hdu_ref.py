@@ -71,7 +71,15 @@ class TableHDURef:
             return max(0, total - start)
         stop = int(stop)
         stop = min(stop, total)
-        return max(0, stop - start)
+        if stop <= start:
+            return 0
+
+        if not isinstance(self._row_slice, tuple) and self._row_slice.step is not None:
+            import math
+
+            return int(math.ceil((stop - start) / self._row_slice.step))
+
+        return stop - start
 
     def __len__(self) -> int:
         return self.num_rows
@@ -142,7 +150,11 @@ class TableHDURef:
             new_slice = (start, start + keep)
         else:
             start = 0 if existing.start is None else int(existing.start)
-            new_slice = slice(start, start + keep)
+            step = 1 if existing.step is None else existing.step
+            stop = start + keep * step
+            if existing.stop is not None:
+                stop = min(stop, existing.stop)
+            new_slice = slice(start, stop, existing.step)
 
         return TableHDURef(
             header=self.header,
