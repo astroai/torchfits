@@ -229,3 +229,31 @@ def test_quantize_table_nan_writes_tnull(tmp_path):
     torchfits.write(str(path), v, quantize="robust", overwrite=True)
     th = torchfits.read_header(str(path), 1)
     assert int(th["TNULL1"]) == -32767
+
+def test_tablehduref_to_arrow_kwarg_collision(tmp_path):
+    import astropy.io.fits as fits
+    import pyarrow as pa
+
+    path = tmp_path / "kwarg_test.fits"
+    col1 = fits.Column(name='X', format='E', array=[1, 2, 3])
+    col2 = fits.Column(name='Y', format='E', array=[4, 5, 6])
+    hdu = fits.BinTableHDU.from_columns([col1, col2])
+    hdu.writeto(str(path), overwrite=True)
+
+    with torchfits.open(str(path)) as f:
+        ref = f[1]
+
+        # Test to_arrow
+        arrow_table = ref.to_arrow(columns=['X'])
+        assert arrow_table.num_columns == 1
+        assert arrow_table.column_names == ['X']
+
+        # Test scan_arrow
+        batches = list(ref.scan_arrow(columns=['Y']))
+        assert len(batches) > 0
+        assert batches[0].schema.names == ['Y']
+
+        # Test reader_arrow
+        with ref.reader_arrow(columns=['X']) as reader:
+            schema = reader.schema
+            assert schema.names == ['X']
