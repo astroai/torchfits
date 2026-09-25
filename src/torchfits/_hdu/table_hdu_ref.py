@@ -307,7 +307,9 @@ class TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
-        columns = kwargs.pop("columns", list(self._columns) if self._columns is not None else None)
+        columns = kwargs.pop(
+            "columns", list(self._columns) if self._columns is not None else None
+        )
         row_slice = kwargs.pop("row_slice", self._row_slice)
         return torchfits.table.read(
             path,
@@ -321,7 +323,9 @@ class TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
-        columns = kwargs.pop("columns", list(self._columns) if self._columns is not None else None)
+        columns = kwargs.pop(
+            "columns", list(self._columns) if self._columns is not None else None
+        )
         row_slice = kwargs.pop("row_slice", self._row_slice)
         return torchfits.table.scan(
             path,

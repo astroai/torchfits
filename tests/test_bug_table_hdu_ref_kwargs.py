@@ -37,6 +37,7 @@ def test_table_hdu_ref_to_arrow_kwargs_collision(tmp_path):
     assert table2.column_names == ["A", "B"]
     assert table2["A"].to_pylist() == [2, 3]
 
+
 def test_table_hdu_ref_scan_arrow_kwargs_collision(tmp_path):
     path = str(tmp_path / "test.fits")
     col1 = fits.Column(name="A", format="J", array=np.array([1, 2, 3], dtype=np.int32))
