@@ -1,6 +1,4 @@
 import torchfits
-import pytest
-import os
 
 def test_write_header_with_list(tmp_path):
     # Tests that providing a list for commentary cards like HISTORY doesn't crash std::bad_cast
