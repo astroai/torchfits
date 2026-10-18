@@ -276,6 +276,11 @@ class Header(dict[str, Any]):
             self._version += 1
 
     def _set_card(self, key: str, value: Any, comment: str, *, bump: bool) -> None:
+        if key in _COMMENTARY_KEYS and isinstance(value, (list, tuple)):
+            for v in value:
+                self._set_card(key, v, comment, bump=bump)
+            return
+
         value = _normalize_header_value(value)
         card = Card(key, value, comment)
         if key in _COMMENTARY_KEYS:
