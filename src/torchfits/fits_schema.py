@@ -135,13 +135,11 @@ def _iter_tfields_indexed(
         for i in range(1, tfields + 1):
             si = str(i)
             name = get("TTYPE" + si)
-            if name is None:
-                continue
             tform = get("TFORM" + si)
             tdim = get("TDIM" + si)
             yield (
                 i,
-                str(name),
+                str(name) if name is not None else "",
                 str(tform) if tform is not None else "",
                 (str(tdim) if tdim is not None else None),
             )
@@ -167,10 +165,13 @@ def _iter_tfields_indexed(
             if suffix.isdigit():
                 tdim_by_idx[int(suffix)] = str(value)
 
-    for idx in sorted(name_by_idx.keys()):
+    all_indices = (
+        set(name_by_idx.keys()) | set(tform_by_idx.keys()) | set(tdim_by_idx.keys())
+    )
+    for idx in sorted(all_indices):
         yield (
             idx,
-            name_by_idx[idx],
+            name_by_idx.get(idx, ""),
             tform_by_idx.get(idx, ""),
             tdim_by_idx.get(idx),
         )
