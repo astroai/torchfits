@@ -1,4 +1,3 @@
-import pytest
 from torchfits import Header
 
 def test_header_update_replaces_history():
