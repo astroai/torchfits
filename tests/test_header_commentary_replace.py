@@ -1,5 +1,6 @@
 from torchfits import Header
 
+
 def test_header_update_replaces_history():
     h = Header()
     h.add_history("old1")
@@ -12,11 +13,13 @@ def test_header_update_replaces_history():
     h.update(h2)
     assert h.get_history() == ["new1", "new2"]
 
+
 def test_header_update_dict_replaces_history():
     h = Header()
     h.add_history("old")
     h.update({"HISTORY": ["new"]})
     assert h.get_history() == ["new"]
+
 
 def test_header_setitem_replaces_history():
     h = Header()
