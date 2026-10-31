@@ -133,6 +133,18 @@ class Header(dict[str, Any]):
             else:
                 plain.update(arg)
         plain.update(kwargs)
+
+        update_commentary_keys = set()
+        for card in cardwise:
+            if card.key in _COMMENTARY_KEYS:
+                update_commentary_keys.add(card.key)
+        for key in plain:
+            if key in _COMMENTARY_KEYS:
+                update_commentary_keys.add(key)
+
+        for key in update_commentary_keys:
+            self.remove(key, ignore_missing=True, remove_all=True)
+
         self._update_from_cards(cardwise)
         for key, value in plain.items():
             if (
