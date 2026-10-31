@@ -1,4 +1,3 @@
-import pytest
 import torchfits
 
 def test_commentary_cards_replace():
