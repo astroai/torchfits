@@ -12,6 +12,7 @@ mix, optional per-band MAD equalize, coupled asinh, saturation, sRGB.
 from __future__ import annotations
 
 import binascii
+import ctypes
 import math
 import struct
 import zlib
@@ -422,6 +423,16 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
 
+def _tensor_bytes(t: torch.Tensor) -> bytes:
+    """Raw bytes of a contiguous CPU tensor in one copy (stdlib only).
+
+    ``bytes(t.untyped_storage())`` iterates element by element in Python and
+    dominated PNG export (~100 s for a 3000x3000 RGB).
+    """
+    t = t.contiguous()
+    return ctypes.string_at(t.data_ptr(), t.numel() * t.element_size())
+
+
 def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
     """Write RGB float image as PNG (stdlib only; no Pillow / NumPy import)."""
     if rgb.dim() != 3 or int(rgb.shape[-1]) != 3:
@@ -448,7 +459,7 @@ def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
         + _png_chunk(
-            b"IDAT", zlib.compress(bytes(scanlines.untyped_storage()), level=6)
+            b"IDAT", zlib.compress(_tensor_bytes(scanlines), level=6)
         )
         + _png_chunk(b"IEND", b"")
     )
