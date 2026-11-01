@@ -247,6 +247,14 @@ def _quantile(
     empty group yields NaN.
     """
     x = _stats_upcast(x)
+    # torch.quantile refuses float32 reductions over > 2**24 elements (rank
+    # indices are not exact); promote only in that case.
+    if x.dtype == torch.float32:
+        reduced = 1
+        for d in dim:
+            reduced *= int(x.shape[d])
+        if reduced > 2**24:
+            x = x.to(torch.float64)
     valid = _get_valid_mask(x, mask)
     x = torch.where(valid, x, _mask_fill(x, "nan"))
     return _reduce_keepdim(
