@@ -458,6 +458,30 @@ storage code (`I` for `uint16`, ...) gets the `TZERO` convention; any other
 integer or float format stores the values plainly when they fit its range,
 and raises `ValueError` otherwise.
 
+When the column keeps its `TSCAL` / `TZERO` (no `tscal=` / `tzero=` given and
+the layout is not replaced as above), `replace_column` takes **physical**
+values, the ones a read returns, as `update_rows` does: `[1, 2, 3]` on a
+`uint16` column reads back as `[1, 2, 3]`, and on a `TSCAL = 0.5`,
+`TZERO = 10` column it is stored as `(value - 10) / 0.5` (rounded half away
+from zero for an integer TFORM). A value the column cannot hold (`70000` for
+`uint16`, a fraction for an unsigned column, NaN without a `TNULL`) raises
+`ValueError` naming the column, before anything is written. Passing `tscal=`
+or `tzero=` sets a new scaling, and the values are then the stored integers,
+as with `bscale` / `bzero` in `table.write`.
+
+```python
+import numpy as np
+import torchfits
+
+torchfits.table.write(
+    "s.fits",
+    {"f": np.array([100, 200], dtype=np.int16)},
+    schema={"f": {"format": "I", "bscale": 0.5, "bzero": 10.0}},
+)
+torchfits.table.replace_column("s.fits", "f", [11.5, 12.0])
+assert torchfits.table.read_arrow("s.fits").column("f").to_pylist() == [11.5, 12.0]
+```
+
 ```python
 import numpy as np
 import torchfits

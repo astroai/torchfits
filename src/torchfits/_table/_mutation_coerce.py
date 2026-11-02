@@ -745,6 +745,113 @@ def _replacement_column_layout(
     return None, arr.astype(target), True
 
 
+_OFFSET_CONVENTION_DTYPE = {"B": "int8", "I": "uint16", "J": "uint32", "K": "uint64"}
+_STORED_INT_DTYPE = {"B": "uint8", "I": "int16", "J": "int32", "K": "int64"}
+
+
+def _exact_int_list(values: Any) -> Any:
+    """A flat list of Python ints as an exact uint64/int64 array.
+
+    ``np.asarray`` turns ``[2**63 + 1, 2]`` into float64 and loses the low
+    bits a uint64 column needs. Anything else is returned unchanged.
+    """
+    import numpy as np
+
+    if not isinstance(values, (list, tuple)) or not values:
+        return values
+    if not all(type(v) is int for v in values):
+        return values
+    lo, hi = min(values), max(values)
+    if lo >= 0 and hi > 2**63 - 1 and hi < 2**64:
+        return np.array(values, dtype=np.uint64)
+    return values
+
+
+def _physical_to_stored_column(
+    name: str,
+    arr: "np.ndarray",
+    fmt: str,
+    meta: dict[str, Any],
+    *,
+    ascii_table: bool = False,
+) -> "np.ndarray":
+    """Turn replace_column's physical values into what the rewrite writes.
+
+    ``replace_column`` takes the values a read returns. When the column keeps
+    its TSCAL/TZERO layout, the rewrite expects an unsigned-convention column
+    as values of its dtype (``uint16`` for ``I`` / ``TZERO = 32768``) and any
+    other scaled column as stored codes, ``(value - TZERO) / TSCAL`` (rounded
+    half away from zero for integer TFORMs, as CFITSIO does). A value the
+    column cannot hold raises ``ValueError`` naming it; nothing is written.
+    """
+    import numpy as np
+
+    bscale_raw = meta.get("bscale")
+    bscale = float(bscale_raw) if bscale_raw is not None else 1.0
+    bzero_raw = meta.get("bzero")
+    bzero = float(bzero_raw) if bzero_raw is not None else 0.0
+    if bscale == 1.0 and bzero == 0.0:
+        return arr
+    if not isinstance(arr, np.ndarray) or arr.dtype.kind not in "biuf":
+        return arr
+    if ascii_table:
+        # ASCII TFORMs are Iw / Fw.d / Ew.d / Dw.d; integers are stored as
+        # text, so int64 bounds them, and there is no unsigned convention.
+        first = str(fmt).strip().upper()[:1]
+        is_vla, code = False, {"I": "K", "F": "D", "E": "D", "D": "D"}.get(first, "")
+    else:
+        is_vla, code, _repeat = _parse_tform(fmt)
+    if is_vla or code not in {"B", "I", "J", "K", "E", "D"}:
+        return arr
+    where = f"Column '{name}' (TFORM {fmt}, TSCAL={bscale:g}, TZERO={bzero_raw})"
+
+    offset = None if ascii_table else _UNSIGNED_TZERO.get(code)
+    if bscale == 1.0 and offset is not None and bzero == float(offset):
+        target = np.dtype(_OFFSET_CONVENTION_DTYPE[code])
+        info = np.iinfo(target)
+        if arr.dtype.kind == "f":
+            if not np.all(np.isfinite(arr)) or np.any(arr != np.trunc(arr)):
+                raise ValueError(
+                    f"{where} holds {target} values; non-integral or non-finite "
+                    "values cannot be stored; nothing was written"
+                )
+        if arr.size:
+            lo, hi = arr.min().item(), arr.max().item()
+            if lo < info.min or hi > info.max:
+                raise ValueError(
+                    f"{where} holds {target} values in [{info.min}, {info.max}]; "
+                    f"got values in [{lo}, {hi}]; nothing was written"
+                )
+        return arr.astype(target)
+
+    if code in {"E", "D"}:
+        stored = (arr.astype(np.float64) - bzero) / bscale
+        return stored.astype(np.float32 if code == "E" else np.float64)
+
+    stored_dtype = np.dtype(_STORED_INT_DTYPE[code])
+    info = np.iinfo(stored_dtype)
+    stored = (arr.astype(np.float64) - bzero) / bscale
+    finite = np.isfinite(stored)
+    tnull = meta.get("tnull")
+    if not np.all(finite) and tnull is None:
+        raise ValueError(
+            f"{where} has no TNULL, so non-finite values cannot be stored; "
+            "nothing was written"
+        )
+    stored = np.where(stored >= 0, np.floor(stored + 0.5), np.ceil(stored - 0.5))
+    if np.any(finite & ((stored < info.min) | (stored > info.max))):
+        lo = float(info.min) * bscale + bzero
+        hi = float(info.max) * bscale + bzero
+        raise ValueError(
+            f"{where} can hold values in [{min(lo, hi):g}, {max(lo, hi):g}]; "
+            "nothing was written"
+        )
+    out = np.where(finite, stored, 0).astype(stored_dtype)
+    if not np.all(finite):
+        out[~finite] = int(str(tnull).strip())
+    return out
+
+
 def _infer_binary_column_format(name: str, values: Any) -> str:
     import numpy as np
 

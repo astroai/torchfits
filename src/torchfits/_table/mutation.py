@@ -32,10 +32,12 @@ from ._mutation_coerce import (
     _coerce_table_string_values,
     _coerce_table_vla_values,
     _ensure_dtype_maps,
+    _exact_int_list,
     _infer_column_format_for_insert,
     _mutation_cache_barrier,
     _normalize_column_values_for_format,
     _normalize_mutation_rows,
+    _physical_to_stored_column,
     _read_table_for_rewrite,
     _replacement_column_layout,
 )
@@ -166,6 +168,9 @@ def replace_column(
         else "binary"
     )
     reset_scaling = False
+    if format is None and float(existing_meta.get("bzero") or 0.0) == 2.0**63:
+        # A uint64 column: keep a Python int list exact (numpy makes it float).
+        values = _exact_int_list(values)
     if table_type == "binary" and tscal is None and tzero is None:
         layout_fmt, values, reset_scaling = _replacement_column_layout(
             name,
@@ -184,6 +189,19 @@ def replace_column(
         )
 
     normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
+    if tscal is None and tzero is None:
+        # The column keeps its TSCAL/TZERO: values are physical, as a read
+        # returns them and update_rows takes them.
+        scaling = dict(existing_meta)
+        if tnull is not None:
+            scaling["tnull"] = tnull
+        normalized_values = _physical_to_stored_column(
+            name,
+            normalized_values,
+            fmt,
+            scaling,
+            ascii_table=table_type == "ascii",
+        )
 
     table_header = _rewrite_table_header(path, target_hdu, header_map, columns)
     rewritten_data = _read_table_for_rewrite(path, target_hdu, columns)
