@@ -38,6 +38,14 @@ class QuantizeError(ValueError):
 # CFITSIO's standard COMMENT block with fits_update_key.
 _COMMENTARY_HEADER_KEYS = frozenset({"HISTORY", "COMMENT"})
 
+# The two-line COMMENT block CFITSIO stamps on every primary HDU it creates.
+_CFITSIO_STANDARD_COMMENTS = frozenset(
+    {
+        "FITS (Flexible Image Transport System) format is defined in 'Astronomy",
+        "and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H",
+    }
+)
+
 # CHECKSUM/DATASUM describe one payload byte-for-byte; replaying a copy from a
 # source header makes a freshly written file fail verification. Fresh keywords
 # are stamped by write(..., checksum=True) / restamp after rewrites.
@@ -815,7 +823,17 @@ def _write_header_cards_if_supported(
     if not header:
         return
     header_obj = header if isinstance(header, Header) else Header(header)
-    if not header_obj.cards:
+    # CFITSIO writes its standard COMMENT block into every primary it
+    # creates; replaying the source copy appended one more per rewrite.
+    cards = [
+        card
+        for card in header_obj.cards
+        if not (
+            str(card.key).upper() == "COMMENT"
+            and str(card.value).strip() in _CFITSIO_STANDARD_COMMENTS
+        )
+    ]
+    if not cards:
         return
     import torchfits._C as cpp
 
@@ -825,10 +843,10 @@ def _write_header_cards_if_supported(
         #  - Before: ensure no stale handle/metadata races with writing new cards.
         #  - After:  ensure the next reader picks up the freshly-written header.
         _invalidate_path_caches(path)
-        writer(path, int(hdu), list(header_obj.cards))
+        writer(path, int(hdu), cards)
         _invalidate_path_caches(path)
         return
-    writer(path, int(hdu), list(header_obj.cards))
+    writer(path, int(hdu), cards)
 
 
 def _delete_header_key_if_supported(path: str, hdu: int, key: str) -> None:
