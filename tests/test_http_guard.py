@@ -294,3 +294,18 @@ def test_proxy_does_not_bypass_guard(monkeypatch):
     monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
     with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
         http_util.http_open("http://10.0.0.5/x.fits")
+
+
+@pytest.mark.parametrize("ip", ["192.0.0.8", "100.64.0.1", "198.18.0.1", "2001:db8::1"])
+def test_special_purpose_ranges_blocked_whatever_ipaddress_says(ip, monkeypatch):
+    """Older Pythons (e.g. 3.11) classify 192.0.0.0/24 as global; the guard
+    must not depend on the interpreter's ipaddress tables."""
+    import ipaddress
+
+    from torchfits import http_util
+
+    for cls in (ipaddress.IPv4Address, ipaddress.IPv6Address):
+        monkeypatch.setattr(cls, "is_global", property(lambda self: True))
+        for name in ("is_private", "is_reserved", "is_loopback", "is_link_local"):
+            monkeypatch.setattr(cls, name, property(lambda self: False))
+    assert http_util._is_blocked_ip(ipaddress.ip_address(ip))

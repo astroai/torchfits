@@ -129,8 +129,35 @@ def auth_headers() -> dict[str, str]:
 _NUMERIC_HOST = re.compile(r"[0-9.]+")
 
 
+# IANA special-purpose ranges, listed explicitly because ``is_global`` /
+# ``is_private`` changed between Python releases (e.g. 192.0.0.0/24 counts as
+# global on 3.11). Blocked on every interpreter version.
+_SPECIAL_PURPOSE_NETS = tuple(
+    ipaddress.ip_network(net)
+    for net in (
+        "0.0.0.0/8",
+        "100.64.0.0/10",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "240.0.0.0/4",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "fc00::/7",
+    )
+)
+
+
 def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """True for any address that is not public unicast (e.g. CGNAT 100.64/10)."""
+    if any(
+        ip_obj in net for net in _SPECIAL_PURPOSE_NETS if net.version == ip_obj.version
+    ):
+        return True
     return (
         ip_obj.is_private
         or ip_obj.is_loopback
