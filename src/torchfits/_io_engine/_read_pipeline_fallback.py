@@ -12,6 +12,7 @@ from typing import Any
 
 import torch
 
+from .._errors import HDUNotFoundError
 from ..hdu import Header
 from .device import to_device, validate_device
 from ._read_pipeline import (
@@ -103,6 +104,7 @@ def read_fallback(
                     )
                     hdu_num = None
 
+                num_hdus = None
                 if hdu_num is None:
                     num_hdus = cpp_module.get_num_hdus(file_handle)
                     wanted = hdu.strip().upper()
@@ -128,7 +130,7 @@ def read_fallback(
                             break
 
                 if hdu_num is None:
-                    raise ValueError(f"HDU '{hdu}' not found in file")
+                    raise HDUNotFoundError.for_request(path, hdu, num_hdus)
             else:
                 hdu_num = hdu
 
@@ -214,9 +216,9 @@ def read_fallback(
                     # Cleanup only: never mask the in-flight error.
                     pass
 
-    except OSError:
-        # IO errors surface typed; wrapping them in RuntimeError would hide
-        # FileNotFoundError/PermissionError from callers (r4a-05).
+    except (OSError, HDUNotFoundError):
+        # IO and lookup errors surface typed; wrapping them in RuntimeError
+        # would hide FileNotFoundError/PermissionError from callers (r4a-05).
         raise
     except Exception as exc:
         raise RuntimeError(f"Failed to read FITS file '{path}': {exc}") from exc

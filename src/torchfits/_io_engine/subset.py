@@ -8,6 +8,12 @@ from torch import Tensor
 
 from .device import to_device, validate_device
 from .http_subset import HttpRangeUnsupported, read_subset_http
+from ._hdu_lookup import (
+    call_with_lookup,
+    raise_hdu_index_error,
+    raise_lookup_failure,
+    resolve_hdu_name,
+)
 from .paths import require_bz2_support
 from torchfits.http_util import HttpRangeNotSatisfied
 
@@ -32,7 +38,6 @@ def read_subset(
     y2: int,
 ) -> Tensor:
     """Read a rectangular subset of an image HDU."""
-    import torchfits._C as cpp
     from .paths import coerce_fits_path, guard_fits_path
 
     path = coerce_fits_path(path)
@@ -50,7 +55,9 @@ def read_subset(
     label = path if source == path else f"{source} (cached at {path})"
 
     if isinstance(hdu, str):
-        hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+        hdu = resolve_hdu_name(path, hdu)
+    elif isinstance(hdu, int) and hdu < 0:
+        raise_hdu_index_error(path, hdu)
     try:
         file_handle, cached = get_cached_handle(path)
         try:
@@ -62,14 +69,15 @@ def read_subset(
                 except (OSError, ValueError, RuntimeError):
                     # Cleanup only: never mask the in-flight error.
                     pass
-    except OSError as exc:
+    except Exception as exc:
+        raise_lookup_failure(path, hdu, exc)
+        if not isinstance(exc, OSError):
+            raise RuntimeError(f"Failed to read subset from '{label}': {exc}") from exc
         # IO errors surface typed; wrapping them in RuntimeError would hide
         # FileNotFoundError/PermissionError from callers (r4a-05).
         if source != path:
             exc.add_note(f"while reading the cached copy of {source}")
         raise
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read subset from '{label}': {exc}") from exc
 
 
 def _open_cached_copy(url: str, path: str, hdu: int | str) -> Any:
@@ -104,7 +112,7 @@ class SubsetReader:
         if not isinstance(hdu, (int, str)):
             raise ValueError("hdu must be an integer or string")
         if isinstance(hdu, int) and hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(path, hdu)
         validate_device(device)
         self._http_url: str | None = None
         self._http_hdu: int | str = hdu
@@ -131,9 +139,9 @@ class SubsetReader:
             return
 
         if isinstance(hdu, str):
-            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+            hdu = resolve_hdu_name(path, hdu)
 
-        self._reader = cpp.SubsetReader(path, int(hdu))
+        self._reader = call_with_lookup(path, hdu, cpp.SubsetReader, path, int(hdu))
 
     @property
     def hdu(self) -> int:

@@ -6,6 +6,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Callable
 
+from .._errors import HDUNotFoundError
+from ._hdu_lookup import raise_lookup_failure
 from .device import batch_to_device, validate_device
 from .paths import coerce_fits_path
 
@@ -26,8 +28,9 @@ def read_batch(
     """Read multiple FITS files in batch.
 
     Every path is attempted and the returned list is always one tensor per
-    input path, in input order. A path that cannot be read raises: with
-    ``strict=False`` (the default) the failure is re-raised as a
+    input path, in input order. A path that cannot be read raises: a missing
+    HDU (``HDUNotFoundError``) keeps its type;
+    with ``strict=False`` (the default) any other failure is re-raised as a
     ``RuntimeError`` naming the path and how many files read before it; with
     ``strict=True`` the original exception propagates unchanged.
     """
@@ -61,6 +64,10 @@ def read_batch(
             return tensors
     except read_exc_types as exc:
         if strict:
+            # The batch reader reports a missing HDU as RuntimeError;
+            # surface it with the type a single read() raises.
+            for path in file_paths:
+                raise_lookup_failure(path, hdu, exc)
             raise
         log.debug("read_batch: C++ batch path failed, falling back per file: %s", exc)
 
@@ -73,6 +80,14 @@ def read_batch(
             if strict:
                 raise
             log.debug("read_batch: %r failed: %s", path, exc, exc_info=True)
+            if isinstance(exc, HDUNotFoundError):
+                # Lookup failures keep their type (the message already names
+                # the path); only the batch position is added.
+                exc.add_note(
+                    f"read_batch: {len(results)} of {len(file_paths)} files "
+                    "read before the failure"
+                )
+                raise
             raise RuntimeError(
                 f"read_batch: failed to read {path!r} ({len(results)} of "
                 f"{len(file_paths)} files read before the failure): {exc}"

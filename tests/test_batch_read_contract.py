@@ -126,7 +126,7 @@ def _both(paths, kwargs):
     [
         ("mode='bogus' rejects", "images", {"mode": "bogus"}, "ValueError"),
         ("mmap='bogus' rejects", "images", {"mmap": "bogus"}, "ValueError"),
-        ("negative hdu rejects", "images", {"hdu": -1}, "ValueError"),
+        ("negative hdu rejects", "images", {"hdu": -1}, "HDUNotFoundError"),
         (
             "mode='image' + columns rejects",
             "images",

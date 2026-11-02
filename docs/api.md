@@ -157,6 +157,8 @@ The root `torchfits.__all__` (public surface; see `__all__`):
 - **Interop:** `to_astropy`, `to_pandas`, `to_arrow`, `to_polars`
 - **HDU types:** `Header`, `Card`, `HDUList`, `TensorHDU`, `TableHDU`,
   `TableHDURef`
+- **Exceptions:** `HDUNotFoundError` (unknown EXTNAME or HDU index out of
+  range; see [Missing files and HDUs](api-core-io.md#missing-files-and-hdus))
 - **Namespaces:** `table`, `cache`, `transforms`, `data`, `where`, `hdu`
 
 Each entry has a reference on the pages above; common calls also have a

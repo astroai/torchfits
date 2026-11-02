@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ._hdu_lookup import call_with_lookup, raise_hdu_index_error, resolve_hdu_name
 from .device import validate_device
 
 
@@ -32,12 +33,14 @@ class TableReaderHandle:
         if not isinstance(hdu, (int, str)):
             raise ValueError("hdu must be an integer or string")
         if isinstance(hdu, str):
-            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+            hdu = resolve_hdu_name(path, hdu)
         if hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(path, hdu)
         self._path = path
         self._hdu = int(hdu)
-        self._reader: cpp.TableReader | None = cpp.TableReader(path, self._hdu)
+        self._reader: cpp.TableReader | None = call_with_lookup(
+            path, self._hdu, cpp.TableReader, path, self._hdu
+        )
         self._closed = False
 
     def __enter__(self) -> TableReaderHandle:

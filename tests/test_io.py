@@ -61,10 +61,8 @@ class TestIORead:
             io.read(["file1.fits", "file2.fits"], hdu=[0, 1])
 
     def test_read_invalid_hdu_type(self):
-        """Test read with invalid hdu type raises ValueError."""
-        with pytest.raises(
-            ValueError, match="HDU index must be a non-negative integer"
-        ):
+        """A negative hdu is refused before the (missing) file is opened."""
+        with pytest.raises(ValueError, match="HDU index must be non-negative"):
             io.read("file.fits", hdu=-1)
 
     def test_read_invalid_device(self):

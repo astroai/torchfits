@@ -13,6 +13,7 @@ from torch import Tensor
 from ..fits_schema import bit_column_names, unsigned_column_dtypes_from_header
 from ..hdu import Header
 from .device import to_device, validate_device
+from ._hdu_lookup import raise_hdu_index_error, raise_lookup_failure
 from .paths import coerce_fits_path, require_bz2_support
 from .options import ReadOptions
 from .caches import (
@@ -132,7 +133,14 @@ def _validate_single_path_params(
     if not isinstance(path, str):
         raise ValueError("Path must be a string or list of strings")
     require_bz2_support(path)
+    _reject_negative_hdu(path, hdu)
     return _validate_read_params(hdu, device, mmap, mode)
+
+
+def _reject_negative_hdu(path: str, hdu: Any) -> None:
+    """A negative index is an HDUNotFoundError naming the file, on every route."""
+    if isinstance(hdu, int) and not isinstance(hdu, bool) and hdu < 0:
+        raise_hdu_index_error(path, hdu)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +148,23 @@ def _validate_single_path_params(
 # ---------------------------------------------------------------------------
 
 
-def read_unified(
+def read_unified(**kwargs: Any) -> Any:
+    """Unified root FITS read dispatcher.
+
+    A failed single-path read is re-checked once: a missing local file raises
+    ``FileNotFoundError`` and an absent HDU raises ``HDUNotFoundError``
+    instead of the CFITSIO-flavoured RuntimeError of whichever strategy ran.
+    """
+    try:
+        return _read_unified(**kwargs)
+    except Exception as exc:
+        path = coerce_fits_path(kwargs.get("path"))
+        if isinstance(path, str):
+            raise_lookup_failure(path, kwargs.get("hdu"), exc)
+        raise
+
+
+def _read_unified(
     *,
     cpp_module: Any,
     path: Any,
@@ -160,7 +184,7 @@ def read_unified(
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Any:
-    """Unified root FITS read dispatcher implementation."""
+    """Unified root FITS read dispatcher implementation (see read_unified)."""
     # --- parse options ---
     opts = _parse_read_options(options, kwargs)
     device = str(device)
@@ -420,6 +444,7 @@ def _read_batch_paths(
     column selection and row windows reach the per-file loop instead of being
     dropped on the floor.
     """
+    _reject_negative_hdu(path[0], hdu)
     force_image, force_table = _validate_read_params(hdu, device, mmap, options.mode)
     if force_image and (
         options.columns is not None or options.start_row != 1 or options.num_rows != -1

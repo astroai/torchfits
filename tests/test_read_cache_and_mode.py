@@ -91,7 +91,7 @@ def test_hdu_list_honors_mode_names_and_mixed_types(mef):
 
 def test_missing_extname_reports_not_found(mef):
     path, _ = mef
-    with pytest.raises(RuntimeError, match="'NOPE' not found"):
+    with pytest.raises(torchfits.HDUNotFoundError, match="'NOPE' not found"):
         torchfits.read(path, hdu="NOPE")
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import operator
 from typing import Any, Dict, Union
 
+from ._hdu_lookup import call_with_lookup
+
 
 def _cpp() -> Any:
     """Resolve the native extension lazily.
@@ -32,7 +34,9 @@ def _validate_hdu(hdu: Union[int, str], path: str) -> int:
             "hdu must be a non-negative integer or an EXTNAME string"
         ) from None
     if hdu < 0:
-        raise ValueError("hdu must be a non-negative integer")
+        from ._hdu_lookup import raise_hdu_index_error
+
+        raise_hdu_index_error(path, hdu)
     return int(hdu)
 
 
@@ -48,7 +52,8 @@ def write_checksums(path: str, hdu: Union[int, str] = 0) -> None:
     path = coerce_fits_path(path)
     guard_fits_path(path)
     cpp = _cpp()
-    cpp.write_hdu_checksums(str(path), _validate_hdu(hdu, str(path)))
+    index = _validate_hdu(hdu, str(path))
+    call_with_lookup(path, index, cpp.write_hdu_checksums, str(path), index)
     # The header just gained CHECKSUM/DATASUM; cached headers keyed on an
     # unchanged size/mtime (coarse filesystems) would keep serving the old one.
     invalidate_path_caches(str(path))
@@ -75,8 +80,9 @@ def verify_checksums(path: str, hdu: Union[int, str] = 0) -> Dict[str, Any]:
 
     path = coerce_fits_path(path)
     guard_fits_path(path)
-    datastatus, hdustatus = _cpp().verify_hdu_checksums(
-        str(path), _validate_hdu(hdu, str(path))
+    index = _validate_hdu(hdu, str(path))
+    datastatus, hdustatus = call_with_lookup(
+        path, index, _cpp().verify_hdu_checksums, str(path), index
     )
     data_i = int(datastatus)
     hdu_i = int(hdustatus)

@@ -504,10 +504,11 @@ def read_batch(
     Returns a ``list`` of tensors, one per input path and in input order.
 
     A path that cannot be read always raises: the result list is never
-    silently short, so positions always map 1:1 onto ``file_paths``. With
-    ``strict=False`` (the default) the failure is re-raised as a
-    ``RuntimeError`` naming the path and how many files preceded it; with
-    ``strict=True`` the original exception propagates unchanged.
+    silently short, so positions always map 1:1 onto ``file_paths``. A
+    missing HDU (``HDUNotFoundError``) keeps its type. With ``strict=False`` (the default) any other failure is
+    re-raised as a ``RuntimeError`` naming the path and how many files
+    preceded it; with ``strict=True`` the original exception propagates
+    unchanged.
     """
     from ._io_engine.batch import read_batch as _read_batch_impl
 
