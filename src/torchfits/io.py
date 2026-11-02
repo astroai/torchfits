@@ -112,6 +112,7 @@ def _read_check_cache(*args: Any, **kwargs: Any) -> Any:
         invalidate_path=_invalidate_path_caches,
         mmap=kwargs.get("mmap", args[10] if len(args) > 10 else "auto"),
         raw_scale=kwargs.get("raw_scale", args[11] if len(args) > 11 else False),
+        mode=kwargs.get("mode", args[12] if len(args) > 12 else "auto"),
     )
 
 

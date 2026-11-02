@@ -54,26 +54,24 @@ def read_fallback(
     raw_scale: bool = False,
 ) -> Any:
     """Generic fallback read path for image/table HDUs."""
-    # The cache key has no mode: an explicit mode='image'/'table' must not be
-    # answered with an entry an auto-mode read stored (a table dict for
-    # mode='image'), so explicit modes bypass the cache.
-    if force_image or force_table:
-        hit, cached_res, cache_key = False, None, None
-    else:
-        hit, cached_res, cache_key = read_check_cache(
-            path,
-            hdu,
-            device,
-            fp16,
-            bf16,
-            columns,
-            start_row,
-            num_rows,
-            return_header,
-            cache_capacity,
-            mmap,
-            raw_scale,
-        )
+    # The mode is part of the cache key: an explicit mode='image'/'table'
+    # must not be answered with an entry an auto-mode read stored (a table
+    # dict for mode='image'), but repeated explicit-mode reads still hit.
+    hit, cached_res, cache_key = read_check_cache(
+        path,
+        hdu,
+        device,
+        fp16,
+        bf16,
+        columns,
+        start_row,
+        num_rows,
+        return_header,
+        cache_capacity,
+        mmap,
+        raw_scale,
+        "image" if force_image else "table" if force_table else "auto",
+    )
     if hit:
         return cached_res
 

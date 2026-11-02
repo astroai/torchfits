@@ -259,6 +259,7 @@ def check_read_cache(
     invalidate_path: Any,
     mmap: bool | str = "auto",
     raw_scale: bool = False,
+    mode: str = "auto",
 ) -> tuple[bool, Any, Any]:
     """Check the Python-side read cache under the cache lock."""
     with cache_lock:
@@ -276,6 +277,7 @@ def check_read_cache(
             invalidate_path=invalidate_path,
             mmap=mmap,
             raw_scale=raw_scale,
+            mode=mode,
         )
 
 
@@ -294,8 +296,13 @@ def _check_read_cache_locked(
     invalidate_path: Any,
     mmap: bool | str = "auto",
     raw_scale: bool = False,
+    mode: str = "auto",
 ) -> tuple[bool, Any, Any]:
-    """Check the Python-side read cache and update cache counters."""
+    """Check the Python-side read cache and update cache counters.
+
+    ``mode`` is part of the key: an explicit ``mode='image'`` must never be
+    answered with the table dict an auto-mode read of the same HDU stored.
+    """
     import torch
 
     cache_stats["total_requests"] += 1
@@ -316,6 +323,7 @@ def _check_read_cache_locked(
                 return_header,
                 mmap,
                 raw_scale,
+                mode,
             )
         except TypeError:
             cache_key = None

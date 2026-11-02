@@ -76,6 +76,23 @@ def test_explicit_mode_is_not_answered_from_cache(mef):
         torchfits.read(path, 2, mode="table", return_header=True)
 
 
+def test_explicit_mode_reads_are_cached_under_their_own_key(mef):
+    """An explicit mode used to bypass the read cache (every read cold)."""
+    path, _ = mef
+    torchfits.clear_file_cache()
+    first = torchfits.read(path, 1, mode="table")
+    hits = torchfits.get_cache_performance()["hits"]
+    again = torchfits.read(path, 1, mode="table")
+    assert torchfits.get_cache_performance()["hits"] == hits + 1
+    assert torch.equal(first["A"], again["A"])
+    # The auto-mode entry is separate, and mode='image' still refuses.
+    torchfits.read(path, 1)
+    with pytest.raises(RuntimeError, match="image parameters"):
+        torchfits.read(path, 1, mode="image")
+    image = torchfits.read(path, 2, mode="image")
+    assert torch.equal(torchfits.read(path, 2, mode="image"), image)
+
+
 def test_hdu_list_honors_mode_names_and_mixed_types(mef):
     path, image = mef
     with pytest.raises(RuntimeError, match="image parameters"):
