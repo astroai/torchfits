@@ -125,6 +125,12 @@ bool FITSFile::owns_current_generation_locked() const {
            shared_meta_->mtime_ns == open_mtime_ns_;
 }
 
+bool FITSFile::shares_current_file() const {
+    if (!shared_meta_) return false;
+    std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
+    return owns_current_generation_locked();
+}
+
 void FITSFile::publish_image_info(
     int hdu_num, const std::tuple<int, int, std::array<LONGLONG, 9>>& info) const {
     if (!shared_meta_ || !open_identity_valid_) return;
@@ -190,8 +196,10 @@ const FITSFile::ScaleInfo& FITSFile::get_scale_info(int hdu_num, int bitpix) {
     if (it != scale_cache_.end()) return it->second;
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
+        // Only trust the shared entry while it describes the file this handle
+        // opened; after an out-of-band rewrite it belongs to the new file.
         auto sit = shared_meta_->scale_cache.find(hdu_num);
-        if (sit != shared_meta_->scale_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->scale_cache.end()) {
             auto [scaled, trusted, bscale, bzero] = sit->second;
             ScaleInfo shared_info;
             shared_info.scaled = scaled; shared_info.trusted = trusted;
@@ -223,7 +231,7 @@ bool FITSFile::is_compressed_image_cached(int hdu_num) {
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
         auto sit = shared_meta_->compressed_cache.find(hdu_num);
-        if (sit != shared_meta_->compressed_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->compressed_cache.end()) {
             compressed_cache_[hdu_num] = sit->second;
             return sit->second;
         }
@@ -244,7 +252,7 @@ const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(in
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
         auto sit = shared_meta_->image_info_cache.find(hdu_num);
-        if (sit != shared_meta_->image_info_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->image_info_cache.end()) {
             auto inserted = image_info_cache_.emplace(hdu_num, sit->second);
             return inserted.first->second;
         }
@@ -318,6 +326,13 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     std::shared_ptr<detail::RawFdHolder> fd_holder;
     if (!meta.compressed && shared_meta_) {
         fd_holder = detail::get_shared_raw_fd(shared_meta_, filename_);
+        // The shared fd follows the path, so after an out-of-band replace it
+        // is the new file. A handle still pinned to the old file must read
+        // through its own CFITSIO handle instead (fd = -1), or it returns
+        // the new file's bytes at the old data offset.
+        if (!shares_current_file()) {
+            fd_holder.reset();
+        }
     }
     const int fd = fd_holder ? fd_holder->fd : -1;
     return detail::read_tensor_canonical(fptr_, filename_, meta, use_mmap, fd, /*use_chunking=*/false);
@@ -1064,6 +1079,12 @@ bool SubsetReader::ensure_data_mmap() {
     if (nbytes == 0) return false;
     raw_fd_holder_ = detail::get_shared_raw_fd(meta, filename_);
     if (!raw_fd_holder_ || raw_fd_holder_->fd < 0) return false;
+    // The shared fd follows the path; once the file was replaced it is not
+    // the file this reader's handle (and data_offset_) describe.
+    if (!file_.shares_current_file()) {
+        raw_fd_holder_.reset();
+        return false;
+    }
 
     // Never map beyond the actual file: header-claimed sizes on truncated or
     // corrupt files would SIGBUS on first touch. Fall back to fits_read_subset.

@@ -58,6 +58,11 @@ public:
         return fn(fptr_);
     }
 
+    // True while the shared per-path metadata (and its raw fd) still describes
+    // the file this handle opened. False after an out-of-band replace: the
+    // shared fd then reads the new file, so callers must use the handle.
+    bool shares_current_file() const;
+
     void ensure_hdu(int hdu_num, int* status);
     // Same move, but throws naming the query that needed it. Used by the
     // HDU-keyed cache lookups below, which read the CFITSIO current-HDU cursor:
