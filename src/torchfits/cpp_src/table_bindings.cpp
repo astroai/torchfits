@@ -963,11 +963,19 @@ void bind_table(nb::module_& m) {
                 // __index__ is a type-level slot, so a 0-d array also lands
                 // here. Only an int64-convertible value is an integer literal;
                 // anything else (out of range, array) is rejected below.
-                if (!nb::try_cast<int64_t>(val, f.val_i)) {
+                if (nb::try_cast<int64_t>(val, f.val_i)) {
+                    f.val_d = (double)f.val_i;
+                } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
+                    // [2^63, 2^64): exact for uint64 columns, a constant
+                    // predicate for every other integer column.
+                    f.has_u64 = true;
+                    f.out_of_int64 = 1;
+                    f.val_i = std::numeric_limits<int64_t>::max();
+                    f.val_d = (double)f.val_u;
+                } else {
                     throw std::runtime_error(
                         "Unsupported filter value type (only float/int)");
                 }
-                f.val_d = (double)f.val_i;
                 f.type_idx = 1;
             } else {
                 // NumPy floating scalars are not Python float subclasses
@@ -987,10 +995,19 @@ void bind_table(nb::module_& m) {
                 }
                 // The integer scan branch compares against this proxy; C++
                 // float-to-int conversion is undefined outside int64, so clamp.
-                if (f.val_d >= (double)std::numeric_limits<int64_t>::max()) {
+                // Outside int64 the proxy is wrong by design; out_of_int64
+                // (and val_u for [2^63, 2^64)) tells the scan the real bound.
+                constexpr double two63 = 9223372036854775808.0;
+                if (f.val_d >= two63) {
                     f.val_i = std::numeric_limits<int64_t>::max();
-                } else if (f.val_d <= (double)std::numeric_limits<int64_t>::min()) {
+                    f.out_of_int64 = 1;
+                    if (f.val_d < 2.0 * two63) {
+                        f.has_u64 = true;
+                        f.val_u = static_cast<uint64_t>(f.val_d);
+                    }
+                } else if (f.val_d < -two63) {
                     f.val_i = std::numeric_limits<int64_t>::min();
+                    f.out_of_int64 = -1;
                 } else {
                     f.val_i = (int64_t)f.val_d;
                 }

@@ -1669,7 +1669,32 @@ public:
                     ctx.op = f.op;
                     ctx.target_i = f.val_i;
                     bool constant_predicate = false;
-                    if (f.type_idx == 0 && !ctx.is_float && !ctx.is_double &&
+                    bool u64_target_mapped = false;
+                    const bool is_u64_col =
+                        c.is_unsigned_int && c.unsigned_target_type == torch::kUInt64;
+                    if (f.out_of_int64 != 0 && !ctx.is_float && !ctx.is_double) {
+                        // A literal outside int64 on an integer column: val_i is
+                        // a clamped proxy (X < 2^63 + 0.5 must keep INT64_MAX).
+                        if (f.has_u64 && is_u64_col) {
+                            // Exact: raw int64 = physical XOR 2^63.
+                            ctx.target_i = static_cast<int64_t>(
+                                f.val_u ^ (uint64_t{1} << 63));
+                            u64_target_mapped = true;
+                        } else {
+                            // Above (or below) every value the column holds.
+                            const bool above = f.out_of_int64 > 0;
+                            bool always = false;
+                            switch (f.op) {
+                                case FilterOp::GT: case FilterOp::GE: always = !above; break;
+                                case FilterOp::LT: case FilterOp::LE: always = above; break;
+                                case FilterOp::EQ: always = false; break;
+                                case FilterOp::NE: always = true; break;
+                            }
+                            ctx.op = always ? FilterOp::GE : FilterOp::LT;
+                            ctx.target_i = std::numeric_limits<int64_t>::min();
+                            constant_predicate = true;
+                        }
+                    } else if (f.type_idx == 0 && !ctx.is_float && !ctx.is_double &&
                         std::floor(f.val_d) != f.val_d) {
                         // A non-integral float literal on an integer column:
                         // val_i is the literal truncated toward zero, which
@@ -1699,8 +1724,9 @@ public:
                                 break;
                         }
                     }
-                    if (c.is_unsigned_int && c.unsigned_target_type == torch::kUInt64 &&
-                        !constant_predicate) {
+                    if (u64_target_mapped) {
+                        // Already the raw int64 target.
+                    } else if (is_u64_col && !constant_predicate) {
                         // Raw int64 = physical XOR 2^63, which preserves order.
                         // Physical values are >= 0, so a negative literal makes
                         // the predicate constant; otherwise map it the same way.

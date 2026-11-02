@@ -781,11 +781,20 @@ def _try_cpp_where_pushdown(
             and (col.tscal or 1.0) == 1.0
             and float(col.tzero or 0.0).is_integer()
         }
+        # The scan also takes an exact uint64 bound in [2**63, 2**64).
+        u64_cols = {
+            name
+            for name, dtype in fits_schema.unsigned_column_dtype_names_from_header(
+                header
+            ).items()
+            if dtype == "uint64"
+        }
         exact: list[tuple[str, str, Any]] = []
         for col_name, op, lit in filters:
             if isinstance(lit, float) and col_name in int_cols:
                 op, lit = _integer_literal(op, lit)
-                if op == "const" or not (-(2**63) <= lit < 2**63):
+                high = 2**64 if col_name in u64_cols else 2**63
+                if op == "const" or not (-(2**63) <= lit < high):
                     return None
             exact.append((col_name, op, lit))
         filters = tuple(exact)
