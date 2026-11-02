@@ -5,7 +5,9 @@ from __future__ import annotations
 import warnings
 from typing import Any, Optional
 
+from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
+from ..fits_schema import unsigned_column_dtype_names_from_header
 from .._table.utils import (
     _column_tnull_map,
     _naxis2_row_count,
@@ -13,26 +15,31 @@ from .._table.utils import (
     _parse_tform,
 )
 from .._table.write import (
+    _scaled_columns_as_stored,
     _extract_table_schema_from_header,
     _ordered_dict_for_columns,
     _resolve_table_hdu_index_and_columns,
     _rewrite_table_hdu_with_schema,
-    _sanitize_table_header_for_rewrite,
+    _rewrite_table_header,
 )
 
 from ._mutation_coerce import (
     _COMPLEX_TFORM_CODES,
+    _clip_strings_to_width,
     _coerce_rows_from_arrow,
     _coerce_table_column_array,
     _coerce_table_complex_values,
     _coerce_table_string_values,
     _coerce_table_vla_values,
     _ensure_dtype_maps,
+    _exact_int_list,
     _infer_column_format_for_insert,
     _mutation_cache_barrier,
     _normalize_column_values_for_format,
     _normalize_mutation_rows,
+    _physical_to_stored_column,
     _read_table_for_rewrite,
+    _replacement_column_layout,
 )
 
 
@@ -53,6 +60,7 @@ def insert_column(
     path = coerce_fits_path(path)
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
+    _validate_schema_numerics(name, {"tnull": tnull, "tscal": tscal, "tzero": tzero})
 
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
@@ -66,25 +74,28 @@ def insert_column(
         raise ValueError(f"index must be in [0, {len(columns)}]")
 
     num_rows = _naxis2_row_count(header_map, path)
-
-    fmt = (
-        str(format).strip().upper()
-        if format is not None
-        else _infer_column_format_for_insert(name, values)
-    )
-    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
-
-    existing_data = _read_table_for_rewrite(path, target_hdu, columns)
-    existing_schema = _extract_table_schema_from_header(header_map, columns)
-    table_header = _sanitize_table_header_for_rewrite(header_map)
     table_type = (
         "ascii"
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
 
+    fmt = (
+        str(format).strip().upper()
+        if format is not None
+        else _infer_column_format_for_insert(
+            name, values, ascii_table=table_type == "ascii"
+        )
+    )
+    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
+
+    existing_data = _read_table_for_rewrite(path, target_hdu, columns)
+    existing_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
+    existing_schema = _extract_table_schema_from_header(header_map, columns)
+
     new_columns = list(columns)
     new_columns.insert(index, name)
+    table_header = _rewrite_table_header(path, target_hdu, header_map, new_columns)
     data_by_name = dict(existing_data)
     data_by_name[name] = normalized_values
     rewritten_data = _ordered_dict_for_columns(new_columns, data_by_name)
@@ -113,6 +124,7 @@ def insert_column(
         rewritten_schema,
         table_header,
         table_type,
+        restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
     )
     _mutation_cache_barrier(path)
 
@@ -133,6 +145,7 @@ def replace_column(
     path = coerce_fits_path(path)
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
+    _validate_schema_numerics(name, {"tnull": tnull, "tscal": tscal, "tzero": tzero})
 
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
@@ -149,18 +162,50 @@ def replace_column(
         if format is not None
         else str(existing_meta.get("format", "")).strip().upper()
     )
-    if not fmt:
-        fmt = _infer_column_format_for_insert(name, values)
-
-    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
-
-    table_header = _sanitize_table_header_for_rewrite(header_map)
     table_type = (
         "ascii"
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
+    reset_scaling = False
+    if format is None and float(existing_meta.get("bzero") or 0.0) == 2.0**63:
+        # A uint64 column: keep a Python int list exact (numpy makes it float).
+        values = _exact_int_list(values)
+    if table_type == "binary" and tscal is None and tzero is None:
+        layout_fmt, values, reset_scaling = _replacement_column_layout(
+            name,
+            values,
+            format=fmt if format is not None else None,
+            existing_meta=existing_meta,
+        )
+        if layout_fmt is not None:
+            fmt = layout_fmt
+    if reset_scaling:
+        for key in ("bzero", "bscale", "tnull"):
+            existing_meta.pop(key, None)
+    if not fmt:
+        fmt = _infer_column_format_for_insert(
+            name, values, ascii_table=table_type == "ascii"
+        )
+
+    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
+    if tscal is None and tzero is None:
+        # The column keeps its TSCAL/TZERO: values are physical, as a read
+        # returns them and update_rows takes them.
+        scaling = dict(existing_meta)
+        if tnull is not None:
+            scaling["tnull"] = tnull
+        normalized_values = _physical_to_stored_column(
+            name,
+            normalized_values,
+            fmt,
+            scaling,
+            ascii_table=table_type == "ascii",
+        )
+
+    table_header = _rewrite_table_header(path, target_hdu, header_map, columns)
     rewritten_data = _read_table_for_rewrite(path, target_hdu, columns)
+    rewritten_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     rewritten_data[name] = normalized_values
 
     merged_meta = dict(existing_meta)
@@ -187,11 +232,24 @@ def replace_column(
         rewritten_schema,
         table_header,
         table_type,
+        restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
     )
     _mutation_cache_barrier(path)
 
 
 # -- public row mutation API -----------------------------------------------------
+
+
+def _restamp_checksums(path: str, hdu: int, header_map: dict[str, Any]) -> None:
+    """Re-stamp CHECKSUM/DATASUM after an in-place edit of a stamped HDU.
+
+    The row and column edits change the HDU's bytes in place; a checksum left
+    from before the edit makes verify_checksums report corruption.
+    """
+    if "CHECKSUM" in header_map or "DATASUM" in header_map:
+        from .._io_engine.checksum_api import write_checksums
+
+        write_checksums(path, hdu=hdu)
 
 
 def append_rows(
@@ -215,6 +273,7 @@ def append_rows(
         tform_map,
         tnull_map,
         allow_partial=True,
+        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
     )
     if expected_rows <= 0:
         return
@@ -222,6 +281,7 @@ def append_rows(
     _mutation_cache_barrier(path)
     cpp.append_fits_table_rows(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def insert_rows(
@@ -256,6 +316,7 @@ def insert_rows(
         tform_map,
         tnull_map,
         allow_partial=True,
+        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
     )
     if expected_rows <= 0:
         return
@@ -264,6 +325,7 @@ def insert_rows(
     _mutation_cache_barrier(path)
     cpp.insert_fits_table_rows(path, target_hdu, normalized, start_row)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def delete_rows(
@@ -273,6 +335,10 @@ def delete_rows(
     hdu: int | str = 1,
 ) -> None:
     path = coerce_fits_path(path)
+    if row_slice is None:
+        # None used to mean "every row"; deleting a whole table must be asked
+        # for explicitly, e.g. slice(0, None).
+        raise ValueError("row_slice is required for delete_rows")
     if isinstance(row_slice, int):
         if row_slice < 0:
             raise ValueError("row index must be >= 0")
@@ -304,14 +370,23 @@ def delete_rows(
     _mutation_cache_barrier(path)
     cpp.delete_fits_table_rows(path, target_hdu, start_row, num_rows)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
-def _warn_numeric_coercion(col_name: str, arr: Any, tform: Any) -> None:
-    """Warn when writing *arr* into an integer-TFORM column loses information.
+def _check_numeric_coercion(
+    col_name: str,
+    arr: Any,
+    tform: Any,
+    unsigned_dtype: str | None = None,
+    scaled: bool = False,
+) -> None:
+    """Check *arr* against an integer-TFORM column before anything is written.
 
-    CFITSIO truncates floats toward zero and wraps out-of-range integers;
-    surfacing this at the Python boundary keeps silent corruption out of
-    science pipelines.
+    CFITSIO truncates floats toward zero (warned here). An out-of-range
+    integer is refused with ValueError: CFITSIO writes the rows before it
+    reports the overflow, which used to leave the file modified behind the
+    error. Scaled (TSCAL/TZERO) columns take physical values and are not
+    range-checked against the stored type here.
     """
     if not tform:
         return
@@ -343,18 +418,25 @@ def _warn_numeric_coercion(col_name: str, arr: Any, tform: Any) -> None:
             stacklevel=3,
         )
         return
-    if arr.dtype.kind in {"i", "u"}:
+    if arr.dtype.kind in {"i", "u"} and not scaled:
         bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
-        high = (1 << (bits - 1)) - 1
-        low = 0 if code == "B" else -(1 << (bits - 1))
-        out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
+        if unsigned_dtype == "int8":
+            # Signed-byte convention: 'B' with TZERO = -128.
+            low, high = -128, 127
+        elif code == "B" or unsigned_dtype is not None:
+            # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
+            low, high = 0, (1 << bits) - 1
+        else:
+            low, high = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+        if arr.dtype.kind == "u":
+            out_of_range = int(_np.count_nonzero(arr > high))
+        else:
+            out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
         if out_of_range:
-            warnings.warn(
+            raise ValueError(
                 f"Column '{col_name}' has integer FITS format '{tform}': "
-                f"{out_of_range} value(s) fall outside [{low}, {high}] and "
-                "will wrap on disk. Cast explicitly to silence this warning.",
-                RuntimeWarning,
-                stacklevel=3,
+                f"{out_of_range} value(s) fall outside [{low}, {high}]; "
+                "nothing was written"
             )
 
 
@@ -379,6 +461,17 @@ def update_rows(
     unknown = sorted({str(name) for name in rows} - set(columns))
     if unknown:
         raise KeyError(f"Unknown columns for table mutation: extra={unknown}")
+    from ..fits_schema import unsigned_column_dtype_names_from_header
+
+    unsigned_names = unsigned_column_dtype_names_from_header(header_map)
+    from ..fits_schema import iter_table_columns
+
+    scaled_names = {
+        col.name
+        for col in iter_table_columns(header_map)
+        if col.name not in unsigned_names
+        and ((col.tscal or 1.0) != 1.0 or (col.tzero or 0.0) != 0.0)
+    }
 
     string_widths: dict[str, int] = {}
     vla_codes: dict[str, str] = {}
@@ -411,50 +504,24 @@ def update_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(  # type: ignore[assignment]
-                col_name, value, expected_rows=expected_rows
+            width = string_widths[col_name]
+            texts = _clip_strings_to_width(
+                col_name,
+                _coerce_table_string_values(
+                    col_name, value, expected_rows=expected_rows
+                ),
+                width,
             )
             if expected_rows is None:
-                expected_rows = len(values)
+                expected_rows = len(texts)
             import numpy as _np
 
-            width = string_widths[col_name]
             arr = _np.full((expected_rows, width), 0x20, dtype=_np.uint8)
-            dropped_chars = 0
-            truncated_rows = 0
-            for i, s in enumerate(values):
-                if isinstance(s, (bytes, bytearray)):
-                    encoded = bytes(s)
-                elif isinstance(s, str):
-                    encoded = s.encode("ascii", "ignore")
-                    if len(encoded) != len(s):
-                        dropped_chars += len(s) - len(encoded)
-                else:
-                    text = str(s)
-                    encoded = text.encode("ascii", "ignore")
-                    if len(encoded) != len(text):
-                        dropped_chars += len(text) - len(encoded)
-                length = min(len(encoded), width)
-                if len(encoded) > width:
-                    truncated_rows += 1
-                if length > 0:
-                    arr[i, :length] = _np.frombuffer(encoded[:length], dtype=_np.uint8)
-            if dropped_chars:
-                warnings.warn(
-                    f"Column '{col_name}' is a FITS string column: "
-                    f"{dropped_chars} non-ASCII character(s) were removed. "
-                    "FITS string columns store bytes; encode explicitly to silence.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
-            if truncated_rows:
-                warnings.warn(
-                    f"Column '{col_name}' has width {width}: "
-                    f"{truncated_rows} value(s) were silently clipped to fit. "
-                    "Shorten values or widen the column to silence.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
+            for i, text in enumerate(texts):
+                if text:
+                    arr[i, : len(text)] = _np.frombuffer(
+                        text.encode("ascii"), dtype=_np.uint8
+                    )
             normalized[col_name] = arr
         elif col_name in complex_codes:
             arr = _coerce_table_complex_values(
@@ -473,7 +540,17 @@ def update_rows(
             )
             if expected_rows is None:
                 expected_rows = int(arr.shape[0])
-            _warn_numeric_coercion(col_name, arr, tform_map.get(col_name))
+            _check_numeric_coercion(
+                col_name,
+                arr,
+                tform_map.get(col_name),
+                unsigned_names.get(col_name),
+                scaled=col_name in scaled_names,
+            )
+            if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
+                # Physical uint64 values (negatives refused above): send them
+                # as uint64 so every writer applies the TZERO = 2**63 offset.
+                arr = arr.astype("uint64")
             normalized[col_name] = arr
 
     if expected_rows is None:
@@ -536,6 +613,7 @@ def update_rows(
                     path, target_hdu, normalized, start_row, num_rows
                 )
                 _mutation_cache_barrier(path)
+                _restamp_checksums(path, target_hdu, header_map)
                 return
             except RuntimeError as exc:
                 # The mmap writer raises RuntimeError for both column layouts
@@ -556,6 +634,7 @@ def update_rows(
 
     cpp.update_fits_table_rows(path, target_hdu, normalized, start_row, num_rows)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def rename_columns(
@@ -578,7 +657,7 @@ def rename_columns(
     if len(set(normalized.values())) != len(normalized.values()):
         raise ValueError("rename_columns mapping has duplicate target names")
 
-    target_hdu, _header, columns, _tform_map = _resolve_table_hdu_index_and_columns(
+    target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
     )
     existing = set(columns)
@@ -597,6 +676,7 @@ def rename_columns(
     _mutation_cache_barrier(path)
     cpp.rename_fits_table_columns(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def drop_columns(
@@ -614,7 +694,7 @@ def drop_columns(
     if len(set(normalized)) != len(normalized):
         raise ValueError("drop_columns received duplicate column names")
 
-    target_hdu, _header, existing_columns, _tform_map = (
+    target_hdu, header_map, existing_columns, _tform_map = (
         _resolve_table_hdu_index_and_columns(path, hdu)
     )
     missing = sorted(set(normalized) - set(existing_columns))
@@ -626,3 +706,4 @@ def drop_columns(
     _mutation_cache_barrier(path)
     cpp.drop_fits_table_columns(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)

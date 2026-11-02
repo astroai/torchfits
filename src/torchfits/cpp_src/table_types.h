@@ -65,6 +65,12 @@ struct TableFilter {
     std::string val_s;
     // 0=double, 1=int, 2=string
     int type_idx = 0;
+    // A numeric literal outside int64: +1 above INT64_MAX, -1 below
+    // INT64_MIN (val_i is then only a clamped proxy). When it lies in
+    // [2^63, 2^64), val_u holds it exactly for uint64 columns.
+    int out_of_int64 = 0;
+    bool has_u64 = false;
+    uint64_t val_u = 0;
 };
 
 // Helper to check if buffered row reading is enabled.

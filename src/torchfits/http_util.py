@@ -11,6 +11,11 @@ Residual: ``guard_cfitsio_remote_path`` gives guard-time validation only for
 CFITSIO-driver URLs (``http``/``https``/``ftp``) — CFITSIO resolves internally
 and its connections re-resolve after the check (residual TOCTOU). Public
 http(s)/ftp still go to CFITSIO; private/loopback stays blocked at the guard.
+The vendored CFITSIO http driver refuses redirects that leave the original
+host (``extern/patches/cfitsio-4.7.0-http-redirect-host.patch``) and only
+treats an ``@`` inside the authority as a credentials separator
+(``cfitsio-4.7.0-http-userinfo-authority.patch``); libcurl
+(https/ftps) is not configured to follow redirects at all.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import http.client
 import ipaddress
 import math
 import os
+import re
 import socket
 import sys
 import urllib.error
@@ -120,6 +126,73 @@ def auth_headers() -> dict[str, str]:
     return {}
 
 
+_NUMERIC_HOST = re.compile(r"[0-9.]+")
+
+
+# IANA special-purpose ranges, listed explicitly because ``is_global`` /
+# ``is_private`` changed between Python releases (e.g. 192.0.0.0/24 counts as
+# global on 3.11). Blocked on every interpreter version.
+_SPECIAL_PURPOSE_NETS = tuple(
+    ipaddress.ip_network(net)
+    for net in (
+        "0.0.0.0/8",
+        "100.64.0.0/10",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "240.0.0.0/4",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "fc00::/7",
+    )
+)
+
+
+def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for any address that is not public unicast (e.g. CGNAT 100.64/10)."""
+    if any(
+        ip_obj in net for net in _SPECIAL_PURPOSE_NETS if net.version == ip_obj.version
+    ):
+        return True
+    return (
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+        or not ip_obj.is_global
+    )
+
+
+def _numeric_ipv4_ambiguity(hostname: str) -> str | None:
+    """Reason to refuse a numeric-looking host that is not canonical IPv4.
+
+    ``0177.0.0.1``, ``127.1``, ``2130706433`` or ``0x7f.0.0.1`` mean different
+    hosts to ``getaddrinfo`` (which may read ``0177`` as decimal 177),
+    ``inet_aton``/``inet_addr`` (CFITSIO: octal, i.e. 127.0.0.1) and libcurl.
+    Only canonical dotted-decimal IPv4 is accepted for numeric hosts, so the
+    guard and every client agree on the address.
+    """
+    bare = hostname.rstrip(".")
+    try:
+        socket.inet_aton(bare)
+        numeric = True
+    except (OSError, ValueError):
+        numeric = bool(_NUMERIC_HOST.fullmatch(bare))
+    if not numeric:
+        return None
+    try:
+        ipaddress.IPv4Address(hostname)
+    except ValueError:
+        return f"non-canonical numeric host {hostname!r} is not allowed"
+    return None
+
+
 def _resolve_public_addrs(url: str) -> tuple[str, ...]:
     """Resolve *url*'s host once and validate every answer as public.
 
@@ -127,7 +200,9 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
     share one ``getaddrinfo`` result, so a DNS answer cannot change between
     the two (DNS rebinding). Multi-record answers fail closed — any
     non-public entry (private/loopback/link-local/reserved/multicast/
-    unspecified) blocks, as does resolution failure.
+    unspecified/shared, i.e. not globally routable) blocks. Numeric hosts
+    must be canonical dotted-decimal IPv4; resolution failure raises
+    :class:`HttpBlockedError` saying the host could not be resolved.
     """
     blocked = HttpBlockedError(
         f"{url}: access to internal or private networks is blocked for security reasons"
@@ -138,10 +213,13 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
         raise blocked from None
     if not hostname:
         raise blocked
+    ambiguity = _numeric_ipv4_ambiguity(hostname)
+    if ambiguity is not None:
+        raise HttpBlockedError(f"{url}: {ambiguity}; blocked for security reasons")
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except Exception:
-        raise blocked from None
+    except Exception as exc:
+        raise HttpBlockedError(f"{url}: could not resolve host {hostname!r}") from exc
     addrs: list[str] = []
     for info in infos:
         ip = str(info[4][0]).split("%", 1)[0]
@@ -149,14 +227,7 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
             ip_obj = ipaddress.ip_address(ip)
         except ValueError:
             raise blocked from None
-        if (
-            ip_obj.is_private
-            or ip_obj.is_loopback
-            or ip_obj.is_link_local
-            or ip_obj.is_reserved
-            or ip_obj.is_multicast
-            or ip_obj.is_unspecified
-        ):
+        if _is_blocked_ip(ip_obj):
             raise blocked
         if ip not in addrs:
             addrs.append(ip)
@@ -179,8 +250,15 @@ def is_internal_url(url: str) -> bool:
     return False
 
 
-def _pin_addrs_for(request: urllib.request.Request) -> tuple[str, ...]:
-    """Guard-time addresses for *request* (as pinned by the guard hop)."""
+def _pin_addrs_for(request: urllib.request.Request) -> tuple[str, ...] | None:
+    """Guard-time addresses for *request* (as pinned by the guard hop).
+
+    ``None`` when urllib routes the request through a proxy (``http_proxy`` /
+    ``https_proxy``): the socket must then reach the proxy itself, which
+    resolves the already-guarded target host on its side.
+    """
+    if request.has_proxy() or getattr(request, "_tunnel_host", None):
+        return None
     pinned = getattr(request, "_torchfits_pin", None)
     if pinned:
         return tuple(pinned)
@@ -257,7 +335,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 
 def _conn_factory(
-    base: Any, pinned_addrs: tuple[str, ...]
+    base: Any, pinned_addrs: tuple[str, ...] | None
 ) -> Callable[..., http.client.HTTPConnection]:
     def factory(host: str, **kwargs: Any) -> Any:
         return base(host, pinned_addrs, **kwargs)
@@ -358,7 +436,9 @@ class ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     ):
         try:
             pinned = _resolve_public_addrs(newurl)
-        except HttpBlockedError:
+        except HttpBlockedError as exc:
+            if isinstance(exc.__cause__, OSError):  # DNS failure, not a block
+                raise HttpBlockedError(f"redirect target {exc}") from exc.__cause__
             raise HttpBlockedError(
                 f"{newurl}: redirect to internal or private networks is blocked "
                 "for security reasons"
@@ -384,7 +464,14 @@ def build_http_opener() -> urllib.request.OpenerDirector:
     )
 
 
-_CFITSIO_NETWORK_SCHEMES = ("http://", "https://", "ftp://")
+# Every CFITSIO driver that dials a remote host (cfileio.c fits_init_cfitsio):
+# the plain schemes and their file/mem/compress variants, which a caller can
+# name directly (``httpmem://host/x.fits``), plus ROOT and GridFTP.
+_CFITSIO_NETWORK_SCHEMES = tuple(
+    f"{base}{variant}://"
+    for base in ("http", "https", "ftp", "ftps")
+    for variant in ("", "file", "mem", "compress")
+) + ("root://", "gsiftp://")
 
 
 def _strip_leading_cfitsio_bang(path: str) -> str:
@@ -396,7 +483,7 @@ def _strip_leading_cfitsio_bang(path: str) -> str:
 
 
 def is_cfitsio_network_url(path: str) -> bool:
-    """True when *path* is an ``http``/``https``/``ftp`` CFITSIO filename."""
+    """True when *path* names a CFITSIO network driver (``http``, ``httpmem``, ...)."""
     lowered = _strip_leading_cfitsio_bang(path).lower()
     return any(lowered.startswith(scheme) for scheme in _CFITSIO_NETWORK_SCHEMES)
 
@@ -418,12 +505,17 @@ def guard_cfitsio_remote_path(path: str) -> None:
     lowered = candidate.lower()
     if not any(lowered.startswith(scheme) for scheme in _CFITSIO_NETWORK_SCHEMES):
         return
-    # Hostname checks ignore a trailing CFITSIO ``[...]`` section.
-    if is_internal_url(candidate):
+    # CFITSIO splits user:password@host on its own and has historically taken
+    # the host after an '@' in the path or query, so the host validated below
+    # need not be the one it dials. URL credentials are not supported here
+    # (use the auth environment variables), so any '@' is refused.
+    if "@" in candidate.split("://", 1)[1]:
         raise HttpBlockedError(
-            f"{path}: access to internal or private networks is blocked "
-            "for security reasons"
+            f"{path}: '@' is not allowed in remote FITS URLs (credentials in the "
+            "URL are unsupported); blocked for security reasons"
         )
+    # Hostname checks ignore a trailing CFITSIO ``[...]`` section.
+    _resolve_public_addrs(candidate)
 
 
 def http_request(

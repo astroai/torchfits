@@ -48,7 +48,7 @@ def test_diff_float64_mean_is_computed_in_float64(tmp_path):
     )
     result = _run_cli("diff", str(path_a), str(path_b))
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "mean" in result.stderr
+    assert "pixels differ" in result.stderr
 
 
 def test_diff_empty_images_compare_clean(tmp_path):

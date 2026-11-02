@@ -528,6 +528,8 @@ def _read_cpp_table_chunk(
             num_rows=num_rows,
             mmap=mmap,
             apply_fits_nulls=apply_fits_nulls,
+            encoding=encoding,
+            strip=strip,
         )
         if where_rows is None:
             return None
@@ -565,7 +567,7 @@ def _read_cpp_table_chunk(
 
     col_list = columns if columns else []
 
-    from .engine import _read_ranges_as_chunk
+    from .engine import _read_selected_rows
 
     # One chunk holds whole columns straight from the C++ engine, so the value
     # type is the union of what the native and numpy paths return.
@@ -616,38 +618,16 @@ def _read_cpp_table_chunk(
                 pa, path, hdu, columns, decode_bytes, include_fits_metadata
             )
 
-        order = np.argsort(rows_arr, kind="stable")
-        sorted_rows = rows_arr[order]
-
-        if len(sorted_rows) == 0:
-            ranges: list[tuple[int, int]] = []
-        else:
-            diffs = np.diff(sorted_rows)
-            breaks = np.nonzero(diffs != 1)[0]
-            start_indices = np.insert(breaks + 1, 0, 0)
-            end_indices = np.append(breaks, len(sorted_rows) - 1)
-
-            start0s = sorted_rows[start_indices]
-            lengths = end_indices - start_indices + 1
-
-            ranges = list(zip(start0s.tolist(), lengths.tolist()))
-
         # A rows= selection has no fallback that could honor it: the scan
         # fallback would silently return the full table (r5a-01), so ranged
         # read failures propagate untouched.
+        hdr = _get_hdr()
+        try:
+            row_bytes = int(hdr.get("NAXIS1", 0)) if hdr is not None else 0
+        except (TypeError, ValueError):
+            row_bytes = 0
         reader = _acquire_cpp_reader(path, hdu, cpp)
-        chunk_sorted = _read_ranges_as_chunk(reader, col_list, ranges)
-
-        inv = np.empty_like(order)
-        inv[order] = np.arange(len(order))
-        chunk = {}
-        for name, value in chunk_sorted.items():
-            if isinstance(value, np.ndarray):
-                chunk[name] = value[inv]
-            elif isinstance(value, list):
-                chunk[name] = [value[i] for i in inv]
-            else:
-                chunk[name] = value
+        chunk = _read_selected_rows(reader, col_list, rows_arr, row_bytes=row_bytes)
 
     if chunk is None:
         if mmap:
@@ -784,8 +764,14 @@ def _resolve_rows_from_where_cpp(
     num_rows: int,
     mmap: bool,
     apply_fits_nulls: bool,
+    encoding: str = "utf-8",
+    strip: bool = True,
 ) -> Optional[list[int]]:
-    """Resolve WHERE predicate to a sorted list of 0-based row indices via C++ chunk read."""
+    """Resolve WHERE predicate to a sorted list of 0-based row indices via C++ chunk read.
+
+    String predicates see the values the caller reads (same ``encoding`` and
+    ``strip``), as on every other backend.
+    """
     where_ast = parse_where_expression(where)
     where_columns = where_columns_from_ast(where_ast)
     predicate_table = _read_cpp_table_chunk(
@@ -797,8 +783,8 @@ def _resolve_rows_from_where_cpp(
         where=None,
         mmap=mmap,
         decode_bytes=True,
-        encoding="utf-8",
-        strip=True,
+        encoding=encoding,
+        strip=strip,
         include_fits_metadata=False,
         apply_fits_nulls=apply_fits_nulls,
     )

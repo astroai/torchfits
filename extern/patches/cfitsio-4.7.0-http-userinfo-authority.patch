@@ -1,0 +1,53 @@
+--- a/drvrnet.c
++++ b/drvrnet.c
+@@ -259,6 +259,7 @@
+ static int root_openfile(char *filename, char *rwmode, int *sock);
+ static int encode64(unsigned s_len, char *src, unsigned d_len, char *dst);
+ static int net_redirect_same_host(const char *location, const char *host);
++static const char *net_authority_at(const char *s);
+ static int ssl_get_with_curl(char *url, curlmembuf* buffer, 
+                 char* username, char* password);
+ static size_t curlToMemCallback(void *buffer, size_t size, size_t nmemb, void *userp);
+@@ -843,7 +844,9 @@
+   
+   /* Do we have a user:password combo ? */
+     strcpy(userpass, url);
+-  if ((scratchstr = strchr(userpass, '@')) != NULL) {
++  /* torchfits: only an '@' inside the authority separates user:password;
++     one in the path or query is data, not a host delimiter. */
++  if ((scratchstr = (char *) net_authority_at(userpass)) != NULL) {
+     *scratchstr = '\0';
+   } else {
+     strcpy(userpass, "");
+@@ -3439,6 +3442,20 @@
+   }
+   return 1;
+ }
++/*--------------------------------------------------------------------------*/
++/* torchfits: the last '@' of the authority that starts at s (which ends at
++   the first '/', '?', '#' or the end of the string), or NULL when there is
++   none.  An '@' later in the path or query must not select the host. */
++static const char *net_authority_at(const char *s)
++{
++  const char *at = NULL;
++
++  for (; *s && *s != '/' && *s != '?' && *s != '#'; s++) {
++    if (*s == '@') at = s;
++  }
++  return at;
++}
++
+ static int NET_ParseUrl(const char *url, char *proto, char *host, int *port, 
+ 		 char *fn)
+ {
+@@ -3508,8 +3525,8 @@
+   /* do this only if http */
+   if (!strcmp(proto,"http:")) {
+ 
+-    /* Move past any user:password */
+-    if ((thost = strchr(urlcopy, '@')) != NULL)
++    /* Move past any user:password (torchfits: within the authority only) */
++    if ((thost = (char *) net_authority_at(urlcopy)) != NULL)
+       urlcopy = thost+1;
+ 
+     thost = urlcopy;

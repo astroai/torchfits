@@ -153,3 +153,79 @@ def test_malformed_naxis2_raises_not_silent_noop(tmp_path, monkeypatch, op):
     }
     with pytest.raises((ValueError, TypeError)):
         calls[op]()
+
+
+def test_delete_rows_rejects_none_row_slice(tmp_path):
+    path = str(tmp_path / "del_none.fits")
+    torchfits.table.write(path, {"A": np.arange(3, dtype=np.int32)}, overwrite=True)
+    with pytest.raises(ValueError, match="row_slice is required"):
+        torchfits.table.delete_rows(path, None)  # type: ignore[arg-type]
+    assert torchfits.table.read_torch(path, hdu=1)["A"].tolist() == [0, 1, 2]
+    torchfits.table.delete_rows(path, slice(0, None))
+    assert torchfits.table.read(path, hdu=1).num_rows == 0
+
+
+def test_none_in_string_columns_is_blank(tmp_path):
+    path = str(tmp_path / "none_str.fits")
+    torchfits.table.write(
+        path, {"k": np.arange(2, dtype=np.int32), "s": ["abcdef", "b"]}, overwrite=True
+    )
+    torchfits.table.append_rows(path, {"k": [2], "s": [None]})
+    torchfits.table.insert_rows(path, {"k": [3], "s": [None]}, row=0)
+    torchfits.table.update_rows(path, {"s": [None]}, slice(1, 2))
+    torchfits.table.insert_column(path, "z", ["xy", None, "q", None])
+    got = torchfits.table.read(path, hdu=1).to_pydict()
+    assert got["s"] == ["", "", "b", ""]
+    assert got["z"] == ["xy", "", "q", ""]
+
+
+@pytest.mark.parametrize("op", ["append", "insert", "update"])
+def test_string_row_mutations_share_ascii_and_width_checks(tmp_path, op):
+    path = str(tmp_path / f"str_{op}.fits")
+    torchfits.table.write(
+        path, {"k": np.arange(2, dtype=np.int32), "s": ["abc", "b"]}, overwrite=True
+    )
+
+    def mutate(value):
+        if op == "append":
+            torchfits.table.append_rows(path, {"s": [value]})
+        elif op == "insert":
+            torchfits.table.insert_rows(path, {"s": [value]}, row=0)
+        else:
+            torchfits.table.update_rows(path, {"s": [value]}, slice(0, 1))
+
+    before = open(path, "rb").read()
+    for bad in ("héllo", b"\xffab"):
+        with pytest.raises(ValueError, match="ASCII"):
+            mutate(bad)
+        assert open(path, "rb").read() == before
+
+    with pytest.warns(RuntimeWarning, match="clipped"):
+        mutate("toolong")
+    assert "too" in torchfits.table.read(path, hdu=1).to_pydict()["s"]
+
+
+@pytest.mark.parametrize("spelling", ["relative", "dot", "double_slash", "symlink"])
+def test_mutation_after_read_through_another_path_spelling(
+    tmp_path, monkeypatch, spelling
+):
+    path = tmp_path / "alias.fits"
+    torchfits.table.write(
+        str(path), {"a": np.arange(4, dtype=np.int32)}, overwrite=True
+    )
+    monkeypatch.chdir(tmp_path)
+    if spelling == "symlink":
+        (tmp_path / "link.fits").symlink_to(path)
+    alias = {
+        "relative": "alias.fits",
+        "dot": "./alias.fits",
+        "double_slash": str(tmp_path) + "//alias.fits",
+        "symlink": str(tmp_path / "link.fits"),
+    }[spelling]
+    # Caches a native reader (a READONLY CFITSIO handle) under the alias.
+    assert torchfits.table.read_torch(alias, hdu=1)["a"].tolist() == [0, 1, 2, 3]
+    torchfits.table.append_rows(str(path), {"a": np.array([5], dtype=np.int32)})
+    torchfits.table.update_rows(
+        str(path), {"a": np.array([9], dtype=np.int32)}, slice(0, 1), mmap=False
+    )
+    assert torchfits.table.read_torch(alias, hdu=1)["a"].tolist() == [9, 1, 2, 3, 5]

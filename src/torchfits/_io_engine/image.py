@@ -15,6 +15,12 @@ from .device import (
     to_device as to_device,
     validate_device as validate_device,
 )
+from ._hdu_lookup import (
+    call_with_lookup,
+    raise_hdu_index_error,
+    raise_lookup_failures,
+    resolve_hdu_name,
+)
 from .paths import coerce_fits_path, guard_fits_path, require_bz2_support
 
 
@@ -28,7 +34,7 @@ def validate_read_image_args(
     if not isinstance(hdu, (int, str)):
         raise ValueError("hdu must be an integer or string")
     if isinstance(hdu, int) and hdu < 0:
-        raise ValueError("hdu must be a non-negative integer")
+        raise_hdu_index_error(path, hdu)
     if isinstance(hdu, str) and hdu.strip().lower() == "auto":
         # "auto" is the autodetect sentinel accepted by read()/read_header();
         # read_image()/read_tensor() require an explicit HDU index or name.
@@ -69,9 +75,11 @@ def read_image(
     guard_fits_path(path)
 
     if isinstance(hdu, str):
-        hdu = int(_cpp.resolve_hdu_name_cached(path, hdu))
+        hdu = resolve_hdu_name(path, hdu)
 
-    data = dispatch_read_image_cpp(_cpp, path, hdu, mmap, raw_scale)
+    data = call_with_lookup(
+        path, hdu, dispatch_read_image_cpp, _cpp, path, hdu, mmap, raw_scale
+    )
 
     if fp16:
         data = data.to(torch.float16)
@@ -117,15 +125,19 @@ def read_hdus(
     for hdu in hdus:
         if isinstance(hdu, int):
             if hdu < 0:
-                raise ValueError("HDU index must be non-negative")
+                raise_hdu_index_error(path, hdu)
             resolved_hdus.append(int(hdu))
             continue
         if isinstance(hdu, str):
-            resolved_hdus.append(int(_cpp.resolve_hdu_name_cached(path, hdu)))
+            resolved_hdus.append(resolve_hdu_name(path, hdu))
             continue
         raise ValueError("each item in hdus must be an int or str")
 
-    data = _cpp.read_hdus_batch(path, resolved_hdus, mmap)
+    try:
+        data = _cpp.read_hdus_batch(path, resolved_hdus, mmap)
+    except Exception as exc:
+        raise_lookup_failures(path, resolved_hdus, exc)
+        raise
     if len(data) != len(resolved_hdus):
         # Never pair tensors with the wrong headers (r4a-01).
         raise RuntimeError(

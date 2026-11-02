@@ -311,10 +311,15 @@ def unsigned_column_dtype_names_from_header(
             continue
         # iter_table_columns always yields a float tzero (0.0 default).
         tzero = col.tzero if col.tzero is not None else 0.0
-        if code == "I" and abs(tzero - 32768.0) < 1e-5:
+        if code == "B" and tzero == -128.0:
+            # Signed-byte convention: uint8 storage, TZERO = -128.
+            out[col.name] = "int8"
+        elif code == "I" and abs(tzero - 32768.0) < 1e-5:
             out[col.name] = "uint16"
         elif code == "J" and abs(tzero - 2147483648.0) < 1e-5:
             out[col.name] = "uint32"
+        elif code == "K" and tzero == 9223372036854775808.0:
+            out[col.name] = "uint64"
     return out
 
 
@@ -340,6 +345,104 @@ def column_tnull_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
         tnull = get(f"TNULL{idx}")
         if tnull is not None:
             out[name] = tnull
+    return out
+
+
+_UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2147483648, "K": 2**63}
+# Range of the integer actually stored for each TFORM code (B is unsigned).
+_STORED_INT_RANGE = {
+    "B": (0, 255),
+    "I": (-(2**15), 2**15 - 1),
+    "J": (-(2**31), 2**31 - 1),
+    "K": (-(2**63), 2**63 - 1),
+}
+
+# Keywords indexed by table column (FITS 4.0 sec. 7.2-7.3, WCS paper III),
+# optionally followed by a WCS alternate-version letter.
+_COLUMN_CARD_RE = re.compile(
+    r"^(TTYPE|TFORM|TUNIT|TNULL|TSCAL|TZERO|TDISP|TDIM|TBCOL|TLMIN|TLMAX|TDMIN"
+    r"|TDMAX|TCTYP|TCUNI|TCRPX|TCRVL|TCDLT|TCROT|TCRDE|TCSYE|TCNAM|TRPOS)"
+    r"(\d+)([A-Z]?)$"
+)
+
+
+def remap_table_column_cards(
+    cards: Any,
+    old_names: Mapping[int, str],
+    new_names: list[str],
+    *,
+    drop: frozenset[str] = frozenset(),
+) -> list[Any]:
+    """Renumber column-indexed cards by column name.
+
+    ``old_names`` maps the source header's column index to its name and
+    ``new_names`` lists the output columns in order. A card for a column that
+    is not kept, or whose keyword stem is in ``drop``, is left out; any other
+    card (HISTORY/COMMENT included) passes through unchanged. Cards are
+    ``(key, value, comment)`` records and keep their type.
+    """
+    new_index = {name: idx for idx, name in enumerate(new_names, start=1)}
+    out: list[Any] = []
+    for card in cards:
+        key, value, comment = card[0], card[1], card[2]
+        match = _COLUMN_CARD_RE.match(str(key).upper())
+        if match is None:
+            out.append(card)
+            continue
+        stem, index, alt = match.groups()
+        if stem in drop:
+            continue
+        target = new_index.get(old_names.get(int(index), ""))
+        if target is None:
+            continue
+        out.append(type(card)(f"{stem}{target}{alt}", value, comment))
+    return out
+
+
+def decoded_tnull(tnull: Any, tform: Any, tscal: Any, tzero: Any) -> Any:
+    """TNULL in the domain of the decoded column values.
+
+    ``TNULLn`` is the raw stored integer, compared before ``TSCALn`` /
+    ``TZEROn`` (FITS standard, CFITSIO). Unscaled columns decode to the stored
+    value; unsigned-convention columns decode to ``raw + TZERO``; other scaled
+    columns decode a TNULL cell to NaN, so the sentinel is NaN. A non-integer
+    TNULL (ASCII-table null strings) is returned unchanged.
+
+    torchfits 1.3.1 wrote an unsigned-convention TNULL as the decoded value
+    (``TNULL1 = 65535`` on ``I`` / ``TZERO = 32768``). Such a TNULL lies
+    outside the stored integer range, so as a raw value it could never match a
+    cell; when it lies inside the decoded range it is read as that legacy
+    decoded value instead.
+    """
+    if tnull is None:
+        return None
+    try:
+        raw = int(str(tnull).strip())
+    except (TypeError, ValueError):
+        return tnull
+    scal = float(tscal) if tscal not in (None, "") else 1.0
+    zero = float(tzero) if tzero not in (None, "") else 0.0
+    if scal == 1.0 and zero == 0.0:
+        return raw
+    code = parse_tform(str(tform or "")).code or ""
+    offset = _UNSIGNED_TZERO.get(code)
+    if scal == 1.0 and offset is not None and zero == float(offset):
+        lo, hi = _STORED_INT_RANGE[code]
+        if not lo <= raw <= hi and lo <= raw - offset <= hi:
+            return raw  # legacy (1.3.1) TNULL written in the decoded domain
+        return raw + offset
+    return float("nan")
+
+
+def column_null_sentinel_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
+    """Map column name -> TNULL as it appears in decoded values.
+
+    See :func:`decoded_tnull`; :func:`column_tnull_map` keeps the raw cards.
+    """
+    out: dict[str, Any] = {}
+    for col in iter_table_columns(header_map):
+        if col.tnull is not None:
+            out[col.name] = decoded_tnull(col.tnull, col.tform, col.tscal, col.tzero)
     return out
 
 

@@ -54,7 +54,6 @@ from ._io_engine.image_meta import (
 _log = _stdlib_logging.getLogger(__name__)
 _DEBUG_SCALE = os.environ.get("TORCHFITS_DEBUG_SCALE") == "1"
 _COLD_NOMMAP = os.environ.get("TORCHFITS_COLD_NOMMAP") == "1"
-_COLD_NOCACHE = os.environ.get("TORCHFITS_COLD_NOCACHE") == "1"
 _READ_EXC_TYPES = (
     RuntimeError,
     OSError,
@@ -113,6 +112,7 @@ def _read_check_cache(*args: Any, **kwargs: Any) -> Any:
         invalidate_path=_invalidate_path_caches,
         mmap=kwargs.get("mmap", args[10] if len(args) > 10 else "auto"),
         raw_scale=kwargs.get("raw_scale", args[11] if len(args) > 11 else False),
+        mode=kwargs.get("mode", args[12] if len(args) > 12 else "auto"),
     )
 
 
@@ -207,7 +207,6 @@ def read(
         read_check_cache=_read_check_cache,
         read_header=_read_header_fast_impl,
         debug_scale=_DEBUG_SCALE,
-        cold_nocache=_COLD_NOCACHE,
         read_exc_types=_READ_EXC_TYPES,
         logger=_log,
     )
@@ -396,7 +395,8 @@ def delete_hdu(
     compress: bool | str = False,
 ) -> None:
     """Delete an HDU from a FITS file by index or name."""
-    from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
+    # Torch-free: the write_api module imports torch for the tensor writers.
+    from ._io_engine._hdu_edit import delete_hdu as _delete_hdu_impl
 
     return _delete_hdu_impl(path, hdu, compress=compress)
 
@@ -503,10 +503,12 @@ def read_batch(
     Returns a ``list`` of tensors, one per input path and in input order.
 
     A path that cannot be read always raises: the result list is never
-    silently short, so positions always map 1:1 onto ``file_paths``. With
-    ``strict=False`` (the default) the failure is re-raised as a
-    ``RuntimeError`` naming the path and how many files preceded it; with
-    ``strict=True`` the original exception propagates unchanged.
+    silently short, so positions always map 1:1 onto ``file_paths``. A
+    missing file (``FileNotFoundError``) or HDU (``HDUNotFoundError``) keeps
+    its type. With ``strict=False`` (the default) any other failure is
+    re-raised as a ``RuntimeError`` naming the path and how many files
+    preceded it; with ``strict=True`` the original exception propagates
+    unchanged.
     """
     from ._io_engine.batch import read_batch as _read_batch_impl
 
@@ -581,13 +583,16 @@ def _shutdown_fits_io_caches() -> None:
 atexit.register(_shutdown_fits_io_caches)
 
 
-def write_checksums(path: str, hdu: int = 0) -> None:
-    """Write DATASUM and CHECKSUM keywords for the given HDU."""
+def write_checksums(path: str, hdu: int | str = 0) -> None:
+    """Write DATASUM and CHECKSUM keywords for the given HDU (index or EXTNAME)."""
     return _write_checksums_impl(path, hdu=hdu)
 
 
-def verify_checksums(path: str, hdu: int = 0) -> dict[str, Any]:
-    """Verify DATASUM and CHECKSUM for the given HDU. Returns dict of status."""
+def verify_checksums(path: str, hdu: int | str = 0) -> dict[str, Any]:
+    """Verify DATASUM and CHECKSUM for the given HDU (index or EXTNAME).
+
+    Returns a dict of status.
+    """
     return _verify_checksums_impl(path, hdu=hdu)
 
 

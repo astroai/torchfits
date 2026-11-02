@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from transforms_reference import (
+    iraf_zscale_naive,
     sigma_clip_naive,
 )
 
@@ -295,6 +296,67 @@ class TestZScaleLimits:
         x = torch.ones(4, 64, 64) * 42.0
         z1, z2 = zscale_limits(x)
         assert torch.all(z1 < z2)  # fallback adds 1e-6
+
+
+def _iraf_cases() -> dict[str, tuple[torch.Tensor, torch.Tensor | None]]:
+    g = torch.Generator().manual_seed(0)
+    img = torch.randn(40, 40, generator=g, dtype=torch.float64) * 10 + 100
+    one_nan = img.clone()
+    one_nan[3, 7] = float("nan")
+    masked = torch.ones(40, 40, dtype=torch.bool)
+    masked[0, 0] = False
+    masked[10:14, 5:30] = False
+    half_nan = img.clone()
+    half_nan[:, :20] = float("nan")
+    # 3600 pixels, 1800 finite: the stride must come from the finite count.
+    big = torch.randn(60, 60, generator=g, dtype=torch.float64) * 3 + 50
+    big[:, ::2] = float("nan")
+    return {
+        "clean": (img, None),
+        "one_nan": (one_nan, None),
+        "masked": (img, masked),
+        "half_nan": (half_nan, None),
+        "strided_nan": (big, None),
+    }
+
+
+class TestZScaleIrafParity:
+    """``algorithm="iraf"`` matches astropy's ZScaleInterval with NaN/masks."""
+
+    @pytest.mark.parametrize("case", list(_iraf_cases()))
+    def test_matches_reference(self, case: str) -> None:
+        x, mask = _iraf_cases()[case]
+        ref_in = x.clone()
+        if mask is not None:
+            ref_in[~mask] = float("nan")
+        expected = iraf_zscale_naive(ref_in.numpy())
+        z1, z2 = zscale_limits(x, algorithm="iraf", mask=mask)
+        assert (float(z1), float(z2)) == pytest.approx(expected, rel=1e-9)
+
+    def test_batched_groups_with_different_valid_counts(self) -> None:
+        cases = _iraf_cases()
+        stack = torch.stack(
+            [cases["clean"][0], cases["one_nan"][0], cases["half_nan"][0]]
+        )
+        z1, z2 = zscale_limits(stack, algorithm="iraf")
+        for i in range(stack.shape[0]):
+            expected = iraf_zscale_naive(stack[i].numpy())
+            got = (float(z1[i]), float(z2[i]))
+            assert got == pytest.approx(expected, rel=1e-9)
+
+    @pytest.mark.skipif(
+        not torch.backends.mps.is_available(), reason="MPS not available"
+    )
+    def test_runs_on_mps(self) -> None:
+        x, _ = _iraf_cases()["one_nan"]
+        x = x.to(torch.float32)
+        cpu = zscale_limits(x, algorithm="iraf")
+        mps = zscale_limits(x.to("mps"), algorithm="iraf")
+        for c, m in zip(cpu, mps):
+            assert m.device.type == "mps"
+            assert torch.allclose(c, m.cpu(), rtol=1e-4)
+        y = ZScaleNormalize(algorithm="iraf")(x.to("mps"))
+        assert y.device.type == "mps"
 
 
 # ---------------------------------------------------------------------------
@@ -2037,6 +2099,63 @@ class TestThreadSafety:
             clone.inverse(torch.zeros(8, 8))
 
 
+class TestBroadcastMask:
+    """A spatial (H, W) mask applies to every plane of a (C, H, W) cube."""
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: ZScaleNormalize(algorithm="iraf"),
+            lambda: SigmaNormalize(stat="std"),
+        ],
+    )
+    def test_matches_expanded_mask(self, make) -> None:
+        g = torch.Generator().manual_seed(1)
+        x = torch.randn(3, 16, 16, generator=g)
+        mask = torch.ones(16, 16, dtype=torch.bool)
+        mask[0, 0] = False
+        mask[5:9, 2:6] = False
+        got = make()(x, mask=mask)
+        want = make()(x, mask=mask.expand_as(x).clone())
+        assert torch.allclose(got, want, equal_nan=True)
+
+    def test_weighted_quantile_broadcast_mask_and_ivar(self) -> None:
+        x = torch.randn(3, 8, 8)
+        mask = torch.rand(8, 8) > 0.2
+        ivar = torch.rand(8, 8) + 0.5
+        got = _weighted_quantile(x, 0.5, (-2, -1), mask=mask, ivar=ivar)
+        want = _weighted_quantile(
+            x,
+            0.5,
+            (-2, -1),
+            mask=mask.expand_as(x).clone(),
+            ivar=ivar.expand_as(x).clone(),
+        )
+        assert torch.equal(got, want)
+
+
+class TestMeshFilterNaNTiles:
+    def test_masked_tile_does_not_wipe_its_neighbourhood(self) -> None:
+        # Linear sky gradient; one tile fully masked. The 3x3 mesh filter must
+        # ignore the empty tile instead of turning its neighbours NaN (which
+        # then fall back to the flat frame median).
+        sky = torch.zeros(64, 64) + torch.linspace(0, 100, 64)
+        mask = torch.ones(64, 64, dtype=torch.bool)
+        mask[24:32, 24:32] = False
+        clean = MeshBackgroundSubtract(mesh=(8, 8))(sky.clone())
+        out = MeshBackgroundSubtract(mesh=(8, 8))(sky.clone(), mask=mask)
+        assert torch.isfinite(out[mask]).all()
+        assert out[mask].abs().max() <= clean.abs().max() + 1e-4
+
+    def test_all_nan_neighbourhood_falls_back_to_frame(self) -> None:
+        img = torch.full((16, 16), 5.0)
+        mask = torch.zeros(16, 16, dtype=torch.bool)
+        mask[-1, -1] = True  # single valid pixel: every tile is too sparse
+        t = MeshBackgroundSubtract(mesh=(4, 4))
+        t(img, mask=mask)
+        assert torch.allclose(t._last_bg, torch.full_like(img, 5.0))
+
+
 class TestMeshTileFallback:
     @staticmethod
     def _sparse_tile_scene() -> tuple[torch.Tensor, torch.Tensor]:
@@ -2065,3 +2184,56 @@ class TestMeshTileFallback:
         # With min_tile_pixels=1 the single pixel defines the tile background,
         # so the pixel is subtracted back to ~0.
         assert abs(out[0, 0, 0].item()) < 1e3
+
+
+class TestMeshTileSigmaClip:
+    @staticmethod
+    def _scene() -> torch.Tensor:
+        # Two bands of sky 100 +- 1; band 0 carries a +50 source over a
+        # quarter of the frame, which drags an unclipped median to ~100.43.
+        gen = torch.Generator().manual_seed(0)
+        img = 100.0 + torch.randn(2, 64, 64, generator=gen)
+        img[0, :32, :32] += 50.0
+        return img
+
+    @staticmethod
+    def _tile_bg(**kwargs: float) -> torch.Tensor:
+        t = MeshBackgroundSubtract(mesh=(1, 1), **kwargs)
+        t(TestMeshTileSigmaClip._scene())
+        return t._last_bg[:, 0, 0]
+
+    def test_clipping_rejects_source_pixels(self) -> None:
+        bg = self._tile_bg()
+        assert abs(bg[0].item() - 100.0) < 0.1
+        assert abs(bg[1].item() - 100.0) < 0.1
+
+    def test_no_clipping_is_biased_by_source(self) -> None:
+        for kwargs in ({"n_sigma": 1e6}, {"max_iter": 0}):
+            bg = self._tile_bg(**kwargs)
+            assert bg[0].item() > 100.3, kwargs
+
+    def test_n_sigma_and_max_iter_change_the_output(self) -> None:
+        base = self._tile_bg()
+        assert not torch.equal(base, self._tile_bg(n_sigma=1e6))
+        assert not torch.equal(base, self._tile_bg(n_sigma=2.0))
+        assert not torch.equal(base, self._tile_bg(max_iter=0))
+
+    def test_rejects_bad_clip_parameters(self) -> None:
+        with pytest.raises(ValueError, match="n_sigma"):
+            MeshBackgroundSubtract(n_sigma=0.0)
+        with pytest.raises(ValueError, match="max_iter"):
+            MeshBackgroundSubtract(max_iter=-1)
+
+
+def test_compose_accepts_plain_callables() -> None:
+    """Users chain lambdas and small classes; Compose calls them with ``x`` only."""
+    from torchfits.transforms import ArcsinhStretch, Compose
+
+    img = torch.tensor([[1.0, float("nan")], [3.0, 4.0]])
+    pipeline = Compose([lambda x: torch.nan_to_num(x, nan=0.0), ArcsinhStretch()])
+    out = pipeline(img)
+    assert torch.isfinite(out).all()
+    expected = ArcsinhStretch()(torch.nan_to_num(img, nan=0.0))
+    torch.testing.assert_close(out, expected)
+    with pytest.raises(TypeError, match="no inverse"):
+        pipeline.inverse(out)

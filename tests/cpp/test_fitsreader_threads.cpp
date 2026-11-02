@@ -25,8 +25,8 @@
 //
 // The build needs the torch-free core library and CFITSIO's headers/archive,
 // and neither is installed into the pixi environment -- they live in the
-// per-build scratch tree (.pixi/bld/torchfits/<hash>/bld), whose hash changes on
-// every rebuild. That is why this file used to carry a literal
+// build tree (build/<wheel-tag>/) that `pixi run dev` writes. That is why this
+// file used to carry a literal
 // "<build>/libtorchfits_core.dylib" placeholder that had to be hand-substituted
 // before the command could be used at all.
 //

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -42,12 +43,20 @@ _OPS: dict[str, Callable[[torch.Tensor, torch.Tensor | float], torch.Tensor]] = 
 _DTYPE_CHOICES = ("auto", "float32", "float64")
 
 
+# Integral floats up to 2**53 are exact; beyond that a float scalar is not a
+# trustworthy integer and could overflow the int64 accumulator.
+_EXACT_INT_LIMIT = 2**53
+
+
 def _promote_scalar(value: float) -> float | int:
-    """Keep integer scalars exact so integer adds stay in integer arithmetic."""
-    try:
-        as_int = int(value)
-    except (ValueError, OverflowError):
+    """Keep integer scalars exact so integer adds stay in integer arithmetic.
+
+    Huge integral floats (``1e20``) stay floats: they take the float64 path
+    and saturate to the output dtype instead of overflowing int64.
+    """
+    if not math.isfinite(value) or abs(value) > _EXACT_INT_LIMIT:
         return value
+    as_int = int(value)
     return as_int if float(as_int) == value else value
 
 
@@ -93,6 +102,10 @@ def _compute(
     import torch
 
     if out_dtype.is_floating_point:
+        # Cast an image operand B too: float32 A (or --dtype float32) with a
+        # float64 B must not be promoted to a float64 result.
+        if isinstance(right, torch.Tensor):
+            right = right.to(out_dtype)
         return op_fn(left.to(out_dtype), right)
 
     if left.dtype.is_floating_point:
@@ -162,9 +175,10 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         choices=_DTYPE_CHOICES,
         default="auto",
         help=(
-            "output/compute dtype: 'auto' keeps the input dtype, warning on "
-            "saturation or fractional truncation; float32/float64 compute and "
-            "store in that dtype"
+            "output/compute dtype: 'auto' keeps operand A's dtype (div on an "
+            "integer A gives float64), warning on saturation or fractional "
+            "truncation; float32/float64 cast both operands to that dtype, "
+            "compute, and store in it"
         ),
     )
     parser.add_argument(
@@ -236,7 +250,7 @@ def _resolve_operands(
 def _image_indices(path: str, hdu: str | None) -> list[int]:
     try:
         with torchfits.open(path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=path)
             return [
                 index
                 for index in indices
@@ -354,7 +368,11 @@ def _arith_one_file(
                 )
 
     shapes = {tuple(t.shape) for t in tensors}
-    can_stack = len(shapes) == 1 and len(tensors) > 1
+    # Stacking is only an execution shortcut: HDUs of different dtypes would
+    # be promoted to a common dtype by torch.stack and change an HDU's output
+    # dtype, so they are processed one by one.
+    dtypes = {t.dtype for t in tensors}
+    can_stack = len(shapes) == 1 and len(dtypes) == 1 and len(tensors) > 1
     if can_stack and value is not None:
         results = list(
             _apply_op(op, torch.stack(tensors), scalar_b, dtype_spec).unbind(0)
@@ -365,7 +383,10 @@ def _arith_one_file(
         and all(isinstance(right, torch.Tensor) for right in rights)
     ):
         b_tensors = [right for right in rights if isinstance(right, torch.Tensor)]
-        if len({tuple(right.shape) for right in b_tensors}) == 1:
+        if (
+            len({tuple(right.shape) for right in b_tensors}) == 1
+            and len({right.dtype for right in b_tensors}) == 1
+        ):
             results = list(
                 _apply_op(
                     op, torch.stack(tensors), torch.stack(b_tensors), dtype_spec

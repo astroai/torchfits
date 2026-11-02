@@ -52,7 +52,9 @@ should branch on dict vs tensor if they need mask-aware wiring — see
     `cache_dir=` on a remote-capable dataset (image / tensor / cube /
     spectrum). HTTP auth: `TORCHFITS_HTTP_AUTHORIZATION` or
     `TORCHFITS_HTTP_TOKEN`. Uncompressed 2D HTTP cutouts use Range GETs when
-    possible; compressed and vos paths cache the full file first.
+    possible; compressed and vos paths cache the full file first. An HTTP
+    body that does not start like a FITS file (or a gzip/bzip2/compress/zip
+    wrapper) raises `OSError` naming the URL and is never cached.
 
 ---
 
@@ -62,7 +64,7 @@ should branch on dict vs tensor if they need mask-aware wiring — see
 |---|---|---|
 | Disk | Remote downloads, example samples | `TORCHFITS_*_CACHE` env / `cache_dir=` |
 | I/O metadata | In-process LRUs | `cache.clear_cache()`, `clear_file_cache(...)` |
-| Everything (incl. disk) | Same + configured download/sample roots | `clear_all_caches()` / `cache.clear_cache(disk=True)` |
+| Everything (incl. disk) | Same + the configured cache root (only torchfits download files in a remote override elsewhere) | `clear_all_caches()` / `cache.clear_cache(disk=True)` |
 
 A single-file `read_tensor` does not need warm-up.
 
@@ -113,9 +115,22 @@ loader = make_loader(ds, batch_size=32, num_workers=4)
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
 | `mask_is_dq` | `bool` | `False` | Decode `mask_hdu` as a FITS `DQ` bitfield via `mask_from_dq` |
 | `bad_bits` | `int` or `sequence` or `None` | `None` | Fatal DQ bit positions; default treats any non-zero value as invalid |
+| `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(payload, label)`; `False`: the payload alone (cannot be combined with `labels` / `label_key`) |
 
 **Returns per item:** `(payload, label)` where payload is a `Tensor` or
-`{"flux", "ivar"?, "mask"?}`.
+`{"flux", "ivar"?, "mask"?}` and `label` is a `torch.long` scalar. Without
+`labels=` or `label_key=` the label is still there and is always
+`tensor(0)` — kept so existing `for x, y in loader` loops keep working.
+`FitsCutoutDataset`, `FitsSpectrumDataset` and the iterable datasets return
+the payload alone instead when no labels are configured. Pass
+`return_label=False` to get the same payload-only items here:
+
+```python
+from torchfits.data import FitsImageDataset
+
+images = FitsImageDataset("obs/*.fits", return_label=False)
+x = images[0]  # a Tensor, no (x, tensor(0)) pair
+```
 
 !!! warning "Masks are validity masks"
     A `mask_hdu` companion always comes back as a **boolean** tensor where
@@ -166,18 +181,20 @@ cubes = FitsCubeDataset("cubes/*.fits", hdu=0, slice_index=None)
     `cutouts must be non-empty`. The reason is that an empty dataset does not
     fail on its own: `make_loader(..., shuffle=True)` raises from torch's
     `RandomSampler`, which validates `num_samples > 0`, but `shuffle=False` uses
-    `SequentialSampler`, which does not check — so before the guard the same
-    dataset under the same `make_loader` was either an error or a silent
+    `SequentialSampler`, which does not check — so without the check the same
+    dataset under the same `make_loader` would be either an error or a silent
     zero-work training loop depending on one flag.
 
     A **glob that matches nothing is not this case.** It keeps falling back to
     the literal pattern, so it fails at read time with the path you actually
     asked for in the message.
 
-**Returns per item:** same as `FitsTensorDataset` — `(payload, label)`.
+**Returns per item:** same as `FitsTensorDataset` — `(payload, label)`, with
+`label == tensor(0)` when no labels are configured; `return_label=False`
+returns the payload alone.
 
 `FitsImageIterableDataset` stays first-class for loaders (same knobs as the
-tensor iterable, channel dim default on).
+tensor iterable, channel dim default on, including `labels=` / `label_key=`).
 
 ### Cubes and IFU cubes
 
@@ -221,8 +238,8 @@ selected band has one. A `*_DQ` companion is a bitfield, so `from_bands`
 decodes it into a boolean validity mask by default (`mask_is_dq=False` to
 override, `bad_bits=` to name the fatal bits); mixing `*_DQ` and `*_MASK`
 companions across bands is rejected as ambiguous. Zeropoints come from
-`PHOTZEROPOINT`, `ZP`,
-`MAGZERO`, `PHOTZP`, `MAGZP`, `ABMAGZERO` or `ZEROPOINT` (first present wins;
+`PHOTZEROPOINT`, `PHOTZP`,
+`ZP`, `MAGZERO`, `MAGZP`, `ABMAGZERO` or `ZEROPOINT` (first present wins;
 `ZP` and friends are read as HIERARCH where needed):
 
 ```python
@@ -317,8 +334,24 @@ ds = FitsTensorIterableDataset(
 | `seed` | `int` | `0` | Base seed for shuffling — the same `seed` replays the same *sequence* of epochs |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
+| `label_key` | `str` or `None` | `None` | Keyword-only. Header keyword of the first flux HDU holding each file's integer label |
+| `labels` | `list[int]`, `Tensor` or `None` | `None` | Keyword-only. Explicit per-file labels (overrides `label_key`); length must match the files |
 
-**Returns per item:** payload (`Tensor` or flux/ivar/mask dict) — no label.
+**Returns per item:** payload (`Tensor` or flux/ivar/mask dict) alone. With
+`labels=` or `label_key=` the item becomes `(payload, label)`, `label` a
+`torch.long` scalar. Each label stays with its own file through rank and
+worker sharding, `shuffle=` and `shuffle_buffer_size=` (duplicate paths keep
+their own labels):
+
+```python
+from torchfits.data import FitsImageIterableDataset, make_loader
+
+files = ["a.fits", "b.fits", "c.fits"]
+ds = FitsImageIterableDataset(files, labels=[0, 1, 0], shuffle=True, seed=0)
+if __name__ == "__main__":
+    for image, label in make_loader(ds, batch_size=2, num_workers=2):
+        ...
+```
 
 !!! info "When to use"
     Use when you have many files and want deterministic multi-worker loading
@@ -331,11 +364,10 @@ ds = FitsTensorIterableDataset(
     * **The shard** is a function of `(rank, world_size, worker_id)` alone, so
       every rank and worker sees its own disjoint slice on every epoch.
     * **The order within the shard** changes every epoch when `shuffle=True` or
-      `shuffle_buffer_size=` is set. These were seeded from `seed` alone, which
-      made `shuffle=True` a no-op across epochs; they now mix a per-dataset
-      epoch counter with `torch.initial_seed()`.
+      `shuffle_buffer_size=` is set: the shuffle mixes a per-dataset epoch
+      counter with `torch.initial_seed()`.
 
-    `seed=` still makes a run reproducible: two datasets built with the same
+    `seed=` makes a run reproducible: two datasets built with the same
     `seed` in the same process replay the same sequence of epochs. If you need
     one *fixed* order — a fixture, a golden-output test — leave `shuffle=False`
     and set no `shuffle_buffer_size`.
@@ -370,19 +402,37 @@ ds = FitsTableDataset(
 | `transform` | `callable` or `None` | `None` | Applied to each row dict |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
+| `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(row_dict, label)`; `False`: the row dict alone (cannot be combined with `labels`) |
 
-**Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and `torch.long` label.
+**Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and
+`torch.long` label, which is `tensor(0)` for every row when `labels` is
+omitted. `return_label=False` returns the row dict alone.
+
+Rows hold the values as stored, whether or not `where=` is set: `where=`
+only selects rows. Integer columns keep their dtype and a `TNULL` null comes
+back as its sentinel value; character columns are `uint8` byte tensors
+(space padded). Convert nulls to NaN with `TNullToNan`:
+
+```python
+import torchfits
+from torchfits.data import FitsTableDataset
+from torchfits.transforms import TNullToNan
+
+header = torchfits.read_header("catalog.fits", 1)
+ds = FitsTableDataset(
+    "catalog.fits", where="MAG_G < 20", transform=TNullToNan.from_header(header)
+)
+```
 
 !!! info "When to use"
-    Use for catalogs up to a few million rows that fit in memory. The
-    `where=` predicate is pushed down so only matching rows are loaded. For
+    Use for catalogs up to a few million rows that fit in memory. For
     larger catalogs, use `FitsTableIterableDataset`.
 
 ---
 
 ## `FitsTableIterableDataset`
 
-Streams table rows in constant memory. Each `__getitem__` yields one
+Streams table rows in constant memory. Each iteration yields one
 `dict[str, Tensor]` row.
 
 ```python
@@ -419,14 +469,11 @@ HDU, including when every column is variable-length. A variable-length column
 arrives from `scan_torch` as a Python `list` rather than a tensor, so the
 per-chunk row count is read from tensor *or* list columns.
 
-!!! warning "where= performance"
-    The ``where=`` path uses ``table.scan()`` which yields Arrow
-    ``RecordBatch`` objects and converts each row to Python individually.
-    This is slower than the non-``where=`` path which uses
-    ``table.scan_torch`` for direct tensor-column chunks. For
-    performance-sensitive filtered streaming on large catalogs, consider
-    reading the full table with ``table.scan_torch`` and filtering in
-    PyTorch.
+Rows and chunks follow the same convention as `FitsTableDataset`: values as
+stored, with or without `where=`. A `TNULL` null is its sentinel value and
+character columns are `uint8` byte tensors; use `TNullToNan` for NaN nulls.
+`where=` accepts the full `table.read` predicate dialect and is evaluated per
+chunk on the predicate columns only.
 
 !!! info "When to use"
     Use for large catalogs that don't fit in memory. Each worker (and each
@@ -437,10 +484,9 @@ per-chunk row count is read from tensor *or* list columns.
 
 !!! tip "Per-row vs tensor-space"
     Per-row mode (`as_batches=False`, the default) is what you want for
-    `collate_fn`-style row sampling and for `where=` predicates. When every
-    column is numeric, `as_batches=True` keeps the data as tensors end to end
-    and skips the Arrow→Python conversion per row — markedly faster for wide
-    catalogs. Character (`TFORM` `A`) and bit (`X`) columns are omitted so both
+    `collate_fn`-style row sampling. `as_batches=True` keeps the data as
+    tensor chunks end to end and skips the per-row split — markedly faster
+    for wide catalogs; `where=` works in both modes. Character (`TFORM` `A`) and bit (`X`) columns are omitted so both
     scanner paths agree; read them in per-row mode. The two modes are not
     mixable with `shuffle_buffer_size=`, which needs individual rows.
 
@@ -536,6 +582,8 @@ Default collation function for torchfits datasets:
 - `list[(Tensor, Tensor)]` → `(stacked_images, stacked_labels)`
 - `list[dict[str, Tensor]]` → `dict[str, stacked_Tensor]`
 - `list[(dict[str, Tensor], Tensor)]` → `(stacked_dict, stacked_labels)`
+- Nested dicts, such as multi-arm spectra `{arm: {"flux": Tensor, ...}}`, are
+  collated per leaf: `batch["R"]["flux"]` has shape `(batch, n_pixels)`
 
 All tensors in a batch must have identical shapes — `torch.stack` is used
 under the hood. Raises `ValueError` on non-tensor columns (strings, VLA
@@ -574,6 +622,7 @@ ds = FitsCubeIterableDataset(
 | `shuffle_buffer_size` | `int` or `None` | `None` | Rolling reservoir buffer for in-flight random mixing |
 | `rank` | `int` or `None` | `None` | Distributed worker rank |
 | `world_size` | `int` or `None` | `None` | Distributed world size |
+| `label_key` / `labels` | `str` / `list[int]` or `Tensor` or `None` | `None` | Per-file labels; items become `(payload, label)` |
 
 ---
 
@@ -651,7 +700,7 @@ torchfits iterable datasets natively partition across both **multi-process DataL
 
 ### Automatic Coordinate Resolution
 When `rank` and `world_size` are omitted, torchfits automatically checks:
-1. Cluster environment variables: `RANK` & `WORLD_SIZE` (`torchrun`, DeepSpeed, FSDP) or `SLURM_PROCID` & `SLURM_NTASKS` (SLURM).
+1. Cluster environment variables, first present wins. Rank: `RANK` (`torchrun`, DeepSpeed, FSDP), `SLURM_PROCID` (SLURM), then `LOCAL_RANK`. World size: `WORLD_SIZE`, `SLURM_NTASKS`, then `SLURM_NPROCS`.
 2. `torch.distributed` process group (if initialized).
 3. Single-worker fallback (`rank=0, world_size=1`).
 

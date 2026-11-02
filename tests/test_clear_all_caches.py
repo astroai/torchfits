@@ -101,3 +101,60 @@ def test_cache_subsystem_still_works_after_clear() -> None:
     stats = torchfits.get_cache_performance()
     assert stats["total_requests"] == 0, stats
     assert stats["hit_rate"] == 0.0, stats
+
+
+def test_clear_cache_disk_keeps_user_files_in_overridden_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Override dirs outside cache_root() are user-owned: only torchfits
+    download files go, the directories and anything else in them stay."""
+    from torchfits.data.remote import cache_path_for_url
+
+    root = tmp_path / "root"
+    remote = tmp_path / "remote_elsewhere"
+    samples = tmp_path / "samples_elsewhere"
+    for d in (root, remote, samples):
+        d.mkdir()
+        (d / "f.fits").write_bytes(b"user data")
+    (remote / "notes").mkdir()
+    (remote / "notes" / "keep.txt").write_text("mine")
+    monkeypatch.setenv("TORCHFITS_CACHE_DIR", str(root))
+    monkeypatch.setenv("TORCHFITS_REMOTE_CACHE", str(remote))
+    monkeypatch.setenv("TORCHFITS_SAMPLE_CACHE", str(samples))
+    dl = cache_path_for_url("https://example.org/x.fits")
+    assert dl.parent == remote
+    dl.write_bytes(b"download")
+    siblings = [
+        dl.with_suffix(dl.suffix + ".partial"),
+        Path(str(dl.with_suffix(dl.suffix + ".partial")) + ".meta"),
+        dl.parent / f".{dl.name}.lock",
+    ]
+    for s in siblings:
+        s.write_bytes(b"")
+
+    torchfits.cache.clear_cache(disk=True)
+
+    assert not root.exists()
+    assert not dl.exists()
+    assert not any(s.exists() for s in siblings)
+    assert (remote / "f.fits").read_bytes() == b"user data"
+    assert (remote / "notes" / "keep.txt").read_text() == "mine"
+    assert (samples / "f.fits").read_bytes() == b"user data"
+
+
+def test_clear_all_caches_never_removes_dir_containing_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote/sample override that contains the root (e.g. $HOME) survives."""
+    home = tmp_path / "home"
+    root = home / ".cache" / "torchfits"
+    root.mkdir(parents=True)
+    (home / "thesis.fits").write_bytes(b"precious")
+    monkeypatch.setenv("TORCHFITS_CACHE_DIR", str(root))
+    monkeypatch.setenv("TORCHFITS_REMOTE_CACHE", str(home))
+    monkeypatch.setenv("TORCHFITS_SAMPLE_CACHE", str(home))
+
+    torchfits.clear_all_caches()
+
+    assert (home / "thesis.fits").read_bytes() == b"precious"
+    assert home.is_dir()

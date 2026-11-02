@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
+from .._errors import HDUNotFoundError
 from ._repr import render_html_table
-from .card import _reassemble_longstr_cards
 from .header import Header
 
 if TYPE_CHECKING:
@@ -51,7 +51,9 @@ class TableHDURef:
         columns: Optional[List[str]] = None,
         row_slice: Optional[slice | tuple[int, int]] = None,
     ):
-        self.header = header or Header()
+        # A ref built from its source alone reads the header on first use, so
+        # len()/columns describe the same table read() returns.
+        self._header: Optional[Header] = header
         self._source_path = source_path
         self._source_hdu = source_hdu
         # ``columns=[]`` is a request for *no* columns, not for every column:
@@ -68,6 +70,23 @@ class TableHDURef:
         self._columns: Optional[tuple[str, ...]] = selected
         self._row_slice = row_slice
 
+    @property
+    def header(self) -> Header:
+        if self._header is None:
+            if self._source_path and self._source_hdu is not None:
+                import torchfits
+
+                self._header = torchfits.read_header(
+                    self._source_path, int(self._source_hdu)
+                )
+            else:
+                self._header = Header()
+        return self._header
+
+    @header.setter
+    def header(self, value: Header) -> None:
+        self._header = value
+
     def _require_source(self) -> tuple[str, int]:
         if not self._source_path or self._source_hdu is None:
             raise RuntimeError("This TableHDURef is not associated with a FITS file")
@@ -77,12 +96,13 @@ class TableHDURef:
     def num_rows(self) -> int:
         try:
             total = int(self.header.get("NAXIS2", 0))
+        except (HDUNotFoundError, FileNotFoundError):
+            # The source itself is gone: a 0-row answer would hide that.
+            raise
         except Exception:
             total = 0
-        if total <= 0:
-            return 0
         if self._row_slice is None:
-            return total
+            return max(0, total)
         # One definition of the row window, shared with read()/iter_rows()
         # (r5c-15 dedupe). This property used to re-derive it with weaker rules:
         # a negative start became 0, a negative stop became 0 rows, step was
@@ -95,7 +115,7 @@ class TableHDURef:
 
         start_row, count = _normalize_row_slice(self._row_slice)
         start = max(0, start_row - 1)
-        if start >= total:
+        if total <= 0 or start >= total:
             return 0
         if count == -1:
             return total - start
@@ -108,12 +128,17 @@ class TableHDURef:
     def columns(self) -> list[str]:
         if self._columns is not None:
             return list(self._columns)
+        return self._file_columns()
 
+    def _file_columns(self) -> list[str]:
+        """Every column of the HDU in file order, ignoring the projection."""
         # Deliberately uncached: this is a metadata walk, and the old
         # id()-keyed cache aliased stale names whenever a fresh Header landed
         # on a replaced header's id (fresh Headers share _version == 0) (r6b).
         try:
             n = int(self.header.get("TFIELDS", 0))
+        except HDUNotFoundError:
+            raise
         except (TypeError, ValueError):
             n = 0
         out: list[str] = []
@@ -386,7 +411,8 @@ class TableHDURef:
             **kwargs,
         )
 
-    def _refresh_file_view(self) -> "TableHDURef":
+    def _refresh_file_view(self, columns: Optional[List[str]] = None) -> "TableHDURef":
+        import torchfits
         import torchfits._C as cpp
         from .._io_engine.caches import invalidate_path_caches
         from .._io_engine.paths import guard_fits_path
@@ -397,17 +423,12 @@ class TableHDURef:
         # (C++ handle-pool invalidate is a no-op after Option A).
         invalidate_path_caches(path)
         cpp.clear_shared_read_meta_cache()
-        handle = cpp.open_fits_file(path, "r")
-        try:
-            # cpp.read_header returns raw (key, value, comment) triples with
-            # LONGSTRN '&' + CONTINUE chains un-reassembled (r4b-13).
-            header = Header(_reassemble_longstr_cards(cpp.read_header(handle, hdu)))
-        finally:
-            try:
-                handle.close()
-            except Exception:
-                pass
-        return TableHDURef(header=header, source_path=path, source_hdu=hdu)
+        # Typed cards with LONGSTRN chains reassembled; cpp.read_header gives
+        # raw value strings (TFIELDS = '4').
+        header = torchfits.read_header(path, hdu)
+        return TableHDURef(
+            header=header, source_path=path, source_hdu=hdu, columns=columns
+        )
 
     def append_rows_file(self, rows: Dict[str, Any]) -> "TableHDURef":
         import torchfits
@@ -432,15 +453,27 @@ class TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
-        old_columns = self.columns
-        insert_at = index if index is not None else len(old_columns)
+        view = self.columns
+        if index is not None and (
+            not isinstance(index, int) or index < 0 or index > len(view)
+        ):
+            raise ValueError(f"index must be in [0, {len(view)}]")
+        # ``index`` is a position in this view; the file may hold more
+        # columns than a select()ed view, so resolve it to a file position.
+        file_columns = self._file_columns()
+        if index is None:
+            file_index = len(file_columns)
+        elif index < len(view):
+            file_index = file_columns.index(view[index])
+        else:
+            file_index = file_columns.index(view[-1]) + 1 if view else 0
 
         torchfits.table.insert_column(
             path,
             name,
             values,
             hdu=hdu,
-            index=insert_at,
+            index=file_index,
             format=format,
             unit=unit,
             dim=dim,
@@ -448,39 +481,9 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        # Build the updated header from memory instead of reading back from
-        # the file (which may return a stale cached handle when the file was
-        # atomically replaced underneath an open torchfits.open context).
-        new_header = Header(self.header)
-        new_columns = list(old_columns)
-        new_columns.insert(insert_at, name)
-        # Shift existing column metadata to make room for the inserted column
-        _COL_PREFIXES = ("TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO")
-        for i in range(len(old_columns), insert_at, -1):
-            for prefix in _COL_PREFIXES:
-                old_key = f"{prefix}{i}"
-                new_key = f"{prefix}{i + 1}"
-                if old_key in new_header:
-                    new_header[new_key] = new_header.pop(old_key)
-        # Set metadata for the newly inserted column
-        one_based = insert_at + 1
-        new_header[f"TTYPE{one_based}"] = name
-        if format is not None:
-            new_header[f"TFORM{one_based}"] = format
-        if unit is not None:
-            new_header[f"TUNIT{one_based}"] = unit
-        if dim is not None:
-            new_header[f"TDIM{one_based}"] = dim
-        if tnull is not None:
-            new_header[f"TNULL{one_based}"] = tnull
-        if tscal is not None:
-            new_header[f"TSCAL{one_based}"] = tscal
-        if tzero is not None:
-            new_header[f"TZERO{one_based}"] = tzero
-        new_header["TFIELDS"] = len(new_columns)
-        return TableHDURef(
-            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
-        )
+        new_view = list(view)
+        new_view.insert(len(view) if index is None else index, name)
+        return self._refresh_file_view(new_view if self._columns is not None else None)
 
     def replace_column_file(
         self,
@@ -509,27 +512,8 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        # Build the updated header from memory (see insert_column_file for
-        # rationale — C++ file cache may return a stale handle after os.replace).
-        new_header = Header(self.header)
-        new_columns = list(self.columns)
-        one_based = new_columns.index(name) + 1
-        # The engine applies format/unit/dim/tnull/tscal/tzero to the file's
-        # rewritten header; mirror them here so ref.schema() matches the file.
-        if format is not None:
-            new_header[f"TFORM{one_based}"] = format
-        if unit is not None:
-            new_header[f"TUNIT{one_based}"] = unit
-        if dim is not None:
-            new_header[f"TDIM{one_based}"] = dim
-        if tnull is not None:
-            new_header[f"TNULL{one_based}"] = tnull
-        if tscal is not None:
-            new_header[f"TSCAL{one_based}"] = tscal
-        if tzero is not None:
-            new_header[f"TZERO{one_based}"] = tzero
-        return TableHDURef(
-            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
+        return self._refresh_file_view(
+            list(self._columns) if self._columns is not None else None
         )
 
     def insert_rows_file(self, rows: Dict[str, Any], *, row: int) -> "TableHDURef":

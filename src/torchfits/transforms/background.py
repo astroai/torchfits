@@ -29,7 +29,9 @@ __all__ = ["MeshBackgroundSubtract"]
 def _median_filter_3x3(grid: torch.Tensor) -> torch.Tensor:
     """3×3 median filter over the last two dims (edge-padded).
 
-    Edge replication is done with explicit concatenation because
+    NaN tiles (empty or too sparse) are ignored so one bad tile does not wipe
+    its neighbourhood; an all-NaN neighbourhood stays NaN and falls back to
+    the frame level downstream. Edge replication is done with explicit concatenation because
     ``F.pad(mode="replicate")`` only accepts rank-3+ inputs.
     """
     padded = torch.cat([grid[..., :1, :], grid, grid[..., -1:, :]], dim=-2)
@@ -42,7 +44,42 @@ def _median_filter_3x3(grid: torch.Tensor) -> torch.Tensor:
         ],
         dim=0,
     )
-    return neighbours.median(dim=0).values
+    return torch.nanmedian(neighbours, dim=0).values
+
+
+def _clipped_background(
+    x: torch.Tensor,
+    mask: torch.Tensor | None,
+    ivar: torch.Tensor | None,
+    *,
+    weighted: bool,
+    n_sigma: float,
+    max_iter: int,
+) -> torch.Tensor:
+    """Sigma-clipped background over the trailing two dims (keepdim).
+
+    Each pass re-estimates the centre and scale with
+    :func:`estimate_background` on the surviving pixels and rejects those
+    more than ``n_sigma`` scales from the centre, stopping after
+    ``max_iter`` passes or when nothing new is rejected. A group whose scale
+    is zero or undefined is not clipped (there is no width to clip against).
+    """
+    dims = (-2, -1)
+    xf = _stats_upcast(x)
+    keep = _get_valid_mask(xf, mask)
+    med, std = estimate_background(x, dim=dims, mask=keep, ivar=ivar, weighted=weighted)
+    for _ in range(max_iter):
+        limit = std * n_sigma
+        clippable = torch.isfinite(limit) & (limit > 0)
+        inside = (xf - med).abs() <= limit
+        new_keep = keep & (inside | ~clippable)
+        if torch.equal(new_keep, keep):
+            break
+        keep = new_keep
+        med, std = estimate_background(
+            x, dim=dims, mask=keep, ivar=ivar, weighted=weighted
+        )
+    return med
 
 
 class MeshBackgroundSubtract(FITSTransform):
@@ -58,10 +95,12 @@ class MeshBackgroundSubtract(FITSTransform):
         Number of background tiles along ``(H, W)``. Each is sigma-clipped
         independently. Default ``(8, 8)``.
     n_sigma, max_iter : float, int
-        Sigma-clipping thresholds passed to :func:`estimate_background`
-        (which uses a robust median/MAD for a single pass; ``n_sigma`` is
-        accepted for API symmetry and used only by the optional iterative
-        refinement).
+        Per-tile sigma clipping: pixels more than ``n_sigma`` robust standard
+        deviations (1.4826 × MAD, or the weighted RMS when ``weighted``) from
+        the tile median are rejected and the statistics re-estimated, for up
+        to ``max_iter`` passes or until nothing new is rejected. The tile
+        background is the median of the surviving pixels. ``n_sigma`` must be
+        > 0; ``max_iter=0`` disables clipping (plain tile median).
     filter_mesh : bool
         Apply a 3×3 median filter to the tile grid before interpolation, as
         SExtractor does, to stop bright sources from imprinting on the sky
@@ -99,6 +138,10 @@ class MeshBackgroundSubtract(FITSTransform):
             raise ValueError(f"mesh must be two positive ints, got {mesh!r}")
         if min_tile_pixels < 1:
             raise ValueError("min_tile_pixels must be >= 1")
+        if not (float(n_sigma) > 0.0):
+            raise ValueError(f"n_sigma must be > 0, got {n_sigma!r}")
+        if int(max_iter) < 0:
+            raise ValueError(f"max_iter must be >= 0, got {max_iter!r}")
         self.mesh = (int(mesh[0]), int(mesh[1]))
         self.n_sigma = float(n_sigma)
         self.max_iter = int(max_iter)
@@ -138,12 +181,13 @@ class MeshBackgroundSubtract(FITSTransform):
                 tile = flux[..., y0:y1, x0:x1]
                 tile_mask = None if mask is None else mask[..., y0:y1, x0:x1]
                 tile_ivar = None if ivar is None else ivar[..., y0:y1, x0:x1]
-                med, _ = estimate_background(
+                med = _clipped_background(
                     tile,
-                    dim=(-2, -1),
-                    mask=tile_mask,
-                    ivar=tile_ivar,
+                    tile_mask,
+                    tile_ivar,
                     weighted=self.weighted,
+                    n_sigma=self.n_sigma,
+                    max_iter=self.max_iter,
                 )
                 med_flat = med.squeeze(-1).squeeze(-1)
                 # min_tile_pixels is a floor on the tile's own evidence: a
@@ -166,12 +210,13 @@ class MeshBackgroundSubtract(FITSTransform):
         # continuous instead of punching holes in the data. A fully invalid
         # frame falls back to 0 (no correction) rather than NaN-poisoning
         # every output pixel.
-        frame_med, _ = estimate_background(
+        frame_med = _clipped_background(
             flux,
-            dim=(-2, -1),
-            mask=mask,
-            ivar=ivar,
+            mask,
+            ivar,
             weighted=self.weighted,
+            n_sigma=self.n_sigma,
+            max_iter=self.max_iter,
         )
         frame_grid = frame_med.squeeze(-1).squeeze(-1).unsqueeze(-1).unsqueeze(-1)
         grid = torch.where(torch.isfinite(grid), grid, frame_grid)

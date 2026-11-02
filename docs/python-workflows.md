@@ -10,7 +10,7 @@ If you are migrating from astropy or fitsio, see [Evaluation](evaluation.md).
 
 | Goal | Primary API | Key Benefit | Full Reference |
 |---|---|---|---|
-| **Read image to Tensor** | `read_tensor(path, device="cuda")` | Direct decode to target device (CPU/CUDA/MPS) | [Images & HDUs](#images-and-hdus) |
+| **Read image to Tensor** | `read_tensor(path, device="cuda")` | Host decode, then the tensor is placed on CPU/CUDA/MPS | [Images & HDUs](#images-and-hdus) |
 | **Read image + Header** | `read(path, return_header=True)` | Unified access to pixel tensor and card dictionary | [Headers](#headers) |
 | **Write Tensor to FITS** | `write(path, tensor, compress="RICE_1")` | Lossless / lossy tile compression & header preservation | [Writing Images](#writing-images) |
 | **Filter & load catalogs** | `table.read(path, where="MAG < 20")` | PyArrow table with C++ pushdown filtering | [Tables & Catalogs](#tables-as-dataframes) |
@@ -28,7 +28,7 @@ If you are migrating from astropy or fitsio, see [Evaluation](evaluation.md).
 
 ### Reading Images as PyTorch Tensors
 
-`torchfits.read_tensor` reads an IMAGE HDU directly into a `torch.Tensor`. Use the `device` argument to place tensors on GPU or Apple Silicon unified memory directly:
+`torchfits.read_tensor` reads an IMAGE HDU directly into a `torch.Tensor`. The file is decoded on the host; the `device` argument then copies the tensor to a GPU or Apple Silicon (MPS):
 
 ```python
 import torchfits

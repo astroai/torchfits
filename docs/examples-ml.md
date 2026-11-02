@@ -46,18 +46,17 @@ from torchfits.transforms import (
 )
 
 
-# NanToZero is example-local: torchfits ships no such transform.
-class NanToZero:
-    def __call__(self, x):
-        import torch
-
-        return torch.nan_to_num(x, nan=0.0)
+# Compose also accepts plain callables: they are called as t(x), without
+# mask= and without an inverse. Use a top-level def rather than a lambda so
+# DataLoader workers can pickle the pipeline.
+def nan_to_zero(x):
+    return torch.nan_to_num(x, nan=0.0)
 
 
 # 1. Define astronomical preprocessing pipeline
 transform = Compose(
     [
-        NanToZero(),  # Replace off-footprint survey boundary NaNs
+        nan_to_zero,  # Replace off-footprint survey boundary NaNs
         BackgroundSubtract(),  # Estimate and subtract local sky background
         ArcsinhStretch(a=0.1),  # Reveal faint spiral arm features
         ZScaleNormalize(),  # Map pixel dynamic range to standard normal scale
@@ -133,8 +132,8 @@ Train a compact U-Net on real CFHT MegaCam darks, test it on a separate dark exp
 ```bash
 bash scripts/fetch_cfht_megacam_sample.sh
 bash scripts/fetch_cfht_calib_frames.sh
-python examples/example_megacam_cr_denoise.py \\
-  --mode dark \\
+python examples/example_megacam_cr_denoise.py \
+  --mode dark \
   --compare-astroscrappy
 ```
 
@@ -189,17 +188,17 @@ The `torchfits.data` module provides specialized PyTorch `Dataset` implementatio
 
 | Dataset Class | Input Source | Primary Use Case | Output Item Shape |
 |---|---|---|---|
-| `FitsImageDataset` | File paths or glob pattern (`"*.fits"`) | 2D/3D images, multi-band stacks, supervised vision models | `(tensor, label)` |
-| `FitsCutoutDataset` | Mosaic path + list of coordinate bounding boxes | On-the-fly stamp extraction from large survey images | `(cutout_tensor, label)` |
-| `FitsCubeDataset` | 3D datacubes (radio/IFU/spectral) | Spectral line classification, velocity channel modeling | `(slice_tensor, label)` |
-| `FitsSpectrumDataset` | 1D FITS tables or spectral arrays | Stellar/galactic spectral classification (e.g. DESI/SDSS) | `(flux_tensor, label)` |
-| `FitsTableDataset` | FITS binary/ASCII table | Tabular catalog features in RAM for ML models | `(row_dict, label)` |
+| `FitsImageDataset` | File paths or glob pattern (`"*.fits"`) | 2D/3D images, multi-band stacks, supervised vision models | `(tensor, label)`; label is `tensor(0)` without `labels=`/`label_key=`; `tensor` alone with `return_label=False` |
+| `FitsCutoutDataset` | Mosaic path + list of coordinate bounding boxes | On-the-fly stamp extraction from large survey images | `cutout_tensor` |
+| `FitsCubeDataset` | 3D datacubes (radio/IFU/spectral) | Spectral line classification, velocity channel modeling | `(slice_tensor, label)`; same label rules as `FitsImageDataset` |
+| `FitsSpectrumDataset` | 1D FITS tables or spectral arrays | Stellar/galactic spectral classification (e.g. DESI/SDSS) | `{"flux", …}` dict; `(dict, label)` with `labels=` or `label_key=` |
+| `FitsTableDataset` | FITS binary/ASCII table | Tabular catalog features in RAM for ML models | `(row_dict, label)`; label is `tensor(0)` without `labels=`; `row_dict` alone with `return_label=False` |
 | `FitsTableIterableDataset` | Massive multi-million row table | Out-of-core streaming iteration without loading to RAM | `row_dict` |
-| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `(tensor, label)` |
+| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `tensor`; `(tensor, label)` with `labels=` or `label_key=` |
 
 ---
 
-## Case Study 2: One Pipeline, Every Product {#ml-full-pipeline}
+## Case Study 4: One Pipeline, Every Product {#ml-full-pipeline}
 
 [`example_ml_training_loop.py`](published-examples/example_ml_training_loop.py) builds a small survey on disk — multi-band cutouts, 1D spectra, an IFU cube, a catalog — and trains a CNN on it. It is the shortest complete path from FITS files to a training step, and it exercises the mask, IVAR and data-state machinery end to end.
 

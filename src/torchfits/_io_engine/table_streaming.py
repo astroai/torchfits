@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, Iterator, Optional, cast
 
+from .._errors import FITSFileNotFoundError
 from ..hdu import Header
 
 
@@ -46,7 +47,7 @@ def stream_table(
     if not is_cfitsio_network_url(file_path):
         check_path = cfitsio_base_path(file_path)
         if not os.path.exists(check_path):
-            raise FileNotFoundError(file_path)
+            raise FITSFileNotFoundError(file_path)
 
     col_list = columns if columns else []
 
@@ -109,6 +110,8 @@ def stream_table(
                     abs(tzero - 32768.0) < 1e-5
                     or abs(tzero + 32768.0) < 1e-5
                     or abs(tzero - 2147483648.0) < 1e-5
+                    or tzero == 9223372036854775808.0
+                    or (tzero == -128.0 and col.tform_info.code == "B")
                 )
                 if (tscal != 1.0 or tzero != 0.0) and not is_unsigned:
                     scaled_columns = True

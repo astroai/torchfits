@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
-import stat
-import tempfile
-from collections.abc import Iterator
-from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+import math
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
@@ -15,7 +11,9 @@ import torch
 from torch import Tensor
 
 from ..hdu import Header, TableHDU, TableHDURef, TensorHDU
-from .caches import invalidate_path_caches as _invalidate_io_path_caches
+from ._file_ops import (
+    _invalidate_path_caches,
+)
 from .quantize import (
     parse_image_quantize_spec,
     parse_table_quantize_spec,
@@ -24,7 +22,8 @@ from .quantize import (
 
 
 class UInt64WriteError(ValueError):
-    """FITS has no native uint64 storage (BITPIX=-64 is non-standard)."""
+    """Kept for compatibility; uint64 is now written with the FITS 4.0
+    BZERO/TZERO = 2**63 convention and this is no longer raised."""
 
 
 class QuantizeError(ValueError):
@@ -36,6 +35,14 @@ class QuantizeError(ValueError):
 # dict writers render them as value cards ('HISTORY = ...') and clobber
 # CFITSIO's standard COMMENT block with fits_update_key.
 _COMMENTARY_HEADER_KEYS = frozenset({"HISTORY", "COMMENT"})
+
+# The two-line COMMENT block CFITSIO stamps on every primary HDU it creates.
+_CFITSIO_STANDARD_COMMENTS = frozenset(
+    {
+        "FITS (Flexible Image Transport System) format is defined in 'Astronomy",
+        "and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H",
+    }
+)
 
 # CHECKSUM/DATASUM describe one payload byte-for-byte; replaying a copy from a
 # source header makes a freshly written file fail verification. Fresh keywords
@@ -163,18 +170,115 @@ def _prepared_tform_code(value: Any) -> Optional[str]:
     return None
 
 
+_VLA_SIGNATURE_CODES: Dict[Any, str] = {
+    ("b", 1): "L",
+    ("u", 1): "B",
+    ("i", 1): "B",
+    ("i", 2): "I",
+    ("i", 4): "J",
+    ("i", 8): "K",
+    ("f", 4): "E",
+    ("f", 8): "D",
+    ("c", 8): "C",
+    ("c", 16): "M",
+}
+
+# Per-column annotation cards: they describe column n by position, so they
+# are stale once column n is a different column. TDIM/TNULL also describe
+# the cell layout/type and go stale when that changes.
+_TABLE_COLUMN_ANNOTATION_PREFIXES = (
+    "TUNIT",
+    "TDISP",
+    "TCTYP",
+    "TCUNI",
+    "TCRPX",
+    "TCRVL",
+    "TCDLT",
+    "TCROT",
+    "TLMIN",
+    "TLMAX",
+    "TDMIN",
+    "TDMAX",
+)
+
+
+def _parse_binary_tform(tform: Any) -> Optional[tuple[int, str, str]]:
+    """(repeat, code, rest) of a binary-table TFORM, or None if malformed."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d*)\s*([A-Za-z])(.*?)\s*", str(tform))
+    if m is None:
+        return None
+    return (int(m.group(1)) if m.group(1) else 1, m.group(2).upper(), m.group(3))
+
+
+def _derived_column_layout(value: Any) -> Optional[tuple[str, int, str]]:
+    """(kind, repeat, code) the table writer derives for a prepared column.
+
+    ``kind`` is 'num' (fixed-width numeric/bool), 'str' (repeat = max string
+    length) or 'vla' (repeat = max row length). None when unknown.
+    """
+    import numpy as np
+
+    code = _prepared_tform_code(value)
+    if code is not None:
+        shape = tuple(value.shape)
+        repeat = 1
+        for size in shape[1:]:
+            repeat *= int(size)
+        return ("num", repeat, code)
+    if isinstance(value, np.ndarray) and value.dtype.kind in {"U", "S"}:
+        lengths = [len(x) for x in value.reshape(-1).tolist()]
+        return ("str", max([1, *lengths]), "A")
+    if isinstance(value, (list, tuple)) or (
+        isinstance(value, np.ndarray) and value.dtype == np.object_
+    ):
+        items = list(value)
+        if any(isinstance(x, (str, bytes, np.str_, np.bytes_)) for x in items):
+            lengths = [len(x) for x in items if x is not None]
+            return ("str", max([1, *lengths]), "A")
+        sig = None
+        max_len = 0
+        for item in items:
+            s = _vla_item_signature(item)
+            if s is None:
+                return None
+            if s == ("none",):
+                continue
+            n = (
+                int(np.asarray(item).size)
+                if not isinstance(item, Tensor)
+                else item.numel()
+            )
+            max_len = max(max_len, n)
+            if n and sig is None:
+                sig = s
+        letter = _VLA_SIGNATURE_CODES.get(sig) if sig is not None else None
+        return ("vla", max_len, letter) if letter else None
+    return None
+
+
 def _preserved_table_tform_cards(
     source_header: Any, prepared_data: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Source ``TFORMn`` spellings preserved verbatim for columns whose
-    prepared storage still matches them.
+) -> tuple[Dict[str, Any], Dict[str, str], set[str]]:
+    """Source ``TFORMn`` spellings a rewrite may keep, by column.
 
-    astropy spells repeat-1 formats as bare type chars ('J', 'I'); C++
-    re-derivation relabels them '1J'/'1I'. Copies and rewrites must keep the
-    source spelling (and exotic spellings like '8X'/'PJ'). A column whose
-    materialized data left its storage domain (e.g. TSCAL/TZERO-scaled ints
-    decoded to floats) must NOT keep the old TFORM -- the label would
-    misdescribe the written cells (see r4b-01).
+    Returns ``(tform_cards, schema_formats, stale_keys)``:
+
+    * ``tform_cards`` -- source TFORMn kept verbatim (astropy spells repeat-1
+      formats as bare 'J'; the writer derives '1J'). A source spelling is
+      kept only when TTYPEn names the same column and it describes exactly
+      the cells the writer lays down: the same repeat and type code, so a
+      6J column replaced by a scalar, or a 10A column replaced by int64,
+      never gets relabeled (the replay step writes these cards verbatim). A
+      column whose data left its storage domain (TSCAL/TZERO-scaled ints
+      decoded to floats) does not keep its TFORM either (r4b-01).
+    * ``schema_formats`` -- spellings the writer must lay down itself
+      because the derived layout differs in bytes: 'rX' bits from a bool
+      payload, a wider 'wA' than the longest string.
+    * ``stale_keys`` -- per-column annotation cards (TDIM/TNULL/TUNIT/...)
+      describing a column that is no longer at that position or whose cells
+      changed.
     """
 
     src = (
@@ -182,22 +286,72 @@ def _preserved_table_tform_cards(
         if isinstance(source_header, Header)
         else Header(source_header or {})
     )
-    out: Dict[str, Any] = {}
-    for i, value in enumerate(prepared_data.values(), start=1):
+    cards: Dict[str, Any] = {}
+    formats: Dict[str, str] = {}
+    stale: set[str] = set()
+    ncols = len(prepared_data)
+    for key in src.keys():
+        ku = str(key).upper()
+        for prefix in ("TDIM", "TNULL", *_TABLE_COLUMN_ANNOTATION_PREFIXES):
+            suffix = ku[len(prefix) :]
+            if ku.startswith(prefix) and suffix.isdigit() and int(suffix) > ncols:
+                stale.add(ku)
+
+    for i, (name, value) in enumerate(prepared_data.items(), start=1):
+        source_name = src.get(f"TTYPE{i}")
+        # No TTYPEn: a hand-built header annotating the new columns.
+        same_column = (
+            source_name is None or str(source_name).strip() == str(name).strip()
+        )
+        if not same_column:
+            stale.update(
+                f"{prefix}{i}"
+                for prefix in ("TDIM", "TNULL", *_TABLE_COLUMN_ANNOTATION_PREFIXES)
+            )
+            continue
         tform = src.get(f"TFORM{i}")
         if tform is None:
-            continue
-        letters = "".join(ch for ch in str(tform).upper() if ch.isalpha())
-        first = letters[:1]
-        if first in {"X", "A", "P", "Q"}:
-            # Bit/string/VLA spellings carry layout the writer does not
-            # re-derive faithfully; always preserve.
-            out[f"TFORM{i}"] = tform
-            continue
-        expected = _prepared_tform_code(value)
-        if expected is None or letters == expected:
-            out[f"TFORM{i}"] = tform
-    return out
+            continue  # nothing describes the old cells; annotations stand
+        parsed = _parse_binary_tform(tform)
+        derived = _derived_column_layout(value)
+        keep = False
+        if parsed is not None and derived is not None:
+            s_repeat, s_code, s_rest = parsed
+            kind, d_repeat, d_code = derived
+            is_u8_matrix = d_code == "B" and getattr(value, "ndim", 1) == 2
+            if kind == "num":
+                if s_code == d_code and s_repeat == d_repeat and not s_rest:
+                    keep = True
+                elif s_code == "A" and is_u8_matrix and s_repeat == d_repeat:
+                    # Strings read back as (rows, width) uint8: same bytes.
+                    keep = True
+                elif s_code == "X" and d_code == "L" and s_repeat == d_repeat:
+                    keep = True
+                    formats[str(name)] = str(tform).strip()
+            elif kind == "str":
+                if s_code == "A" and s_repeat >= d_repeat and not s_rest:
+                    keep = True
+                    formats[str(name)] = str(tform).strip()
+            elif kind == "vla":
+                rest = s_rest.strip().upper()
+                if s_code == "P" and s_repeat in (0, 1) and rest[:1] == d_code:
+                    bound = rest[1:].strip()
+                    keep = bound == "" or bound == f"({d_repeat})"
+        if keep:
+            cards[f"TFORM{i}"] = tform
+        else:
+            # Cell type/shape changed: TNULL and TDIM no longer describe it.
+            stale.update((f"TNULL{i}", f"TDIM{i}"))
+            if (
+                parsed is not None
+                and derived is not None
+                and derived[0] == "num"
+                and parsed[0] == derived[1]
+            ):
+                # Same element count (e.g. scaled ints decoded to floats):
+                # TDIM still describes the cell shape.
+                stale.discard(f"TDIM{i}")
+    return cards, formats, stale
 
 
 def _cpp_header_mapping(header: Header) -> Dict[str, Any]:
@@ -241,75 +395,14 @@ def _require_image_hdu_dict_keys(item: Dict[str, Any]) -> None:
         )
 
 
-def _invalidate_path_caches(path: str) -> None:
-    """Invalidate Python-side caches and native metadata for a modified path."""
-    _invalidate_io_path_caches(path)
-    import torchfits._C as cpp
+def _ndarray_to_tensor(arr: Any) -> Tensor:
+    """``torch.as_tensor`` for numpy images; torch cannot view negative
+    strides (``a[::-1]``), so those are copied to a contiguous array first."""
+    if any(stride < 0 for stride in getattr(arr, "strides", ())):
+        import numpy as np
 
-    # The native side used to expose a per-path invalidate_file_cache as well;
-    # it was a no-op with a misleading name (shared handles were removed), so
-    # the live native state is cleared globally here.
-    cpp.clear_shared_read_meta_cache()
-
-
-@contextlib.contextmanager
-def _atomic_replace_target(path: str) -> Iterator[str]:
-    """Yield a temp path that is ``os.replace``d over ``path`` on clean exit.
-
-    Every whole-file writer here reaches CFITSIO's ``fits_create_file("!path")``,
-    whose leading ``!`` unlinks the target before a single byte of the payload is
-    validated -- even a *successful* rewrite changes the inode. So the payload
-    goes to a hidden temp file in the same directory (same filesystem, so the
-    rename is atomic) and the target is replaced only once the write is known
-    good: a rejected, failed or crashed write leaves any existing file
-    byte-identical, and no reader ever observes a partial file at ``path``.
-
-    ``path`` must already exist -- otherwise there is nothing to protect, and a
-    caller that may be creating a new file should yield ``path`` directly. The
-    temp file is created in the realpath's directory and renamed onto the
-    realpath, so a symlinked target keeps its symlink and only the file it
-    points to is replaced; the target's mode is carried over.
-
-    This is the single copy of the recipe:
-    ``write_api.atomic_write_target``, ``_hdu_rewrite._write_hdus_uncompressed``
-    and ``_hdu_rewrite._atomic_rewrite_hdus`` all route through it, so a fix to
-    the window cannot reach one site and miss the others.
-
-    Callers must invalidate the path caches *after* the block -- see
-    ``_invalidate_written_target``. Inside the block the rename has not happened
-    yet, and invalidating early lets a concurrent reader cache the old contents
-    under the path and keep serving them after the rename.
-    """
-    target = os.path.realpath(path)
-    target_dir = os.path.dirname(target) or "."
-    original_mode = stat.S_IMODE(os.stat(target).st_mode)
-    fd, temp_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
-    )
-    os.close(fd)
-    # CFITSIO creates the file itself, so hand it a path that does not exist.
-    os.unlink(temp_path)
-    try:
-        yield temp_path
-        os.chmod(temp_path, original_mode)
-        os.replace(temp_path, target)
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-
-def _invalidate_written_target(path: str) -> None:
-    """Invalidate the caches a just-renamed temp file has made stale.
-
-    ``path`` and its realpath are the two spellings a reader can hold a cached
-    handle under, and they differ whenever the target is a symlink, so both are
-    invalidated. Must be called *after* ``_atomic_replace_target``'s block
-    exits; see there for why.
-    """
-    target = os.path.realpath(path)
-    _invalidate_path_caches(path)
-    if target != path:
-        _invalidate_path_caches(target)
+        arr = np.ascontiguousarray(arr)
+    return torch.as_tensor(arr)
 
 
 def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
@@ -375,12 +468,12 @@ def _unsigned_image_storage_for_fits_write(
     """
     tensor = _host_tensor_for_fits_write(tensor)
     if tensor.dtype == torch.uint64:
-        raise UInt64WriteError(
-            "torchfits does not support writing uint64 image tensors: FITS has "
-            "no native uint64 storage (BITPIX=-64 is not standard), and a "
-            "BZERO=2**64 pseudo-unsigned convention is not interoperable. "
-            "Convert to int64 (requires values < 2**63) or float64 before writing."
-        )
+        # FITS 4.0 unsigned 64-bit convention: int64 storage, BZERO = 2**63.
+        # Subtracting 2**63 modulo 2**64 is flipping the sign bit.
+        raw64 = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
+        # The exact integer card (not a float spelling) is what FITS 4.0
+        # §5.3 and other readers write; the native card writer takes big ints.
+        return raw64, {"BSCALE": 1.0, "BZERO": 2**63}
     if tensor.dtype == torch.uint16:
         raw: Tensor = (tensor.to(torch.int32) - 32768).to(torch.int16)
         return raw, {"BSCALE": 1.0, "BZERO": 32768.0}
@@ -392,20 +485,38 @@ def _unsigned_image_storage_for_fits_write(
 
 _INTEGER_STORAGE_SCALE_KEYS = ("BSCALE", "BZERO", "BLANK")
 
+# BITPIX each tensor dtype is stored with (unsigned/int8 via their BZERO
+# conventions).
+_STORAGE_BITPIX = {
+    torch.uint8: 8,
+    torch.int8: 8,
+    torch.int16: 16,
+    torch.uint16: 16,
+    torch.int32: 32,
+    torch.uint32: 32,
+    torch.int64: 64,
+    torch.uint64: 64,
+    torch.float32: -32,
+    torch.float64: -64,
+}
+
 
 def _drop_stale_integer_scale_cards(
     header: Optional[Dict[str, Any]],
     tensor: Tensor,
 ) -> Optional[Dict[str, Any]]:
-    """Drop integer-storage scale cards copied onto an already-decoded float.
+    """Drop scale cards copied from a header whose storage the tensor left.
 
-    CFITSIO applies BSCALE/BZERO to BITPIX=-32 payloads. Replaying a quantized
+    CFITSIO applies BSCALE/BZERO to every payload. Replaying a quantized
     source header (BITPIX=16 plus a tiny BSCALE) onto physical floats
-    double-scales on the next read. Quantize runs first and leaves int16, so
-    those writes keep the cards. Float headers (BITPIX < 0) keep an explicit
-    BSCALE.
+    double-scales on the next read, and a uint16 header's BZERO=32768 on an
+    int32 tensor (user arithmetic promoted the dtype) shifts every value. So
+    BSCALE/BZERO/BLANK go whenever the header BITPIX is not the tensor's
+    storage BITPIX; the unsigned/int8 conventions then add their own cards.
+    Float headers (BITPIX < 0) keep an explicit BSCALE on floats; quantize
+    stamps BITPIX=16 on its own header, so those writes keep the cards.
     """
-    if header is None or not tensor.is_floating_point():
+    if header is None:
         return header
     getter = getattr(header, "get", None)
     bitpix = getter("BITPIX") if getter is not None else None
@@ -413,10 +524,18 @@ def _drop_stale_integer_scale_cards(
         bp = int(bitpix) if bitpix is not None else None
     except (TypeError, ValueError):
         bp = None
-    if bp is None or bp < 0:
+    if bp is None:
+        return header
+    if tensor.is_floating_point():
+        if bp < 0:
+            return header
+    elif _STORAGE_BITPIX.get(tensor.dtype, bp) == bp:
         return header
     out = Header(header)
-    for key in _INTEGER_STORAGE_SCALE_KEYS:
+    # BITPIX goes too: it no longer describes this payload, and a later pass
+    # on the converted storage must not mistake the convention cards for
+    # stale ones.
+    for key in (*_INTEGER_STORAGE_SCALE_KEYS, "BITPIX"):
         if key in out:
             del out[key]
     return out
@@ -444,7 +563,7 @@ def _apply_image_quantize(
     packed = quantize_int16_robust(
         tensor, lo_q=opts.lo_q, hi_q=opts.hi_q, keep_zero=opts.keep_zero
     )
-    extra = {"BSCALE": packed.scale, "BZERO": packed.zero}
+    extra = {"BITPIX": 16, "BSCALE": packed.scale, "BZERO": packed.zero}
     if packed.blank_code is not None:
         extra["BLANK"] = int(packed.blank_code)
     return packed.codes, _merge_fits_write_header(header, extra)
@@ -539,20 +658,26 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
     """True for a leading empty primary HDU the compressed writer re-creates itself.
 
     The compressed writer always emits its own empty primary at HDU 0, so a
-    leading ``NAXIS=0`` primary in the input must be skipped both when writing and
-    when replaying per-HDU header cards; otherwise the output HDU indices shift by
-    one and header-card replay runs off the end ("Could not move to HDU").
+    leading empty primary in the input -- a ``NAXIS=0`` header card, or
+    in-memory data with no elements such as ``TensorHDU(torch.empty(0))`` --
+    must be skipped both when writing and when replaying per-HDU header cards;
+    otherwise the output HDU indices shift by one and header-card replay runs
+    off the end ("Could not move to HDU").
     """
     if idx != 0:
         return False
     hdr = getattr(hdu, "header", {}) or {}
+    if str(hdr.get("XTENSION", "")).strip().upper():
+        return False
     try:
         naxis = int(hdr.get("NAXIS", -1))
     except Exception:
         naxis = -1
-    if naxis != 0:
-        return False
-    return not str(hdr.get("XTENSION", "")).strip().upper()
+    if naxis == 0:
+        return True
+    data = getattr(hdu, "_data", None)
+    numel = getattr(data, "numel", None)
+    return callable(numel) and numel() == 0
 
 
 def _write_header_cards_if_supported(
@@ -571,7 +696,17 @@ def _write_header_cards_if_supported(
     if not header:
         return
     header_obj = header if isinstance(header, Header) else Header(header)
-    if not header_obj.cards:
+    # CFITSIO writes its standard COMMENT block into every primary it
+    # creates; replaying the source copy appended one more per rewrite.
+    cards = [
+        card
+        for card in header_obj.cards
+        if not (
+            str(card.key).upper() == "COMMENT"
+            and str(card.value).strip() in _CFITSIO_STANDARD_COMMENTS
+        )
+    ]
+    if not cards:
         return
     import torchfits._C as cpp
 
@@ -581,10 +716,10 @@ def _write_header_cards_if_supported(
         #  - Before: ensure no stale handle/metadata races with writing new cards.
         #  - After:  ensure the next reader picks up the freshly-written header.
         _invalidate_path_caches(path)
-        writer(path, int(hdu), list(header_obj.cards))
+        writer(path, int(hdu), cards)
         _invalidate_path_caches(path)
         return
-    writer(path, int(hdu), list(header_obj.cards))
+    writer(path, int(hdu), cards)
 
 
 def _delete_header_key_if_supported(path: str, hdu: int, key: str) -> None:
@@ -832,25 +967,42 @@ def _normalize_ndarray_column(value: np.ndarray) -> Any:
 
 
 def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float] | None:
-    """Return signed-storage column data plus FITS format/BZERO for uint columns."""
+    """Return storage column data plus FITS format/TZERO for the offset
+    conventions: uint16/32/64 in signed storage, int8 in unsigned bytes
+    (FITS has no signed-byte TFORM; storage is value XOR 0x80, TZERO=-128)."""
     import numpy as np
 
     if isinstance(value, torch.Tensor):
+        if value.dtype == torch.int8:
+            raw = value.detach().contiguous().view(torch.uint8) ^ 0x80
+            return raw, "B", -128.0
         if value.dtype == torch.uint16:
             raw = (value.detach().to(torch.int32) - 32768).to(torch.int16)
             return raw, "I", 32768.0
         if value.dtype == torch.uint32:
             raw = (value.detach().to(torch.int64) - 2147483648).to(torch.int32)
             return raw, "J", 2147483648.0
+        if value.dtype == torch.uint64:
+            raw = (
+                value.detach().contiguous().view(torch.int64)
+                ^ torch.iinfo(torch.int64).min
+            )
+            return raw, "K", 9223372036854775808.0
         return None
 
     if isinstance(value, np.ndarray):
+        if value.dtype == np.int8:
+            raw_u8 = np.ascontiguousarray(value).view(np.uint8) ^ np.uint8(0x80)
+            return np.ascontiguousarray(raw_u8), "B", -128.0
         if value.dtype == np.uint16:
             raw = (value.astype(np.int32, copy=False) - 32768).astype(np.int16)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "I", 32768.0
         if value.dtype == np.uint32:
             raw = (value.astype(np.int64, copy=False) - 2147483648).astype(np.int32)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "J", 2147483648.0
+        if value.dtype == np.uint64:
+            raw_np = np.ascontiguousarray(value).view(np.int64) ^ np.iinfo(np.int64).min
+            return np.ascontiguousarray(raw_np), "K", 9223372036854775808.0
         return None
 
     return None
@@ -877,32 +1029,146 @@ def _unsigned_table_tform(value: Any, code: str) -> str:
     return code if repeat == 1 else f"{repeat}{code}"
 
 
+_SCHEMA_NUMERIC_FIELDS = {
+    "null": "TNULL",
+    "tnull": "TNULL",
+    "bscale": "TSCAL",
+    "tscal": "TSCAL",
+    "bzero": "TZERO",
+    "tzero": "TZERO",
+}
+
+
+def _validate_schema_numerics(name: str, meta: Dict[str, Any]) -> None:
+    """Reject a non-numeric TNULL/TSCAL/TZERO before the native writer sees it.
+
+    ``null``/``tnull`` must be an integer (or an integer string, as header
+    cards give it) within int64, or within uint64 when it is a value of an
+    unsigned column (:func:`_check_stored_tnull` checks the stored card once
+    the column's layout is known); ``bscale``/``bzero`` must be a number or a
+    numeric string. The native writer only raised an unnamed RuntimeError.
+    """
+    import numbers
+
+    for field, card in _SCHEMA_NUMERIC_FIELDS.items():
+        if field not in meta or meta[field] is None:
+            continue
+        value = meta[field]
+        what = f"{field}={value!r} ({card}) for column {name!r}"
+        if isinstance(value, bool):
+            raise ValueError(f"{what} must be a number, not a bool")
+        if card == "TNULL":
+            parsed: Any = None
+            if isinstance(value, numbers.Integral):
+                parsed = int(value)
+            elif isinstance(value, numbers.Real) and float(value).is_integer():
+                parsed = int(float(value))
+            elif isinstance(value, str):
+                try:
+                    parsed = int(value.strip())
+                except ValueError:
+                    parsed = None
+            if parsed is None:
+                raise ValueError(f"{what} must be an integer")
+            if not -(2**63) <= parsed < 2**64:
+                raise ValueError(f"{what} is outside the 64-bit integer range")
+        else:
+            try:
+                ok = isinstance(value, (numbers.Real, str)) and math.isfinite(
+                    float(value)
+                )
+            except ValueError:
+                ok = False
+            if not ok:
+                raise ValueError(f"{what} must be a finite number")
+
+
+def _check_stored_tnull(name: str, meta: Dict[str, Any]) -> None:
+    """Reject a TNULL card value outside int64 (the native card type).
+
+    Runs after unsigned-convention columns moved their TNULL to the stored
+    domain, so only a value no column dtype can hold is left to fail here.
+    """
+    for key in ("null", "tnull"):
+        value = meta.get(key)
+        if value is None:
+            continue
+        stored = int(str(value).strip()) if isinstance(value, str) else int(value)
+        if not -(2**63) <= stored < 2**63:
+            raise ValueError(
+                f"{key}={value!r} (TNULL) for column {name!r} is outside the "
+                "64-bit integer range"
+            )
+
+
+def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) -> int:
+    """Stored TNULL for a column written from unsigned (or int8) values.
+
+    ``TNULLn`` is compared with the raw stored integer, before ``TZEROn``
+    (FITS standard). The schema gives it in the column's own value domain, as
+    the data is, so it moves by the same offset (``TNULL = value - TZERO``).
+    """
+    bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
+    low, high = (-128, 127) if code == "B" else (0, (1 << bits) - 1)
+    value = int(tnull)
+    if not low <= value <= high:
+        raise ValueError(
+            f"TNULL {tnull!r} for column '{name}' is outside the column's "
+            f"value range [{low}, {high}]"
+        )
+    return value - int(bzero)
+
+
+def _string_column_width(value: Any) -> Optional[int]:
+    """Character width of a 1-D numpy 'S'/'U' column's dtype, else None.
+
+    The dtype is the declared width: ``np.array(['ab', 'c'], dtype='S3')``
+    is a 3-character column even though no cell uses all 3 characters, and
+    a 0-row column has no cell to infer from at all.
+    """
+    import numpy as np
+
+    if not (
+        isinstance(value, np.ndarray)
+        and value.dtype.kind in {"U", "S"}
+        and value.ndim == 1
+    ):
+        return None
+    chars = int(value.dtype.itemsize) // (4 if value.dtype.kind == "U" else 1)
+    return max(1, chars)
+
+
 def _prepare_unsigned_table_data_for_write(
     table_dict: Dict[str, Any],
     schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    *,
+    ascii_table: bool = False,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]], bool]:
-    """Convert uint16/uint32 table columns to FITS pseudo-unsigned storage."""
+    """Convert uint16/uint32 table columns to FITS pseudo-unsigned storage.
+
+    Also types 0-row numpy string columns, which carry no cell to infer from.
+    """
     out: Dict[str, Any] = {}
     prepared_schema: Dict[str, Dict[str, Any]] = {
         str(name): dict(meta or {}) for name, meta in (schema or {}).items()
     }
+    for col_name, meta in prepared_schema.items():
+        _validate_schema_numerics(col_name, meta)
     changed = False
 
     for name, value in table_dict.items():
         col_name = str(name)
-        import numpy as np
-
-        is_uint64 = (
-            isinstance(value, torch.Tensor) and value.dtype == torch.uint64
-        ) or (isinstance(value, np.ndarray) and value.dtype == np.uint64)
-        if is_uint64:
-            raise UInt64WriteError(
-                f"torchfits does not support writing uint64 table column "
-                f"{col_name!r}: FITS has no native uint64 storage (BITPIX=-64 "
-                f"is not standard), and a BZERO=2**64 pseudo-unsigned "
-                f"convention is not interoperable. Convert to int64 (requires "
-                f"values < 2**63) or float64 before writing."
-            )
+        width = _string_column_width(value)
+        if width is not None:
+            # The dtype width is the column's TFORM (inferring from the cells
+            # shrank 'S3' holding ['ab', 'c'] to 2A, and a 0-row column has no
+            # cell at all: the writer raised std::bad_cast).
+            out[col_name] = value
+            meta = prepared_schema.setdefault(col_name, {})
+            if "format" not in meta and "tform" not in meta:
+                meta["format"] = f"A{width}" if ascii_table else f"{width}A"
+            changed = True
+            continue
         converted = _unsigned_table_storage_for_fits_write(value)
         if converted is None:
             out[col_name] = value
@@ -917,8 +1183,15 @@ def _prepare_unsigned_table_data_for_write(
         if "format" not in meta and "tform" not in meta:
             meta["format"] = _unsigned_table_tform(value, code)
         meta.setdefault("bscale", 1.0)
-        meta.setdefault("bzero", int(bzero))
+        # 2**63 does not fit the native int64 card path; it is exact as a float.
+        meta.setdefault("bzero", int(bzero) if bzero < 2**63 else bzero)
+        for key in ("null", "tnull"):
+            if meta.get(key) is not None:
+                meta[key] = _unsigned_tnull_to_stored(col_name, meta[key], code, bzero)
         changed = True
+
+    for col_name, meta in prepared_schema.items():
+        _check_stored_tnull(col_name, meta)
 
     if schema is None and not changed:
         return out, None, False
@@ -946,7 +1219,13 @@ def _table_schema_scale_header_cards(
             out[f"TSCAL{idx}"] = float(meta["bscale"])
         if "bzero" in meta:
             bzero = meta["bzero"]
-            out[f"TZERO{idx}"] = int(bzero) if float(bzero).is_integer() else bzero
+            # Integral offsets (including the uint64 offset 2**63, beyond long
+            # long) are written as exact integer cards by the native writer.
+            out[f"TZERO{idx}"] = (
+                int(bzero)
+                if float(bzero).is_integer() and abs(float(bzero)) <= 2**63
+                else float(bzero)
+            )
         if "null" in meta:
             out[f"TNULL{idx}"] = int(meta["null"])
     return out
@@ -972,18 +1251,6 @@ def _normalize_cpp_table_data(table_dict: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[name] = value
     return out
-
-
-def _resolve_compression_algorithm(compress: Union[bool, str]) -> Optional[str]:
-    """Normalize compress flag to a backend algorithm string or None."""
-    if compress is False:
-        return None
-    if compress is True:
-        return "RICE_1"
-    if isinstance(compress, str):
-        algo = compress.strip()
-        return algo if algo else "RICE_1"
-    raise TypeError("compress must be bool or compression algorithm string")
 
 
 class _TableHDUWriteProxy:
@@ -1061,7 +1328,7 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                     import numpy as np
 
                     if isinstance(img, np.ndarray):
-                        img = torch.from_numpy(img)
+                        img = _ndarray_to_tensor(img)
                     elif isinstance(img, (list, tuple)):
                         img = torch.tensor(img)
                     else:
@@ -1072,12 +1339,12 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                         " for dict HDUs. Could not convert"
                         f" {type(img).__name__} to a tensor."
                     ) from None
+            header = _drop_stale_integer_scale_cards(item.get("header", {}), img)
             img, img_header = _unsigned_image_storage_for_fits_write(img)
             return TensorHDU(
                 data=img,
                 header=_merge_fits_write_header(
-                    _write_boundary_header(item.get("header", {})),
-                    img_header,
+                    _write_boundary_header(header), img_header
                 ),
             )
         return _TableHDUWriteProxy(item, Header())

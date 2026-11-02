@@ -1,0 +1,24 @@
+--- a/fitsio.h
++++ b/fitsio.h
+@@ -204,7 +204,9 @@
+ #include "longnam.h"
+ #endif
+  
++#ifndef NIOBUF
+ #define NIOBUF  40  /* number of IO buffers to create (default = 40) */
++#endif
+           /* !! Significantly increasing NIOBUF may degrade performance !! */
+ 
+ #define IOBUFLEN 2880    /* size in bytes of each IO buffer (DONT CHANGE!) */
+--- a/fitsio2.h
++++ b/fitsio2.h
+@@ -55,7 +55,9 @@
+ 	/* plus each file that is opened will use NIOBUF * 2880 bytes of memeory */
+ 	/* where NIOBUF is defined in fitio.h and has a default value of 40 */
+ 
++#ifndef MINDIRECT
+ #define MINDIRECT 8640   /* minimum size for direct reads and writes */
++#endif
+                          /* MINDIRECT must have a value >= 8640 */
+ 
+ /*   it is useful to identify certain specific types of machines   */

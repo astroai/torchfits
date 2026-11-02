@@ -4,6 +4,7 @@
 
 #include <string>
 #include <cmath>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -32,6 +33,21 @@
 namespace nb = nanobind;
 
 namespace {
+
+// One spelling per file for the reader cache: './x.fits', 'x.fits', a
+// symlink and the absolute path name the same file, and a writer evicts by
+// whichever spelling it was given. Readers also open the resolved path:
+// CFITSIO resolves a handle's relative name against the *current* directory
+// when it checks for an already-open file, so a reader cached as 'x.fits'
+// blocked writes to another directory's x.fits after a chdir. Names
+// realpath() cannot resolve (extended syntax, URLs) are kept as given.
+std::string canonical_reader_path(const std::string& filename) {
+    char buf[PATH_MAX];
+    if (::realpath(filename.c_str(), buf) != nullptr) {
+        return std::string(buf);
+    }
+    return filename;
+}
 
 struct ReaderCacheKey {
     std::string filename;
@@ -153,10 +169,10 @@ struct ThreadLocalReaderCache {
     // Drop any cached reader for `filename` from this cache. A reader is only
     // destroyed here while idle (not acquired), so a concurrent read on the
     // owning thread never touches an evicted reader.
-    void evict(const std::string& filename) {
+    void evict(const std::string& filename, const std::string& canonical) {
         std::lock_guard<std::mutex> l(mu_);
         for (auto it = map_.begin(); it != map_.end();) {
-            if (it->first.filename == filename) {
+            if (it->first.filename == filename || it->first.filename == canonical) {
                 lru_.erase(it->second.lru_it);
                 it = map_.erase(it);
             } else {
@@ -166,9 +182,10 @@ struct ThreadLocalReaderCache {
     }
 
     static void evict_everywhere(const std::string& filename) {
+        const std::string canonical = canonical_reader_path(filename);
         std::lock_guard<std::mutex> g(g_registry_mu);
         for (ThreadLocalReaderCache* cache : g_registry) {
-            cache->evict(filename);
+            cache->evict(filename, canonical);
         }
     }
 
@@ -552,6 +569,18 @@ nb::dict table_result_to_python(
     return result_dict;
 }
 
+// Name stamped on the open_fits_mmap_reader capsule; any other capsule must be
+// refused before its pointer is cast to TableReader*.
+constexpr const char* kTableReaderCapsuleName = "torchfits.TableReader";
+
+torchfits::TableReader* table_reader_from_capsule(const nb::capsule& cap) {
+    if (!PyCapsule_IsValid(cap.ptr(), kTableReaderCapsuleName)) {
+        throw nb::type_error(
+            "reader must be a capsule returned by open_fits_mmap_reader");
+    }
+    return static_cast<torchfits::TableReader*>(cap.data());
+}
+
 } // anonymous namespace
 
 namespace torchfits {
@@ -573,8 +602,11 @@ void bind_table(nb::module_& m) {
             new (self) torchfits::TableReader(filename, hdu_num);
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("__init__", [](torchfits::TableReader* self, nb::object file_obj, int hdu_num) {
-            fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
-            new (self) torchfits::TableReader(fptr, hdu_num);
+            auto owner = torchfits::share_fptr_from_python_object(file_obj);
+            new (self) torchfits::TableReader(owner.get(), hdu_num);
+            // Keep the fitsfile open for this reader even if the FITSFile is
+            // closed or collected first.
+            self->hold_fptr_owner(std::move(owner));
         }, nb::arg("file_obj"), nb::arg("hdu_num") = 1)
         .def_prop_ro("num_rows", &torchfits::TableReader::get_num_rows)
         .def("read_rows", [](torchfits::TableReader& self,
@@ -677,7 +709,8 @@ void bind_table(nb::module_& m) {
     });
 
     m.def("read_fits_table_from_handle", [](nb::object file_obj, int hdu_num) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns({}, 1, -1, true);
@@ -688,7 +721,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_from_handle", [](nb::object file_obj, int hdu_num,
                                                  const std::vector<std::string>& column_names,
                                                  long start_row, long num_rows) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
@@ -701,7 +735,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_raw_from_handle", [](nb::object file_obj, int hdu_num,
                                                      const std::vector<std::string>& column_names,
                                                      long start_row, long num_rows) -> nb::dict {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
@@ -713,10 +748,10 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table_raw", [](const std::string& filename, int hdu_num, const std::vector<std::string>& column_names, bool mmap) -> nb::dict {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names);
@@ -734,10 +769,10 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table", [](const std::string& filename, int hdu_num, const std::vector<std::string>& column_names, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names);
@@ -757,10 +792,10 @@ void bind_table(nb::module_& m) {
                                      const std::vector<std::string>& column_names,
                                      long start_row, long num_rows, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -782,10 +817,10 @@ void bind_table(nb::module_& m) {
                                          const std::vector<std::string>& column_names,
                                          long start_row, long num_rows, bool mmap) -> nb::dict {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -805,7 +840,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_numpy_from_handle", [](nb::object file_obj, int hdu_num,
                                                        const std::vector<std::string>& column_names,
                                                        long start_row, long num_rows) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
@@ -819,10 +855,10 @@ void bind_table(nb::module_& m) {
                                            const std::vector<std::string>& column_names,
                                            long start_row, long num_rows, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result_map = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -860,7 +896,7 @@ void bind_table(nb::module_& m) {
         // header once; each read_rows call maps/unmaps per batch but never
         // re-opens the file.
         torchfits::TableReader* reader = new torchfits::TableReader(path, hdu_num);
-        return nb::capsule(reader, [](void* p) noexcept {
+        return nb::capsule(reader, kTableReaderCapsuleName, [](void* p) noexcept {
             delete static_cast<torchfits::TableReader*>(p);
         });
     }, nb::arg("path"), nb::arg("hdu_num") = 1);
@@ -868,10 +904,7 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_mmap_from_reader", [](nb::capsule reader_cap,
                                                       const std::vector<std::string>& column_names,
                                                       long start_row, long num_rows) -> nb::object {
-        auto* reader = static_cast<torchfits::TableReader*>(reader_cap.data());
-        if (reader == nullptr) {
-            throw std::runtime_error("Invalid mmap reader capsule");
-        }
+        auto* reader = table_reader_from_capsule(reader_cap);
         nb::gil_scoped_release release;
         // A persistent capsule reader can be shared across threads (e.g.
         // DataLoader workers); serialize access to its CFITSIO cursor.
@@ -885,10 +918,7 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_mmap_from_reader_raw", [](nb::capsule reader_cap,
                                                           const std::vector<std::string>& column_names,
                                                           long start_row, long num_rows) -> nb::dict {
-        auto* reader = static_cast<torchfits::TableReader*>(reader_cap.data());
-        if (reader == nullptr) {
-            throw std::runtime_error("Invalid mmap reader capsule");
-        }
+        auto* reader = table_reader_from_capsule(reader_cap);
         nb::gil_scoped_release release;
         std::lock_guard<std::mutex> io_lock(reader->io_mutex_);
         auto result = reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -933,11 +963,19 @@ void bind_table(nb::module_& m) {
                 // __index__ is a type-level slot, so a 0-d array also lands
                 // here. Only an int64-convertible value is an integer literal;
                 // anything else (out of range, array) is rejected below.
-                if (!nb::try_cast<int64_t>(val, f.val_i)) {
+                if (nb::try_cast<int64_t>(val, f.val_i)) {
+                    f.val_d = (double)f.val_i;
+                } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
+                    // [2^63, 2^64): exact for uint64 columns, a constant
+                    // predicate for every other integer column.
+                    f.has_u64 = true;
+                    f.out_of_int64 = 1;
+                    f.val_i = std::numeric_limits<int64_t>::max();
+                    f.val_d = (double)f.val_u;
+                } else {
                     throw std::runtime_error(
                         "Unsupported filter value type (only float/int)");
                 }
-                f.val_d = (double)f.val_i;
                 f.type_idx = 1;
             } else {
                 // NumPy floating scalars are not Python float subclasses
@@ -957,10 +995,19 @@ void bind_table(nb::module_& m) {
                 }
                 // The integer scan branch compares against this proxy; C++
                 // float-to-int conversion is undefined outside int64, so clamp.
-                if (f.val_d >= (double)std::numeric_limits<int64_t>::max()) {
+                // Outside int64 the proxy is wrong by design; out_of_int64
+                // (and val_u for [2^63, 2^64)) tells the scan the real bound.
+                constexpr double two63 = 9223372036854775808.0;
+                if (f.val_d >= two63) {
                     f.val_i = std::numeric_limits<int64_t>::max();
-                } else if (f.val_d <= (double)std::numeric_limits<int64_t>::min()) {
+                    f.out_of_int64 = 1;
+                    if (f.val_d < 2.0 * two63) {
+                        f.has_u64 = true;
+                        f.val_u = static_cast<uint64_t>(f.val_d);
+                    }
+                } else if (f.val_d < -two63) {
                     f.val_i = std::numeric_limits<int64_t>::min();
+                    f.out_of_int64 = -1;
                 } else {
                     f.val_i = (int64_t)f.val_d;
                 }

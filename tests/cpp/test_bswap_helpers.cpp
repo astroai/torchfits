@@ -134,7 +134,8 @@ void check_plain(
     for (size_t i = 0; i < n; ++i) {
         ref_reverse(buf.data() + src_off + i * width, want.data() + dst_off + i * width, width);
     }
-    expect(std::memcmp(got.data(), want.data(), span) == 0);
+    // memcmp on empty vectors would pass nullptr (UB even with span 0).
+    expect(span == 0 || std::memcmp(got.data(), want.data(), span) == 0);
 }
 
 // Same, for the BZERO variants: reverse the bytes, then do the offset add in
@@ -159,7 +160,8 @@ void check_offset(
         const T v = static_cast<T>(load_host<T>(tmp) + offset);
         store_host<T>(want.data() + dst_off + i * width, v);
     }
-    expect(std::memcmp(got.data(), want.data(), span) == 0);
+    // memcmp on empty vectors would pass nullptr (UB even with span 0).
+    expect(span == 0 || std::memcmp(got.data(), want.data(), span) == 0);
 }
 
 #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)

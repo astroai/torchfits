@@ -563,3 +563,109 @@ def test_removed_native_cache_environment_is_ignored() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("mmap", [True, False])
+def test_table_read_where_does_not_import_torch(tmp_path, mmap: bool) -> None:
+    """An Arrow ``table.read(where=...)`` must not pull torch into the process."""
+    import numpy as np
+
+    import torchfits
+
+    path = tmp_path / "where.fits"
+    torchfits.table.write(
+        str(path),
+        {"ID": np.arange(10, dtype=np.int32), "MAG": np.linspace(18.0, 20.0, 10)},
+        overwrite=True,
+    )
+    script = f"""
+import sys
+import torchfits
+table = torchfits.table.read(sys.argv[1], where="MAG > 19", mmap={mmap})
+assert table.num_rows == 5, table.num_rows
+assert "torch" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_documented_torch_free_entry_points_never_import_torch(tmp_path) -> None:
+    """Every entry point the architecture page lists as torch-free runs with
+    ``import torch`` blocked. ``delete_hdu`` used to load torch through the
+    tensor write module that re-exported it."""
+    import numpy as np
+    import torch
+
+    import torchfits
+
+    image = tmp_path / "image.fits"
+    torchfits.write(
+        str(image), np.arange(16, dtype=np.float32).reshape(4, 4), overwrite=True
+    )
+    table = tmp_path / "table.fits"
+    torchfits.table.write(
+        str(table),
+        {"ID": np.arange(5, dtype=np.int32), "MAG": np.linspace(18.0, 20.0, 5)},
+        overwrite=True,
+        extname="SCI",
+    )
+    mef = tmp_path / "mef.fits"
+    torchfits.write(
+        str(mef),
+        torchfits.HDUList(
+            [
+                torchfits.TensorHDU(torch.zeros(0)),
+                torchfits.TensorHDU(torch.ones(2, 2), {"EXTNAME": "A"}),
+                torchfits.TensorHDU(torch.ones(3), {"EXTNAME": "B"}),
+            ]
+        ),
+        overwrite=True,
+    )
+
+    script = """
+import contextlib, importlib.abc, io, sys
+
+
+class _Block(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] == "torch":
+            raise ImportError("torch is blocked: " + fullname)
+        return None
+
+
+sys.meta_path.insert(0, _Block())
+
+import torchfits
+from torchfits.cli.main import main as cli_main
+
+image, table, mef = sys.argv[1:4]
+with contextlib.redirect_stdout(io.StringIO()):
+    with torchfits.open(table) as hdul:
+        hdul.info()
+        assert hdul[1].header["EXTNAME"] == "SCI"
+        assert hdul["SCI"].header["NAXIS2"] == 5
+    torchfits.write_checksums(image)
+    assert torchfits.verify_checksums(image)
+    for argv in (["info", table], ["header", table], ["verify", image],
+                 ["setkey", image, "--key", "OBSERVER", "--value", "x"]):
+        assert cli_main(argv) in (0, None), argv
+    assert sum(b.num_rows for b in torchfits.table.scan(table, batch_size=2)) == 5
+    assert "MAG" in str(torchfits.table.schema(table))
+    torchfits.delete_hdu(mef, "A")
+assert torchfits.read_num_hdus(mef) == 2
+assert "torch" not in sys.modules
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(image), str(table), str(mef)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("ok")

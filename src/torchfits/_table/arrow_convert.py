@@ -219,26 +219,29 @@ def _coerce_null_sentinel(value: "np.ndarray", sentinel: Any) -> Any:
             return np.array(sentinel, dtype=arr.dtype).item()
         return float(sentinel)
     except (TypeError, ValueError, OverflowError):
-        # Unsigned columns are stored as the physical value (raw + 2**(bits-1)).
-        # A negative TNULL does not fit in that dtype; the value in the tensor
-        # is the offset one, not the wrapped bit pattern.
-        if arr.dtype.kind == "u":
-            bits = int(arr.dtype.itemsize) * 8
-            physical = int(sentinel) + (1 << (bits - 1))
-            if 0 <= physical < (1 << bits):
-                return np.array(physical, dtype=arr.dtype).item()
+        # The sentinel is already in the decoded domain (see
+        # fits_schema.decoded_tnull); one that does not fit the dtype (NaN
+        # for a scaled column, a value outside the range) matches no cell.
         return None
 
 
 def _column_tnull_from_meta(
     null_meta: Optional[dict[str, dict[str, str]]], name: str
-) -> Optional[str]:
+) -> Any:
+    """The column's TNULL in the decoded domain (raw TNULL, before TSCAL/TZERO)."""
     if not null_meta:
         return None
     field = null_meta.get(name)
     if not field:
         return None
-    return field.get("fits_tnull")
+    from ..fits_schema import decoded_tnull
+
+    return decoded_tnull(
+        field.get("fits_tnull"),
+        field.get("fits_tform"),
+        field.get("fits_tscal"),
+        field.get("fits_tzero"),
+    )
 
 
 def _tform_code(tform: Any) -> Optional[str]:

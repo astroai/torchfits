@@ -126,7 +126,7 @@ def _both(paths, kwargs):
     [
         ("mode='bogus' rejects", "images", {"mode": "bogus"}, "ValueError"),
         ("mmap='bogus' rejects", "images", {"mmap": "bogus"}, "ValueError"),
-        ("negative hdu rejects", "images", {"hdu": -1}, "ValueError"),
+        ("negative hdu rejects", "images", {"hdu": -1}, "HDUNotFoundError"),
         (
             "mode='image' + columns rejects",
             "images",
@@ -310,7 +310,6 @@ def test_nondefault_option_uses_equivalent_per_path_dispatch(name, value):
             read_check_cache=lambda *args: (False, None, None),
             read_header=lambda *args: {},
             debug_scale=False,
-            cold_nocache=False,
             read_exc_types=(RuntimeError, OSError, ValueError),
             logger=mock.Mock(),
         )
@@ -351,7 +350,6 @@ def test_batch_recursion_carries_the_complete_options_object():
             read_check_cache=lambda *args: (False, None, None),
             read_header=lambda *args: {},
             debug_scale=False,
-            cold_nocache=False,
             read_exc_types=(RuntimeError, OSError, ValueError),
             logger=mock.Mock(),
         )

@@ -2,56 +2,57 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
-from typing import Any, Dict, List, Optional, Union
+import shutil
+import tempfile
+from collections.abc import Iterator
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import torch
 from torch import Tensor
 
+from .._errors import HDUNotFoundError
 from ..hdu import Header, TableHDU, TableHDURef, TensorHDU
-from .hdu_api import open_hdulist
+from ._hdu_edit import (
+    _CHECKSUM_KEYS,
+    _file_hdus,
+    _file_headers,
+    _has_checksums,
+    _nonempty,
+    _resolve_target,
+)
 from .paths import guard_fits_path
+from ._hdu_splice import (
+    hdu_byte_spans,
+    header_has_card,
+    primary_as_image_extension,
+    publish_spliced,
+)
+from ._file_ops import (
+    _atomic_replace_target,
+    _invalidate_path_caches,
+    _invalidate_written_target,
+    _resolve_compression_algorithm,
+)
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
     _COMPRESSION_CARD_KEYS,
     _COMPRESSION_CARD_PREFIXES,
-    _atomic_replace_target,
     _cpp_header_mapping,
+    _filter_header_cards,
     _hdu_with_header,
     _image_hdu_dict_for_fits_write,
-    _invalidate_path_caches,
-    _invalidate_written_target,
     _is_skippable_empty_primary,
     _merge_fits_write_header,
     _normalize_cpp_table_data,
     _payload_replay_header,
     _prepare_unsigned_table_data_for_write,
     _preserved_table_tform_cards,
-    _resolve_compression_algorithm,
     _table_schema_scale_header_cards,
     _write_boundary_header,
     _write_header_cards_if_supported,
 )
-
-
-def _detach_hdus_for_rewrite(path: str) -> List[Any]:
-    """Materialize file-backed HDUs so rewrite paths never hold stale handles."""
-    with open_hdulist(path) as hdul:
-        detached: List[Any] = []
-        for hdu in list(hdul._hdus):
-            if isinstance(hdu, TensorHDU):
-                detached.append(TensorHDU(data=hdu.to_tensor("cpu"), header=hdu.header))
-            elif isinstance(hdu, TableHDU):
-                detached.append(
-                    TableHDU(dict(getattr(hdu, "_raw_data", {})), header=hdu.header)
-                )
-            elif isinstance(hdu, TableHDURef):
-                mat = hdu.materialize(device="cpu")
-                detached.append(
-                    TableHDU(dict(getattr(mat, "_raw_data", {})), header=hdu.header)
-                )
-            else:
-                detached.append(hdu)
-    return detached
 
 
 def _sanitize_header_for_compressed_write(
@@ -193,12 +194,24 @@ def _prepare_table_hdu_for_payload(hdu: Any) -> Optional[_TableWriteProxy]:
         raw_data, schema, _ = _prepare_unsigned_table_data_for_write(raw_data)
         scale_cards = _table_schema_scale_header_cards(schema)
         # Source TFORMn spellings (astropy bare 'J'/'I', exotic '8X'/'PJ') are
-        # re-added verbatim for columns whose storage is unchanged; decoded
-        # scaled columns re-derive instead (r4b-01).
-        preserved = _preserved_table_tform_cards(hdu.header, raw_data)
+        # re-added verbatim only for the same column with the same cell
+        # layout; decoded scaled columns re-derive instead (r4b-01). Bit and
+        # wide string spellings are laid down by the writer via the schema.
+        preserved, formats, stale = _preserved_table_tform_cards(hdu.header, raw_data)
+        if formats:
+            schema = {
+                name: {
+                    **(schema or {}).get(name, {}),
+                    **({"format": formats[name]} if name in formats else {}),
+                }
+                for name in raw_data
+            }
         header = _merge_fits_write_header(
             _merge_fits_write_header(
-                _sanitize_table_header_for_write(hdu.header), preserved
+                _filter_header_cards(
+                    _sanitize_table_header_for_write(hdu.header), frozenset(stale)
+                ),
+                preserved,
             ),
             scale_cards,
         )
@@ -285,18 +298,25 @@ def _strip_compression_cards(header: Header) -> Header:
     return preserved
 
 
-def _hdus_have_checksums(hdus: List[Any]) -> bool:
-    for hdu in hdus:
-        header = getattr(hdu, "header", None)
-        if header is None:
-            continue
-        if "CHECKSUM" in header or "DATASUM" in header:
-            return True
-    return False
+def _reject_64bit_integer_tile_compression(data: Any, algorithm: str, idx: int) -> None:
+    """CFITSIO has no tile codec for BITPIX=64: it fails mid-write with a bare
+    "error compressing image" (status 413). Say what is wrong up front."""
+    if algorithm.strip().upper() == "NONE":
+        return
+    if isinstance(data, Tensor) and data.dtype in (torch.int64, torch.uint64):
+        raise ValueError(
+            "tile compression does not support 64-bit integer images "
+            f"(HDU {idx} is {str(data.dtype).removeprefix('torch.')}); "
+            "write uncompressed or convert to int32/float64"
+        )
 
 
 def _write_hdus_with_optional_compression(
-    path: str, hdus: List[Any], compress: Union[bool, str] = False
+    path: str,
+    hdus: List[Any],
+    compress: Union[bool, str] = False,
+    *,
+    overwrite: bool = True,
 ) -> None:
     """Rewrite HDUs, optionally using CFITSIO compressed-image writer.
 
@@ -309,12 +329,13 @@ def _write_hdus_with_optional_compression(
     guard_fits_path(path)
     algorithm = _resolve_compression_algorithm(compress)
     if algorithm is None:
-        _write_hdus_uncompressed(path, hdus, overwrite=True)
+        _write_hdus_uncompressed(path, hdus, overwrite=overwrite)
         return
 
     import torchfits._C as cpp
 
     payload: list[Any] = []
+    primary_header: Any = None
     for idx, hdu in enumerate(hdus):  # noqa: B007
         table_proxy = _prepare_table_hdu_for_payload(hdu)
         if table_proxy is not None:
@@ -329,11 +350,14 @@ def _write_hdus_with_optional_compression(
         # A compressed FITS file uses an empty primary HDU followed by compressed
         # image extensions; skip this placeholder to avoid duplicating it.
         if _is_skippable_empty_primary(idx, hdu):
+            # Its user cards still belong on the primary the writer emits.
+            primary_header = getattr(hdu, "header", None)
             continue
 
         hdu_dict = _image_hdu_dict_for_fits_write(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
+        _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
         replay_header = _payload_replay_header(hdu_dict)
         if replay_header is not None:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(replay_header)
@@ -343,10 +367,22 @@ def _write_hdus_with_optional_compression(
                 raise RuntimeError(
                     "PLIO_1 compression algorithm does not support floating-point image data"
                 )
+            scale = replay_header if replay_header is not None else {}
+            if (
+                isinstance(d, Tensor)
+                and d.dtype == torch.int16
+                and scale.get("BZERO") == 32768
+                and scale.get("BSCALE", 1) == 1
+            ):
+                # PLIO only stores values in [0, 2**24): hand CFITSIO the
+                # physical uint16 pixels instead of the signed -32768 codes.
+                hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
         payload.append(hdu_dict)
 
     _invalidate_path_caches(path)
-    cpp.write_fits_file_compressed_images(path, payload, True, algorithm)
+    cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)
+    # Structural cards (SIMPLE/NAXIS/...) are skipped by the card writer.
+    _write_header_cards_if_supported(path, 0, primary_header, invalidate=False)
     for j, item in enumerate(payload):
         _write_header_cards_if_supported(
             path, j + 1, _payload_replay_header(item), invalidate=False
@@ -354,29 +390,62 @@ def _write_hdus_with_optional_compression(
     _invalidate_path_caches(path)
 
 
-def _atomic_rewrite_hdus(
-    path: str,
-    hdus: List[Any],
-    compress: Union[bool, str] = False,
-    *,
-    restamp_checksums: bool = False,
-) -> None:
-    """Rewrite an existing HDU sequence without exposing a partial file."""
-    with _atomic_replace_target(path) as temp_path:
+def _new_hdu_from_args(data: Any, header: Optional[Dict[str, Any]]) -> Any:
+    if isinstance(data, (TableHDU, TensorHDU)):
+        # Never mutate the caller's HDU: build a header-replaced copy.
+        return _hdu_with_header(data, Header(header)) if header is not None else data
+    if isinstance(data, dict) and "data" not in data:
+        return TableHDU(data, header=Header(header or {}))
+    if isinstance(data, Tensor):
+        return TensorHDU(data=data, header=Header(header or {}))
+    raise ValueError(f"Unsupported HDU data type: {type(data)}")
+
+
+def _is_table_hdu(hdu: Any) -> bool:
+    return isinstance(hdu, (TableHDU, TableHDURef)) or hasattr(hdu, "_raw_data")
+
+
+def _require_primary_capable(new_hdu: Any, compress: Union[bool, str]) -> None:
+    """Refuse a new HDU that cannot be the primary HDU (index 0)."""
+    if _is_table_hdu(new_hdu):
+        raise ValueError(
+            "A table cannot be the primary HDU (index 0): the file would gain an "
+            "empty primary and every HDU would shift by one. Insert or replace "
+            "the table at index >= 1, or keep an HDU in front of it."
+        )
+    if _resolve_compression_algorithm(compress) is not None:
+        raise ValueError(
+            "compress= cannot apply at index 0: a tile-compressed image is stored "
+            "as a binary-table extension and cannot be the primary HDU. Write it "
+            "at index >= 1, or without compress=."
+        )
+
+
+@contextlib.contextmanager
+def _scratch_hdu(
+    new_hdu: Any, *, primary: bool, compress: Union[bool, str]
+) -> Iterator[Tuple[str, int, int]]:
+    """Write ``new_hdu`` alone to a scratch file; yield ``(path, start, end)``
+    of its bytes (the primary HDU, or the extension behind an empty primary).
+    """
+    scratch_dir = tempfile.mkdtemp(prefix="torchfits-hdu-")
+    scratch = os.path.join(scratch_dir, "hdu.fits")
+    try:
+        if primary:
+            hdus = [new_hdu]
+        else:
+            empty = TensorHDU(data=torch.empty(0), header=Header({"NAXIS": 0}))
+            hdus = [empty, new_hdu]
         from . import write_api
 
         write_api._write_hdus_with_optional_compression(  # type: ignore[attr-defined]
-            temp_path, hdus, compress=compress
+            scratch, hdus, compress=compress, overwrite=False
         )
-    # Both steps below mutate the now-current file, so they belong after the
-    # rename: invalidating before it would let a concurrent reader cache the
-    # old contents, and restamping before it would stamp a file about to be
-    # replaced.
-    _invalidate_written_target(path)
-    if restamp_checksums:
-        from .write_api import _write_all_checksums
-
-        _write_all_checksums(path)
+        start, _data, end = hdu_byte_spans(scratch)[0 if primary else 1]
+        yield scratch, start, end
+    finally:
+        _invalidate_path_caches(scratch)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 def insert_hdu(
@@ -386,27 +455,45 @@ def insert_hdu(
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
 ) -> None:
-    """Insert a new HDU into an existing FITS file."""
-    if not isinstance(index, int):
+    """Insert a new HDU into an existing FITS file.
+
+    Only the new HDU is written (``compress=`` applies to it alone); every
+    other HDU is copied byte-for-byte. Inserting at index 0 turns the old
+    primary into an IMAGE extension (header cards converted, data unchanged).
+    """
+    if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError("index must be an integer HDU position")
-
-    if isinstance(data, TableHDU) or isinstance(data, TensorHDU):
-        # Never mutate the caller's HDU: build a header-replaced copy.
-        new_hdu = _hdu_with_header(data, Header(header)) if header is not None else data
-    elif isinstance(data, dict) and "data" not in data:
-        new_hdu = TableHDU(data, header=Header(header or {}))
-    elif isinstance(data, Tensor):
-        new_hdu = TensorHDU(data=data, header=Header(header or {}))
-    else:
-        raise ValueError(f"Unsupported HDU data type: {type(data)}")
-
-    hdus = _detach_hdus_for_rewrite(path)
-    restamp = _hdus_have_checksums(hdus)
-
+    new_hdu = _new_hdu_from_args(data, header)
+    hdus = _file_hdus(path, len(_file_headers(path)))
     if index < 0 or index > len(hdus):
-        raise IndexError(f"index {index} out of range for {len(hdus)} HDUs")
-    hdus.insert(index, new_hdu)
-    _atomic_rewrite_hdus(path, hdus, compress=compress, restamp_checksums=restamp)
+        error = HDUNotFoundError.for_request(path, index, len(hdus))
+        error.add_note(f"insert_hdu positions are 0..{len(hdus)}")
+        raise error
+    stamp = _has_checksums(hdus)
+    end = None  # through EOF: keeps bytes after the last HDU
+
+    if index == 0:
+        _require_primary_capable(new_hdu, compress)
+        _start, old_data, _end, old_raw = hdus[0]
+        converted = primary_as_image_extension(old_raw)
+        restamp = [0] if stamp else []
+        if header_has_card(old_raw, *_CHECKSUM_KEYS):
+            restamp.append(1)
+        with _scratch_hdu(new_hdu, primary=True, compress=False) as new_piece:
+            publish_spliced(
+                path,
+                _nonempty([new_piece, converted, (path, old_data, end)]),
+                restamp=restamp,
+            )
+        return
+
+    cut = hdus[index - 1][2]
+    with _scratch_hdu(new_hdu, primary=False, compress=compress) as new_piece:
+        publish_spliced(
+            path,
+            _nonempty([(path, 0, cut), new_piece, (path, cut, end)]),
+            restamp=[index] if stamp else [],
+        )
 
 
 def replace_hdu(
@@ -416,36 +503,15 @@ def replace_hdu(
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
 ) -> None:
-    """Replace an HDU by index or EXTNAME."""
+    """Replace an HDU by index or EXTNAME.
+
+    Only the replacement is written (``compress=`` applies to it alone); every
+    other HDU is copied byte-for-byte.
+    """
     preserve_header = header is None and not isinstance(data, (TableHDU, TensorHDU))
-
-    if isinstance(data, TableHDU) or isinstance(data, TensorHDU):
-        # Never mutate the caller's HDU: build a header-replaced copy.
-        new_hdu = _hdu_with_header(data, Header(header)) if header is not None else data
-    elif isinstance(data, dict) and "data" not in data:
-        new_hdu = TableHDU(data, header=Header(header or {}))
-    elif isinstance(data, Tensor):
-        new_hdu = TensorHDU(data=data, header=Header(header or {}))
-    else:
-        raise ValueError(f"Unsupported HDU data type: {type(data)}")
-
-    hdus = _detach_hdus_for_rewrite(path)
-    restamp = _hdus_have_checksums(hdus)
-
-    if isinstance(hdu, int):
-        if hdu < 0 or hdu >= len(hdus):
-            raise IndexError(f"hdu index {hdu} out of range for {len(hdus)} HDUs")
-        target: int = hdu
-    elif isinstance(hdu, str):
-        target = -1
-        for idx, item in enumerate(hdus):
-            if item.header.get("EXTNAME") == hdu:
-                target = idx
-                break
-        if target < 0:
-            raise KeyError(f"HDU '{hdu}' not found")
-    else:
-        raise TypeError("hdu must be an int index or EXTNAME string")
+    new_hdu = _new_hdu_from_args(data, header)
+    headers = _file_headers(path)
+    target = _resolve_target(path, headers, hdu)
 
     if preserve_header:
         # Keep the original header (e.g. EXTNAME/WCS) unless the caller
@@ -453,63 +519,33 @@ def replace_hdu(
         # payload's storage: replaying e.g. an unsigned-convention BZERO=32768
         # over different data makes every reader misinterpret the new bytes,
         # so they are dropped and the writer emits canonical keywords.
-        old_header = getattr(hdus[target], "header", None)
-        if old_header is not None:
-            preserved = Header(old_header)
-            for stale_key in (
-                "BSCALE",
-                "BZERO",
-                "BLANK",
-                "DATAMIN",
-                "DATAMAX",
-                "DATASUM",
-                "CHECKSUM",
-            ):
-                if stale_key in preserved:
-                    del preserved[stale_key]
-            preserved = _strip_compression_cards(preserved)
-            if isinstance(new_hdu, TensorHDU):
-                new_hdu._header = preserved
-            else:
-                new_hdu.header = preserved
+        preserved = Header(headers[target])
+        for stale_key in (
+            "BSCALE",
+            "BZERO",
+            "BLANK",
+            "DATAMIN",
+            "DATAMAX",
+            "DATASUM",
+            "CHECKSUM",
+        ):
+            if stale_key in preserved:
+                del preserved[stale_key]
+        preserved = _strip_compression_cards(preserved)
+        if isinstance(new_hdu, TensorHDU):
+            new_hdu._header = preserved
+        else:
+            new_hdu.header = preserved
 
-    hdus[target] = new_hdu
-    _atomic_rewrite_hdus(path, hdus, compress=compress, restamp_checksums=restamp)
-
-
-def delete_hdu(
-    path: str,
-    hdu: Union[int, str],
-    compress: Union[bool, str] = False,
-) -> None:
-    """Delete an HDU by index or EXTNAME."""
-    hdus = _detach_hdus_for_rewrite(path)
-    restamp = _hdus_have_checksums(hdus)
-
-    if isinstance(hdu, int):
-        if hdu < 0 or hdu >= len(hdus):
-            raise IndexError(f"hdu index {hdu} out of range for {len(hdus)} HDUs")
-        target: int = hdu
-    elif isinstance(hdu, str):
-        target = -1
-        for idx, item in enumerate(hdus):
-            if item.header.get("EXTNAME") == hdu:
-                target = idx
-                break
-        if target < 0:
-            raise KeyError(f"HDU '{hdu}' not found")
-    else:
-        raise TypeError("hdu must be an int index or EXTNAME string")
-
-    if len(hdus) == 1:
-        # Refuse before touching anything, so the caller gets an actionable
-        # message instead of a file that used to be readable and no longer is.
-        # _write_hdus_uncompressed refuses the empty payload as a backstop;
-        # this is the same rule stated where the request is made.
-        raise ValueError(
-            "Cannot delete the last HDU: a FITS file must contain at least "
-            "one HDU. Write an empty primary instead if that is what you want."
+    hdus = _file_hdus(path, len(headers))
+    stamp = _has_checksums(hdus)
+    primary = target == 0
+    if primary:
+        _require_primary_capable(new_hdu, compress)
+    start, _data, stop, _raw = hdus[target]
+    with _scratch_hdu(new_hdu, primary=primary, compress=compress) as new_piece:
+        publish_spliced(
+            path,
+            _nonempty([(path, 0, start), new_piece, (path, stop, None)]),
+            restamp=[target] if stamp else [],
         )
-
-    del hdus[target]
-    _atomic_rewrite_hdus(path, hdus, compress=compress, restamp_checksums=restamp)

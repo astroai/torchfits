@@ -97,6 +97,44 @@ class Header(dict[str, Any]):
                     "expected a Header, dict, or card sequence"
                 )
 
+    # dict's own pickle/copy protocol rebuilds a subclass by replaying the
+    # mapping into an instance whose __init__ never ran (no ``_cards``) and
+    # copies ``__dict__`` by reference, so copies shared -- and appended to --
+    # the original card list. Rebuild from the ordered cards instead.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (list(self._cards),))
+
+    def __copy__(self) -> "Header":
+        return type(self)(list(self._cards))
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "Header":
+        import copy as _copy
+
+        return type(self)([_copy.deepcopy(card, memo) for card in self._cards])
+
+    # dict.copy / | / |= build or fill a plain mapping and skip the card list
+    # that write() serializes, so those values vanished on write.
+    def copy(self) -> "Header":
+        return self.__copy__()
+
+    def __ior__(self, other: Any) -> "Header":  # type: ignore[override]
+        self.update(other)
+        return self
+
+    def __or__(self, other: Any) -> "Header":  # type: ignore[override]
+        if not isinstance(other, dict):
+            return NotImplemented
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ror__(self, other: Any) -> "Header":  # type: ignore[override]
+        if not isinstance(other, dict):
+            return NotImplemented
+        merged = type(self)(other)
+        merged.update(self)
+        return merged
+
     def __setitem__(self, key: str, value: Any) -> None:
         if (
             not isinstance(value, (str, bytes))

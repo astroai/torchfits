@@ -8,7 +8,10 @@
 # fail at import time with a bare "undefined symbol: _ffopen". Fail the build
 # here instead, naming the symbol.
 #
-# Invoked as: cmake -DCMAKE_TARGET=<lib> -P check_core_link.cmake
+# Invoked as: cmake -DCMAKE_TARGET=<lib> [-DCORE_LIBRARY=<libtorchfits_core>]
+#             -P check_core_link.cmake
+# On ELF, CORE_LIBRARY is what proves each undefined CFITSIO symbol is really
+# defined by the core; without it those symbols count as unresolved.
 if(NOT CMAKE_TARGET)
     message(FATAL_ERROR "check_core_link.cmake requires -DCMAKE_TARGET=<library>")
 endif()
@@ -19,7 +22,8 @@ if(NOT _NM_EXECUTABLE)
     return()
 endif()
 
-if(APPLE)
+# CHECK_CORE_LINK_FORCE_ELF lets the tests drive the ELF branch from macOS.
+if(APPLE AND NOT CHECK_CORE_LINK_FORCE_ELF)
     # macOS uses a two-level namespace: `nm -u` lists every symbol _C does not
     # define itself, including the ones the linker bound to a specific dylib.
     # `nm -m` appends "from <dylib>" to those, so a CFITSIO symbol with no
@@ -91,11 +95,20 @@ else()
         message(STATUS "check_core_link: nm failed (${_NM_ERR}); skipping")
         return()
     endif()
-    string(REGEX MATCHALL "[ \t_](fits|ff)[a-z0-9_]+" _LEAKED "${_UNDEF}")
+    # Whole C symbol names only: a mangled C++ name such as
+    # _ZN9torchfits6detail17open_fits_readonlyE... contains "_fits_" and must
+    # not be read as a CFITSIO symbol (it broke every Linux build).
+    string(REGEX MATCHALL "[ \t]_?(fits|ff)[a-z0-9_]+" _LEAKED "${_UNDEF}")
+    # libc's fflush/ffs* share the ff prefix (nm prints `U fflush@GLIBC_2.2.5`
+    # and the match stops at '@'); they are not CFITSIO.
+    list(TRANSFORM _LEAKED REPLACE "^[ \t]_?" "")
+    list(FILTER _LEAKED EXCLUDE REGEX "^(fflush|fflush_unlocked|ffs|ffsl|ffsll)$")
     # Undefined `ff*`/`fits_*` in a shared object is how a dynamic import
-    # looks. They are filled at load when libtorchfits_core is NEEDED.
-    # An empty stand-in file (the gate's own tests) has no such dependency,
-    # so a genuinely unbound symbol still fails.
+    # looks. They are filled at load when libtorchfits_core is NEEDED -- but
+    # only if the core actually defines them: NEEDED alone excused a symbol
+    # the core had stopped exporting. Require each one in the core's dynamic
+    # symbol table. An empty stand-in file (the gate's own tests) has no such
+    # dependency, so a genuinely unbound symbol still fails.
     if(_LEAKED)
         find_program(_READELF_EXECUTABLE NAMES readelf)
         if(_READELF_EXECUTABLE)
@@ -106,7 +119,28 @@ else()
                 RESULT_VARIABLE _READELF_RC
             )
             if(_READELF_RC EQUAL 0 AND _DYNAMIC MATCHES "libtorchfits_core")
-                set(_LEAKED "")
+                set(_CORE_DEFINED "")
+                if(CORE_LIBRARY)
+                    execute_process(
+                        COMMAND "${_NM_EXECUTABLE}" -D --defined-only "${CORE_LIBRARY}"
+                        OUTPUT_VARIABLE _CORE_SYMS
+                        ERROR_VARIABLE _CORE_NM_ERR
+                        RESULT_VARIABLE _CORE_NM_RC
+                    )
+                    if(_CORE_NM_RC EQUAL 0)
+                        string(REGEX MATCHALL "[ \t]_?(fits|ff)[a-z0-9_]+" _CORE_DEFINED "${_CORE_SYMS}")
+                        string(REGEX REPLACE "[ \t]_?" "" _CORE_DEFINED "${_CORE_DEFINED}")
+                    endif()
+                endif()
+                set(_UNRESOLVED "")
+                foreach(_sym IN LISTS _LEAKED)
+                    string(REGEX REPLACE "^[ \t]_?" "" _name "${_sym}")
+                    list(FIND _CORE_DEFINED "${_name}" _found)
+                    if(_found EQUAL -1)
+                        list(APPEND _UNRESOLVED "${_name}")
+                    endif()
+                endforeach()
+                set(_LEAKED "${_UNRESOLVED}")
             endif()
         endif()
     endif()

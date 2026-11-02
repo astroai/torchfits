@@ -179,3 +179,133 @@ def test_no_bare_urlretrieve_call_sites_in_src():
         if "urlretrieve" in py.read_text()
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "host", ["0177.0.0.1", "127.1", "2130706433", "0x7f.0.0.1", "08.1.1.1", "1.2.3"]
+)
+def test_non_canonical_numeric_hosts_are_refused_before_cfitsio(monkeypatch, host):
+    """getaddrinfo may read ``0177.0.0.1`` as public 177.0.0.1 while CFITSIO's
+    ``inet_addr`` (and libcurl) read it as 127.0.0.1: only canonical dotted
+    decimal is accepted for numeric hosts."""
+
+    def no_dns(*args, **kwargs):
+        raise AssertionError("numeric host must be refused before DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    with pytest.raises(http_util.HttpBlockedError, match="non-canonical numeric"):
+        http_util.guard_cfitsio_remote_path(f"http://{host}:8080/x.fits")
+    with pytest.raises(http_util.HttpBlockedError, match="non-canonical numeric"):
+        torchfits.read(f"http://{host}:8080/x.fits")
+    assert http_util.is_internal_url(f"http://{host}/x.fits")
+
+
+@pytest.mark.parametrize("ip", ["100.64.0.1", "100.127.255.254", "192.0.0.8"])
+def test_non_global_addresses_are_blocked(ip):
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.guard_cfitsio_remote_path(f"http://{ip}/x.fits")
+
+
+def test_canonical_public_ipv4_still_allowed():
+    assert http_util._resolve_public_addrs("http://8.8.8.8/x.fits") == ("8.8.8.8",)
+
+
+def test_dns_failure_says_could_not_resolve(monkeypatch):
+    def fail(*args, **kwargs):
+        raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    with pytest.raises(
+        http_util.HttpBlockedError, match="could not resolve host"
+    ) as ei:
+        http_util.guard_cfitsio_remote_path("http://nosuch.example.invalid/x.fits")
+    assert "private" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    [
+        "httpmem",
+        "httpfile",
+        "httpcompress",
+        "httpsmem",
+        "ftps",
+        "ftpmem",
+        "root",
+        "gsiftp",
+    ],
+)
+def test_cfitsio_driver_variants_are_guarded(monkeypatch, scheme):
+    """``httpmem://127.0.0.1/...`` used to skip the guard and reach loopback."""
+    dialed = []
+    _mock_dns_and_dial(monkeypatch, {}, dialed)
+    url = f"{scheme}://127.0.0.1:8080/x.fits"
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.guard_cfitsio_remote_path(url)
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        torchfits.read(url)
+    assert dialed == []
+
+
+class _ProxyHandler(http.server.BaseHTTPRequestHandler):
+    seen: list[str] = []
+
+    def do_GET(self):
+        type(self).seen.append(self.requestline)
+        body = b"via-proxy"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_http_open_goes_through_configured_proxy(monkeypatch):
+    """With ``http_proxy`` set the socket must reach the proxy, not the
+    target's pinned address at the proxy's port."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ProxyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _ProxyHandler.seen = []
+    for name in ("no_proxy", "NO_PROXY", "HTTP_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{server.server_address[1]}")
+    resolved = []
+
+    def fake_resolve(url):
+        resolved.append(url)
+        return (GLOBAL_A,)
+
+    monkeypatch.setattr(http_util, "_resolve_public_addrs", fake_resolve)
+    try:
+        with http_util.http_open("http://files.example/data.fits", timeout=5) as r:
+            body = r.read()
+    finally:
+        server.shutdown()
+        thread.join()
+    assert body == b"via-proxy"
+    assert _ProxyHandler.seen == ["GET http://files.example/data.fits HTTP/1.1"]
+    assert resolved == ["http://files.example/data.fits"]  # target still guarded
+
+
+def test_proxy_does_not_bypass_guard(monkeypatch):
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.http_open("http://10.0.0.5/x.fits")
+
+
+@pytest.mark.parametrize("ip", ["192.0.0.8", "100.64.0.1", "198.18.0.1", "2001:db8::1"])
+def test_special_purpose_ranges_blocked_whatever_ipaddress_says(ip, monkeypatch):
+    """Older Pythons (e.g. 3.11) classify 192.0.0.0/24 as global; the guard
+    must not depend on the interpreter's ipaddress tables."""
+    import ipaddress
+
+    from torchfits import http_util
+
+    for cls in (ipaddress.IPv4Address, ipaddress.IPv6Address):
+        monkeypatch.setattr(cls, "is_global", property(lambda self: True))
+        for name in ("is_private", "is_reserved", "is_loopback", "is_link_local"):
+            monkeypatch.setattr(cls, name, property(lambda self: False))
+    assert http_util._is_blocked_ip(ipaddress.ip_address(ip))

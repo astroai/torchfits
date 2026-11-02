@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import torchfits
 from torchfits._io_engine.paths import cfitsio_base_path, has_bz2_support
@@ -19,8 +20,10 @@ from .common import (
     configure_torch_jobs,
     ensure_unique_basenames,
     _hdu_width,
+    _header_truthy,
     ensure_unique_split_stems,
     hdu_type_name,
+    is_compressed_image_header,
     reject_same_path,
     resolve_batch_io_pairs,
     resolve_file_jobs,
@@ -110,6 +113,89 @@ def _resolve_file_pairs(args: argparse.Namespace) -> list[tuple[str, str]]:
     )
 
 
+# Cards a tile-compressed HDU uses to remember the uncompressed HDU's
+# required keywords (CFITSIO imcomp_copy_comp2img). They mean nothing in an
+# uncompressed HDU and must not leak into decompressed output.
+_RESTORE_CARDS = (
+    "ZSIMPLE",
+    "ZTENSION",
+    "ZEXTEND",
+    "ZBLOCKED",
+    "ZPCOUNT",
+    "ZGCOUNT",
+    "ZHECKSUM",
+    "ZDATASUM",
+)
+
+
+def _naxis_has_data(header: Any) -> bool:
+    try:
+        naxis = int(header.get("NAXIS", 0))
+        return naxis > 0 and all(
+            int(header.get(f"NAXIS{axis}", 0)) > 0 for axis in range(1, naxis + 1)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _refresh_checksums(path: str, hdu: int) -> None:
+    header = torchfits.read_header(path, hdu)
+    if "CHECKSUM" in header or "DATASUM" in header:
+        torchfits.write_checksums(path, hdu)
+        torchfits.io._invalidate_path_caches(path)
+
+
+def _compress_file(input_path: str, output_path: str, *, algorithm: str) -> None:
+    with torchfits.open(input_path) as hdul:
+        primary_image = len(hdul) > 0 and _naxis_has_data(hdul[0].header)
+        torchfits.write(output_path, hdul, overwrite=True, compress=algorithm)
+    if not primary_image:
+        return
+    # A FITS primary cannot be compressed: the image moves to HDU 1 behind an
+    # empty primary. Record that with ZSIMPLE (as fpack / CFITSIO do) so
+    # decompress can put it back as the primary.
+    with torchfits.open(output_path) as out:
+        moved = (
+            len(out) > 1
+            and not _naxis_has_data(out[0].header)
+            and is_compressed_image_header(out[1].header)
+        )
+    if moved:
+        torchfits.io._write_header_cards_if_supported(
+            output_path, 1, {"ZSIMPLE": (True, "file does conform to FITS standard")}
+        )
+        _refresh_checksums(output_path, 1)
+
+
+def _decompress_file(input_path: str, output_path: str) -> None:
+    with torchfits.open(input_path) as hdul:
+        hdus = [hdul[index] for index in range(len(hdul))]
+        compressed = [is_compressed_image_header(hdu.header) for hdu in hdus]
+        # funpack layout restore: a compressed HDU 1 flagged ZSIMPLE behind an
+        # empty primary was the original primary image.
+        restore_primary = (
+            len(hdus) > 1
+            and compressed[1]
+            and not _naxis_has_data(hdus[0].header)
+            and _header_truthy(hdus[1].header.get("ZSIMPLE"))
+        )
+        if restore_primary:
+            hdus = hdus[1:]
+            compressed = compressed[1:]
+        torchfits.write(
+            output_path, torchfits.HDUList(hdus), overwrite=True, compress=False
+        )
+    for index, was_compressed in enumerate(compressed):
+        if not was_compressed:
+            continue
+        header = torchfits.read_header(output_path, index)
+        leaked = [key for key in _RESTORE_CARDS if key in header]
+        for key in leaked:
+            torchfits.io._delete_header_key_if_supported(output_path, index, key)
+        if leaked:
+            _refresh_checksums(output_path, index)
+
+
 def _rewrite_file(
     input_path: str,
     output_path: str,
@@ -117,8 +203,10 @@ def _rewrite_file(
     compress: bool | str,
 ) -> None:
     try:
-        with torchfits.open(input_path) as hdul:
-            torchfits.write(output_path, hdul, overwrite=True, compress=compress)
+        if isinstance(compress, str):
+            _compress_file(input_path, output_path, algorithm=compress)
+        else:
+            _decompress_file(input_path, output_path)
     except UsageError:
         raise
     except Exception as exc:
@@ -145,7 +233,7 @@ def _rewrite_one_input_split_hdu(
 
     try:
         with torchfits.open(input_path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=input_path)
             image_indices = [
                 index
                 for index in indices
@@ -224,7 +312,7 @@ def _validate_compression_inputs(
     for path in inputs:
         try:
             with torchfits.open(path) as hdul:
-                for index in selected_hdu_indices(len(hdul), hdu):
+                for index in selected_hdu_indices(len(hdul), hdu, path=path):
                     if hdu_type_name(hdul[index].header, hdul[index]) != "IMAGE":
                         continue
                     bitpix = int(

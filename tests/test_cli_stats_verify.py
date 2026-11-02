@@ -54,11 +54,15 @@ def test_stats_empty_region_jsonl_yields_null(tmp_path):
 
 
 def test_stats_nonfinite_floats_serialize_as_null(tmp_path):
-    """NaN/±inf statistics serialize as null: JSON has no NaN/Infinity."""
+    """NaN statistics serialize as null: JSON has no NaN/Infinity.
+
+    Non-finite pixels are excluded, so an image with no finite pixel has
+    undefined (NaN -> null) statistics and counts every pixel in ``nbad``.
+    """
     path = tmp_path / "nan.fits"
     torchfits.write(
         str(path),
-        torch.tensor([[float("nan"), 1.0], [2.0, float("inf")]]),
+        torch.tensor([[float("nan"), float("-inf")], [float("nan"), float("inf")]]),
         overwrite=True,
     )
     for fmt in ("json", "jsonl"):
@@ -68,6 +72,7 @@ def test_stats_nonfinite_floats_serialize_as_null(tmp_path):
         record = payload[0] if fmt == "json" else payload
         for key in ("min", "max", "mean", "std", "median"):
             assert record[key] is None
+        assert record["nbad"] == 4
 
 
 def test_table_json_preview_nonfinite_null(tmp_path):

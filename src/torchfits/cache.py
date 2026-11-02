@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import warnings
 from pathlib import Path
@@ -80,7 +81,15 @@ def clear_cache(*, disk: bool = False) -> None:
             stacklevel=2,
         )
     if disk:
-        _remove_tree(cache_root())
+        root = cache_root()
+        _remove_tree(root)
+        # TORCHFITS_REMOTE_CACHE / TORCHFITS_SAMPLE_CACHE are user-configured
+        # and may be shared (even $HOME): never delete them wholesale. Only
+        # the hashed download files torchfits names itself are removed from a
+        # remote override outside the root; a sample override is left alone.
+        remote = remote_cache_root()
+        if not _is_within(remote, root):
+            _remove_remote_downloads(remote)
 
 
 def clear_all_caches() -> None:
@@ -91,6 +100,34 @@ def clear_all_caches() -> None:
 def _remove_tree(path: Path) -> None:
     if path.is_dir():
         shutil.rmtree(path, ignore_errors=True)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
+
+
+# Names data.remote creates: ``<sha256[:32]><suffix>`` plus its
+# ``.partial``/``.partial.meta`` siblings and the ``.<name>.lock`` file.
+_REMOTE_DOWNLOAD_NAME = re.compile(r"^\.?[0-9a-f]{32}\.[^/]+$")
+
+
+def _remove_remote_downloads(directory: Path) -> None:
+    """Unlink torchfits download files directly inside *directory*."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not _REMOTE_DOWNLOAD_NAME.match(entry.name):
+            continue
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                entry.unlink()
+        except OSError:
+            pass
 
 
 __all__ = [

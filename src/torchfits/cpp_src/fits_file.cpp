@@ -67,9 +67,11 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         // Private per-instance handle (CFITSIO §4 Option A): no shared CHDU.
         status = detail::open_fits_readonly(&fptr_, filename_);
     } else {
-        fits_create_file(&fptr_, filename, &status);
+        fits_clear_errmsg();
+        status = create_fits_file(&fptr_, filename_);
     }
     if (status != 0 || !fptr_) {
+        const std::string message = detail::open_failure_message(filename_, status);
         // CFITSIO may leave a partially-initialized handle on failure; close it
         // to avoid leaking the underlying file.
         if (fptr_) {
@@ -77,8 +79,12 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
             fits_close_file(fptr_, &close_status);
             fptr_ = nullptr;
         }
-        throw std::runtime_error("Could not open FITS file: " + filename_);
+        throw std::runtime_error(message);
     }
+    fptr_owner_.reset(fptr_, [](fitsfile* f) {
+        int close_status = 0;
+        fits_close_file(f, &close_status);
+    });
     if (mode == 0) {
         shared_meta_ = detail::get_shared_meta_for_path(filename_);
         capture_open_identity();
@@ -121,6 +127,12 @@ bool FITSFile::owns_current_generation_locked() const {
            shared_meta_->mtime_ns == open_mtime_ns_;
 }
 
+bool FITSFile::shares_current_file() const {
+    if (!shared_meta_) return false;
+    std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
+    return owns_current_generation_locked();
+}
+
 void FITSFile::publish_image_info(
     int hdu_num, const std::tuple<int, int, std::array<LONGLONG, 9>>& info) const {
     if (!shared_meta_ || !open_identity_valid_) return;
@@ -147,17 +159,28 @@ void FITSFile::publish_compressed(int hdu_num, bool compressed) const {
 void FITSFile::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     close_raw_fd();
-    if (fptr_) {
-        int status = 0;
-        fits_close_file(fptr_, &status);
-        fptr_ = nullptr;
+    if (fptr_ && fptr_owner_ && fptr_owner_.use_count() > 1) {
+        // A borrower (share_fptr) defers fits_close_file, but close() must
+        // still put everything written so far on disk: another process
+        // reading the file after close() saw it truncated.
+        int flush_status = 0;
+        fits_flush_file(fptr_, &flush_status);
     }
+    fptr_ = nullptr;
+    // Closes the file now, or when the last borrower (share_fptr) lets go.
+    fptr_owner_.reset();
 }
 
 void FITSFile::ensure_hdu(int hdu_num, int* status) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (!fptr_) throw std::runtime_error("FITSFile is closed");
     int target_hdu = hdu_num + start_hdu_;
+    // Ask CFITSIO where the cursor is instead of trusting current_hdu_:
+    // bindings and handle-based TableReaders move it on this same fitsfile
+    // (fits_get_num_hdus walks to the last HDU), so a cached value goes stale.
+    int actual_hdu = 0;
+    fits_get_hdu_num(fptr_, &actual_hdu);
+    current_hdu_ = actual_hdu;
     if (current_hdu_ != target_hdu) {
         fits_movabs_hdu(fptr_, target_hdu, nullptr, status);
         if (*status == 0) {
@@ -182,8 +205,10 @@ const FITSFile::ScaleInfo& FITSFile::get_scale_info(int hdu_num, int bitpix) {
     if (it != scale_cache_.end()) return it->second;
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
+        // Only trust the shared entry while it describes the file this handle
+        // opened; after an out-of-band rewrite it belongs to the new file.
         auto sit = shared_meta_->scale_cache.find(hdu_num);
-        if (sit != shared_meta_->scale_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->scale_cache.end()) {
             auto [scaled, trusted, bscale, bzero] = sit->second;
             ScaleInfo shared_info;
             shared_info.scaled = scaled; shared_info.trusted = trusted;
@@ -215,7 +240,7 @@ bool FITSFile::is_compressed_image_cached(int hdu_num) {
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
         auto sit = shared_meta_->compressed_cache.find(hdu_num);
-        if (sit != shared_meta_->compressed_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->compressed_cache.end()) {
             compressed_cache_[hdu_num] = sit->second;
             return sit->second;
         }
@@ -236,7 +261,7 @@ const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(in
     if (shared_meta_) {
         std::shared_lock<std::shared_mutex> lock(shared_meta_->mutex);
         auto sit = shared_meta_->image_info_cache.find(hdu_num);
-        if (sit != shared_meta_->image_info_cache.end()) {
+        if (owns_current_generation_locked() && sit != shared_meta_->image_info_cache.end()) {
             auto inserted = image_info_cache_.emplace(hdu_num, sit->second);
             return inserted.first->second;
         }
@@ -310,6 +335,13 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     std::shared_ptr<detail::RawFdHolder> fd_holder;
     if (!meta.compressed && shared_meta_) {
         fd_holder = detail::get_shared_raw_fd(shared_meta_, filename_);
+        // The shared fd follows the path, so after an out-of-band replace it
+        // is the new file. A handle still pinned to the old file must read
+        // through its own CFITSIO handle instead (fd = -1), or it returns
+        // the new file's bytes at the old data offset.
+        if (!shares_current_file()) {
+            fd_holder.reset();
+        }
     }
     const int fd = fd_holder ? fd_holder->fd : -1;
     return detail::read_tensor_canonical(fptr_, filename_, meta, use_mmap, fd, /*use_chunking=*/false);
@@ -461,6 +493,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
 
 bool FITSFile::write_image(nb::ndarray<> tensor) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    torchfits::internal::require_cpu_ndarray(tensor, "image data");
     int status = 0;
     int naxis = tensor.ndim();
     std::vector<long> naxes(naxis);
@@ -562,6 +595,10 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
     if (signed_byte_scaled) { dtype = torch::kInt8;  datatype = TSBYTE; }
     else if (unsigned_short) { dtype = torch::kUInt16; datatype = TUSHORT; }
     else if (unsigned_long) { dtype = torch::kUInt32; datatype = TUINT; }
+    else if (scaled && bitpix == LONGLONG_IMG && scale_info.bscale == 1.0 &&
+             detail::is_unsigned_longlong_offset(scale_info.bzero)) {
+        dtype = torch::kUInt64; datatype = TULONGLONG;
+    }
     else if (scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
         dtype = torch::kFloat32; datatype = TFLOAT;
     } else if (scaled) { dtype = torch::kFloat64; datatype = TDOUBLE; }
@@ -636,6 +673,7 @@ std::string FITSFile::get_hdu_type(int hdu_num) {
 
 bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    validate_hdu_list_headers(hdus);
     int hdu_count = 0;
     for (auto handle : hdus) {
         nb::object hdu_obj = nb::cast<nb::object>(handle);
@@ -694,46 +732,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                     key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
                     key_upper == "THEAP" || key_upper.rfind("NAXIS", 0) == 0) continue;
                 int key_status = 0;
-                bool matched = false;
-                if (nb::isinstance<bool>(item.second)) {
-                    int val = nb::cast<bool>(item.second) ? 1 : 0;
-                    fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-                    matched = true;
-                } else if (nb::isinstance<nb::str>(item.second)) {
-                    std::string val = detail::require_fits_ascii(
-                        nb::cast<std::string>(item.second), "header value");
-                    if (val.size() > 68) {
-                        fits_update_key_longstr(fptr_, key.c_str(), val.c_str(), nullptr, &key_status);
-                    } else {
-                        fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                    }
-                    matched = true;
-                } else if (PyLong_Check(item.second.ptr())) {
-                    int overflow = 0;
-                    long long val = PyLong_AsLongLongAndOverflow(
-                        item.second.ptr(), &overflow
-                    );
-                    if (overflow != 0 || PyErr_Occurred()) {
-                        PyErr_Clear();
-                        throw std::runtime_error(
-                            "FITS header integer out of long long range: " + key
-                        );
-                    }
-                    fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-                    matched = true;
-                } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
-                    double val = nb::cast<double>(item.second);
-                    fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
-                    matched = true;
-                } else {
-                    throw std::runtime_error(
-                        "Unsupported FITS header value type for key '" + key +
-                        "': expected str, bool, int, or float"
-                    );
-                }
-                if (!matched) {
-                    // unreachable: matched handles all branches, kept for symmetry
-                }
+                update_header_value(fptr_, key, item.second, nullptr, &key_status);
                 if (key_status != 0) {
                     throw std::runtime_error("Failed to write FITS header keyword: " + key);
                 }
@@ -746,6 +745,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
 
 bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    validate_hdu_list_headers(hdus);
     int status = 0;
     long naxes0[1] = {0};
     fits_create_img(fptr_, BYTE_IMG, 0, naxes0, &status);
@@ -777,38 +777,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             if (key_upper.rfind("ZNAXIS", 0) == 0 || key_upper.rfind("ZTILE", 0) == 0 ||
                 key_upper.rfind("ZNAME", 0) == 0 || key_upper.rfind("ZVAL", 0) == 0) continue;
             int key_status = 0;
-            if (nb::isinstance<bool>(item.second)) {
-                int val = nb::cast<bool>(item.second) ? 1 : 0;
-                fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-            } else if (nb::isinstance<nb::str>(item.second)) {
-                    std::string val = detail::require_fits_ascii(
-                        nb::cast<std::string>(item.second), "header value");
-                    if (val.size() > 68) {
-                        fits_update_key_longstr(fptr_, key.c_str(), val.c_str(), nullptr, &key_status);
-                    } else {
-                        fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                    }
-            } else if (PyLong_Check(item.second.ptr())) {
-                    int overflow = 0;
-                    long long val = PyLong_AsLongLongAndOverflow(
-                        item.second.ptr(), &overflow
-                    );
-                    if (overflow != 0 || PyErr_Occurred()) {
-                        PyErr_Clear();
-                        throw std::runtime_error(
-                            "FITS header integer out of long long range: " + key
-                        );
-                    }
-                    fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-            } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
-                    double val = nb::cast<double>(item.second);
-                    fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
-            } else {
-                throw std::runtime_error(
-                    "Unsupported FITS header value type for key '" + key +
-                    "': expected str, bool, int, or float"
-                );
-            }
+            update_header_value(fptr_, key, item.second, nullptr, &key_status);
             if (key_status != 0) {
                 throw std::runtime_error("Failed to write FITS header keyword: " + key);
             }
@@ -838,6 +807,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         }
         if (!has_data) throw std::runtime_error("Compressed writing requires image data");
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(data_obj);
+        torchfits::internal::require_cpu_ndarray(tensor, "image data");
         int naxis = tensor.ndim();
         if (naxis <= 0) throw std::runtime_error("Unsupported image ndim for compressed write");
         std::vector<long> naxes(naxis);
@@ -861,11 +831,13 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             lossless_capable =
                 dt.code != (uint8_t)nb::dlpack::dtype_code::Float;
         }
-        if (lossless_capable) {
-            status = 0;
-            fits_set_quantize_level(fptr_, 0.0f, &status);
-            if (status != 0) throw std::runtime_error("Failed to set compression quantization");
-        }
+        // The request is per file, not per HDU: set it on every HDU so a
+        // lossless integer HDU does not leave a later float HDU at qlevel=0,
+        // which float RICE rejects (status 413). 4.0 is CFITSIO's own default
+        // for the default SUBTRACTIVE_DITHER_1 method (imcompress.c).
+        status = 0;
+        fits_set_quantize_level(fptr_, lossless_capable ? 0.0f : 4.0f, &status);
+        if (status != 0) throw std::runtime_error("Failed to set compression quantization");
         if (compression_type == PLIO_1) {
             nb::dlpack::dtype dt_plio = tensor.dtype();
             if (dt_plio.code == (uint8_t)nb::dlpack::dtype_code::Float) {
@@ -890,6 +862,9 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) { bitpix = BYTE_IMG; datatype = TBYTE; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) { bitpix = SBYTE_IMG; datatype = TSBYTE; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) { bitpix = SHORT_IMG; datatype = TSHORT; }
+        // uint16 (BZERO = 32768): PLIO cannot store the negative signed
+        // codes, but CFITSIO compresses TUSHORT pixels of a USHORT_IMG.
+        else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 16) { bitpix = USHORT_IMG; datatype = TUSHORT; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) { bitpix = LONG_IMG; datatype = TINT; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 64) { bitpix = LONGLONG_IMG; datatype = TLONGLONG; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) { bitpix = FLOAT_IMG; datatype = TFLOAT; }
@@ -1005,6 +980,10 @@ void SubsetReader::init_from_hdu() {
                detail::is_unsigned_long_offset(scale.bzero)) {
         dtype_ = torch::kUInt32; datatype_ = TUINT; elem_bytes_ = 4;
         mmap_conv_ = MmapConv::UInt32;
+    } else if (scale.scaled && bitpix == LONGLONG_IMG && scale.bscale == 1.0 &&
+               detail::is_unsigned_longlong_offset(scale.bzero)) {
+        // uint64 convention: CFITSIO converts (TULONGLONG); no mmap path.
+        dtype_ = torch::kUInt64; datatype_ = TULONGLONG; return;
     } else if (scale.scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
         dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
     } else if (scale.scaled) {
@@ -1054,6 +1033,12 @@ bool SubsetReader::ensure_data_mmap() {
     if (nbytes == 0) return false;
     raw_fd_holder_ = detail::get_shared_raw_fd(meta, filename_);
     if (!raw_fd_holder_ || raw_fd_holder_->fd < 0) return false;
+    // The shared fd follows the path; once the file was replaced it is not
+    // the file this reader's handle (and data_offset_) describe.
+    if (!file_.shares_current_file()) {
+        raw_fd_holder_.reset();
+        return false;
+    }
 
     // Never map beyond the actual file: header-claimed sizes on truncated or
     // corrupt files would SIGBUS on first touch. Fall back to fits_read_subset.

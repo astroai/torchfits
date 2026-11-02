@@ -111,7 +111,7 @@ example verification tasks.
 ### C++ code conventions
 
 - **No inline RAII structs in `.cpp` files.** Use the shared guards from the headers below instead.
-- `FitsHandleGuard` (`cache.h`) — RAII wrapper that always `fits_close_file`s a privately owned `fitsfile*`.
+- `FitsHandleGuard` (`fits_handle.h`) — RAII wrapper that always `fits_close_file`s a privately owned `fitsfile*`.
 - `MMapHandle` (`hardware.h`) — RAII wrapper for `mmap` regions. Construct with a filename (open + mmap) or adopt an existing mapping via `MMapHandle(ptr, size, fd)`.
 - If a new resource requires RAII, add the guard to the appropriate shared header rather than defining an inline struct at the usage site.
 
@@ -143,12 +143,13 @@ Upstream parity against astropy and fitsio is `pixi run test` in torchfits-harne
 
 Two suites run against real CFHT data — three 1.6 GB MegaPipe mosaics
 (21404x20347, single HDU) and ten Rice-compressed MegaCam MEFs (37–41 HDUs,
-`1PB(nnnn)` tiles). That data is not in git, so both skip unless it is fetched:
+`1PB(nnnn)` tiles). That data is not in git, so both skip unless it is fetched.
+CI does not fetch it either, so these suites only ever run locally:
 
 ```bash
 bash scripts/fetch_cfht_megacam_sample.sh    # ~2.5 GB
 bash scripts/fetch_cfht_megapipe_sample.sh  # ~5 GB
-pixi run -e test -- pytest tests/test_core_library_real_data.py -q
+pixi run -e test -- pytest tests/test_core_library_real_data.py tests/test_real_data_reads.py -q -rs
 ```
 
 `tests/test_core_library_real_data.py` is about the **metadata** path: it
@@ -177,7 +178,7 @@ The boundary claims are enforced by tests, but the quickest way to find a leak
 is to block the import and run something real:
 
 ```bash
-python - <<'PY'
+pixi run python - examples/example_mef_header.py <<'PY'
 import importlib.abc, runpy, sys
 class _Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -185,9 +186,10 @@ class _Block(importlib.abc.MetaPathFinder):
             raise ImportError(fullname + " is blocked")
         return None
 sys.meta_path.insert(0, _Block())
-sys.argv = [sys.argv[1]]
-runpy.run_path(sys.argv[1], run_name="__main__")
-PY examples/example_mef_header.py
+script = sys.argv[1]
+sys.argv = [script]
+runpy.run_path(script, run_name="__main__")
+PY
 ```
 
 Auditing `examples/` this way is how the `where=`-filter leak and the

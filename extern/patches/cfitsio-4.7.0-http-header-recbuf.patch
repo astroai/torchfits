@@ -1,0 +1,12 @@
+--- a/drvrnet.c
++++ b/drvrnet.c
+@@ -941,6 +941,9 @@
+   status = NET_SendRaw(sock,tmpstr,strlen(tmpstr),NET_DEFAULT);
+ 
+   /* read the header */
++  /* torchfits: a server that closes without a status line leaves recbuf
++     untouched, and it is formatted into the error message below. */
++  recbuf[0] = '\0';
+   if (!(fgets(recbuf,MAXLEN,*httpfile))) {
+     snprintf (errorstr,MAXLEN,"http header short (http_open_network) %s",recbuf);
+     ffpmsg(errorstr);

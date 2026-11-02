@@ -1,20 +1,15 @@
 """The `tests/cpp` self-checks that pytest *can* build, plus guards on the rest.
 
-`tests/cpp/` holds five standalone C++ programs. Two are already driven by
-pytest (`test_security.py` compiles the bracket detector, `test_byteswap.py` the
-byte-swap helpers). This file adds the third that needs nothing but a compiler
-and `core/parallel.cpp`: `test_parallel_for_nesting`, whose regression is a
-**deadlock** in `core::parallel_for` when a worker issues a nested call
-(CP-001). Until now that check only ran through `tests/cpp/run_all.sh`, which
-no CI job invokes, so the regression it guards had no CI coverage at all.
+`tests/cpp/` holds seven standalone C++ programs. Two are driven by
+`test_native_tree.py` (the bracket detector and the byte-swap helpers). This
+file adds one that needs nothing but a compiler and `core/parallel.cpp`:
+`test_parallel_for_nesting`, whose regression is a **deadlock** in
+`core::parallel_for` when a worker issues a nested call (CP-001).
 
-The other two — `test_open_for_write_conflict` and `test_fitsreader_threads` —
-link CFITSIO and are deliberately **not** wired here, because a skip that
-always fires is worse than no test: it reports coverage that does not exist
-(the TS-015 shape). They need a standalone CFITSIO library, which is not
-installed into the pixi environment and, in a `pip install -e .` CI job, is
-statically linked into the extension instead of shipped separately. Their
-coverage is `run_all.sh`, and the tests below keep that honest.
+The CFITSIO-linked ones are not wired here: `test_core_library.py` drives
+`test_open_for_write_conflict` and `test_fitsreader_threads` against the
+`pixi run dev` build tree, and the rest run only through `run_all.sh`. The
+tests below keep the runner and `tests/cpp/README.md` honest about that.
 """
 
 from __future__ import annotations
@@ -132,21 +127,36 @@ def test_library_linked_self_checks_are_documented_as_manual() -> None:
     half, so "manual" never reads as "unverified".
     """
     readme = (CHECKS / "README.md").read_text(encoding="utf-8")
-    for name in (
-        "test_open_for_write_conflict",
-        "test_fitsreader_threads",
-        "test_raw_fd_retry",
-    ):
+    for name in sorted(p.stem for p in CHECKS.glob("*.cpp")):
         assert name in readme, f"{name} is not mentioned in tests/cpp/README.md"
-    assert "test_shared_read_cache_does_not_retain_one_descriptor_per_path" in readme, (
+    assert "test_raw_fd_cap.py::" in readme, (
         "test_raw_fd_retry's Python half (the retained-descriptor cap) is not "
         "named in tests/cpp/README.md, so a reader would take the cap for "
         "unverified"
     )
     assert "no pytest fixture builds" in readme or "stay behind the" in readme, (
-        "tests/cpp/README.md no longer says why the library-linked checks are "
+        "tests/cpp/README.md no longer says why the runner-only checks are "
         "not run by pytest"
     )
+
+
+def test_readme_cites_only_tests_that_exist() -> None:
+    """Every ``tests/<file>.py::<name>`` the README cites must resolve.
+
+    The README pointed at a test that had moved to torchfits-harness, and the
+    guard above *required* that dead name, so the pointer could not be fixed
+    without failing the suite.
+    """
+    readme = (CHECKS / "README.md").read_text(encoding="utf-8")
+    cited = re.findall(r"tests/([A-Za-z0-9_]+\.py)::([A-Za-z0-9_]+)", readme)
+    assert cited, "tests/cpp/README.md cites no pytest tests at all"
+    for filename, name in cited:
+        path = REPO / "tests" / filename
+        assert path.is_file(), f"README cites missing file tests/{filename}"
+        source = path.read_text(encoding="utf-8")
+        assert re.search(rf"^\s*def {re.escape(name)}\(", source, re.MULTILINE), (
+            f"README cites tests/{filename}::{name}, which is not defined there"
+        )
 
 
 # --- the CFITSIO link gate ------------------------------------------------
@@ -284,3 +294,113 @@ def test_core_link_gate_never_reports_success_without_looking(tmp_path: Path) ->
     assert "skipping" in output, (
         f"a failed nm should say so rather than pass quietly: {output}"
     )
+
+
+_FAKE_ELF_NM = """#!/bin/sh
+# `nm -D --defined-only <core>` lists what the core exports; any other call
+# lists the target's undefined symbols.
+case " $* " in
+  *" --defined-only "*) printf '%s' "$R2_NM_CORE" ;;
+  *) printf '%s' "$R2_NM_OUT" ;;
+esac
+"""
+_FAKE_READELF = """#!/bin/sh
+printf ' 0x0000000000000001 (NEEDED)  Shared library: [libtorchfits_core.so]\\n'
+"""
+
+
+def _run_elf_gate(
+    tmp_path: Path, undefined: str, core_defined: str
+) -> subprocess.CompletedProcess[str]:
+    """Drive the ELF branch (as on Linux) with fake nm/readelf, from any host."""
+    fake_bin = tmp_path / "elfbin"
+    fake_bin.mkdir(exist_ok=True)
+    for name, body in (("nm", _FAKE_ELF_NM), ("readelf", _FAKE_READELF)):
+        tool = fake_bin / name
+        tool.write_text(body, encoding="utf-8")
+        tool.chmod(0o755)
+    target = tmp_path / "_C.so"
+    target.write_bytes(b"")
+    core = tmp_path / "libtorchfits_core.so"
+    core.write_bytes(b"")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "R2_NM_OUT": undefined,
+        "R2_NM_CORE": core_defined,
+    }
+    return subprocess.run(
+        [
+            "cmake",
+            f"-DCMAKE_TARGET={target}",
+            f"-DCORE_LIBRARY={core}",
+            "-DCHECK_CORE_LINK_FORCE_ELF=1",
+            "-P",
+            str(GATE),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_ignores_mangled_cpp_names_containing_fits(tmp_path: Path) -> None:
+    """A C++ core function such as detail::open_fits_readonly is not CFITSIO.
+
+    Its mangled name contains "_fits_", and the ELF gate read it as an unbound
+    CFITSIO symbol, failing every Linux build once _C imported it.
+    """
+    undefined = (
+        "                 U ffclos\n"
+        "                 U _ZN9torchfits6detail17open_fits_readonlyEPP8fitsfileRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE\n"
+    )
+    core_defined = "0000000000012340 T ffclos\n0000000000012400 T _ZN9torchfits6detail17open_fits_readonlyE\n"
+    result = _run_elf_gate(tmp_path, undefined, core_defined)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "resolves every CFITSIO symbol" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_still_fails_on_a_cfitsio_symbol_the_core_lacks(
+    tmp_path: Path,
+) -> None:
+    result = _run_elf_gate(
+        tmp_path,
+        "                 U ffclos\n                 U ffpcks\n",
+        "0000000000012340 T ffclos\n",
+    )
+    assert result.returncode != 0
+    assert "ffpcks" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_ignores_libc_ff_names(tmp_path: Path) -> None:
+    """libc's fflush/ffs/ffsl/ffsll match the ``ff`` prefix but are not CFITSIO."""
+    undefined = "".join(
+        f"                 U {name}\n"
+        for name in (
+            "ffclos",
+            "fflush@GLIBC_2.2.5",
+            "ffs@GLIBC_2.2.5",
+            "ffsl",
+            "ffsll@GLIBC_2.27",
+        )
+    )
+    result = _run_elf_gate(tmp_path, undefined, "0000000000012340 T ffclos\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "resolves every CFITSIO symbol" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_still_flags_cfitsio_names_near_libc_ones(tmp_path: Path) -> None:
+    """The libc exclusions are whole names: ffsrow is still CFITSIO."""
+    result = _run_elf_gate(
+        tmp_path,
+        "                 U fflush\n                 U ffsrow\n",
+        "0000000000012340 T ffclos\n",
+    )
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "ffsrow" in output and "fflush" not in output.split("symbol(s):")[-1]

@@ -1,16 +1,26 @@
-"""Unit tests for scripts/update_changelog.py (pure functions, no git)."""
+"""Unit tests for scripts/update_changelog.py and scripts/release_notes.py."""
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import update_changelog as changelog  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_config(monkeypatch) -> None:
+    """Keep temp repos independent of the user's git config (e.g. tag.gpgsign)."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def test_parse_subject_maps_conventional_types() -> None:
@@ -275,10 +285,12 @@ def test_release_notes_extracts_stamped_then_unreleased(tmp_path) -> None:
     label, body = rn.extract(text, "1.1.0")
     assert label == "[1.1.0]" and body == "Stamped highlights."
 
-    label, body = rn.extract(text, "1.2.0")  # unstamped -> prerelease fallback
+    label, body = rn.extract(text, "1.2.0rc1")  # unstamped -> prerelease fallback
     assert label == "Unreleased" and body.startswith("Fresh work.")
 
-    import pytest  # noqa: PLC0415
+    # A final release must not silently ship the Unreleased text.
+    with pytest.raises(SystemExit, match="final release 1.2.0"):
+        rn.extract(text, "1.2.0")
 
     with pytest.raises(SystemExit):
         rn.extract("# Changelog\n", "9.9.9")
@@ -317,3 +329,66 @@ def test_changelog_only_commit_is_not_collected(tmp_path, monkeypatch) -> None:
     assert changelog.collect_bullets("v1.0.0", include_all=False) == [
         ("Fixed", "- Real change")
     ]
+
+
+def test_check_without_tags_fails_only_in_ci(tmp_path, monkeypatch, capsys) -> None:
+    changelog_md = tmp_path / "changelog.md"
+    changelog_md.write_text("# Changelog\n\n## Unreleased\n", encoding="utf-8")
+    monkeypatch.setattr(changelog, "CHANGELOG", changelog_md)
+    monkeypatch.setattr(changelog, "_list_vtags", lambda: [])
+    monkeypatch.delenv("CI", raising=False)
+    assert changelog.main(["--check"]) == 0
+    monkeypatch.setenv("CI", "true")
+    assert changelog.main(["--check"]) == 1
+    assert "no git tags found" in capsys.readouterr().out
+
+
+def test_parse_subject_breaking_and_revert() -> None:
+    assert changelog.parse_subject("feat(io)!: drop the legacy reader") == (
+        "Added",
+        "- **Breaking:** io: Drop the legacy reader",
+    )
+    # Breaking changes are listed even for otherwise skipped types.
+    assert changelog.parse_subject("build!: require CMake 4") == (
+        "Changed",
+        "- **Breaking:** Require CMake 4",
+    )
+    assert changelog.parse_subject('Revert "fix(io): reject empty HDU"') == (
+        "Changed",
+        "- Revert: io: Reject empty HDU",
+    )
+    assert changelog.parse_subject('Revert "ci: tweak workflow"') is None
+    assert changelog.is_conventional("feat(io)!: x")
+    assert changelog.is_conventional('Revert "anything"')
+    assert not changelog.is_conventional("Fix the thing")
+    assert not changelog.is_conventional("wip: unknown type")
+
+
+def test_check_fails_on_nonconventional_subject(tmp_path, monkeypatch, capsys) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "tests@example.com")
+    git("config", "user.name", "Tests")
+    (tmp_path / "docs").mkdir()
+    changelog_md = tmp_path / "docs" / "changelog.md"
+    changelog_md.write_text(
+        "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- Real change\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "code.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "feat: first")
+    git("tag", "v1.0.0")
+    (tmp_path / "code.py").write_text("x = 2\n", encoding="utf-8")
+    git("commit", "-qam", "fix: real change")
+
+    monkeypatch.setattr(changelog, "ROOT", tmp_path)
+    monkeypatch.setattr(changelog, "CHANGELOG", changelog_md)
+    assert changelog.main(["--check"]) == 0
+
+    (tmp_path / "code.py").write_text("x = 3\n", encoding="utf-8")
+    git("commit", "-qam", "Tweak the thing")
+    assert changelog.main(["--check"]) == 1
+    assert "Tweak the thing" in capsys.readouterr().out

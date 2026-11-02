@@ -5,6 +5,46 @@ multi-extension files, checksums, and caching.
 
 ---
 
+## Missing files and HDUs
+
+Every route that takes a path and an `hdu` (the readers on this page,
+`open()[...]`, the skinny metadata calls, checksums, HDU mutation, the
+[table](api-tables.md) readers and mutators, and the
+[datasets](api-data.md)) fails the same way:
+
+| Failure | Exception |
+|---|---|
+| Local path does not exist | `FileNotFoundError` (an `OSError`, and also a `RuntimeError`) |
+| EXTNAME / HDUNAME that no HDU carries | `torchfits.HDUNotFoundError` |
+| Integer `hdu` that is negative or past the last HDU | `torchfits.HDUNotFoundError` |
+
+`HDUNotFoundError` subclasses `KeyError`, `IndexError`, `ValueError` and
+`RuntimeError`, so code that caught any of those keeps working. The
+missing-file error is a `FileNotFoundError` subclass that is also a
+`RuntimeError`, the type most readers raised for it in 1.3.1, so an
+`except RuntimeError` written against 1.3.1 still catches both. Its message names the request
+and the file, and the attributes `hdu`, `path` and `n_hdus` carry the same
+values (`n_hdus` is `None` when the count is unknown):
+
+```python
+import torchfits
+
+try:
+    sci = torchfits.read("mef.fits", hdu="SCI")
+except torchfits.HDUNotFoundError as exc:
+    print(exc)  # HDU 'SCI' not found in mef.fits (3 HDUs)
+except FileNotFoundError as exc:
+    print(exc)  # FITS file not found: mef.fits
+```
+
+An `hdu` of the wrong type (a float, or `None` where autodetection is not
+offered) is still a `TypeError` or `ValueError`. `HDUList` indexing keeps
+Python sequence rules: `hdul[-1]` is the last HDU, and only an index outside
+`-len(hdul)..len(hdul)-1` raises `HDUNotFoundError`. Remote URLs keep the
+errors of their transport.
+
+---
+
 ## `read()`
 
 Unified FITS reader. Auto-detects image or table HDUs.
@@ -46,7 +86,7 @@ torchfits.read(
 | `use_cache` | `bool` or `None` | `None` | `False` disables the read cache; `True` enables it (using capacity 10 when `cache_capacity <= 0`); `None` follows `cache_capacity` |
 | `columns` | `list[str]` or `None` | `None` | Table columns to return; invalid with `mode="image"` |
 | `start_row` | `int` | `1` | 1-based first table row; invalid with `mode="image"` |
-| `num_rows` | `int` | `-1` | Number of table rows (`-1` reads through the end); invalid with `mode="image"` |
+| `num_rows` | `int` | `-1` | Number of table rows (`-1` reads through the end; `0` returns every column empty, with its usual dtype); invalid with `mode="image"` |
 | `cache_capacity` | `int` | `10` | Read-cache capacity; `0` disables cached reads |
 | `fast_header` | `bool` | `True` | Use the fast header path in the unified-reader fallback |
 
@@ -55,7 +95,8 @@ columns are tensors; VLA columns may use list/tuple values), or a tuple if
 `return_header=True`. Multiple paths or HDUs return results in input order.
 
 The options after `return_header` are keyword-only. Unknown keywords raise
-`TypeError`; `use_cache` must be a boolean or `None`.
+`TypeError`; a `use_cache` that is not a boolean or `None` raises
+`ValueError`.
 
 !!! tip "When to mmap"
     Mmap can help eligible large local integer IMAGE HDUs and repeated
@@ -173,6 +214,16 @@ Do not stack a path section with `read_subset` / `--box` on the same call.
 Binspec / complex CFITSIO filters are not a certified torchfits surface —
 use `table.read(..., where=)` for catalog predicates.
 
+A section is recognised only when it ends the file name. A `[` elsewhere, for
+example in a directory such as `/data/[run1]/img.fits`, is part of the path and
+every read and write works there; a section on such a path
+(`/data/[run1]/img.fits[1:10,1:10]`) is not supported, because CFITSIO would
+read the directory's `[` as the start of the filter.
+
+Write paths take no section: `write("c.fits[compress]", x)` (or a trailing
+`(template.fits)`) raises `ValueError`. Use `write("c.fits", x,
+compress="RICE")` for tile compression.
+
 ---
 
 ## `open_subset_reader()`
@@ -253,8 +304,10 @@ torchfits.read_batch(file_paths, hdu=0, device="cpu", *, strict=False)
 
 **Returns:** `list[torch.Tensor]` — one tensor per input file (not a stacked
 batch), in input order. A path that cannot be read always raises, so the result
-list is never silently short: with the default ``strict=False`` the failure
-surfaces as a `RuntimeError` naming the path and how many files read before it;
+list is never silently short. A missing file (`FileNotFoundError`) or HDU
+(`HDUNotFoundError`) keeps its type, with a note giving how many files read
+before it. With the default ``strict=False`` any other failure surfaces as a
+`RuntimeError` naming the path and how many files read before it;
 ``strict=True`` lets the original exception propagate unchanged.
 
 ```python
@@ -265,14 +318,15 @@ tensors = torchfits.read_batch(["img1.fits", "img2.fits"], hdu=0)
 
 ## `read_batch_info()`
 
-Inspect shape and dtype consistency across files before batch reading.
+Count how many of the given paths exist before a batch read. It does not
+open the files or compare shapes and dtypes.
 
 ```python
 torchfits.read_batch_info(file_paths)
 ```
 
-**Returns:** `dict` with `num_files` (paths supplied) and `existing_files`
-(paths present on disk).
+**Returns:** `dict` with two integers: `num_files` (paths supplied) and
+`existing_files` (how many of them exist on disk).
 
 ---
 
@@ -287,7 +341,7 @@ torchfits.open(path, mode="r")
 **Returns:** `HDUList` context manager.
 
 Header and HDU inspection (`hdul[i].header`, `hdul.info()`, `TableHDURef`
-metadata) goes through `torchfits._core` and does not import PyTorch. Reading
+metadata) uses a metadata-only reader that does not import PyTorch. Reading
 pixels or tensors (`.data`, `.to_tensor()`) opens the tensor-backed reader on
 first use.
 
@@ -311,7 +365,9 @@ torchfits `open` surface yet.
 
 !!! info "EXTNAME lookup returns first match"
     When indexing by EXTNAME (`hdul["SCI"]`), only the **first** HDU with
-    that name is returned. FITS files with duplicate EXTNAMEs (e.g.,
+    that name is returned. The match follows `read(path, hdu="SCI")`:
+    case-insensitive, surrounding blanks ignored, and an HDU without a
+    matching EXTNAME matches on `HDUNAME`. `"SCI" in hdul` uses the same rule. FITS files with duplicate EXTNAMEs (e.g.,
     multi-chip detectors with repeated ``SCI`` extensions) must use
     numeric indices for the second and subsequent occurrences.
 
@@ -444,9 +500,38 @@ torchfits.write(
 | `path` | `str` or `PathLike` | *(required)* | Output path |
 | `data` | `Tensor`, numpy array, `dict`, or `HDUList` | *(required)* | Data to write. Numpy arrays and tensors write an image HDU; `dict` writes a table. |
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
-| `overwrite` | `bool` | `False` | Overwrite existing file |
-| `compress` | `bool` or `str` | `False` | `True`, `"gzip"`, `"rice"`, etc. GZIP_1 and integer RICE_1 writes are lossless; float RICE_1 / HCOMPRESS_1 use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
+| `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
+| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). 64-bit integer images (`int64`, `uint64`) cannot be tile-compressed: `compress=` raises `ValueError`. |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
+
+!!! note "`uint16` images and `PLIO_1`"
+    CFITSIO stores a `uint16` image compressed with `PLIO_1` as unsigned
+    tile values without the `BZERO = 32768` offset applied. torchfits,
+    fitsio and other CFITSIO readers read it back exactly; astropy reads
+    every value 32768 off. For files astropy users will open, compress
+    `uint16` images with `RICE_1` or `GZIP_1` instead:
+
+    ```python
+    import torch, torchfits
+
+    x = torch.tensor([[0, 1, 40000, 65535]], dtype=torch.uint16)
+    torchfits.write("u16.fits", x, compress="RICE_1", overwrite=True)
+    assert torch.equal(torchfits.read("u16.fits", hdu=1), x)
+    ```
+
+!!! note "No tile compression for 64-bit integers"
+    CFITSIO has no tile codec for `BITPIX = 64`. `write()`, `write_tensor()`,
+    `HDUList` writes and `insert_hdu()`/`replace_hdu()` with `compress=` raise
+    `ValueError("tile compression does not support 64-bit integer images; ...")`
+    for an `int64` or `uint64` image, before anything is written. Write it
+    uncompressed, or convert it first:
+
+    ```python
+    import torch, torchfits
+
+    x = torch.arange(16, dtype=torch.int64).reshape(4, 4)
+    torchfits.write("i32.fits", x.to(torch.int32), compress="GZIP_1", overwrite=True)
+    ```
 
 !!! tip "Skewed float → int16"
     Linear min→max packing onto int16 wastes codes on rare extremes. Prefer
@@ -455,6 +540,12 @@ torchfits.write(
     or a dict `{"lo_q", "hi_q", "keep_zero"}` — not global min/max. Same helper
     packs table columns via `table.write(..., quantize=)`. See
     [`example_quantize_int16.py`](published-examples/example_quantize_int16.py).
+
+!!! note "Errors from `write()`"
+    Invalid arguments raise `ValueError` or `TypeError` unchanged (for
+    example `compress=3` raises `TypeError`). A failure inside the writer
+    raises `RuntimeError("Failed to write FITS file '<path>': ...")`. Either
+    way nothing is created or replaced at `path`.
 
 !!! note "The `write()` data-type convention"
     `write()` dispatches on the *type* of `data`: a `dict` (of tensors or
@@ -471,21 +562,37 @@ torchfits.write(
     the written file — passing `{"HISTORY": ...}` in `header=` sets a
     single card.
 
+!!! note "Header value types"
+    A header value may be `str`, `bool`, `int` (any size: an integer beyond
+    64 bits is written as its exact literal), `float`, `complex`, or `None`
+    (an undefined-value card) — every type `read_header` returns, so
+    `write(path, data, header=read_header(src))` round-trips. Anything else
+    raises `RuntimeError: Unsupported FITS header value type`.
+
 !!! note "Header text must be printable ASCII"
     FITS restricts header values, comments and keywords to codes 32–126.
     Non-ASCII text is rejected with a `ValueError` naming the offending byte
-    rather than silently stripped: `header={"UNI": "λ-cold"}` used to store
-    `'-cold'`, a different string with no error. The same applies to table
+    rather than silently stripped. The same applies to table
     column names and string column values. Reading stays forgiving — stray
     bytes already on disk are dropped so the file still opens.
 
-!!! note "uint64 payloads are rejected"
-    FITS has no native uint64 storage (`BITPIX=-64` is not standard, and a
-    `BZERO=2**64` pseudo-unsigned convention is not interoperable).
-    `write()` raises `ValueError` for uint64 image tensors and uint64 table
-    columns with guidance: convert to `int64` (values `< 2**63`) or `float64`
-    before writing. Unsigned `uint16`/`uint32` are supported natively via the
-    standard signed storage + `BSCALE`/`BZERO` convention.
+!!! note "Unsigned integers"
+    `uint16`, `uint32` and `uint64` images and table columns are written with
+    the FITS standard convention: signed storage plus `BZERO`/`TZERO` of
+    `2**15`, `2**31` or `2**63` (the `uint64` offset is written as the exact
+    integer card `9223372036854775808`; files carrying the older float
+    spelling still read as `uint64`). Reading such a file returns the unsigned
+    dtype with exact values, the same as astropy and fitsio. `int8` images
+    and table columns use the signed-byte convention (unsigned byte storage
+    plus `BZERO`/`TZERO` of `-128`) and read back as `int8`.
+
+    ```python
+    import torch, torchfits
+
+    x = torch.tensor([0, 2**63, 2**64 - 1], dtype=torch.uint64)
+    torchfits.write("u64.fits", x, overwrite=True)
+    assert torch.equal(torchfits.read("u64.fits"), x)
+    ```
 
 ### `write_tensor()`
 
@@ -519,6 +626,53 @@ torchfits.replace_hdu(path, hdu, data, header=None, compress=False)
 torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
+`hdu` is an index or an EXTNAME (matched case-insensitively, as in `read()`).
+Every other HDU keeps its index. An `hdu` (or insert `index`) that is not in
+the file raises `HDUNotFoundError` and leaves the file unchanged; `insert_hdu`
+accepts positions `0..len(file)`, the last one appending.
+
+Only the inserted or replacing HDU is written, from the call's arguments.
+Every other HDU is copied byte for byte, so it keeps the structure it had
+before the edit: tile compression, storage `BITPIX`, `BSCALE`/`BZERO`/`BLANK`,
+scaled table columns with `TSCAL`/`TZERO`, and all other cards. `compress=`
+applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
+HDU is stamped too. Bytes after the last HDU that do not start an extension
+(junk, zero or blank padding, which readers ignore) stay at the end of the file.
+
+These are in-place edits: a file you cannot write (for example mode `0444`)
+raises `PermissionError` and is left unchanged. `write(path, ...,
+overwrite=True)` instead replaces the whole file, which needs only a writable
+directory, and keeps the old file's mode.
+
+```python
+# Add a RICE-compressed extension; HDUs 0 and 1 are left exactly as they were.
+torchfits.insert_hdu(
+    "mef.fits", image, index=2, header={"EXTNAME": "SCI2"}, compress="RICE"
+)
+```
+
+HDU 0 changes structure only when the edit itself moves it:
+
+- `insert_hdu(..., index=0)` turns the old primary into an `IMAGE` extension
+  (`SIMPLE` becomes `XTENSION`, `PCOUNT`/`GCOUNT` added, `EXTEND` dropped);
+- `delete_hdu(path, 0)` turns an `IMAGE` extension at index 1 into the primary
+  (`XTENSION` becomes `SIMPLE`, `EXTEND = T` added, `PCOUNT`/`GCOUNT` dropped).
+
+Data bytes are unchanged in both cases; only that HDU's checksum is restamped.
+
+An edit that cannot land where asked raises `ValueError` and leaves the file
+unchanged:
+
+- a table at index 0 (`insert_hdu(..., index=0)`, `replace_hdu(path, 0, table)`,
+  or `delete_hdu(path, 0)` when HDU 1 is a table) — a table cannot be the
+  primary HDU;
+- `compress=` at index 0, or `delete_hdu(path, 0)` when HDU 1 is a
+  tile-compressed image — a compressed image is a binary-table extension and
+  cannot be the primary HDU;
+- `insert_hdu(..., index=0)` when the primary holds random groups;
+- `delete_hdu(..., compress=...)` — a delete writes no HDU, so there is
+  nothing to compress.
+
 ---
 
 ## Checksums
@@ -529,6 +683,7 @@ Stamp CFITSIO `DATASUM`/`CHECKSUM` while writing with `checksum=True`
 ```python
 torchfits.write("img.fits", data, checksum=True)  # stamped at write time
 torchfits.write_checksums(path, hdu=0)
+torchfits.write_checksums(path, hdu="SCI")  # EXTNAME, case-insensitive as in read()
 result = torchfits.verify_checksums(path, hdu=0)
 # result: dict with "datastatus", "hdustatus", "ok", "present", and "status"
 # ("ok" / "no_checksums" / "fail"). Missing stamps set present=False; ok
@@ -541,7 +696,7 @@ result = torchfits.verify_checksums(path, hdu=0)
 
 | Layer | Entry points | Role |
 |---|---|---|
-| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Remote and sample files under the configured cache root |
+| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Everything under the configured cache root; in a `TORCHFITS_REMOTE_CACHE` directory set elsewhere, only the download files torchfits named there |
 | Aggregate statistics | `torchfits.cache.get_cache_stats()` | In-process I/O cache counters |
 | I/O metadata | `get_cache_performance()`, `clear_file_cache(...)` | In-process header / meta / data caches |
 | Shared metadata (C++) | `clear_file_cache(..., cpp=True)` | Per-path metadata across private CFITSIO handles |
@@ -557,7 +712,12 @@ torchfits.clear_all_caches()  # in-process + configured disk cache
 
 `clear_cache()` clears in-process data and metadata caches. Pass
 `disk=True` (or call root `clear_all_caches()`) to also remove downloaded
-files under the configured disk cache root.
+files under the configured disk cache root (`TORCHFITS_CACHE_DIR`, the whole
+directory). A `TORCHFITS_REMOTE_CACHE` or `TORCHFITS_SAMPLE_CACHE` directory
+outside that root is never deleted: from the remote one only torchfits'
+own download files (`<hash>.<ext>` and their `.partial` / `.lock`
+siblings) are removed, and the sample one is left untouched, so pointing
+either at a shared directory such as `$HOME` cannot lose your files.
 
 `clear_file_cache` keyword-only flags (all default `True`): `data`, `meta`,
 `hdu_types`, `stats`, `cpp`. Optional `cpp_module=` overrides the extension

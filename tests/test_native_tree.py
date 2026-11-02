@@ -49,7 +49,15 @@ def test_contiguous_copy_helper_rejects_count_larger_than_the_array():
 
 def test_vendored_cfitsio_has_niobuf_mindirect_guards():
     """The vendored CFITSIO headers must carry the #ifndef guards that let
-    -DTORCHFITS_NIOBUF / -DTORCHFITS_MINDIRECT override the defaults."""
+    -DTORCHFITS_NIOBUF / -DTORCHFITS_MINDIRECT override the defaults.
+
+    They come from a vendor.sh patch, so a re-vendor keeps them; a configure
+    step editing extern/cfitsio is lost on the next vendor run."""
+    patch = ROOT / "extern/patches/cfitsio-4.7.0-niobuf-guards.patch"
+    assert "+#ifndef NIOBUF" in patch.read_text()
+    assert "+#ifndef MINDIRECT" in patch.read_text()
+    cmake = (ROOT / "src/torchfits/cpp_src/CMakeLists.txt").read_text()
+    assert 'file(WRITE "${_CFITSIO_FITSIO_H}"' not in cmake
     fitsio_h = ROOT / "extern/cfitsio/fitsio.h"
     fitsio2_h = ROOT / "extern/cfitsio/fitsio2.h"
     if not fitsio_h.exists():

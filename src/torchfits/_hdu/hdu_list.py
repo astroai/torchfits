@@ -15,6 +15,7 @@ from torchfits._io_engine.paths import (
     is_cfitsio_network_url,
 )
 
+from .._errors import FITSFileNotFoundError, HDUNotFoundError
 from ._repr import render_html_table
 from .card import _reassemble_longstr_cards
 from .header import Header
@@ -118,7 +119,7 @@ class HDUList:
             and not is_cfitsio_network_url(path)
             and not os.path.exists(cfitsio_base_path(path))
         ):
-            raise FileNotFoundError(f"FITS file not found: {path}")
+            raise FITSFileNotFoundError(f"FITS file not found: {path}")
 
         hdul = cls()
         hdul._source_path = path
@@ -129,7 +130,7 @@ class HDUList:
             # Headers come from the torch-free core. Importing ``torchfits._C``
             # here would preload PyTorch (~1 s) just to list HDUs; the handle
             # is opened lazily by the first HDU that touches its data.
-            from torchfits import _core as core
+            from torchfits import _core_api as core
             from torchfits.header_parser import fast_parse_header_cards
 
             num_hdus = int(core.read_num_hdus(path))
@@ -190,25 +191,52 @@ class HDUList:
     def __len__(self) -> int:
         return len(self._hdus)
 
+    def _index_of_name(self, name: str) -> Optional[int]:
+        """First HDU whose EXTNAME (else HDUNAME) matches *name*, like CFITSIO.
+
+        Same rule as ``read(path, hdu=name)`` (``fits_movnam_hdu``): the match
+        is case-insensitive and surrounding blanks are ignored. Scanned
+        live (a few header.get calls per lookup): a cached name index went
+        stale as soon as a caller renamed EXTNAME on a live header, and HDU
+        counts are tiny.
+        """
+        wanted = name.strip().upper()
+        for i, hdu in enumerate(self._hdus):
+            for keyword in ("EXTNAME", "HDUNAME"):
+                value = hdu.header.get(keyword)
+                if isinstance(value, str) and value.strip().upper() == wanted:
+                    return i
+        return None
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            return self._index_of_name(key) is not None
+        return any(key is hdu for hdu in self._hdus)
+
     def __getitem__(
         self, key: Union[int, str]
     ) -> Union[TensorHDU, TableHDU, TableHDURef]:
         if isinstance(key, str):
-            # Scanned live (a few header.get calls per lookup): a cached name
-            # index went stale as soon as a caller renamed EXTNAME on a live
-            # header, and HDU counts are tiny.
-            for i, hdu in enumerate(self._hdus):
-                name = hdu.header.get("EXTNAME")
-                if name is not None and name == key:
-                    return self._hdus[i]
-            raise KeyError(f"HDU '{key}' not found")
+            index = self._index_of_name(key)
+            if index is None:
+                raise self._not_found(key)
+            return self._hdus[index]
 
         try:
-            return self._hdus[operator.index(key)]
+            position = operator.index(key)
         except TypeError:
             raise TypeError(
                 f"HDUList indices must be int or EXTNAME str; got {type(key).__name__}"
             ) from None
+        try:
+            # Negative indices count from the end, as for any Python sequence.
+            return self._hdus[position]
+        except IndexError:
+            raise self._not_found(position) from None
+
+    def _not_found(self, key: Union[int, str]) -> HDUNotFoundError:
+        where = self._source_path if self._source_path else "this HDUList"
+        return HDUNotFoundError.for_request(where, key, len(self._hdus))
 
     def __enter__(self) -> HDUList:
         return self
@@ -250,9 +278,14 @@ class HDUList:
                 hdu.mark_closed()
 
     def write(self, path: str, overwrite: bool = False) -> None:
-        from .._io_engine._hdu_rewrite import _write_hdus_uncompressed
+        """Write every HDU to *path*; same contract as ``torchfits.write``.
 
-        _write_hdus_uncompressed(path, list(self._hdus), overwrite)
+        Raises FileExistsError when *path* exists and ``overwrite`` is False;
+        the file is written to a temporary name and published atomically.
+        """
+        from .._io_engine.write_api import write
+
+        write(path, self, overwrite=overwrite)
 
     def append(self, hdu: Union[TensorHDU, TableHDU]) -> None:
         self._hdus.append(hdu)

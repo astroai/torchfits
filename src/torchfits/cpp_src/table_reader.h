@@ -14,6 +14,7 @@
 #include <nanobind/stl/unordered_map.h>
 #include <ATen/Parallel.h>
 #include <functional>
+#include <memory>
 #include <new>
 #include <mutex>
 #include <algorithm>
@@ -92,6 +93,14 @@ public:
                 "Invalid table geometry for HDU " + std::to_string(hdu_num_) +
                 ": " + std::string(err_msg));
         }
+        // Several paths below (extent validation, buffered pread, VLA heap
+        // pread) read the file on disk, not CFITSIO's buffers. A borrowed
+        // handle may have just written this HDU, so flush first; this is a
+        // no-op for a read-only handle.
+        {
+            int flush_status = 0;
+            fits_flush_buffer(fptr_, 0, &flush_status);
+        }
         // Needed for VLA heap pread coalesce (diskfile path).
         char fname[FLEN_FILENAME] = {0};
         int name_status = 0;
@@ -101,6 +110,10 @@ public:
         }
         analyze_table();
     }
+
+    // A reader built on a borrowed handle keeps that handle's owner alive, so
+    // closing the Python FITSFile first cannot free the fitsfile under it.
+    void hold_fptr_owner(std::shared_ptr<void> owner) { fptr_owner_ = std::move(owner); }
 
     ~TableReader() {
         if (data_fd_cached_ >= 0) {
@@ -247,6 +260,13 @@ public:
                     case TLONGLONG: col.torch_type = torch::kInt64; break;
                     case TFLOAT: col.torch_type = torch::kFloat32; break;
                     case TDOUBLE: col.torch_type = torch::kFloat64; break;
+                    // 'PA': raw bytes, like fixed-width string columns.
+                    case TSTRING: col.torch_type = torch::kUInt8; break;
+                    // 'PC'/'PM'/'PX' are rejected when read (see
+                    // read_vla_column_flat); record the true element type
+                    // instead of the old silent float32 fallback.
+                    case TCOMPLEX: col.torch_type = torch::kComplexFloat; break;
+                    case TDBLCOMPLEX: col.torch_type = torch::kComplexDouble; break;
                     default: col.torch_type = torch::kFloat32;
                 }
                 col.width = 8;
@@ -530,6 +550,21 @@ public:
                 col.unsigned_offset = 2147483648;
                 col.unsigned_target_type = torch::kUInt32;
                 col.scaled = false;
+            } else if (typecode == TBYTE && col.tzero == -128.0) {
+                // Signed-byte convention (TFORM B, TZERO = -128): storage is
+                // value XOR 0x80, read back as int8 like the image path.
+                col.is_unsigned_int = true;
+                col.unsigned_offset = -128;
+                col.unsigned_target_type = torch::kInt8;
+                col.scaled = false;
+            } else if (typecode == TLONGLONG && detail::is_unsigned_longlong_offset(col.tzero)) {
+                // uint64 convention (TZERO = 2^63). The offset does not fit
+                // int64, so unsigned_offset stays 0 and every consumer keys
+                // on unsigned_target_type == kUInt64 (sign-bit flip).
+                col.is_unsigned_int = true;
+                col.unsigned_offset = 0;
+                col.unsigned_target_type = torch::kUInt64;
+                col.scaled = false;
             }
         }
         // Quantize writes TSCAL/TZERO even when they are identity; TNULL on
@@ -619,6 +654,10 @@ public:
         if (!raw.is_contiguous()) {
             raw = raw.contiguous();
         }
+        if (target == torch::kInt8) {
+            raw.bitwise_xor_(0x80);
+            return raw.view(torch::kInt8);
+        }
         if (target == torch::kUInt16) {
             raw.bitwise_xor_(std::numeric_limits<int16_t>::min());
             return raw.view(torch::kUInt16);
@@ -626,6 +665,10 @@ public:
         if (target == torch::kUInt32) {
             raw.bitwise_xor_(std::numeric_limits<int32_t>::min());
             return raw.view(torch::kUInt32);
+        }
+        if (target == torch::kUInt64) {
+            raw.bitwise_xor_(std::numeric_limits<int64_t>::min());
+            return raw.view(torch::kUInt64);
         }
         // Defensive fallback for any future target width.
         torch::Tensor converted = raw.to(torch::kInt64);
@@ -681,24 +724,31 @@ public:
             }
         }
 
-        // Handle empty table
-        if (nrows_ == 0) {
-            return {};
-        }
-        if (num_rows <= 0) {
+        // An empty window (0-row table, or num_rows == 0) still returns every
+        // requested column, as an empty tensor of the dtype a non-empty read
+        // gives, so the result's keys and dtypes do not depend on row count.
+        if (num_rows < 0) {
             throw std::runtime_error("Invalid table row count: " + std::to_string(num_rows));
         }
-
-        // Validate rows
-        if (start_row < 1 || start_row > nrows_) {
+        if (nrows_ == 0) {
+            num_rows = 0;
+        }
+        if (num_rows > 0) {
+            // Validate rows
+            if (start_row < 1 || start_row > nrows_) {
+                throw std::runtime_error(
+                    "Invalid start row: " + std::to_string(start_row) +
+                    ", nrows: " + std::to_string(nrows_));
+            }
+            // Reordered comparison: start_row + num_rows - 1 can overflow long for
+            // adversarial inputs; nrows_ - start_row + 1 cannot (start_row in range).
+            if (num_rows > nrows_ - start_row + 1) {
+                num_rows = nrows_ - start_row + 1;
+            }
+        } else if (start_row < 1 || start_row > nrows_ + 1) {
             throw std::runtime_error(
                 "Invalid start row: " + std::to_string(start_row) +
                 ", nrows: " + std::to_string(nrows_));
-        }
-        // Reordered comparison: start_row + num_rows - 1 can overflow long for
-        // adversarial inputs; nrows_ - start_row + 1 cannot (start_row in range).
-        if (num_rows > nrows_ - start_row + 1) {
-            num_rows = nrows_ - start_row + 1;
         }
         for (int col_idx : col_indices) {
             ensure_column_scale(col_idx);
@@ -732,11 +782,6 @@ public:
             }
         };
 
-
-        // Check if we have any data
-        if (nrows_ == 0 || ncols_ == 0) {
-             return {};
-        }
 
         // Allocate tensors for all requested columns (except VLA)
         for (int col_idx : col_indices) {
@@ -928,8 +973,21 @@ public:
                             int scale_status = 0;
                             fits_set_tscale(fptr_, col_idx + 1, 1.0, 0.0, &scale_status);
                         }
-                        fits_read_col(fptr_, datatype, col_idx + 1, start_row, firstelem, nelements,
-                                      nullptr, tensor.data_ptr(), nullptr, &status);
+                        if (col.type == FITSColumnType::BIT && col.repeat % 8 != 0) {
+                            // CFITSIO's TBIT reader walks every byte of each
+                            // cell, pad bits included, before the next row, so
+                            // a multi-row read is misaligned unless the repeat
+                            // fills whole bytes. Read one row at a time.
+                            auto* dst = static_cast<char*>(tensor.data_ptr());
+                            for (long r = 0; r < num_rows && status == 0; ++r) {
+                                fits_read_col(fptr_, datatype, col_idx + 1, start_row + r, firstelem,
+                                              static_cast<long>(col.repeat), nullptr,
+                                              dst + r * static_cast<long>(col.repeat), nullptr, &status);
+                            }
+                        } else {
+                            fits_read_col(fptr_, datatype, col_idx + 1, start_row, firstelem, nelements,
+                                          nullptr, tensor.data_ptr(), nullptr, &status);
+                        }
                     }
 
                     if (status != 0) {
@@ -941,7 +999,23 @@ public:
             }
         };
 
-        if (use_buffered) {
+        if (num_rows == 0) {
+            // Nothing to read: the fixed-width tensors above are already
+            // (0, ...) and go through the same dtype post-processing below.
+            for (int col_idx : col_indices) {
+                const auto& col = columns_[col_idx];
+                if (col.type != FITSColumnType::VARIABLE) continue;
+                if (vla_flat) {
+                    torch::Tensor values = torch::empty(
+                        {0}, torch::TensorOptions().dtype(col.torch_type));
+                    torch::Tensor offsets = torch::zeros(
+                        {1}, torch::TensorOptions().dtype(torch::kInt64));
+                    result[col_idx] = ColumnData(values, offsets, true);
+                } else {
+                    result[col_idx] = ColumnData(std::vector<torch::Tensor>{});
+                }
+            }
+        } else if (use_buffered) {
             try {
                 read_columns_buffered(col_indices, start_row, num_rows, result);
             } catch (const std::exception&) {
@@ -1170,8 +1244,22 @@ public:
             }
         }
 
-        if (nrows_ == 0) {
-            return {};
+        if (nrows_ == 0 || num_rows == 0) {
+            // Typed empty columns come from the CFITSIO reader (same dtype
+            // post-processing as a non-empty read; no bytes to map).
+            auto rows = read_columns(column_names, start_row, 0, false);
+            std::vector<std::pair<std::string, torch::Tensor>> out;
+            out.reserve(rows.size());
+            for (auto& kv : rows) {
+                if (kv.second.is_vla) {
+                    throw std::runtime_error("VLA columns not supported for mmap");
+                }
+                out.emplace_back(kv.first, std::move(kv.second.fixed_data));
+            }
+            return out;
+        }
+        if (num_rows < 0) {
+            throw std::runtime_error("Invalid table row count: " + std::to_string(num_rows));
         }
 
         // Validate rows
@@ -1533,6 +1621,9 @@ public:
             // True when target_i is representable in the column's integer
             // storage width; EQ/NE raw-byte compare is exact only then.
             bool target_fits_storage = true;
+            // Effective operator: equal to filter->op except when a
+            // non-integral float literal meets an integer column (see below).
+            FilterOp op = FilterOp::EQ;
         };
 
         std::vector<FilterContext> ctxs;
@@ -1575,8 +1666,80 @@ public:
                     // compare is exact only when the effective target fits the
                     // column's integer storage width; ordering comparisons are
                     // promoted to int64 and never truncate.
+                    ctx.op = f.op;
                     ctx.target_i = f.val_i;
-                    if (c.is_unsigned_int) {
+                    bool constant_predicate = false;
+                    bool u64_target_mapped = false;
+                    const bool is_u64_col =
+                        c.is_unsigned_int && c.unsigned_target_type == torch::kUInt64;
+                    if (f.out_of_int64 != 0 && !ctx.is_float && !ctx.is_double) {
+                        // A literal outside int64 on an integer column: val_i is
+                        // a clamped proxy (X < 2^63 + 0.5 must keep INT64_MAX).
+                        if (f.has_u64 && is_u64_col) {
+                            // Exact: raw int64 = physical XOR 2^63.
+                            ctx.target_i = static_cast<int64_t>(
+                                f.val_u ^ (uint64_t{1} << 63));
+                            u64_target_mapped = true;
+                        } else {
+                            // Above (or below) every value the column holds.
+                            const bool above = f.out_of_int64 > 0;
+                            bool always = false;
+                            switch (f.op) {
+                                case FilterOp::GT: case FilterOp::GE: always = !above; break;
+                                case FilterOp::LT: case FilterOp::LE: always = above; break;
+                                case FilterOp::EQ: always = false; break;
+                                case FilterOp::NE: always = true; break;
+                            }
+                            ctx.op = always ? FilterOp::GE : FilterOp::LT;
+                            ctx.target_i = std::numeric_limits<int64_t>::min();
+                            constant_predicate = true;
+                        }
+                    } else if (f.type_idx == 0 && !ctx.is_float && !ctx.is_double &&
+                        std::floor(f.val_d) != f.val_d) {
+                        // A non-integral float literal on an integer column:
+                        // val_i is the literal truncated toward zero, which
+                        // makes `X >= 2.5` match 2. Rewrite to exact integer
+                        // bounds (|val_d| < 2^52 here, so floor fits int64).
+                        const auto lo = static_cast<int64_t>(std::floor(f.val_d));
+                        switch (f.op) {
+                            case FilterOp::GT:
+                            case FilterOp::GE:
+                                ctx.op = FilterOp::GT;  // X > 2.5  <=>  X > 2
+                                ctx.target_i = lo;
+                                break;
+                            case FilterOp::LT:
+                            case FilterOp::LE:
+                                ctx.op = FilterOp::LT;  // X < 2.5  <=>  X < 3
+                                ctx.target_i = lo + 1;
+                                break;
+                            case FilterOp::EQ:  // never true
+                                ctx.op = FilterOp::LT;
+                                ctx.target_i = std::numeric_limits<int64_t>::min();
+                                constant_predicate = true;
+                                break;
+                            case FilterOp::NE:  // always true
+                                ctx.op = FilterOp::GE;
+                                ctx.target_i = std::numeric_limits<int64_t>::min();
+                                constant_predicate = true;
+                                break;
+                        }
+                    }
+                    if (u64_target_mapped) {
+                        // Already the raw int64 target.
+                    } else if (is_u64_col && !constant_predicate) {
+                        // Raw int64 = physical XOR 2^63, which preserves order.
+                        // Physical values are >= 0, so a negative literal makes
+                        // the predicate constant; otherwise map it the same way.
+                        if (ctx.target_i < 0) {
+                            const bool always = ctx.op == FilterOp::GT ||
+                                                ctx.op == FilterOp::GE ||
+                                                ctx.op == FilterOp::NE;
+                            ctx.op = always ? FilterOp::GE : FilterOp::LT;
+                            ctx.target_i = std::numeric_limits<int64_t>::min();
+                        } else {
+                            ctx.target_i += std::numeric_limits<int64_t>::min();
+                        }
+                    } else if (c.is_unsigned_int && !constant_predicate) {
                         ctx.target_i -= c.unsigned_offset;
                     }
                     if (ctx.is_short) {
@@ -1613,7 +1776,7 @@ public:
         if (ctxs.size() == 1) {
             const auto& ctx = ctxs[0];
             const size_t offset = ctx.offset;
-            const FilterOp op = ctx.filter->op;
+            const FilterOp op = ctx.op;
 
             // Pre-byte-swap the target so we can compare raw FITS bytes directly,
             // eliminating per-row bswap instructions for EQ/NE on integers.
@@ -1842,7 +2005,7 @@ public:
                         uint64_t tmp; std::memcpy(&tmp, val_ptr, 8); tmp = bswap_64(tmp);
                         double val; std::memcpy(&val, &tmp, 8);
                         double target = ctx.filter->val_d;
-                        switch (ctx.filter->op) {
+                        switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target) && (val == val); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1854,7 +2017,7 @@ public:
                         uint32_t tmp; std::memcpy(&tmp, val_ptr, 4); tmp = bswap_32(tmp);
                         float val; std::memcpy(&val, &tmp, 4);
                         float target = (float)ctx.filter->val_d;
-                        switch (ctx.filter->op) {
+                        switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target) && (val == val); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1866,7 +2029,7 @@ public:
                        uint64_t tmp; memcpy(&tmp, val_ptr, 8);
                        int64_t val = (int64_t)bswap_64(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1878,7 +2041,7 @@ public:
                        uint32_t tmp; memcpy(&tmp, val_ptr, 4);
                        int32_t val = (int32_t)bswap_32(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1890,7 +2053,7 @@ public:
                        uint16_t tmp; memcpy(&tmp, val_ptr, 2);
                        int16_t val = (int16_t)bswap_16(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1901,7 +2064,7 @@ public:
                     } else if (ctx.is_byte) {
                        uint8_t val = *val_ptr;
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1978,10 +2141,15 @@ public:
                 continue;
             }
 
+            // item_size is the byte-swap unit; a complex cell is two of them
+            // (real, imaginary), each swapped on its own.
             int item_size = 0;
+            int items_per_value = 1;
             if (col.type == FITSColumnType::DOUBLE || col.type == FITSColumnType::LONG) item_size = 8;
             else if (col.type == FITSColumnType::FLOAT || col.type == FITSColumnType::INT) item_size = 4;
             else if (col.type == FITSColumnType::SHORT) item_size = 2;
+            else if (col.type == FITSColumnType::COMPLEX_FLOAT) { item_size = 4; items_per_value = 2; }
+            else if (col.type == FITSColumnType::COMPLEX_DOUBLE) { item_size = 8; items_per_value = 2; }
             else item_size = 1;
 
             // Cell size in storage bytes. BIT columns are bit-packed, so the
@@ -1993,7 +2161,8 @@ public:
             } else if (col.type == FITSColumnType::BIT) {
                 cell_size = (static_cast<size_t>(col.repeat) + 7) / 8;
             } else {
-                cell_size = static_cast<size_t>(item_size) * static_cast<size_t>(std::max(1, col.repeat));
+                cell_size = static_cast<size_t>(item_size) * static_cast<size_t>(items_per_value) *
+                            static_cast<size_t>(std::max(1, col.repeat));
             }
             uint8_t* out_ptr = (uint8_t*)out_tensor.data_ptr();
 
@@ -2122,13 +2291,21 @@ public:
         // rejection.
         switch (col.type) {
             case FITSColumnType::BYTE:
+                if (col.is_unsigned_int && col.unsigned_target_type == torch::kInt8) {
+                    return is(code::Int, 8);
+                }
                 return col.fits_typecode == TSBYTE ? is(code::Int, 8) : is(code::UInt, 8);
             case FITSColumnType::LOGICAL:
             case FITSColumnType::BIT:
                 return is(code::Bool, 8) || is(code::UInt, 8);
-            case FITSColumnType::SHORT: return is(code::Int, 16);
-            case FITSColumnType::INT: return is(code::Int, 32);
-            case FITSColumnType::LONG: return is(code::Int, 64);
+            // Unsigned-convention columns also take their physical unsigned
+            // dtype (the write loop flips the sign bit).
+            case FITSColumnType::SHORT:
+                return is(code::Int, 16) || (col.is_unsigned_int && is(code::UInt, 16));
+            case FITSColumnType::INT:
+                return is(code::Int, 32) || (col.is_unsigned_int && is(code::UInt, 32));
+            case FITSColumnType::LONG:
+                return is(code::Int, 64) || (col.is_unsigned_int && is(code::UInt, 64));
             case FITSColumnType::FLOAT: return is(code::Float, 32);
             case FITSColumnType::DOUBLE: return is(code::Float, 64);
             case FITSColumnType::STRING: return is(code::UInt, 8);
@@ -2362,7 +2539,9 @@ public:
 
                     switch (col->type) {
                         case FITSColumnType::BYTE: {
-                            const bool is_sbyte = col->fits_typecode == TSBYTE;
+                            const bool offset_sbyte = col->is_unsigned_int &&
+                                                      col->unsigned_target_type == torch::kInt8;
+                            const bool is_sbyte = col->fits_typecode == TSBYTE || offset_sbyte;
                             if (is_sbyte) {
                                 if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8)) {
                                     munmap(map_ptr, sb.st_size);
@@ -2374,8 +2553,10 @@ public:
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            // Byte-for-byte identical bit pattern for signed/unsigned 8-bit.
-                            *dest = src_u8[idx];
+                            // Byte-for-byte identical bit pattern for signed/unsigned 8-bit;
+                            // the TZERO = -128 convention stores value XOR 0x80.
+                            *dest = offset_sbyte ? static_cast<uint8_t>(src_u8[idx] ^ 0x80u)
+                                                 : src_u8[idx];
                             break;
                         }
                         case FITSColumnType::LOGICAL: {
@@ -2393,47 +2574,79 @@ public:
                             break;
                         }
                         case FITSColumnType::SHORT: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16)) {
+                            // An unsigned column also takes its physical
+                            // uint16 values; storage is value XOR sign bit.
+                            const bool u16_payload =
+                                col->is_unsigned_int &&
+                                dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 16;
+                            if (!u16_payload &&
+                                !(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16)) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            int32_t phys = src_i16[idx];
-                            if (col->is_unsigned_int) {
-                                phys -= static_cast<int32_t>(col->unsigned_offset);
-                            }
-                            const int16_t stored = static_cast<int16_t>(phys);
                             uint16_t v;
-                            std::memcpy(&v, &stored, sizeof(uint16_t));
+                            if (u16_payload) {
+                                std::memcpy(&v, &src_i16[idx], sizeof(uint16_t));
+                                v ^= 0x8000u;
+                            } else {
+                                int32_t phys = src_i16[idx];
+                                if (col->is_unsigned_int) {
+                                    phys -= static_cast<int32_t>(col->unsigned_offset);
+                                }
+                                const int16_t stored = static_cast<int16_t>(phys);
+                                std::memcpy(&v, &stored, sizeof(uint16_t));
+                            }
                             v = bswap_16(v);
                             std::memcpy(dest, &v, sizeof(uint16_t));
                             break;
                         }
                         case FITSColumnType::INT: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32)) {
+                            const bool u32_payload =
+                                col->is_unsigned_int &&
+                                dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 32;
+                            if (!u32_payload &&
+                                !(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32)) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            int64_t phys = src_i32[idx];
-                            if (col->is_unsigned_int) {
-                                phys -= col->unsigned_offset;
-                            }
-                            const int32_t stored = static_cast<int32_t>(phys);
                             uint32_t v;
-                            std::memcpy(&v, &stored, sizeof(uint32_t));
+                            if (u32_payload) {
+                                std::memcpy(&v, &src_i32[idx], sizeof(uint32_t));
+                                v ^= 0x80000000u;
+                            } else {
+                                int64_t phys = src_i32[idx];
+                                if (col->is_unsigned_int) {
+                                    phys -= col->unsigned_offset;
+                                }
+                                const int32_t stored = static_cast<int32_t>(phys);
+                                std::memcpy(&v, &stored, sizeof(uint32_t));
+                            }
                             v = bswap_32(v);
                             std::memcpy(dest, &v, sizeof(uint32_t));
                             break;
                         }
                         case FITSColumnType::LONG: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 64)) {
+                            const bool u64_col = col->is_unsigned_int &&
+                                                 col->unsigned_target_type == torch::kUInt64;
+                            const bool dtype_ok =
+                                dt.bits == 64 &&
+                                (dt.code == (uint8_t)nb::dlpack::dtype_code::Int ||
+                                 (u64_col && dt.code == (uint8_t)nb::dlpack::dtype_code::UInt));
+                            if (!dtype_ok) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
                             uint64_t v;
                             std::memcpy(&v, &src_i64[idx], sizeof(uint64_t));
+                            if (u64_col) {
+                                // Physical value -> stored int64 (TZERO = 2**63),
+                                // for uint64 and int64 payloads alike, matching
+                                // the SHORT/INT arms' physical semantics.
+                                v ^= 0x8000000000000000ULL;
+                            }
                             v = bswap_64(v);
                             std::memcpy(dest, &v, sizeof(uint64_t));
                             break;
@@ -2597,6 +2810,17 @@ public:
     std::pair<torch::Tensor, torch::Tensor> read_vla_column_flat(
         int col_idx, long start_row, long num_rows, const ColumnInfo& col
     ) {
+        {
+            // Complex and bit heap elements need a decode this reader does not
+            // have (two swapped halves; packed bits counted in bits). Reading
+            // them as float32 returned truncated, mistyped data.
+            const int vla_type = -col.fits_typecode;
+            if (vla_type == TCOMPLEX || vla_type == TDBLCOMPLEX || vla_type == TBIT) {
+                throw std::runtime_error(
+                    "Variable-length complex or bit columns ('PC', 'PM', 'PX') are not "
+                    "supported: " + col.name);
+            }
+        }
         const size_t descriptor_count = internal::checked_nonnegative_cast<size_t>(
             num_rows, "Invalid VLA geometry for column " + col.name + " row count");
         std::vector<LONGLONG> repeats(descriptor_count, 0);
@@ -3475,6 +3699,7 @@ private:
     int hdu_num_;
     int target_hdu_ = 1;
     bool owns_fptr_ = false;
+    std::shared_ptr<void> fptr_owner_;
     long nrows_;
     int ncols_;
     long row_width_bytes_ = 0;

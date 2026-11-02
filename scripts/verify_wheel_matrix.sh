@@ -33,6 +33,30 @@ next_minor() {
   pixi run python -c "major, minor = map(int, '$1'.split('.')); print(f'<{major}.{minor + 1}')"
 }
 
+verify_cell_steps() {
+  local wheel="$1" lane="$2" py="$3"
+  local venv="$WORK/venv-$(basename "$wheel")"
+  echo "== $(basename "$wheel"): fresh venv py$py =="
+  uv venv --python "$py" --no-project "$venv" --quiet
+  uv pip install --python "$venv/bin/python" --quiet \
+    "$wheel" \
+    "torch>=$lane,$(next_minor "$lane")" \
+    pytest numpy pyarrow \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+  TORCH_LIB="$("$venv/bin/python" -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
+  # Mirror scripts/cibw_test.sh: torch libs resolve at runtime on both platforms.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="$TORCH_LIB${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+  else
+    export LD_LIBRARY_PATH="$TORCH_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+  echo "== $(basename "$wheel"): import + CLI + release smoke =="
+  "$venv/bin/python" -c 'import torchfits; print("import ok:", torchfits.__version__)'
+  "$venv/bin/torchfits" --help >/dev/null
+  "$venv/bin/python" -m pytest -c /dev/null --noconftest \
+    "$ROOT/tests/test_release_smoke.py" -q
+}
+
 verify_cell() {
   local wheel="$1"
   local log="$WORK/logs/$(basename "$wheel").log"
@@ -64,28 +88,10 @@ print(lane)')"
     echo "[SKIP] $(basename "$wheel"): lane $lane not requested"
     return 0
   fi
-  local venv="$WORK/venv-$(basename "$wheel")"
-  if {
-    echo "== $(basename "$wheel"): fresh venv py$py =="
-    uv venv --python "$py" --no-project "$venv" --quiet
-    uv pip install --python "$venv/bin/python" --quiet \
-      "$ROOT/$WHEEL_DIR/$(basename "$wheel")" \
-      "torch>=$lane,$(next_minor "$lane")" \
-      pytest numpy pyarrow \
-      --extra-index-url https://download.pytorch.org/whl/cpu
-    TORCH_LIB="$("$venv/bin/python" -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
-    # Mirror scripts/cibw_test.sh: torch libs resolve at runtime on both platforms.
-    if [[ "$(uname)" == "Darwin" ]]; then
-      export DYLD_FALLBACK_LIBRARY_PATH="$TORCH_LIB${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
-    else
-      export LD_LIBRARY_PATH="$TORCH_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    fi
-    echo "== $(basename "$wheel"): import + CLI + release smoke =="
-    "$venv/bin/python" -c 'import torchfits; print("import ok:", torchfits.__version__)'
-    "$venv/bin/torchfits" --help >/dev/null
-    "$venv/bin/python" -m pytest -c /dev/null --noconftest \
-      "$ROOT/tests/test_release_smoke.py" -q
-  } >"$log" 2>&1; then
+  # A separate `bash -eo pipefail` process: errexit is ignored inside an `if`
+  # condition, so a failing step in an `if { ...; }` body reported OK.
+  if bash -eo pipefail -c 'verify_cell_steps "$@"' _ "$wheel" "$lane" "$py" \
+    >"$log" 2>&1; then
     echo "[ OK ] $(basename "$wheel")"
   else
     echo "[FAIL] $(basename "$wheel") (see $log)"
@@ -94,9 +100,16 @@ print(lane)')"
   fi
 }
 
-export -f verify_cell next_minor
+export -f verify_cell verify_cell_steps next_minor
 export ROOT WORK LANES WHEEL_DIR
 
+if [[ ! -d "$WHEEL_DIR" ]]; then
+  echo "no wheel directory $WHEEL_DIR" >&2
+  exit 2
+fi
+# Absolute, so wheel paths work from any cwd (an absolute dir was previously
+# glued onto $ROOT).
+WHEEL_DIR="$(cd "$WHEEL_DIR" && pwd)"
 shopt -s nullglob
 wheels=("$WHEEL_DIR"/torchfits-*.whl)
 if [[ ${#wheels[@]} -eq 0 ]]; then

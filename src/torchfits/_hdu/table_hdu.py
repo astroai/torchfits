@@ -8,6 +8,7 @@ import torch
 from torch import Tensor
 
 
+from .._errors import FITSFileNotFoundError
 from ._repr import render_html_table
 from .header import Header
 
@@ -582,9 +583,17 @@ class TableHDU:
         renamed: Dict[str, Any] = {}
         for key, value in raw.items():
             renamed[new_name if key == old_name else key] = value
+        header = self._derived_header()
+        from ..fits_schema import iter_table_columns
+
+        # Keep the header's column naming in step with the data, so the
+        # column's own cards (TUNITn, TDISPn, ...) still follow it on write.
+        for col in iter_table_columns(header):
+            if col.name == old_name:
+                header[f"TTYPE{col.index}"] = new_name
         return TableHDU(
             renamed,
-            header=self._derived_header(),
+            header=header,
             source_path=self._source_path,
             source_hdu=self._source_hdu,
         )
@@ -684,16 +693,19 @@ class TableHDU:
         if not file_path or not isinstance(file_path, str):
             raise ValueError("file_path must be a non-empty string")
 
-        if not isinstance(hdu_index, int) or hdu_index < 0:
+        if not isinstance(hdu_index, int):
             raise ValueError("hdu_index must be a non-negative integer")
 
         import os
 
+        from torchfits._io_engine._hdu_lookup import raise_hdu_index_error
         from torchfits._io_engine.paths import guard_fits_path, is_cfitsio_network_url
 
         guard_fits_path(file_path)
         if not is_cfitsio_network_url(file_path) and not os.path.exists(file_path):
-            raise FileNotFoundError(f"FITS file not found: {file_path}")
+            raise FITSFileNotFoundError(f"FITS file not found: {file_path}")
+        if hdu_index < 0:
+            raise_hdu_index_error(file_path, hdu_index)
 
         try:
             from torchfits import table
@@ -744,10 +756,21 @@ class TableHDU:
 
                 payload[name] = decode_byte_tensor(value, encoding="ascii", strip=True)
 
+        header = self.header if self.header is not None else Header()
+        from ..fits_schema import iter_table_columns, remap_table_column_cards
+
+        # drop_columns/select/add_column keep the source header: renumber its
+        # column cards (TUNITn, TNULLn, TDISPn, ...) onto the written columns
+        # by name, and drop those of columns no longer present.
+        old_names = {col.index: col.name for col in iter_table_columns(header)}
+        if old_names:
+            header = Header(
+                remap_table_column_cards(header.cards, old_names, list(payload))
+            )
         torchfits.write(
             file_path,
             payload,
-            header=self.header if self.header is not None else {},
+            header=header,
             overwrite=overwrite,
         )
 

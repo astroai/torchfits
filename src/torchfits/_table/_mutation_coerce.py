@@ -20,6 +20,10 @@ from .._table.utils import (
 _VLA_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_TFORM_CODES: frozenset[str] = frozenset({"C", "M"})
+_UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2**31, "K": 2**63}
+# Fixed-width dtypes FITS stores through the TZERO convention (numpy dtype
+# str without byte order -> stored TFORM code).
+_OFFSET_CONVENTION_CODE = {"i1": "B", "u2": "I", "u4": "J", "u8": "K"}
 
 
 def _ensure_dtype_maps() -> None:
@@ -108,7 +112,11 @@ def _infer_fits_format(arr: "np.ndarray") -> str:
     if arr.dtype == np.object_:
         raise TypeError("Object/VLA columns require explicit schema['format']")
 
-    base = _infer_fits_scalar_code(arr)
+    # uint16/32/64 and int8 take the FITS offset convention (I/J/K/B plus
+    # TZERO), as table.write does; the rewrite applies the offset.
+    base = _OFFSET_CONVENTION_CODE.get(arr.dtype.str[1:]) or _infer_fits_scalar_code(
+        arr
+    )
     if arr.ndim == 1:
         return f"1{base}"
     repeat = int(np.prod(arr.shape[1:]))
@@ -142,6 +150,7 @@ def _default_table_column_values(
     tform: str,
     num_rows: int,
     tnull: Any = None,
+    unsigned_dtype: str | None = None,
 ) -> Any:
     import numpy as np
 
@@ -174,6 +183,14 @@ def _default_table_column_values(
         "D": np.float64,
     }
     dtype = dtype_map.get(code, np.float32)
+    if unsigned_dtype is not None:
+        # Unsigned-convention columns take their values (raw + TZERO), so the
+        # default and its TNULL must be in that domain too.
+        dtype = np.dtype(unsigned_dtype)
+        if tnull is not None:
+            from ..fits_schema import decoded_tnull
+
+            tnull = decoded_tnull(tnull, tform, 1.0, _UNSIGNED_TZERO[code])
     shape = (num_rows,) if repeat == 1 else (num_rows, repeat)
 
     if tnull is not None and code not in {"A", "C", "M"}:
@@ -194,6 +211,7 @@ def _normalize_mutation_rows(
     tnull_map: dict[str, Any],
     *,
     allow_partial: bool,
+    unsigned_dtypes: Optional[dict[str, str]] = None,
 ) -> tuple[dict[str, Any], int]:
     rows_by_name = {str(k): v for k, v in rows.items()}
     input_columns = set(rows_by_name)
@@ -244,8 +262,12 @@ def _normalize_mutation_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(  # type: ignore[assignment]
-                col_name, value, expected_rows=expected_rows
+            values = _clip_strings_to_width(  # type: ignore[assignment]
+                col_name,
+                _coerce_table_string_values(
+                    col_name, value, expected_rows=expected_rows
+                ),
+                string_widths[col_name],
             )
             if expected_rows is None:
                 expected_rows = len(values)
@@ -281,6 +303,7 @@ def _normalize_mutation_rows(
             tform,
             expected_rows,
             tnull=tnull_map.get(col_name),
+            unsigned_dtype=(unsigned_dtypes or {}).get(col_name),
         )
         normalized[col_name] = _normalize_column_values_for_format(
             col_name,
@@ -453,18 +476,49 @@ def _coerce_table_string_values(
 
     out: list[str] = []
     for item in values:
-        if isinstance(item, bytes):
-            out.append(item.decode("ascii", errors="ignore"))
-        elif isinstance(item, np.bytes_):
-            out.append(bytes(item).decode("ascii", errors="ignore"))
+        text: str | None
+        if item is None:
+            # A missing string is blank in a fixed-width FITS column, not the
+            # text "None".
+            text = ""
+        elif isinstance(item, (bytes, bytearray, np.bytes_)):
+            try:
+                text = bytes(item).decode("ascii")
+            except UnicodeDecodeError:
+                text = None
         else:
-            out.append(str(item))
+            text = str(item)
+        if text is None or not text.isascii():
+            # Same rule as table.write: FITS 'A' columns hold ASCII. Writing
+            # the UTF-8 bytes (or silently dropping characters) corrupts it.
+            raise ValueError(
+                f"Column '{name}' is a FITS string column and takes ASCII text "
+                f"only; got {item!r}"
+            )
+        out.append(text)
 
     if expected_rows is not None and len(out) != expected_rows:
         raise ValueError(
             f"Column '{name}' has {len(out)} rows, expected {expected_rows}"
         )
     return out
+
+
+def _clip_strings_to_width(name: str, values: list[str], width: int) -> list[str]:
+    """Clip ASCII values to a fixed-width 'A' column, warning when any is cut."""
+    import warnings
+
+    clipped = sum(1 for text in values if len(text) > width)
+    if clipped:
+        warnings.warn(
+            f"Column '{name}' has width {width}: "
+            f"{clipped} value(s) were silently clipped to fit. "
+            "Shorten values or widen the column to silence.",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return [text[:width] for text in values]
+    return values
 
 
 def _coerce_table_vla_values(
@@ -563,7 +617,242 @@ def _coerce_table_complex_values(
 # -- column format inference (from write section) --------------------------------
 
 
-def _infer_column_format_for_insert(name: str, values: Any) -> str:
+# ASCII-table TFORMs for the binary codes inference produces; the same widths
+# the table writer picks for a new ASCII table.
+_ASCII_TFORM_FOR_BINARY = {
+    "B": "I3",
+    "I": "I6",
+    "J": "I11",
+    "K": "I20",
+    "E": "E15.7",
+    "D": "E25.15",
+}
+
+
+def _infer_column_format_for_insert(
+    name: str, values: Any, *, ascii_table: bool = False
+) -> str:
+    fmt = _infer_binary_column_format(name, values)
+    if not ascii_table:
+        return fmt
+    dtype = getattr(values, "dtype", None)
+    if isinstance(dtype, torch.dtype):
+        dtype = torch.empty(0, dtype=dtype).numpy().dtype
+    if dtype is not None and getattr(dtype, "str", "")[1:] in _OFFSET_CONVENTION_CODE:
+        # The TZERO convention is a binary-table one; table.write cannot
+        # write these dtypes to an ASCII table either.
+        raise ValueError(
+            f"Column '{name}' has dtype {dtype}, which an ASCII table cannot hold "
+            "without a TZERO offset. Pass format= with an ASCII TFORM (e.g. "
+            "'I11') and values of a signed dtype."
+        )
+    # An ASCII table holds scalar I/F/E/D/A fields only; a binary TFORM such
+    # as '1D' made the rewrite fail with "Failed to create table".
+    repeat, code = fmt[:-1], fmt[-1]
+    if code == "A":
+        return f"A{repeat or 1}"
+    if repeat in ("", "1") and code in _ASCII_TFORM_FOR_BINARY:
+        return _ASCII_TFORM_FOR_BINARY[code]
+    raise ValueError(
+        f"Column '{name}' (inferred binary TFORM '{fmt}') has no ASCII-table "
+        "format: ASCII tables hold scalar integer, float and string fields only. "
+        "Pass format= with an ASCII TFORM (e.g. 'I11', 'E15.7', 'A8')."
+    )
+
+
+_PLAIN_STORAGE_DTYPE = {
+    "B": "uint8",
+    "I": "int16",
+    "J": "int32",
+    "K": "int64",
+    "E": "float32",
+    "D": "float64",
+}
+
+
+def _offset_convention_dtype(values: Any) -> Any:
+    """numpy dtype of ``values`` when FITS stores it via the TZERO convention
+    (uint16/32/64, int8), else None."""
+    dtype = getattr(values, "dtype", None)
+    if isinstance(dtype, torch.dtype):
+        dtype = torch.empty(0, dtype=dtype).numpy().dtype
+    if dtype is not None and getattr(dtype, "str", "")[1:] in _OFFSET_CONVENTION_CODE:
+        return dtype
+    return None
+
+
+def _replacement_column_layout(
+    name: str,
+    values: Any,
+    *,
+    format: Optional[str],
+    existing_meta: dict[str, Any],
+) -> tuple[Optional[str], Any, bool]:
+    """Layout for replace_column when ``values`` use the TZERO convention.
+
+    Returns ``(fmt, values, reset_scaling)``. ``fmt`` None keeps the caller's
+    default. ``reset_scaling`` drops the column's old TZERO/TSCAL/TNULL, which
+    describe the previous storage and would turn the new cells into floats
+    (a 1K column replaced by uint16 kept 1K and gained TZERO=32768).
+    """
+    import numpy as np
+
+    dtype = _offset_convention_dtype(values)
+    if dtype is None:
+        return None, values, False
+    code = _OFFSET_CONVENTION_CODE[dtype.str[1:]]
+    offset = _UNSIGNED_TZERO[code]
+
+    if format is None:
+        _vla, old_code, _repeat = _parse_tform(str(existing_meta.get("format", "")))
+        old_bzero = existing_meta.get("bzero")
+        old_bscale = existing_meta.get("bscale")
+        already = (
+            old_code == code
+            and old_bzero is not None
+            and float(old_bzero) == float(offset)
+            and float(1.0 if old_bscale is None else old_bscale) == 1.0
+        )
+        if already:
+            return None, values, False
+        # The values' dtype wins: replace the layout as table.write would.
+        return _infer_binary_column_format(name, values), values, True
+
+    is_vla, fmt_code, _repeat = _parse_tform(format)
+    if is_vla:
+        return None, values, False
+    if fmt_code == code:
+        # Same storage code: the TZERO convention for that code applies.
+        return None, values, True
+    plain = _PLAIN_STORAGE_DTYPE.get(fmt_code)
+    if plain is None:
+        raise ValueError(
+            f"Column '{name}' has dtype {dtype}, which format '{format}' cannot "
+            "hold; use a numeric TFORM (B, I, J, K, E or D)"
+        )
+    arr = values.detach().cpu().numpy() if isinstance(values, torch.Tensor) else values
+    arr = np.asarray(arr)
+    target = np.dtype(plain)
+    if target.kind in "iu" and arr.size:
+        info = np.iinfo(target)
+        lo, hi = int(arr.min()), int(arr.max())
+        if lo < info.min or hi > info.max:
+            raise ValueError(
+                f"Column '{name}' values span [{lo}, {hi}], which format "
+                f"'{format}' (range [{info.min}, {info.max}]) cannot hold; "
+                f"use format '{code}' for {dtype} with TZERO={offset}"
+            )
+    return None, arr.astype(target), True
+
+
+_OFFSET_CONVENTION_DTYPE = {"B": "int8", "I": "uint16", "J": "uint32", "K": "uint64"}
+_STORED_INT_DTYPE = {"B": "uint8", "I": "int16", "J": "int32", "K": "int64"}
+
+
+def _exact_int_list(values: Any) -> Any:
+    """A flat list of Python ints as an exact uint64/int64 array.
+
+    ``np.asarray`` turns ``[2**63 + 1, 2]`` into float64 and loses the low
+    bits a uint64 column needs. Anything else is returned unchanged.
+    """
+    import numpy as np
+
+    if not isinstance(values, (list, tuple)) or not values:
+        return values
+    if not all(type(v) is int for v in values):
+        return values
+    lo, hi = min(values), max(values)
+    if lo >= 0 and hi > 2**63 - 1 and hi < 2**64:
+        return np.array(values, dtype=np.uint64)
+    return values
+
+
+def _physical_to_stored_column(
+    name: str,
+    arr: "np.ndarray",
+    fmt: str,
+    meta: dict[str, Any],
+    *,
+    ascii_table: bool = False,
+) -> "np.ndarray":
+    """Turn replace_column's physical values into what the rewrite writes.
+
+    ``replace_column`` takes the values a read returns. When the column keeps
+    its TSCAL/TZERO layout, the rewrite expects an unsigned-convention column
+    as values of its dtype (``uint16`` for ``I`` / ``TZERO = 32768``) and any
+    other scaled column as stored codes, ``(value - TZERO) / TSCAL`` (rounded
+    half away from zero for integer TFORMs, as CFITSIO does). A value the
+    column cannot hold raises ``ValueError`` naming it; nothing is written.
+    """
+    import numpy as np
+
+    bscale_raw = meta.get("bscale")
+    bscale = float(bscale_raw) if bscale_raw is not None else 1.0
+    bzero_raw = meta.get("bzero")
+    bzero = float(bzero_raw) if bzero_raw is not None else 0.0
+    if bscale == 1.0 and bzero == 0.0:
+        return arr
+    if not isinstance(arr, np.ndarray) or arr.dtype.kind not in "biuf":
+        return arr
+    if ascii_table:
+        # ASCII TFORMs are Iw / Fw.d / Ew.d / Dw.d; integers are stored as
+        # text, so int64 bounds them, and there is no unsigned convention.
+        first = str(fmt).strip().upper()[:1]
+        is_vla, code = False, {"I": "K", "F": "D", "E": "D", "D": "D"}.get(first, "")
+    else:
+        is_vla, code, _repeat = _parse_tform(fmt)
+    if is_vla or code not in {"B", "I", "J", "K", "E", "D"}:
+        return arr
+    where = f"Column '{name}' (TFORM {fmt}, TSCAL={bscale:g}, TZERO={bzero_raw})"
+
+    offset = None if ascii_table else _UNSIGNED_TZERO.get(code)
+    if bscale == 1.0 and offset is not None and bzero == float(offset):
+        target = np.dtype(_OFFSET_CONVENTION_DTYPE[code])
+        info = np.iinfo(target)
+        if arr.dtype.kind == "f":
+            if not np.all(np.isfinite(arr)) or np.any(arr != np.trunc(arr)):
+                raise ValueError(
+                    f"{where} holds {target} values; non-integral or non-finite "
+                    "values cannot be stored; nothing was written"
+                )
+        if arr.size:
+            lo, hi = arr.min().item(), arr.max().item()
+            if lo < info.min or hi > info.max:
+                raise ValueError(
+                    f"{where} holds {target} values in [{info.min}, {info.max}]; "
+                    f"got values in [{lo}, {hi}]; nothing was written"
+                )
+        return arr.astype(target)
+
+    if code in {"E", "D"}:
+        stored = (arr.astype(np.float64) - bzero) / bscale
+        return stored.astype(np.float32 if code == "E" else np.float64)
+
+    stored_dtype = np.dtype(_STORED_INT_DTYPE[code])
+    info = np.iinfo(stored_dtype)
+    stored = (arr.astype(np.float64) - bzero) / bscale
+    finite = np.isfinite(stored)
+    tnull = meta.get("tnull")
+    if not np.all(finite) and tnull is None:
+        raise ValueError(
+            f"{where} has no TNULL, so non-finite values cannot be stored; "
+            "nothing was written"
+        )
+    stored = np.where(stored >= 0, np.floor(stored + 0.5), np.ceil(stored - 0.5))
+    if np.any(finite & ((stored < info.min) | (stored > info.max))):
+        lo = float(info.min) * bscale + bzero
+        hi = float(info.max) * bscale + bzero
+        raise ValueError(
+            f"{where} can hold values in [{min(lo, hi):g}, {max(lo, hi):g}]; "
+            "nothing was written"
+        )
+    out = np.where(finite, stored, 0).astype(stored_dtype)
+    if not np.all(finite):
+        out[~finite] = int(str(tnull).strip())
+    return out
+
+
+def _infer_binary_column_format(name: str, values: Any) -> str:
     import numpy as np
 
     if isinstance(values, torch.Tensor):

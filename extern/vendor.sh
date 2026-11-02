@@ -138,7 +138,6 @@ fetch_and_extract() {
   local dest="$3"
   local archive="$4"
 
-  rm -rf "${dest}"
   mkdir -p "${TMP_DIR}"
 
   echo "Downloading ${repo}@${tag}"
@@ -169,6 +168,10 @@ fetch_and_extract() {
     exit 1
   fi
 
+  # Replace the existing tree only now that download, verification and
+  # extraction all succeeded: removing it first left no vendored sources at
+  # all after an offline run or a checksum mismatch.
+  rm -rf "${dest}"
   mv "${src_dir}" "${dest}"
 }
 

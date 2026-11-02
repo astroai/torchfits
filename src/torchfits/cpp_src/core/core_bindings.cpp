@@ -61,6 +61,9 @@ nb::dict key_values_to_dict(const std::vector<c::KeyValue>& values) {
             case c::KeyValue::Kind::Str:
                 out[key] = kv.str_value;
                 break;
+            case c::KeyValue::Kind::BigInt:
+                out[key] = nb::steal(PyLong_FromString(kv.str_value.c_str(), nullptr, 10));
+                break;
         }
     }
     return out;
@@ -273,15 +276,17 @@ NB_MODULE(_core, m) {
           nb::arg("filename"), nb::arg("hdu_num"));
 
     m.def("read_keys",
-          [](const std::string& path, int hdu, const std::vector<std::string>& keys) {
+          [](const std::string& path, int hdu, const std::vector<std::string>& keys,
+             bool missing_ok) {
               std::vector<c::KeyValue> values;
               {
                   nb::gil_scoped_release release;
-                  values = c::keywords_path(path, hdu, keys);
+                  values = c::keywords_path(path, hdu, keys, missing_ok);
               }
               return key_values_to_dict(values);
           },
-          nb::arg("filename"), nb::arg("hdu_num"), nb::arg("keys"));
+          nb::arg("filename"), nb::arg("hdu_num"), nb::arg("keys"),
+          nb::arg("missing_ok") = false);
 
     m.def("read_shape",
           [](const std::string& path, int hdu) {

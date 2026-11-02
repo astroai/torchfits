@@ -7,6 +7,259 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.3.2rc1] — 2026-11-03
+
+### Highlights
+A correctness and safety release from a full audit of the library. Many
+fixes change results that were silently wrong in 1.3.1 (BIT columns, `where=`
+on integer and NULL columns, uint64 and int8 data, scaled-column edits, stale
+handles after a file replace), close four ways around the remote-URL SSRF
+guard, and make every write atomic. Read **Behaviour changes** before
+upgrading.
+
+### Behaviour changes
+- **Exceptions.** A missing HDU (unknown EXTNAME, out-of-range or negative
+  index) raises `torchfits.HDUNotFoundError` on every route; it is also a
+  `KeyError`, `IndexError`, `ValueError` and `RuntimeError`, so existing
+  `except` clauses keep working. A missing local file raises
+  `FileNotFoundError` (also a `RuntimeError`) on every route. `write()` raises
+  `ValueError` / `TypeError` for bad arguments instead of wrapping them in
+  `RuntimeError`. `read_extname` raises for a missing file or HDU (it still
+  returns `None` when the HDU has no EXTNAME); `read_batch(strict=False)` keeps
+  those two error types.
+- **TNULL** is compared with the raw stored value (FITS standard), and
+  torchfits now writes it that way. Files written by 1.3.1 with a value-domain
+  unsigned TNULL still read their nulls.
+- **uint64 and int8.** uint64 images and columns (BZERO/TZERO = 2**63) read as
+  `torch.uint64` instead of float64 and can be written. int8 table columns are
+  written with TZERO = -128 and read back as int8 (1.3.1 stored them as uint8).
+- **`where=`:** `IS NULL` also matches NaN; `== NULL` / `!= NULL` on numeric
+  columns raise; quoted literals are taken literally (only `''` escapes);
+  predicates on vector columns raise on every backend.
+- **Refused operations** (they used to corrupt or silently misbehave):
+  - HDU edits that would renumber other HDUs, edits on a read-only file, and
+    `delete_hdu(..., compress=...)`;
+  - `update_rows` with out-of-range integers, non-ASCII strings in table
+    mutations, `delete_rows(path, None)`;
+  - a leading `!` or a CFITSIO `[...]` / `(...)` section in a write path;
+  - tile compression of 64-bit integer images;
+  - remote URLs containing `@`, non-canonical numeric hosts, non-global
+    addresses, and redirects to another host.
+- **HDU edits** (`insert_hdu`, `replace_hdu`, `delete_hdu`) copy untouched
+  HDUs byte for byte, so they keep their tile compression and scaled storage;
+  `compress=` applies only to the HDU being written.
+- **Table datasets** return the same torch-native values with and without
+  `where=` (nulls as stored sentinels; use `TNullToNan`).
+- **`replace_column`** takes physical values on scaled or unsigned columns,
+  and an unsigned dtype without `format=` replaces the column layout.
+- **Transforms:** `rgb()` returns float32; `MeshBackgroundSubtract` now really
+  sigma-clips each tile with `n_sigma` / `max_iter` (`max_iter=0` restores the
+  plain tile median).
+- **CLI:** `diff` compares pixels and table rows exactly (exit 0 means
+  identical data); `stats` skips NaN/BLANK pixels, reports them as `nbad`,
+  uses float64 and a midpoint median, and gives exact integer min/max for
+  integer images; `convert` to PNG puts pixel (1,1) bottom-left by default
+  (`--origin upper` for the 1.3.1 orientation); `setkey` refuses structural
+  keywords and refreshes existing checksums; `cutout --box` shifts CRPIX.
+- **`clear_cache(disk=True)`** removes the cache root and only torchfits'
+  own download files from a `TORCHFITS_REMOTE_CACHE` directory set outside it.
+
+### Security
+- The remote-URL guard covers every CFITSIO network driver and refuses
+  non-canonical numeric hosts (e.g. `0177.0.0.1`), non-global addresses
+  (including CGNAT) and `@` anywhere in the URL. Patched CFITSIO no longer
+  follows redirects to another host, honours `@` only in the authority, and
+  no longer reports uninitialised memory in HTTP errors.
+
+### Added
+- io: Read and write uint64 with the FITS BZERO/TZERO = 2**63 convention
+- io: Accept an EXTNAME in write_checksums and verify_checksums
+- data: Add return_label= to the image, cube, tensor and table datasets
+- data: Accept labels= and label_key= on the image and cube iterable datasets
+- io: Add HDUNotFoundError for unknown or out-of-range HDUs
+### Fixed
+- http: Block IANA special-purpose ranges on every Python version
+- io: Serve Python-fetched https cutouts on builds without libcurl
+- table: Allow update_rows/append_rows on unsigned columns
+- table: Gather complex columns at full width in filtered mmap reads
+- table: Convert VLA row payloads to the column type on append/update
+- io: Validate every HDU header before the native writers create a file
+- table: Skip caller cards that would rewrite a written table's layout
+- table: Read an ASCII schema 'Aw' width after the code letter
+- io: Refuse non-CPU arrays in native image and table writes
+- table: Refuse a foreign capsule as an mmap TableReader
+- table: Stop reading stride(0) of a 0-d BIT or byte-string payload
+- table: Flush a borrowed handle before reading a table through it
+- io: Stop handles opened before a file replace using the new file's metadata
+- table: Read 'PA' VLA columns as bytes and reject 'PC'/'PM'/'PX'
+- table: Write rAw sub-string columns one row per value
+- table: Validate the whole rename_columns mapping before writing TTYPEn
+- io: Keep FITSFile handles safe across get_num_hdus, table reads and close
+- io: Reset the compression quantize level for every HDU
+- table: Stop truncating float literals in integer-column pushdown filters
+- table: Read BIT columns row by row when the repeat is not byte-aligned
+- stats: Promote float32 to float64 for quantiles over > 2**24 elements
+- build: Apply NIOBUF/MINDIRECT to every target via a vendored-header patch
+- build: Require the core to define every CFITSIO symbol _C imports on ELF
+- build: Ship the bzip2 license with wheels that bundle libbz2
+- build: Drop the dead CFITSIO_HAVE_SSSE3 define and document SSSE3
+- build: Clear a cached USE_BZIP2 when TORCHFITS_USE_BZIP2 is OFF
+- core: Bound the shared per-path metadata registry
+- core: Keep started pool workers when a worker thread cannot start
+- core: Create the core thread pool once under concurrent first use
+- core: Re-validate extended-syntax paths and stop caching URLs
+- core: Publish path-level probe answers only for the current generation
+- core: Type read_keys values the way read_header does
+- table: Reject a schema bit repeat that disagrees with the payload width
+- build: Size BZIP2 float tiles correctly and reject short bzip2 tiles
+- build: Keep the vendored CFITSIO tree when vendor.sh fails
+- io: Compress uint16 images with PLIO_1
+- io: Refuse HDU edits that would renumber the other HDUs
+- io: Keep untouched scaled images' stored codes across HDU edits
+- cache: Clear overridden remote and sample roots with clear_cache(disk=True)
+- io: Take the read-cache file signature before reading
+- io: Invalidate path caches after write_checksums
+- io: Write numpy images with negative strides
+- io: Match EXTNAME case-insensitively in replace_hdu and delete_hdu
+- io: Stop rewrites from stacking CFITSIO's standard COMMENT block
+- io: Keep x.fits.gz gzip-compressed on overwrite and HDU edits
+- io: Drop BSCALE/BZERO copied onto an integer tensor of another BITPIX
+- io: Let write() raise the documented ValueError for invalid input
+- io: Reject CFITSIO's '!' clobber prefix in write paths
+- io: Never clobber or delete a file that appears during overwrite=False
+- io: Keep a source TFORM on rewrite only for the same column layout
+- table: Write and read int8 columns with the signed-byte convention
+- table: Write uint64 TZERO = 2**63 exactly on every path
+- io: Honor mode= and EXTNAMEs on every read route
+- io: Refuse HTTP range cutouts of table HDUs
+- io: Validate cached reads of file.fits[N] and file:// paths against the file
+- where: Take string literals literally and align read_torch literals
+- table: Key cached native table readers by the resolved path
+- hdu: Resolve TableHDURef column-file edits against the file's columns
+- hdu: Renumber column cards when TableHDU.to_fits writes a subset
+- table: Carry typed header cards through insert/replace_column
+- table: Re-stamp CHECKSUM/DATASUM after row and column edits
+- where: Refuse vector-column predicates on every backend
+- where: Resolve cpp-backend string predicates with the caller's decoding
+- table: Check ASCII and width for strings in every row mutation
+- table: Write None in string columns as a blank value
+- table: Reject delete_rows(path, None) instead of deleting every row
+- table: Compare TNULL with the stored value before TSCAL/TZERO
+- table: Refuse out-of-range integers in update_rows before writing
+- table: Keep scaled columns' stored values across insert/replace_column
+- where: Compare integer columns exactly against float and wide literals
+- where: Keep NULL OR TRUE rows with Kleene and/or
+- table: Write signed payloads into uint64 columns as physical values
+- table: Infer ASCII TFORMs for column edits on ASCII tables
+- table: Write 0-row numpy string columns with their dtype width
+- hdu: Give refreshed TableHDURef views typed header cards
+- where: Read quoted literals literally in the public parse helpers
+- hdu: Keep untouched HDUs byte-identical across insert/replace/delete
+- table: Size numpy string columns from their dtype width
+- table: Read scaled cells of gzip tables from the decompressed stream
+- io: Write None, complex and big-int header values read_header returns
+- header: Keep orphan CONTINUE cards off earlier string values
+- hdu: Report the DataView dtype with the native reader's exact rule
+- hdu: Look up HDUList names like CFITSIO and support "in"
+- hdu: Keep Header.copy, | and |= on the card list
+- hdu: Rebuild Header from its cards under pickle and copy
+- http: Connect to the configured proxy instead of the pinned target
+- data: Never cache a non-FITS HTTP body as a download
+- http: Guard every CFITSIO network driver scheme
+- io: Report missing libcurl and CFITSIO's reason on open failures
+- http: Stop CFITSIO following redirects to unguarded hosts
+- http: Refuse non-canonical numeric hosts and non-global addresses
+- scripts: No --user cibuildwheel install; fail CFHT fetch on missing frames
+- release: Refuse Unreleased notes for a final release
+- scripts: Make ci-local build first and run mypy, changelog-check, full tests
+- scripts: Never pick a pre-release tag for the stable docs root
+- scripts: Count launcher failures in the CANFAR CUDA verify summary
+- scripts: Report failing wheel build/verify cells as FAIL
+- scripts: Parse breaking and revert subjects; reject non-conventional ones
+- data: Collate nested per-arm dicts in fits_collate_fn
+- data: Keep table dataset rows torch-native under where=
+- transforms: Broadcast spatial masks in weighted stats and IRAF zscale
+- transforms: Ignore empty tiles in the mesh background 3x3 filter
+- transforms: Run IRAF zscale on MPS in float32
+- transforms: Keep NaN/masked pixels out of the IRAF zscale fit
+- cli: Decompress restores a compressed primary image as the primary
+- cli: Setkey coerces only plain numeric literals
+- cli: Convert reports bad --columns/--where as usage errors
+- cli: Cutout --box shifts CRPIX to the cutout origin
+- cli: Arith keeps huge integral scalars as floats
+- cli: Arith output dtype no longer follows a float64 operand B
+- cli: Arith stacks HDUs only when their dtypes match
+- cli: Setkey validates before copying to -o/--out-dir
+- cli: Setkey refreshes CHECKSUM/DATASUM in edited HDUs that had them
+- cli: Setkey refuses structural and tile-compression keywords
+- cli: Setkey --delete/--rename find HIERARCH keywords
+- cli: Report compressed image shapes row-major like uncompressed ones
+- cli: Cutout checks compressed image size and refuses -e with a section
+- cli: Stats over finite pixels in float64 with midpoint median
+- cli: Diff compares pixels and table rows exactly
+- transforms: Compose accepts plain callables
+- hdu: TableHDURef reads its header lazily and validates every window
+- table: Keep where= reads torch-free unless torch is already imported
+- transforms: Sigma-clip mesh background tiles with n_sigma and max_iter
+- table: Accept pathlib.Path in table.write cache invalidation
+- io: Let remote cutouts of tile-compressed HDUs fall back to a download
+- io: Create and open paths with '[' in a directory literally
+- io: Raise argument errors from open(mode=) and table.read(hdu<0) as is
+- io: Keep delete_hdu torch-free and correct the torch-free table
+- hdu: Refuse insert/replace/delete_hdu on a read-only file
+- hdu: Splice HDUs in files with trailing bytes after the last HDU
+- write: Skip an empty in-memory primary when writing a compressed MEF
+- hdu: Route HDUList.write through torchfits.write's path contract
+- io: Raise a readable open error when CFITSIO's error stack holds raw bytes
+- http: Refuse '@' in CFITSIO URLs and parse userinfo only in the authority
+- io: Let write() raise argument TypeErrors unchanged
+- table: Infer the TZERO convention for unsigned and int8 in insert_column
+- table: Raise ValueError naming TNULL/TSCAL/TZERO for bad schema numerics
+- table: Return typed empty columns for 0-row tables and num_rows=0
+- io: Write the uint64 BZERO/TZERO offset as the exact integer 2**63
+- table: Let replace_column adopt the layout of unsigned and int8 values
+- io: Reject tile compression of 64-bit integer images up front
+- io: Raise FileNotFoundError for a missing local file on every route
+- cli: Report an out-of-range -e with the library's HDU message
+- io: Raise HDUNotFoundError from table, HDU-edit and HDUList lookups
+- table: Compare where= literals beyond int64 exactly in the native scan
+- build: Stop the ELF link gate reading libc fflush/ffs* as CFITSIO
+- write: Keep the empty primary's header cards on a compressed MEF
+- io: Reject CFITSIO [..]/(..) sections on write paths
+- io: Flush a write handle on close() while a TableReader borrows it
+- table: Replace_column takes physical values on a scaled column
+- table: Accept a uint64 tnull at or above 2**63
+- table: Read 1.3.1 value-domain unsigned TNULL as a null
+- errors: Keep except RuntimeError catching missing HDUs and files
+- cache: Never delete user-configured cache override directories
+- build: Stop the ELF link gate reading mangled C++ names as CFITSIO
+### Performance
+- png: Export PNG scanlines in one copy instead of per-element Python loop
+- rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
+
+- io: Read a missing EXTNAME without an exception or lookup re-check
+- io: Answer .fits.gz metadata from one decompression per file
+- table: Read dense rows= selections through merged block reads
+- io: Read EXTNAME/HDUNAME in one missing_ok call in the name scan
+- io: Cache explicit mode= reads under a mode-keyed entry
+### Docs
+- Say the real-CFHT suites never run in CI and list both files
+- Correct AGENTS.md claims about test markers, changelog-check, stubs
+- examples: Say the cutout command now shifts CRPIX
+- cli: Document convert --origin; align docs contract with CRPIX shift
+- contributing: Make the torch-boundary audit recipe run
+- architecture: Correct dtype map, image mmap ownership and env var list
+- index: Say device= copies a host-decoded tensor, not native GPU decode
+- examples-ml: Correct dataset output table, bash continuations and numbering
+- api-transforms: Match signatures, rgb dtypes and weighted support to code
+- api-data: Match zeropoint and rank lookup order to the code
+- api-tables: To_duckdb returns a relation, not a connection
+- install: Mark the bzip2/libcurl build flags as a diagnostic
+- api-core-io: Correct read_batch_info, compression losslessness and errors
+- api: Name Header.cards instead of a nonexistent read_header_cards
+- io: Note that PLIO_1 uint16 images read 32768 off in astropy
+- io: Document HDUNotFoundError and FileNotFoundError for lookups
+
 ## [1.3.1] — 2026-10-26
 
 ### Changed
@@ -1715,7 +1968,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.2rc1...HEAD
+[1.3.2rc1]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2rc1
 [1.3.1]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1
 [1.3.1rc3]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1rc3
 [1.3.1rc2]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1rc2

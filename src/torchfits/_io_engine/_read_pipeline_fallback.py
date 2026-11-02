@@ -12,6 +12,7 @@ from typing import Any
 
 import torch
 
+from .._errors import HDUNotFoundError
 from ..hdu import Header
 from .device import to_device, validate_device
 from ._read_pipeline import (
@@ -20,6 +21,7 @@ from ._read_pipeline import (
 )
 from .caches import (
     get_cached_handle,
+    UNSET_SIGNATURE,
     path_signature,
     set_cached_hdu_type,
     store_cached_read,
@@ -52,6 +54,9 @@ def read_fallback(
     raw_scale: bool = False,
 ) -> Any:
     """Generic fallback read path for image/table HDUs."""
+    # The mode is part of the cache key: an explicit mode='image'/'table'
+    # must not be answered with an entry an auto-mode read stored (a table
+    # dict for mode='image'), but repeated explicit-mode reads still hit.
     hit, cached_res, cache_key = read_check_cache(
         path,
         hdu,
@@ -65,6 +70,7 @@ def read_fallback(
         cache_capacity,
         mmap,
         raw_scale,
+        "image" if force_image else "table" if force_table else "auto",
     )
     if hit:
         return cached_res
@@ -73,10 +79,13 @@ def read_fallback(
         raise ValueError("HDU index must be non-negative")
     if start_row < 1:
         raise ValueError("start_row must be >= 1 (FITS uses 1-based indexing)")
-    if num_rows < -1 or num_rows == 0:
-        raise ValueError("num_rows must be > 0 or -1 for all rows")
+    if num_rows < -1:
+        raise ValueError("num_rows must be >= 0, or -1 for all rows")
     validate_device(device)
 
+    # File identity *before* reading: everything cached below is keyed on
+    # it, so a rewrite landing mid-read invalidates rather than gets pinned.
+    signature = path_signature(path)
     try:
         file_handle, cached_handle = get_cached_handle(path)
         try:
@@ -93,19 +102,33 @@ def read_fallback(
                     )
                     hdu_num = None
 
+                num_hdus = None
                 if hdu_num is None:
                     num_hdus = cpp_module.get_num_hdus(file_handle)
+                    wanted = hdu.strip().upper()
                     for i in range(num_hdus):
                         try:
-                            hdr = cpp_module.read_header(file_handle, i)
-                            if hdr.get("EXTNAME") == hdu:
-                                hdu_num = i
-                                break
+                            # read_header returns (key, value, comment) cards.
+                            cards = cpp_module.read_header(file_handle, i)
                         except (RuntimeError, TypeError, ValueError):
                             continue
+                        extname = next(
+                            (
+                                str(c[1])
+                                for c in cards
+                                if str(c[0]).upper() == "EXTNAME"
+                            ),
+                            None,
+                        )
+                        if (
+                            extname is not None
+                            and extname.strip(" '").upper() == wanted
+                        ):
+                            hdu_num = i
+                            break
 
                 if hdu_num is None:
-                    raise ValueError(f"HDU '{hdu}' not found in file")
+                    raise HDUNotFoundError.for_request(path, hdu, num_hdus)
             else:
                 hdu_num = hdu
 
@@ -115,7 +138,7 @@ def read_fallback(
             if isinstance(hdu_num, int) and hdu_type is None:
                 try:
                     hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                    set_cached_hdu_type(path, hdu_num, hdu_type)
+                    set_cached_hdu_type(path, hdu_num, hdu_type, signature)
                 except (RuntimeError, TypeError, ValueError):
                     hdu_type = None
 
@@ -142,6 +165,7 @@ def read_fallback(
                         resolve_image_mmap=resolve_image_mmap,
                         read_header=read_header,
                         raw_scale=raw_scale,
+                        signature=signature,
                     )
                 except (RuntimeError, TypeError):
                     if force_image:
@@ -149,7 +173,7 @@ def read_fallback(
                     if isinstance(hdu_num, int):
                         try:
                             hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                            set_cached_hdu_type(path, hdu_num, hdu_type)
+                            set_cached_hdu_type(path, hdu_num, hdu_type, signature)
                         except (RuntimeError, TypeError, ValueError):
                             hdu_type = None
                     is_table_hdu = force_table or (
@@ -177,6 +201,7 @@ def read_fallback(
                     header_data=header_data,
                     header=header,
                     read_header=read_header,
+                    signature=signature,
                 )
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise RuntimeError(f"Failed to read table extension: {exc}") from exc
@@ -189,9 +214,9 @@ def read_fallback(
                     # Cleanup only: never mask the in-flight error.
                     pass
 
-    except OSError:
-        # IO errors surface typed; wrapping them in RuntimeError would hide
-        # FileNotFoundError/PermissionError from callers (r4a-05).
+    except (OSError, HDUNotFoundError):
+        # IO and lookup errors surface typed; wrapping them in RuntimeError
+        # would hide FileNotFoundError/PermissionError from callers (r4a-05).
         raise
     except Exception as exc:
         raise RuntimeError(f"Failed to read FITS file '{path}': {exc}") from exc
@@ -215,8 +240,11 @@ def read_fallback_image(
     resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
     read_header: Callable[[Any, int, bool], Any],
     raw_scale: bool = False,
+    signature: Any = UNSET_SIGNATURE,
 ) -> Any:
     """Read an image HDU in the generic fallback path."""
+    if signature is UNSET_SIGNATURE:
+        signature = path_signature(path)
     effective_mmap = resolve_image_mmap(path, hdu_num, mmap, cache_capacity)
     header = None
     header_data = None
@@ -256,13 +284,13 @@ def read_fallback_image(
             (
                 data.cpu() if device != "cpu" else data,
                 header,
-                path_signature(path),
+                signature,
             ),
             cache_capacity,
         )
 
     if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "IMAGE")
+        set_cached_hdu_type(path, hdu_num, "IMAGE", signature)
     return (data, header) if return_header else data
 
 
@@ -285,8 +313,11 @@ def read_fallback_table(
     header_data: Any,
     header: Any,
     read_header: Callable[[Any, int, bool], Any],
+    signature: Any = UNSET_SIGNATURE,
 ) -> Any:
     """Read a table HDU in the generic fallback path."""
+    if signature is UNSET_SIGNATURE:
+        signature = path_signature(path)
     if (return_header or isinstance(hdu_num, str)) and header_data is None:
         header_data = read_header(file_handle, hdu_num, fast_header)
         header = Header(header_data)
@@ -390,7 +421,7 @@ def read_fallback_table(
     if use_cache and cache_key is not None:
         store_cached_read(
             cache_key,
-            (table_data, header, path_signature(path)),
+            (table_data, header, signature),
             cache_capacity,
         )
 
@@ -412,5 +443,5 @@ def read_fallback_table(
         table_data = new_data
 
     if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "BINARY_TABLE")
+        set_cached_hdu_type(path, hdu_num, "BINARY_TABLE", signature)
     return (table_data, header) if return_header else table_data

@@ -7,11 +7,12 @@ repos:
       # Byte-exact files must be left alone: a patch's context lines have to
       # match the target source verbatim (stripping their trailing whitespace
       # silently breaks the vendored-CFITSIO build), and docs/assets/ is
-      # vendored third-party bundles that should stay identical to upstream.
+      # vendored third-party bundles that should stay identical to upstream,
+      # as are the third-party license texts in extern/licenses/.
       - id: trailing-whitespace
-        exclude: ^(extern/patches/|docs/assets/)
+        exclude: ^(extern/patches/|extern/licenses/|docs/assets/)
       - id: end-of-file-fixer
-        exclude: ^(extern/patches/|docs/assets/)
+        exclude: ^(extern/patches/|extern/licenses/|docs/assets/)
       # No exclude: the only file that ever needed one was .dsh/cordis.patch.yml,
       # which used a JavaScript type tag (``!!js ...``) that only its own parser
       # accepts. .dsh/ has been removed, and every remaining YAML file in the

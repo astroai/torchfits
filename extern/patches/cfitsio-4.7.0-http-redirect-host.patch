@@ -1,0 +1,99 @@
+--- a/drvrnet.c
++++ b/drvrnet.c
+@@ -167,6 +167,7 @@
+ #include <arpa/inet.h>
+ #include <netdb.h>
+ #include <errno.h>
++#include <ctype.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -257,6 +258,7 @@
+ static int root_recv_buffer(int sock, int *op, char *buffer,int buflen);
+ static int root_openfile(char *filename, char *rwmode, int *sock);
+ static int encode64(unsigned s_len, char *src, unsigned d_len, char *dst);
++static int net_redirect_same_host(const char *location, const char *host);
+ static int ssl_get_with_curl(char *url, curlmembuf* buffer, 
+                 char* username, char* password);
+ static size_t curlToMemCallback(void *buffer, size_t size, size_t nmemb, void *userp);
+@@ -986,7 +988,19 @@
+ 	  ffpmsg(scratchstr);
+ 	  ffpmsg(" ");
+ */
+-	  scratchstr2 = strstr(scratchstr,"http://");
++          /* torchfits: the caller validated only the original host, so a
++             redirect that leaves it is refused instead of followed. */
++          if (!net_redirect_same_host(scratchstr, host)) {
++            snprintf(errorstr,MAXLEN,
++              "HTTP redirect from host %s to another host refused: %s",
++              host, scratchstr);
++            ffpmsg(errorstr);
++            fclose(*httpfile);
++            *httpfile=0;
++            return (FILE_NOT_OPENED);
++          }
++
++	  scratchstr2 = strncmp(scratchstr,"http://",7) ? NULL : scratchstr;
+           if (scratchstr2 != NULL) {
+ 	     /* Ok, we found the HTTP redirection is to another HTTP URL. */
+ 	     /* We can handle this case directly, here */
+@@ -1004,7 +1018,7 @@
+           }
+ 
+           /* It was not a HTTP to HTTP redirection, so see if it HTTP to FTP */
+-	  scratchstr2 = strstr(scratchstr,"ftp://");
++	  scratchstr2 = strncmp(scratchstr,"ftp://",6) ? NULL : scratchstr;
+           if (scratchstr2 != NULL) {
+ 	     /* Ok, we found the HTTP redirection is to a FTP URL. */
+ 	     /* skip the "ftp://" characters */
+@@ -1028,7 +1042,7 @@
+           }
+           
+           /* Now check for HTTP to HTTPS redirection. */
+-	  scratchstr2 = strstr(scratchstr,"https://");
++	  scratchstr2 = strncmp(scratchstr,"https://",8) ? NULL : scratchstr;
+           if (scratchstr2 != NULL) {
+              /* skip the "https://" characters */
+              scratchstr2 += 8;
+@@ -3390,6 +3404,41 @@
+    fn - output filename
+ */
+ 
++/*--------------------------------------------------------------------------*/
++/* torchfits: nonzero when the absolute http/https/ftp URL in location names
++   the same host (case-insensitive) as host.  Anything else, including a
++   relative or unparsable location, counts as a different host. */
++static int net_redirect_same_host(const char *location, const char *host)
++{
++  const char *p, *end, *at, *hstart, *hend;
++  size_t n, i;
++
++  if (!strncmp(location, "http://", 7)) p = location + 7;
++  else if (!strncmp(location, "https://", 8)) p = location + 8;
++  else if (!strncmp(location, "ftp://", 6)) p = location + 6;
++  else return 0;
++
++  end = p;
++  while (*end && *end != '/' && *end != '?' && *end != '#') end++;
++  hstart = p;
++  for (at = p; at < end; at++) {
++    if (*at == '@') hstart = at + 1;
++  }
++  hend = hstart;
++  if (*hstart == '[') {
++    while (hend < end && *hend != ']') hend++;
++    if (hend < end) hend++;
++  } else {
++    while (hend < end && *hend != ':') hend++;
++  }
++  n = (size_t)(hend - hstart);
++  if (n == 0 || n != strlen(host)) return 0;
++  for (i = 0; i < n; i++) {
++    if (tolower((unsigned char)hstart[i]) != tolower((unsigned char)host[i]))
++      return 0;
++  }
++  return 1;
++}
+ static int NET_ParseUrl(const char *url, char *proto, char *host, int *port, 
+ 		 char *fn)
+ {

@@ -110,8 +110,9 @@ endif()
 # Enable SIMD optimizations globally (propagates to cfitsio)
 # Note: For wheels, avoid -march=native. Using reasonable baselines.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    # Enable SSSE3 for Rice compression optimization (reasonable baseline for modern PyTorch)
-    add_compile_definitions(CFITSIO_HAVE_SSSE3)
+    # SSSE3 (pshufb) backs the SIMD byte-swap of big-endian image and table
+    # data (internal_utils.h). Every x86_64 build therefore requires an SSSE3
+    # CPU, which is also what modern PyTorch wheels assume.
     add_compile_options(-mssse3)
     message(STATUS "Enabled x86_64 optimizations (SSSE3)")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
@@ -435,6 +436,9 @@ endif()
 
 if(CFITSIO_FOUND)
     message(STATUS "Found environment CFITSIO: ${CFITSIO_INCLUDE_DIRS} ${CFITSIO_LIBRARIES}")
+    # An environment CFITSIO does not say whether it links libcurl; assume it
+    # does and let its open error (now surfaced) explain an https failure.
+    set(_TORCHFITS_CFITSIO_HAS_CURL ON)
 else()
     # Vendor CFITSIO as fallback
     if(NOT EXISTS "${CFITSIO_SOURCE_DIR}/CMakeLists.txt")
@@ -443,39 +447,6 @@ else()
 
     if(EXISTS "${CFITSIO_SOURCE_DIR}/CMakeLists.txt")
         message(STATUS "Building vendored CFITSIO from ${CFITSIO_SOURCE_DIR}")
-
-        # CFITSIO hard-defines NIOBUF/MINDIRECT in headers. When we want to tune these
-        # compile-time constants, patch in #ifndef guards once so command-line -D values
-        # can actually take effect.
-        if(TORCHFITS_NIOBUF OR TORCHFITS_MINDIRECT)
-            set(_CFITSIO_FITSIO_H "${CFITSIO_SOURCE_DIR}/fitsio.h")
-            if(EXISTS "${_CFITSIO_FITSIO_H}")
-                file(READ "${_CFITSIO_FITSIO_H}" _fitsio_h_content)
-                if(NOT _fitsio_h_content MATCHES "#ifndef NIOBUF")
-                    string(REPLACE
-                        "#define NIOBUF  40  /* number of IO buffers to create (default = 40) */"
-                        "#ifndef NIOBUF\n#define NIOBUF  40  /* number of IO buffers to create (default = 40) */\n#endif"
-                        _fitsio_h_content
-                        "${_fitsio_h_content}"
-                    )
-                    file(WRITE "${_CFITSIO_FITSIO_H}" "${_fitsio_h_content}")
-                endif()
-            endif()
-
-            set(_CFITSIO_FITSIO2_H "${CFITSIO_SOURCE_DIR}/fitsio2.h")
-            if(EXISTS "${_CFITSIO_FITSIO2_H}")
-                file(READ "${_CFITSIO_FITSIO2_H}" _fitsio2_h_content)
-                if(NOT _fitsio2_h_content MATCHES "#ifndef MINDIRECT")
-                    string(REPLACE
-                        "#define MINDIRECT 8640   /* minimum size for direct reads and writes */"
-                        "#ifndef MINDIRECT\n#define MINDIRECT 8640   /* minimum size for direct reads and writes */\n#endif"
-                        _fitsio2_h_content
-                        "${_fitsio2_h_content}"
-                    )
-                    file(WRITE "${_CFITSIO_FITSIO2_H}" "${_fitsio2_h_content}")
-                endif()
-            endif()
-        endif()
 
         # CFITSIO Build Options
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
@@ -517,6 +488,10 @@ else()
                     set(USE_BZIP2 OFF CACHE BOOL "Enable bzip2 support" FORCE)
                 endif()
             endif()
+        else()
+            # Reconfiguring with the option turned off must also clear a
+            # USE_BZIP2=ON left in the cache by an earlier configure.
+            set(USE_BZIP2 OFF CACHE BOOL "Enable bzip2 support" FORCE)
         endif()
 
         # Force position-independent code for static library to be linked into shared library
@@ -525,6 +500,16 @@ else()
         # Build and link CFITSIO, but do not install its headers, static archive,
         # pkg-config file, or CMake metadata into the Python wheel.
         add_subdirectory("${CFITSIO_SOURCE_DIR}" cfitsio_build EXCLUDE_FROM_ALL)
+        # CFITSIO's own CMakeLists adds -DCFITSIO_HAVE_CURL only when it found
+        # libcurl (https/ftps support). Mirror that result as _C.HAS_CURL.
+        get_directory_property(_cfitsio_dir_defs
+            DIRECTORY "${CFITSIO_SOURCE_DIR}" COMPILE_DEFINITIONS)
+        if("CFITSIO_HAVE_CURL" IN_LIST _cfitsio_dir_defs)
+            set(_TORCHFITS_CFITSIO_HAS_CURL ON)
+        else()
+            set(_TORCHFITS_CFITSIO_HAS_CURL OFF)
+        endif()
+        message(STATUS "Vendored CFITSIO https/ftps (libcurl): ${_TORCHFITS_CFITSIO_HAS_CURL}")
 
         # The vendored cfitsio CMakeLists publishes its dependency include
         # dirs (zlib/curl/bzip2) as PUBLIC usage requirements. A dep resolved
@@ -569,15 +554,33 @@ else()
         # GNU ld rejects every member ("is not an object").
         set_target_properties(cfitsio PROPERTIES
             INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+        # NIOBUF (fitsio.h) sizes arrays inside CFITSIO's FITSfile struct and
+        # MINDIRECT (fitsio2.h) is the direct-I/O threshold. The vendored
+        # headers take both from the command line through #ifndef guards
+        # (extern/patches/cfitsio-4.7.0-niobuf-guards.patch), and every target
+        # that includes them must see the same values -- a NIOBUF that only
+        # CFITSIO saw gave torchfits a different FITSfile layout from the one
+        # CFITSIO built. Applied to the torchfits targets below as well.
+        set(_TORCHFITS_CFITSIO_TUNING_DEFS "")
         if(TORCHFITS_NIOBUF)
-            # CFITSIO reads this compile-time macro directly from fitsio.h.
-            target_compile_definitions(cfitsio PRIVATE NIOBUF=${TORCHFITS_NIOBUF})
+            list(APPEND _TORCHFITS_CFITSIO_TUNING_DEFS NIOBUF=${TORCHFITS_NIOBUF})
             message(STATUS "Overriding CFITSIO NIOBUF=${TORCHFITS_NIOBUF}")
         endif()
         if(TORCHFITS_MINDIRECT)
-            # CFITSIO direct I/O threshold (bytes), defined in fitsio2.h.
-            target_compile_definitions(cfitsio PRIVATE MINDIRECT=${TORCHFITS_MINDIRECT})
+            list(APPEND _TORCHFITS_CFITSIO_TUNING_DEFS MINDIRECT=${TORCHFITS_MINDIRECT})
             message(STATUS "Overriding CFITSIO MINDIRECT=${TORCHFITS_MINDIRECT}")
+        endif()
+        if(_TORCHFITS_CFITSIO_TUNING_DEFS)
+            # Without the guards the header's own #define wins and the -D is
+            # silently ignored, so refuse a tree vendored before the patch.
+            file(STRINGS "${CFITSIO_SOURCE_DIR}/fitsio.h" _niobuf_guard REGEX "^#ifndef NIOBUF")
+            file(STRINGS "${CFITSIO_SOURCE_DIR}/fitsio2.h" _mindirect_guard REGEX "^#ifndef MINDIRECT")
+            if(NOT _niobuf_guard OR NOT _mindirect_guard)
+                message(FATAL_ERROR
+                    "${CFITSIO_SOURCE_DIR} lacks the NIOBUF/MINDIRECT #ifndef guards; "
+                    "re-run ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt")
+            endif()
+            target_compile_definitions(cfitsio PRIVATE ${_TORCHFITS_CFITSIO_TUNING_DEFS})
         endif()
     else()
         message(FATAL_ERROR
@@ -800,6 +803,10 @@ target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI
 if(USE_BZIP2)
     target_compile_definitions(_C PRIVATE TORCHFITS_HAVE_BZIP2=1)
 endif()
+# _C.HAS_CURL: whether CFITSIO can open https:// and ftps:// URLs.
+if(_TORCHFITS_CFITSIO_HAS_CURL)
+    target_compile_definitions(_C PRIVATE TORCHFITS_HAVE_CURL=1)
+endif()
 
 
 # Compiler flags
@@ -810,14 +817,23 @@ target_compile_features(_C PRIVATE cxx_std_20)
 # import (torchfits/__init__.py) instead of crossing an ABI boundary quietly.
 target_compile_definitions(_C PRIVATE TORCHFITS_CORE_BUILD_ID="${TORCHFITS_CORE_BUILD_ID}")
 
+# Same NIOBUF/MINDIRECT as the vendored CFITSIO build (see where they are set).
+if(_TORCHFITS_CFITSIO_TUNING_DEFS)
+    foreach(_torchfits_target IN ITEMS torchfits_core _core _C)
+        target_compile_definitions(${_torchfits_target} PRIVATE ${_TORCHFITS_CFITSIO_TUNING_DEFS})
+    endforeach()
+endif()
+
 # Prove the CFITSIO symbols actually bound to the core (see check_core_link.cmake).
 add_custom_command(TARGET _C POST_BUILD
     COMMAND "${CMAKE_COMMAND}" "-DCMAKE_TARGET=$<TARGET_FILE:_C>"
+            "-DCORE_LIBRARY=$<TARGET_FILE:torchfits_core>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/check_core_link.cmake"
     VERBATIM
 )
 add_custom_command(TARGET _core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" "-DCMAKE_TARGET=$<TARGET_FILE:_core>"
+            "-DCORE_LIBRARY=$<TARGET_FILE:torchfits_core>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/check_core_link.cmake"
     VERBATIM
 )

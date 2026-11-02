@@ -47,6 +47,18 @@ def _empty_table_with_schema(
     header_schema = _schema_from_header(
         path, hdu, columns, decode_bytes, include_fits_metadata
     )
+    if header_schema is None:
+        # VLA columns are not typed from the header alone; take the schema
+        # from a one-row scan so an empty window keeps every column typed.
+        scanned = schema(
+            path,
+            hdu,
+            columns,
+            decode_bytes=decode_bytes,
+            include_fits_metadata=include_fits_metadata,
+        )
+        if scanned.names:
+            header_schema = scanned
     if header_schema is not None:
         # Reorder fields to match the requested column order when specified.
         if columns is not None:
@@ -387,10 +399,14 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
     is_list = pa.types.is_fixed_size_list(arrow_type)
     if abs(tscal - 1.0) > 1e-5:
         new_elem = pa.float64()
+    elif info.code == "B" and tzero == -128.0:
+        new_elem = pa.int8()
     elif info.code == "I" and abs(tzero - 32768.0) < 1e-5:
         new_elem = pa.uint16()
     elif info.code == "J" and abs(tzero - 2147483648.0) < 1e-5:
         new_elem = pa.uint32()
+    elif info.code == "K" and tzero == 9223372036854775808.0:
+        new_elem = pa.uint64()
     elif tzero != 0.0:
         new_elem = pa.float64()
     else:
@@ -539,6 +555,27 @@ def schema(
         backend=scan_backend,
     )
     first = next(iterator, None)
+    if first is None and where is None:
+        # A table with no rows: the C++ chunk reader still returns typed
+        # (empty) columns, including VLA lists the header cannot type.
+        from ._read_scan import _read_cpp_table_chunk
+
+        chunk = _read_cpp_table_chunk(
+            path=path,
+            hdu=hdu,
+            columns=columns,
+            row_slice=None,
+            rows=None,
+            where=None,
+            mmap=False,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+        )
+        if chunk is not None:
+            return chunk.schema
     if first is None:
         return pa.schema([])
     return first.schema

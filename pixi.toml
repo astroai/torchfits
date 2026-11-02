@@ -1,14 +1,11 @@
 [workspace]
 preview = ["pixi-build"]
-# Keep the manager itself reproducible alongside pixi.lock. Update this pin
-# deliberately when the lockfile is regenerated with a newer Pixi release.
-requires-pixi = "==0.82.0"
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [package]
 name = "torchfits"
-version = "1.3.1"
+version = "1.3.2rc1"
 description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = ["Seb Fabbro <sebfabbro@gmail.com>"]
 
@@ -92,7 +89,7 @@ dev = "pip install -e . --no-build-isolation"
 build = "pixi build"
 # Install exactly the checked-in lock before the complete local gate.
 current-source-gate = "pixi install --locked && pixi run preflight-push && pixi run ci-local"
-# test runs the full suite including performance markers; the GHA PR matrix excludes them. release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
+# test runs the full suite; the GHA PR matrix deselects the performance marker (no test carries it today). release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
 test = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/"
 release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_transforms.py tests/test_release_smoke.py tests/test_public_boundary.py tests/test_http_probe_fixture.py -q && pixi run docs-contract && pixi run docs-links"
 lint = "ruff check . && ruff format ."
@@ -102,7 +99,8 @@ preflight-push = "ruff check . && ruff format --check . && mypy src/torchfits &&
 gen-stub = "python scripts/gen_native_stub.py"
 check-stub = "python scripts/gen_native_stub.py --check"
 # Build a wheel and assert its contents contract (what the CI wheel-smoke job does).
-wheel-smoke = "python -m pip wheel . --no-build-isolation --no-deps -w dist && python scripts/check_wheel_contents.py dist/*.whl"
+# Fresh output dir: stale wheels left in dist/ (older versions) would be checked too.
+wheel-smoke = "rm -rf dist/wheel-smoke && python -m pip wheel . --no-build-isolation --no-deps -w dist/wheel-smoke && python scripts/check_wheel_contents.py dist/wheel-smoke/*.whl"
 # Verify the committed release-lane pins match scripts/torch_lanes.json.
 check-lane = "python scripts/release_lane.py --check"
 # `.cursor/skills` and `.cursor/hooks` are canonical and tracked; `.agents/` and

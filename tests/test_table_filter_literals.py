@@ -83,8 +83,8 @@ def test_integer_literals_compare_against_float_columns(table_path, literal):
         None,
         np.array([1]),
         np.array(1.5),
-        2**63,
-        np.uint64(2**63),
+        2**64,
+        -(2**63) - 1,
     ],
 )
 def test_non_numeric_literals_are_rejected(table_path, literal):
@@ -96,3 +96,66 @@ def test_non_numeric_literals_are_rejected(table_path, literal):
 def test_non_finite_float_literals_are_rejected(table_path, literal):
     with pytest.raises(RuntimeError, match="must be finite"):
         _filtered(table_path, "A", ">", literal)
+
+
+U64 = [0, 5, 2**63 - 1, 2**63, 2**63 + 5, 10**19, 2**64 - 2, 2**64 - 1]
+I64 = [-(2**63), -5, 0, 5, 2**63 - 1]
+
+
+@pytest.fixture
+def wide_path(tmp_path):
+    path = str(tmp_path / "wide.fits")
+    torchfits.table.write(
+        path,
+        {"U": np.array(U64, dtype=np.uint64)},
+    )
+    torchfits.table.write(
+        str(tmp_path / "i64.fits"), {"I": np.array(I64, dtype=np.int64)}
+    )
+    return path
+
+
+_OPS = {
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+}
+
+
+@pytest.mark.parametrize("op", sorted(_OPS))
+@pytest.mark.parametrize(
+    "literal",
+    [2**63, 2**63 + 5, 2**64 - 2, 2**64 - 1, np.uint64(2**64 - 1), 2.0**63, -(2.0**64)],
+)
+def test_literals_beyond_int64_compare_exactly(wide_path, tmp_path, op, literal):
+    """A literal outside int64 was clamped to INT64_MAX (or refused): uint64
+    columns now compare it exactly and other integer columns treat it as a
+    bound above (or below) every value."""
+    exact = int(literal)
+    expected_u = [v for v in U64 if _OPS[op](v, exact)]
+    assert _filtered(wide_path, "U", op, literal) == expected_u
+    expected_i = [v for v in I64 if _OPS[op](v, exact)]
+    assert _filtered(str(tmp_path / "i64.fits"), "I", op, literal) == expected_i
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "U > 1.8e19",
+        "U >= 1.0e19",
+        "U == 18446744073709551615",
+        "U != 18446744073709551615",
+        "U > 9223372036854775808",
+        "U <= 9223372036854775807",
+    ],
+)
+@pytest.mark.parametrize("backend", ["auto", "cpp", "torch"])
+def test_uint64_where_beyond_int64_agrees_across_backends(wide_path, where, backend):
+    col, op, lit = where.split()
+    literal = float(lit) if "e" in lit else int(lit)
+    expected = [v for v in U64 if _OPS[op](v, literal)]
+    result = torchfits.table.read(wide_path, where=where, backend=backend)
+    assert result.column("U").to_pylist() == expected

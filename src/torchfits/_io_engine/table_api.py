@@ -6,6 +6,8 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
+from ._hdu_lookup import raise_hdu_index_error
+from .paths import coerce_fits_path
 from .hdu_api import _resolve_hdu_index, autodetect_hdu
 from .device import to_device
 
@@ -203,7 +205,7 @@ def read_table(
         )
     if isinstance(hdu, int):
         if hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(coerce_fits_path(path), hdu)
     elif isinstance(hdu, str):
         hdu = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
     else:
@@ -217,7 +219,7 @@ def read_table(
     if int(start_row) < 1:
         raise ValueError("start_row must be >= 1 (FITS uses 1-based indexing)")
     if int(num_rows) < -1:
-        raise ValueError("num_rows must be > 0 or -1 for all rows")
+        raise ValueError("num_rows must be >= 0, or -1 for all rows")
     _resolve_mmap(mmap)  # raises on an unknown mmap mode; the value is unused
 
     if where is not None and str(where).strip():
@@ -339,22 +341,31 @@ def read_table(
         import numpy as np
 
         import torchfits
-        from torchfits._table._read_where import _tnull_in_tensor, _torch_cmp_mask
-        from torchfits.fits_schema import column_tnull_map
+        from torchfits._table._read_where import _not_null, _torch_cmp_mask
+        from torchfits.fits_schema import column_null_sentinel_map
 
         header = torchfits.read_header(path, hdu=hdu)
-        tnull_map = column_tnull_map(header)
+        tnull_map = column_null_sentinel_map(header)
 
         mask: torch.Tensor | None = None
         for col, op, lit in predicates:
             values = data[col]
             if not isinstance(values, torch.Tensor):
                 values = torch.as_tensor(values)
-            part = _torch_cmp_mask(values, op, lit)
+            if values.dim() != 1:
+                raise ValueError(
+                    f"where does not support fixed-size vector column '{col}'"
+                )
+            try:
+                part = _torch_cmp_mask(values, op, lit)
+            except TypeError as exc:
+                raise ValueError(
+                    f"where cannot compare column '{col}' ({values.dtype}) with "
+                    f"{lit!r} using '{op}': {exc}"
+                ) from exc
             sentinel = tnull_map.get(col)
             if sentinel is not None:
-                sentinel = _tnull_in_tensor(values, sentinel)
-                part = part & torch.ne(values, sentinel)
+                part = part & _not_null(values, sentinel)
             mask = part if mask is None else (mask & part)
         assert mask is not None
         keep_cols = list(columns) if columns is not None else list(data.keys())

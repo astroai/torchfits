@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import re
+from typing import Any
 
 import torchfits
+from torchfits._errors import HDUNotFoundError
 from torchfits._io_engine.paths import has_cfitsio_filter
 
 from .common import (
@@ -12,6 +15,7 @@ from .common import (
     IoError,
     UsageError,
     add_file_jobs_arg,
+    compressed_image_geometry,
     add_hdu_arg,
     resolve_batch_io_pairs,
     resolve_file_jobs,
@@ -76,6 +80,14 @@ def _plane_shape(header: object) -> tuple[int, int] | None:
     return ``None`` and are left to the reader, rather than being refused
     here on a shape this check cannot vouch for.
     """
+    # A tile-compressed HDU's NAXIS1/NAXIS2 describe the tile table; the
+    # image geometry lives in ZNAXIS* (returned row-major: width last).
+    geometry = compressed_image_geometry(header)
+    if geometry is not None:
+        shape = geometry[0]
+        if len(shape) < 2 or shape[-1] <= 0 or shape[-2] <= 0:
+            return None
+        return shape[-2], shape[-1]
     try:
         if int(header.get("NAXIS", 0)) < 2:  # type: ignore[attr-defined]
             return None
@@ -113,6 +125,27 @@ def _check_box_intersects_image(
         )
 
 
+_CRPIX_XY = re.compile(r"^CRPIX([12])([A-Z]?)$")
+
+
+def _shift_crpix(header: Any, x1: int, y1: int) -> None:
+    """Move ``CRPIX1``/``CRPIX2`` (and alternate ``CRPIXna``) to the cutout.
+
+    The reference pixel is 1-based in the source frame; a cutout starting at
+    0-based ``(x1, y1)`` moves it by ``-x1`` / ``-y1``, exactly what CFITSIO
+    does to the header of an image section.
+    """
+    for key in list(header.keys()):
+        match = _CRPIX_XY.match(str(key))
+        if match is None:
+            continue
+        try:
+            value = float(header[key])
+        except (TypeError, ValueError):
+            continue
+        header[key] = value - (x1 if match.group(1) == "1" else y1)
+
+
 def _cutout_one(
     pair: tuple[str, str],
     *,
@@ -124,6 +157,13 @@ def _cutout_one(
     if sectioned and box is not None:
         raise UsageError(
             "pass either a CFITSIO image section in the path or --box, not both"
+        )
+    if sectioned and hdu != 0:
+        # CFITSIO applies a bare section to the primary HDU; -e N would be
+        # silently ignored (or fail on a dataless primary).
+        raise UsageError(
+            f"-e {hdu} cannot be combined with an image section; put the "
+            "extension in the path instead, e.g. 'image.fits[1][101:256,101:256]'"
         )
     if not sectioned and box is None:
         raise UsageError(
@@ -141,9 +181,14 @@ def _cutout_one(
                 (x1, y1, x2, y2), header, path=input_path, hdu=hdu
             )
             tensor = torchfits.read_subset(input_path, hdu, x1, y1, x2, y2)
+            # Keep the stamp on the sky, as CFITSIO does for a section.
+            _shift_crpix(header, x1, y1)
         torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
     except UsageError:
         raise
+    except HDUNotFoundError as exc:
+        # The message already names the file and the HDU.
+        raise IoError(str(exc)) from exc
     except Exception as exc:
         raise IoError(f"{input_path}: {exc}") from exc
 

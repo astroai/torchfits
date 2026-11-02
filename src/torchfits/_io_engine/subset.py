@@ -8,6 +8,12 @@ from torch import Tensor
 
 from .device import to_device, validate_device
 from .http_subset import HttpRangeUnsupported, read_subset_http
+from ._hdu_lookup import (
+    call_with_lookup,
+    raise_hdu_index_error,
+    raise_lookup_failure,
+    resolve_hdu_name,
+)
 from .paths import require_bz2_support
 from torchfits.http_util import HttpRangeNotSatisfied
 
@@ -32,12 +38,13 @@ def read_subset(
     y2: int,
 ) -> Tensor:
     """Read a rectangular subset of an image HDU."""
-    import torchfits._C as cpp
     from .paths import coerce_fits_path, guard_fits_path
 
     path = coerce_fits_path(path)
-    guard_fits_path(path)
+    # http(s) is fetched in Python below (range read or cached download).
+    guard_fits_path(path, cfitsio_opens=False)
     is_http_url, is_vos_path, resolve_local_path = _remote_helpers()
+    source = path
     if is_http_url(path):
         try:
             return read_subset_http(path, hdu, x1, y1, x2, y2)
@@ -45,9 +52,13 @@ def read_subset(
             path = resolve_local_path(path)
     elif is_vos_path(path):
         path = resolve_local_path(path)
+    # Name the URL, not only the cache file, when a downloaded copy fails.
+    label = path if source == path else f"{source} (cached at {path})"
 
     if isinstance(hdu, str):
-        hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+        hdu = resolve_hdu_name(path, hdu)
+    elif isinstance(hdu, int) and hdu < 0:
+        raise_hdu_index_error(path, hdu)
     try:
         file_handle, cached = get_cached_handle(path)
         try:
@@ -59,12 +70,32 @@ def read_subset(
                 except (OSError, ValueError, RuntimeError):
                     # Cleanup only: never mask the in-flight error.
                     pass
-    except OSError:
+    except Exception as exc:
+        raise_lookup_failure(path, hdu, exc)
+        if not isinstance(exc, OSError):
+            raise RuntimeError(f"Failed to read subset from '{label}': {exc}") from exc
         # IO errors surface typed; wrapping them in RuntimeError would hide
         # FileNotFoundError/PermissionError from callers (r4a-05).
+        if source != path:
+            exc.add_note(f"while reading the cached copy of {source}")
         raise
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read subset from '{path}': {exc}") from exc
+
+
+def _open_cached_copy(url: str, path: str, hdu: int | str) -> Any:
+    """``cpp.SubsetReader`` on a downloaded copy; failures name the URL."""
+    import torchfits._C as cpp
+
+    try:
+        if isinstance(hdu, str):
+            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+        return cpp.SubsetReader(path, int(hdu))
+    except OSError as exc:
+        exc.add_note(f"while reading the cached copy of {url} at {path}")
+        raise
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{exc} (reading the cached copy of {url} at {path})"
+        ) from exc
 
 
 class SubsetReader:
@@ -77,12 +108,12 @@ class SubsetReader:
         path = coerce_fits_path(path)
         if not isinstance(path, str):
             raise ValueError("path must be a string")
-        guard_fits_path(path)
+        guard_fits_path(path, cfitsio_opens=False)  # http(s) fetched in Python
         require_bz2_support(path)
         if not isinstance(hdu, (int, str)):
             raise ValueError("hdu must be an integer or string")
         if isinstance(hdu, int) and hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(path, hdu)
         validate_device(device)
         self._http_url: str | None = None
         self._http_hdu: int | str = hdu
@@ -102,14 +133,16 @@ class SubsetReader:
                 self._shape = (int(meta["naxis2"]), int(meta["naxis1"]))
                 return
             except (HttpRangeUnsupported, HttpRangeNotSatisfied):
-                path = resolve_local_path(path)
+                self._reader = _open_cached_copy(path, resolve_local_path(path), hdu)
+                return
         elif is_vos_path(path):
-            path = resolve_local_path(path)
+            self._reader = _open_cached_copy(path, resolve_local_path(path), hdu)
+            return
 
         if isinstance(hdu, str):
-            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+            hdu = resolve_hdu_name(path, hdu)
 
-        self._reader = cpp.SubsetReader(path, int(hdu))
+        self._reader = call_with_lookup(path, hdu, cpp.SubsetReader, path, int(hdu))
 
     @property
     def hdu(self) -> int:
@@ -136,20 +169,15 @@ class SubsetReader:
                     _meta=self._http_meta,
                 )
             except (HttpRangeUnsupported, HttpRangeNotSatisfied):
-                import torchfits._C as cpp
-
                 _, _, resolve_local_path = _remote_helpers()
                 path = resolve_local_path(self._http_url)
-                hdu = self._http_hdu
-                if isinstance(hdu, str):
-                    hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
                 # Build the replacement *before* clearing any state: this open
                 # is the one step that can fail, and committing early used to
                 # leave the reader with _reader=None and no remote URL, so
                 # every later call raised "AttributeError: 'NoneType' object
                 # has no attribute 'read'" instead of the real error and the
                 # HTTP route it could still retry was gone for good (r2-027).
-                reader = cpp.SubsetReader(path, int(hdu))
+                reader = _open_cached_copy(self._http_url, path, self._http_hdu)
                 self._http_url = None
                 self._http_meta = None
                 self._reader = reader

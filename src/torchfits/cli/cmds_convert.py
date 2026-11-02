@@ -109,6 +109,15 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         default=None,
         help="Lupton stretch (--recipe lupton; default: 0.5)",
     )
+    parser.add_argument(
+        "--origin",
+        choices=("lower", "upper"),
+        default="lower",
+        help=(
+            "png row order: lower (default; FITS pixel (1,1) at bottom-left, "
+            "north up for standard WCS, as in ds9) or upper (array row 0 on top)"
+        ),
+    )
     parser.set_defaults(func=run)
 
 
@@ -262,7 +271,23 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     where = args.where
     if where or columns or fmt == "fits":
         # Filter / column-select / FITS out: materialize via table.read.
-        arrow = tf_table.read(path, hdu=hdu, columns=columns, where=where)
+        if columns or where:
+            # A bad --columns / --where is a usage error (exit 2). Reading the
+            # schema first keeps an unreadable file or HDU an I/O error (3).
+            tf_table.schema(path, hdu=hdu)
+        try:
+            arrow = tf_table.read(path, hdu=hdu, columns=columns, where=where)
+        except KeyError as exc:
+            if not columns:
+                raise
+            # The schema read fine: an unknown projected column name.
+            raise UsageError(f"--columns: {exc.args[0] if exc.args else exc}") from exc
+        except ValueError as exc:
+            if not where:
+                raise
+            # The schema read fine, so a ValueError here is the predicate's:
+            # unknown column, syntax error, or a type mismatch.
+            raise UsageError(f"--where: {exc}") from exc
         if fmt == "parquet":
             tf_table.write_parquet(args.output, arrow)
         elif fmt == "csv":
@@ -312,6 +337,13 @@ def _load_png_bands(inputs: list[str], hdus: list[int]) -> list[Any]:
     return [_read_band(path, hdu) for path, hdu in zip(inputs, hdus, strict=True)]
 
 
+def _orient(image: Any, args: argparse.Namespace) -> Any:
+    """FITS rows run bottom-up; PNG rows run top-down."""
+    if getattr(args, "origin", "lower") == "lower":
+        return image.flip(0)
+    return image
+
+
 def _convert_png(args: argparse.Namespace) -> int:
     from torchfits.transforms.rgb import (
         lupton_rgb,
@@ -340,7 +372,7 @@ def _convert_png(args: argparse.Namespace) -> int:
             Q=8.0 if args.q is None else args.q,
             stretch=0.5 if args.stretch is None else args.stretch,
         )
-        write_rgb_image(args.output, image)
+        write_rgb_image(args.output, _orient(image, args))
         return EXIT_OK
 
     if args.q is not None or args.stretch is not None:
@@ -367,7 +399,7 @@ def _convert_png(args: argparse.Namespace) -> int:
         saturation=2.0 if args.saturation is None else args.saturation,
         zeropoints=zps,
     )
-    write_rgb_image(args.output, image)
+    write_rgb_image(args.output, _orient(image, args))
     return EXIT_OK
 
 

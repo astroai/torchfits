@@ -20,6 +20,11 @@ still to move.
 Supports `where=` filters, column projection, streaming, mutations, and
 handoff to Astropy, Polars, DuckDB, Pandas, and PyArrow.
 
+Every table reader and mutator raises `FileNotFoundError` for a missing local
+file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError`,
+`ValueError` and `RuntimeError`) for an `hdu` index or EXTNAME the file does not have; see
+[Missing files and HDUs](api-core-io.md#missing-files-and-hdus).
+
 ---
 
 ## `table.read()`
@@ -102,7 +107,7 @@ torchfits.table.read_torch(
 | `hdu` | `int` or `str` | `1` | Table HDU index or EXTNAME |
 | `columns` | `list[str]` or `None` | `None` | Columns to return (`None` = all) |
 | `start_row` | `int` | `1` | 1-based first row |
-| `num_rows` | `int` | `-1` | Row count (`-1` = through end) |
+| `num_rows` | `int` | `-1` | Row count (`-1` = through end; `0` returns every column empty, with its usual dtype, as a 0-row table does) |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
 | `mmap` | `bool` or `str` | `"auto"` | `True` / `False` / `"auto"` (`"auto"` → mmap on) |
 | `return_header` | `bool` | `False` | Also return the HDU `Header` |
@@ -258,6 +263,23 @@ torchfits.table.write(path, data, *, schema=None, header=None,
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. |
 
+`schema` scaling and nulls describe **stored** values:
+
+- With `bscale`/`bzero`, the column data you pass is written as the stored
+  integers and the file's readers apply `value = stored * TSCAL + TZERO`.
+  `{"F": {"format": "I", "bscale": 0.5, "bzero": 10.0}}` with data `[100, 200]`
+  reads back as `[60.0, 110.0]`.
+- `null`/`tnull` is written verbatim as `TNULLn`, which FITS compares with
+  the stored value before `TSCAL`/`TZERO`. The exception is a column written
+  from `uint16`/`uint32`/`uint64`/`int8` data: torchfits stores it with the
+  standard `TZERO` offset, so give `tnull` as a value of that dtype (for
+  example `65535` for `uint16`) and it is written as `65535 - 32768`.
+  A `tnull` outside the dtype's range raises `ValueError`.
+- A `tnull` that is not an integer (or an integer string), and a `bscale` /
+  `bzero` that is not a finite number, raise `ValueError` naming the field;
+  so do the `tnull=` / `tscal=` / `tzero=` arguments of `insert_column` and
+  `replace_column`.
+
 `quantize` applies to binary tables only (`ValueError` when `table_type="ascii"`).
 If it is set and no floating-point column qualifies, `QuantizeError` is raised
 instead of writing those columns unpacked.
@@ -280,7 +302,7 @@ Pass `where=` to keep matching rows.
 
 | Call | Dialect | How it filters |
 |---|---|---|
-| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection); otherwise read then Arrow filter |
+| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection) and PyTorch is already imported; otherwise read then Arrow filter. `where=` never imports PyTorch itself |
 | `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns, then torch mask. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
 
 Root `torchfits.read()` has no `where=` parameter.
@@ -302,6 +324,12 @@ Root `torchfits.read()` has no `where=` parameter.
     The WHERE dialect is Python-expression based — single `=` is not an
     operator; write `==` (also accepts `&&` / `||` / `~` C-style forms).
 
+!!! note "String literals are literal"
+    Quote strings with `'...'` or `"..."`. A doubled quote is one quote
+    character (`'O''NEIL'`); a backslash is an ordinary character, so
+    `'a\nb'` is four characters, not a newline. `BETWEEN` takes string
+    bounds (`NAME BETWEEN 'a' AND 'm'`) as well as numbers such as `.5`.
+
 !!! note "How null rows are filtered"
     With `apply_fits_nulls=True` (the default) a `TNULL` sentinel is a null
     and the dialect follows **SQL three-valued logic**: a null carries an
@@ -318,16 +346,26 @@ Root `torchfits.read()` has no `where=` parameter.
     `where="NOT (A == 1)"` and `where="A != 1"` return the same rows, and so
     do `NOT (A > 1)` / `A <= 1` and `NOT (A IN (...))` / `A NOT IN (...)`.
     On float columns a NaN pixel is treated the same way: IEEE makes
-    `NaN != v` true, but the comparison is unknown, so the row is excluded.
+    `NaN != v` true, but the comparison is unknown, so the row is excluded,
+    and `IS NULL` selects it. A scaled column's `TNULL` cells read as NaN.
     This holds identically on all three read backends (`auto`, `cpp`, `torch`)
     and matches the `torchfits.where` reference evaluator. Use `IS NULL` /
-    `IS NOT NULL` to test for absence. `== NULL` is rejected.
+    `IS NOT NULL` to test for absence. `== NULL` / `!= NULL` on a numeric or
+    logical column raise `ValueError`.
+
+    `TNULLn` is the stored value, compared before `TSCALn`/`TZEROn` as in
+    the FITS standard: on a `uint16` column (`TZERO = 32768`) `TNULL = 0`
+    marks cells that read as `32768`. Files written by torchfits 1.3.1 stored
+    an unsigned-column `TNULL` as the value instead (`TNULL = 65535` on that
+    `uint16` column). A `TNULL` that cannot be a stored value (outside the
+    stored integer range) but is a valid value of the column dtype is read
+    that way, so those nulls still read as nulls.
 
 ### `backend=` on `table.read` / `table.scan`
 
 | Value | Behavior |
 |---|---|
-| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable and the projection has no VLA columns; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
+| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable, the projection has no VLA columns, and PyTorch is already imported; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
 | `"cpp"` | Prefer C++ column / pushdown paths when safe |
 | `"torch"` | Chunked path via `table.scan_torch` |
 
@@ -351,7 +389,9 @@ mask = evaluate_where(ast, {"MAG_G": magnitudes, "DEC": declinations})
 ```
 
 Additional public names: `parse_where_literal`, `tokenize_where_expression`,
-`normalize_where_syntax`, `where_columns_from_ast`.
+`normalize_where_syntax`, `where_columns_from_ast`. They read quoted literals
+as `where=` does: `parse_where_literal("'O''NEIL'")` is `O'NEIL`, and a
+backslash is an ordinary character.
 
 ---
 
@@ -396,6 +436,67 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 
 `row_slice` is a `slice` or `(start, stop)` tuple (0-based Python style for
 update/delete). `insert_rows` requires keyword `row=` (0-based insert index).
+
+`update_rows` raises `ValueError`, before writing anything, when an integer
+value does not fit the column (for example `70000` into a `uint16` column);
+float values written into an integer column only warn that they are
+truncated toward zero.
+
+Without `format=`, `insert_column` / `replace_column` infer the TFORM from
+the values. As in `table.write`, `uint16` / `uint32` / `uint64` values become
+`I` / `J` / `K` with `TZERO` = `2**15` / `2**31` / `2**63`, and `int8` becomes
+`B` with `TZERO = -128`. On an ASCII table (`XTENSION = 'TABLE'`) the inferred format is an
+ASCII one (`I6`, `I11`, `E25.15`, `A8`, ...); values an ASCII table cannot
+hold (booleans, vectors, complex) raise `ValueError` asking for `format=`.
+
+Without `format=`, `replace_column` keeps the column's TFORM unless the new
+values are `uint16` / `uint32` / `uint64` / `int8` and the column does not
+already use that `TZERO` convention: then the column layout is replaced too,
+exactly as `insert_column` would infer it, and the old `TZERO` / `TSCAL` /
+`TNULL` are dropped. With `format=` and such values, a format of the same
+storage code (`I` for `uint16`, ...) gets the `TZERO` convention; any other
+integer or float format stores the values plainly when they fit its range,
+and raises `ValueError` otherwise.
+
+When the column keeps its `TSCAL` / `TZERO` (no `tscal=` / `tzero=` given and
+the layout is not replaced as above), `replace_column` takes **physical**
+values, the ones a read returns, as `update_rows` does: `[1, 2, 3]` on a
+`uint16` column reads back as `[1, 2, 3]`, and on a `TSCAL = 0.5`,
+`TZERO = 10` column it is stored as `(value - 10) / 0.5` (rounded half away
+from zero for an integer TFORM). A value the column cannot hold (`70000` for
+`uint16`, a fraction for an unsigned column, NaN without a `TNULL`) raises
+`ValueError` naming the column, before anything is written. Passing `tscal=`
+or `tzero=` sets a new scaling, and the values are then the stored integers,
+as with `bscale` / `bzero` in `table.write`.
+
+```python
+import numpy as np
+import torchfits
+
+torchfits.table.write(
+    "s.fits",
+    {"f": np.array([100, 200], dtype=np.int16)},
+    schema={"f": {"format": "I", "bscale": 0.5, "bzero": 10.0}},
+)
+torchfits.table.replace_column("s.fits", "f", [11.5, 12.0])
+assert torchfits.table.read_arrow("s.fits").column("f").to_pylist() == [11.5, 12.0]
+```
+
+```python
+import numpy as np
+import torchfits
+
+torchfits.table.write("t.fits", {"a": np.arange(3, dtype=np.int64)}, overwrite=True)
+u16 = np.array([0, 40000, 65535], dtype=np.uint16)
+torchfits.table.replace_column("t.fits", "a", u16)  # now TFORM 'I', TZERO 32768
+assert torchfits.read("t.fits", hdu=1)["a"].dtype.is_floating_point is False
+torchfits.table.replace_column("t.fits", "a", u16, format="1J")  # plain int32
+```
+
+String (`A`) columns take ASCII text in every row and column mutation:
+non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
+`None` is written as a blank value, and a value longer than the column width
+is clipped with a `RuntimeWarning`.
 
 ---
 
@@ -450,8 +551,18 @@ polars_df = torchfits.to_polars(table_dict, decode_bytes=False)
 ### DuckDB
 
 ```python
-# Register and query (share the relation name between both calls)
-con = torchfits.table.to_duckdb("catalog.fits", hdu=1, relation_name="tbl")
+import duckdb
+
+# to_duckdb registers the table and returns a DuckDB relation (DuckDBPyRelation).
+# Pass connection= to run SQL against the registered name on your own connection.
+con = duckdb.connect()
+rel = torchfits.table.to_duckdb(
+    "catalog.fits", hdu=1, relation_name="tbl", connection=con
+)
+bright = rel.filter("MAG < 20")
+counts = con.sql("SELECT count(*) FROM tbl WHERE MAG < 20").fetchall()
+
+# One-shot query: registers the file under relation_name on a fresh connection
 result = torchfits.table.duckdb_query(
     "catalog.fits",
     "SELECT * FROM tbl WHERE MAG < 20",

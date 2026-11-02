@@ -141,6 +141,28 @@ def _read_resume_validators(meta_path: Path) -> dict[str, str]:
         return {}
 
 
+# Leading bytes of a body CFITSIO can open: a FITS primary header, or a
+# whole-file compression wrapper it decompresses (gzip, bzip2, Unix compress,
+# pack, pkzip).
+_FITS_PAYLOAD_MAGIC = (
+    b"SIMPLE  =",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\x1f\x9d",
+    b"\x1f\x1e",
+    b"PK\x03\x04",
+)
+
+
+def _looks_like_fits_payload(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(9)
+    except OSError:
+        return False
+    return any(head.startswith(magic) for magic in _FITS_PAYLOAD_MAGIC)
+
+
 def _download_http(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = _partial_path_for(dest)
@@ -255,6 +277,15 @@ def _download_http(url: str, dest: Path) -> Path:
                         f"{url}: incomplete Range download "
                         f"({final_size} bytes, total={total})"
                     )
+        if not _looks_like_fits_payload(tmp):
+            # A 200 error page (CDN outage, login wall, quota notice) is not a
+            # FITS file; caching it would be trusted forever.
+            tmp.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise OSError(
+                f"{url}: response is not a FITS file (no 'SIMPLE  =' header "
+                "or gzip/bzip2 signature); not cached"
+            )
         tmp.replace(dest)
         try:
             meta_path.unlink(missing_ok=True)
@@ -350,8 +381,14 @@ def resolve_local_path(
     cache_key = normalize_vos_uri(path) if is_vos_path(path) else path
     dest = cache_path_for_url(cache_key, cache_dir=cache_dir)
     if dest.is_file():
-        _cleanup_cache_key(cache_key)
-        return str(dest)
+        if is_http_url(path) and not _looks_like_fits_payload(dest):
+            # Poisoned by an earlier release that cached any 200 body: drop
+            # it and fetch again instead of failing on it forever.
+            _log.warning("discarding non-FITS cached copy of %s at %s", path, dest)
+            dest.unlink(missing_ok=True)
+        else:
+            _cleanup_cache_key(cache_key)
+            return str(dest)
     # Prefetch threads are keyed by cache_key so vos:/vault: aliases share one
     # in-flight download and do not race the same ".partial".
     with _prefetch_lock:

@@ -74,7 +74,7 @@ def test_416_on_resume_restarts_instead_of_wedging(tmp_path):
     with 416. That is a dead resume offset: drop the partial and fetch
     cleanly instead of retrying the same doomed Range forever.
     """
-    body = b"COMPLETE-PAYLOAD" * 16
+    body = b"SIMPLE  =" + b"COMPLETE-PAYLOAD" * 16
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/wedged.fits"
@@ -127,7 +127,7 @@ def test_malformed_content_length_treated_as_unverifiable(tmp_path):
     ``http.client`` treats a malformed length as unknown framing; the cache
     layer must do the same and warn about unverifiable completeness.
     """
-    body = b"REAL-FITS-PAYLOAD" * 32
+    body = b"SIMPLE  =" + b"REAL-FITS-PAYLOAD" * 32
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/badlen.fits"
@@ -156,7 +156,7 @@ def test_short_download_is_not_promoted(tmp_path):
 
 def test_body_without_content_length_promotes_with_warning(tmp_path):
     """Connection-close framing promotes, but the warning must say so."""
-    body = b"UNCHECKED-BUT-USEFUL" * 16
+    body = b"SIMPLE  =" + b"UNCHECKED-BUT-USEFUL" * 16
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/nolen.fits"
@@ -269,3 +269,106 @@ def test_concurrent_vos_downloads_use_private_temporaries(tmp_path, monkeypatch)
     assert errors == []
     assert dest.read_bytes() == _CopyState.content
     assert list(cache.glob("*.partial*")) == []
+
+
+_HTML = b"<html><body>Service temporarily unavailable</body></html>"
+
+
+def test_error_page_body_is_not_promoted_to_cache(tmp_path):
+    """A 200 HTML error page must not become the permanent cached copy."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/outage.fits"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+
+    resp = _FakeResp(200, {"Content-Length": str(len(_HTML))}, _HTML)
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp):
+        with pytest.raises(OSError, match="not a FITS file") as excinfo:
+            remote.resolve_local_path(url, cache_dir=cache)
+    assert url in str(excinfo.value)
+    assert not dest.exists()
+    assert list(cache.glob("*.partial*")) == []
+
+
+@pytest.mark.parametrize("magic", [b"SIMPLE  =", b"\x1f\x8b\x08", b"BZh9"])
+def test_fits_and_compressed_bodies_are_cached(tmp_path, magic):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/ok.fits"
+    body = magic + b"x" * 64
+    resp = _FakeResp(200, {"Content-Length": str(len(body))}, body)
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp):
+        local = remote.resolve_local_path(url, cache_dir=cache)
+    assert Path(local).read_bytes() == body
+
+
+def test_previously_poisoned_cache_entry_is_refetched(tmp_path):
+    """A non-FITS file left in the cache by an older release is replaced."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/poisoned.fits"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_HTML)
+    body = b"SIMPLE  =" + b"y" * 64
+    resp = _FakeResp(200, {"Content-Length": str(len(body))}, body)
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp) as fetch:
+        local = remote.resolve_local_path(url, cache_dir=cache)
+    assert fetch.call_count == 1
+    assert Path(local).read_bytes() == body
+
+
+def test_cached_copy_read_failure_names_the_url(tmp_path, monkeypatch):
+    """A broken cached copy reports the URL it came from, not just a hash path."""
+    import torchfits
+    from torchfits._io_engine import subset
+
+    cached = tmp_path / "cached.fits"
+    cached.write_bytes(b"SIMPLE  =" + b" " * 2871)  # FITS magic, broken header
+    url = "https://example.test/broken.fits"
+
+    def no_range(*args, **kwargs):
+        raise subset.HttpRangeNotSatisfied("no ranges")
+
+    monkeypatch.setattr(subset, "read_subset_http", no_range)
+    monkeypatch.setattr(
+        "torchfits._io_engine.http_subset.locate_uncompressed_2d", no_range
+    )
+    monkeypatch.setattr(remote, "resolve_local_path", lambda p, **kw: str(cached))
+    monkeypatch.setattr(
+        torchfits.http_util, "_resolve_public_addrs", lambda u: ("8.8.8.8",)
+    )
+    with pytest.raises((OSError, RuntimeError)) as excinfo:
+        torchfits.read_subset(url, 0, 0, 0, 2, 2)
+    text = str(excinfo.value) + " ".join(getattr(excinfo.value, "__notes__", []))
+    assert url in text
+
+
+def test_python_fetched_https_works_without_libcurl(tmp_path, monkeypatch):
+    """read_subset fetches http(s) in Python, so a build without libcurl must
+    still serve it; only CFITSIO-opened routes need the curl driver."""
+    import torch
+
+    import torchfits
+    from torchfits._io_engine import paths, subset
+
+    cached = tmp_path / "cached.fits"
+    torchfits.write(str(cached), torch.arange(16.0).reshape(4, 4), overwrite=True)
+    url = "https://example.test/image.fits"
+
+    def no_range(*args, **kwargs):
+        raise subset.HttpRangeNotSatisfied("no ranges")
+
+    monkeypatch.setattr(paths, "has_curl_support", lambda: False)
+    monkeypatch.setattr(subset, "read_subset_http", no_range)
+    monkeypatch.setattr(
+        "torchfits._io_engine.http_subset.locate_uncompressed_2d", no_range
+    )
+    monkeypatch.setattr(remote, "resolve_local_path", lambda p, **kw: str(cached))
+    monkeypatch.setattr(
+        torchfits.http_util, "_resolve_public_addrs", lambda u: ("8.8.8.8",)
+    )
+    cut = torchfits.read_subset(url, 0, 0, 0, 2, 2)
+    assert cut.tolist() == [[0.0, 1.0], [4.0, 5.0]]
+    with pytest.raises(ValueError, match="libcurl"):
+        torchfits.read(url)

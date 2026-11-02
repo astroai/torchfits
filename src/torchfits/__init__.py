@@ -25,7 +25,7 @@ from torchfits._torch_libs import install as _install_torch_lib_preload
 
 _install_torch_lib_preload()
 
-__version__ = "1.3.1"
+__version__ = "1.3.2rc1"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -103,6 +103,7 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "TensorHDU": ("torchfits.hdu", "TensorHDU"),
     "TableHDU": ("torchfits.hdu", "TableHDU"),
     "TableHDURef": ("torchfits.hdu", "TableHDURef"),
+    "HDUNotFoundError": ("torchfits._errors", "HDUNotFoundError"),
 }
 
 __all__ = tuple(
@@ -130,6 +131,7 @@ __all__ = tuple(
         "TensorHDU",
         "TableHDU",
         "TableHDURef",
+        "HDUNotFoundError",
         "read_batch",
         "read_batch_info",
         "get_cache_performance",
@@ -246,6 +248,7 @@ if TYPE_CHECKING:
     from .hdu import TableHDU as TableHDU
     from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
+    from ._errors import HDUNotFoundError as HDUNotFoundError
     from .cache import clear_all_caches as clear_all_caches
     from .io import clear_file_cache as clear_file_cache
     from .io import delete_hdu as delete_hdu

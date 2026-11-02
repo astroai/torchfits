@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -61,7 +63,7 @@ auto with_open(const std::string& path, F&& body) -> decltype(body(std::declval<
     fitsfile* fptr = nullptr;
     const int status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || fptr == nullptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, status));
     }
     struct Guard {
         fitsfile* fptr;
@@ -94,6 +96,84 @@ inline int start_hdu(fitsfile* fptr) {
 // same path described PRIMARY, because they moved to absolute hdu + 1 and
 // discarded the position CFITSIO had already given them.
 inline int absolute_hdu(fitsfile* fptr, int hdu) { return hdu + start_hdu(fptr); }
+
+// Type an unquoted card value exactly as header_parser._parse_fits_number
+// does, so read_keys() and read_header() agree: a Fortran D exponent is a
+// float, an integer past int64 stays an (arbitrary-precision) int, and an
+// overflowing or subnormal float is still a float. std::stoll/std::stod threw
+// out_of_range on the last two and left them as strings.
+bool parse_fits_number(const std::string& text, KeyValue& kv) {
+    const size_t first = text.find_first_not_of(' ');
+    if (first == std::string::npos) return false;
+    std::string t = text.substr(first, text.find_last_not_of(' ') - first + 1);
+    // FITS numeric characters only: keeps strtod from accepting spellings the
+    // Python parser rejects (inf, nan, hex floats).
+    if (t.find_first_not_of("0123456789+-.EeDd") != std::string::npos) return false;
+    if (t.find_first_of(".eE") == std::string::npos) {
+        const size_t digits = (t[0] == '+' || t[0] == '-') ? 1 : 0;
+        if (digits < t.size() &&
+            t.find_first_not_of("0123456789", digits) == std::string::npos) {
+            errno = 0;
+            const long long iv = std::strtoll(t.c_str(), nullptr, 10);
+            if (errno == ERANGE) {
+                kv.kind = KeyValue::Kind::BigInt;
+                kv.str_value = t;
+            } else {
+                kv.kind = KeyValue::Kind::Int;
+                kv.int_value = iv;
+            }
+            return true;
+        }
+    }
+    for (char& c : t) {
+        if (c == 'D') c = 'E';
+        if (c == 'd') c = 'e';
+    }
+    char* end = nullptr;
+    // Overflow gives +-inf and underflow 0 or a subnormal, as float() does.
+    const double dv = std::strtod(t.c_str(), &end);
+    if (end == t.c_str() || *end != '\0') return false;
+    kv.kind = KeyValue::Kind::Double;
+    kv.double_value = dv;
+    return true;
+}
+
+// A quoted value, followed through CONTINUE cards (the long-string
+// convention) so a value split as 'abc&' + CONTINUE 'def' reads as "abcdef"
+// like read_header(), not "abc&".
+std::string read_string_value(fitsfile* fptr, const std::string& key, const std::string& raw) {
+    char* longstr = nullptr;
+    char comment[FLEN_COMMENT] = {0};
+    int status = 0;
+    fits_read_key_longstr(fptr, key.c_str(), &longstr, comment, &status);
+    std::string out;
+    if (status == 0 && longstr != nullptr) {
+        out = d::sanitize_fits_string(std::string(longstr));
+    } else {
+        out = raw;
+        unquote_fits_string(out);
+    }
+    if (longstr != nullptr) {
+        int free_status = 0;
+        fits_free_memory(longstr, &free_status);
+    }
+    return out;
+}
+
+// The path-level probes below answer from SharedReadMeta, then open the file
+// and publish what they found. An out-of-band replace can land while the file
+// is open: the validator clears the caches and rotates meta->uid, and a store
+// after that would pin the old file's answer under the new generation for good.
+// Read the generation before opening and publish only if it is still current
+// (the same rule FITSFile::owns_current_generation_locked applies).
+template <typename F>
+void publish_if_current(const std::shared_ptr<d::SharedReadMeta>& meta, uint64_t generation,
+                        F&& store) {
+    if (!meta) return;
+    std::unique_lock<std::shared_mutex> lock(meta->mutex);
+    if (meta->uid.load(std::memory_order_relaxed) != generation) return;
+    store(*meta);
+}
 
 }  // namespace
 
@@ -234,15 +314,23 @@ TableInfo table_info(fitsfile* fptr) {
     return info;
 }
 
-std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::string>& keys) {
+std::vector<KeyValue> read_keywords(
+    fitsfile* fptr, const std::vector<std::string>& keys, bool missing_ok) {
     std::vector<KeyValue> out;
     out.reserve(keys.size());
     for (const auto& key : keys) {
+        // CFITSIO matches keyword names as templates ('*', '?', '#'), so
+        // "NAXIS*" silently returned NAXIS's value under the requested name.
+        if (key.find_first_of("*?#") != std::string::npos) {
+            throw std::invalid_argument(
+                "read_keys: keyword names cannot contain '*', '?' or '#': " + key);
+        }
         char value[FLEN_VALUE] = {0};
         char comment[FLEN_COMMENT] = {0};
         int status = 0;
         if (fits_read_keyword(fptr, key.c_str(), value, comment, &status) != 0) {
             if (status == KEY_NO_EXIST) {
+                if (missing_ok) continue;
                 throw std::runtime_error("read_keys: keyword not found: " + key);
             }
             char err_text[FLEN_ERRMSG] = {0};
@@ -260,43 +348,11 @@ std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::strin
             kv.kind = KeyValue::Kind::Bool;
             kv.bool_value = (val == "T");
         } else if (val.front() == '\'') {
-            std::string s = val;
-            unquote_fits_string(s);
             kv.kind = KeyValue::Kind::Str;
-            kv.str_value = s;
-        } else {
-            bool typed = false;
-            try {
-                // Full-consumption check: a partially numeric string
-                // ("1999-01-01") must stay a string, not truncate to its
-                // leading number.
-                size_t pos = 0;
-                if (val.find_first_of(".eE") != std::string::npos) {
-                    const double dv = std::stod(val, &pos);
-                    while (pos < val.size() &&
-                           std::isspace(static_cast<unsigned char>(val[pos]))) ++pos;
-                    if (pos == val.size()) {
-                        kv.kind = KeyValue::Kind::Double;
-                        kv.double_value = dv;
-                        typed = true;
-                    }
-                } else {
-                    const long long iv = std::stoll(val, &pos);
-                    while (pos < val.size() &&
-                           std::isspace(static_cast<unsigned char>(val[pos]))) ++pos;
-                    if (pos == val.size()) {
-                        kv.kind = KeyValue::Kind::Int;
-                        kv.int_value = iv;
-                        typed = true;
-                    }
-                }
-            } catch (const std::exception&) {
-                typed = false;
-            }
-            if (!typed) {
-                kv.kind = KeyValue::Kind::Str;
-                kv.str_value = val;
-            }
+            kv.str_value = read_string_value(fptr, key, val);
+        } else if (!parse_fits_number(val, kv)) {
+            kv.kind = KeyValue::Kind::Str;
+            kv.str_value = val;
         }
         out.push_back(std::move(kv));
     }
@@ -397,9 +453,11 @@ std::string header_text_path(const std::string& path, int hdu) {
 int num_hdus_path(const std::string& path) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         if (meta->num_hdus >= 0) return meta->num_hdus;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const int num_hdus = with_open(path, [](fitsfile* fptr) {
         // checked_num_hdus() seeks to `start_hdu + num_hdus - 1` to find the
@@ -409,20 +467,19 @@ int num_hdus_path(const std::string& path) {
         // the last HDU and silently skip the truncation check.
         return checked_num_hdus(fptr, 1);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->num_hdus = num_hdus;
-    }
+    publish_if_current(meta, generation, [&](d::SharedReadMeta& m) { m.num_hdus = num_hdus; });
     return num_hdus;
 }
 
 std::string hdu_type_path(const std::string& path, int hdu) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->hdu_type_cache.find(hdu);
         if (it != meta->hdu_type_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const std::string hdu_type = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -430,10 +487,8 @@ std::string hdu_type_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_hdu_type: could not move to HDU");
         return hdu_type_name(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->hdu_type_cache[hdu] = hdu_type;
-    }
+    publish_if_current(meta, generation,
+                       [&](d::SharedReadMeta& m) { m.hdu_type_cache[hdu] = hdu_type; });
     return hdu_type;
 }
 
@@ -442,10 +497,12 @@ long long nrows_path(const std::string& path, int hdu) {
     // global-map entry.
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->nrows_cache.find(hdu);
         if (it != meta->nrows_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const long nrows = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -453,20 +510,21 @@ long long nrows_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_nrows: could not move to HDU");
         return table_nrows(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->nrows_cache[hdu] = static_cast<long long>(nrows);
-    }
+    publish_if_current(meta, generation, [&](d::SharedReadMeta& m) {
+        m.nrows_cache[hdu] = static_cast<long long>(nrows);
+    });
     return static_cast<long long>(nrows);
 }
 
 std::vector<std::string> colnames_path(const std::string& path, int hdu) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->colnames_cache.find(hdu);
         if (it != meta->colnames_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const std::vector<std::string> names = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -474,10 +532,8 @@ std::vector<std::string> colnames_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_colnames: could not move to HDU");
         return table_colnames(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->colnames_cache[hdu] = names;
-    }
+    publish_if_current(meta, generation,
+                       [&](d::SharedReadMeta& m) { m.colnames_cache[hdu] = names; });
     return names;
 }
 
@@ -491,12 +547,13 @@ TableInfo table_info_path(const std::string& path, int hdu) {
 }
 
 std::vector<KeyValue> keywords_path(
-    const std::string& path, int hdu, const std::vector<std::string>& keys) {
+    const std::string& path, int hdu, const std::vector<std::string>& keys,
+    bool missing_ok) {
     return with_open(path, [&](fitsfile* fptr) {
         int status = 0;
         fits_movabs_hdu(fptr, absolute_hdu(fptr, hdu), nullptr, &status);
         if (status != 0) throw std::runtime_error("read_keys: could not move to HDU");
-        return read_keywords(fptr, keys);
+        return read_keywords(fptr, keys, missing_ok);
     });
 }
 
@@ -505,6 +562,7 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
     // Warm SharedReadMeta: skip the CFITSIO open when image params were
     // already populated by a prior read / SubsetReader.
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->image_info_cache.find(hdu);
@@ -521,8 +579,9 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
             }
             return {bitpix, std::move(shape)};
         }
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
-    return with_open(path, [hdu, &path](fitsfile* fptr) {
+    return with_open(path, [hdu, &meta, generation](fitsfile* fptr) {
         int status = 0;
         fits_movabs_hdu(fptr, absolute_hdu(fptr, hdu), nullptr, &status);
         if (status != 0) throw std::runtime_error("read_shape: could not move to HDU");
@@ -532,11 +591,9 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
         naxes_ll.fill(0);
         d::read_image_params_9d(fptr, &bitpix, &naxis, naxes_ll, &status);
         if (status != 0) throw std::runtime_error("Could not read image parameters");
-        auto cache = d::get_shared_meta_for_path(path);
-        if (cache) {
-            std::unique_lock<std::shared_mutex> lock(cache->mutex);
-            cache->image_info_cache[hdu] = std::make_tuple(bitpix, naxis, naxes_ll);
-        }
+        publish_if_current(meta, generation, [&](d::SharedReadMeta& m) {
+            m.image_info_cache[hdu] = std::make_tuple(bitpix, naxis, naxes_ll);
+        });
         std::vector<long> shape;
         shape.reserve(static_cast<size_t>(naxis));
         for (int i = naxis - 1; i >= 0; --i) {
@@ -555,12 +612,13 @@ FitsReader::FitsReader(const std::string& path) : path_(path) {
     int status = 0;
     status = d::open_fits_readonly(&fptr_, path_);
     if (status != 0 || fptr_ == nullptr) {
+        const std::string message = d::open_failure_message(path_, status);
         if (fptr_ != nullptr) {
             int close_status = 0;
             fits_close_file(fptr_, &close_status);
             fptr_ = nullptr;
         }
-        throw std::runtime_error("Could not open FITS file: " + path_);
+        throw std::runtime_error(message);
     }
     if (has_cfitsio_extended_filename_syntax(path_)) {
         fits_get_hdu_num(fptr_, &start_hdu_);

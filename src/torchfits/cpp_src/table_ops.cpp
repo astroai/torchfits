@@ -28,7 +28,51 @@ namespace {
 // for the image and table write paths).
 using torchfits::internal::ndarray_is_c_contiguous;
 using torchfits::internal::ensure_c_contiguous_ndarray;
+using torchfits::internal::require_cpu_ndarray;
 using torchfits::internal::pad_fits_strings;
+
+// CFITSIO datatype describing a numeric VLA row payload as it sits in memory,
+// or 0 if unsupported. fits_write_col reads nelements * sizeof(datatype)
+// bytes, so passing the column's base type for a narrower payload (int8 rows
+// on a 'PD' column) reads past the buffer; passing the payload's own type lets
+// CFITSIO convert to the column type instead.
+int vla_payload_fits_type(const nb::dlpack::dtype& dt, int base_type) {
+    using code = nb::dlpack::dtype_code;
+    if (dt.code == (uint8_t)code::Bool && dt.bits == 8) return TBYTE;
+    if (dt.code == (uint8_t)code::UInt) {
+        switch (dt.bits) {
+            case 8: return TBYTE;
+            case 16: return TUSHORT;
+            case 32: return TUINT;
+            case 64: return TULONGLONG;
+        }
+    } else if (dt.code == (uint8_t)code::Int) {
+        switch (dt.bits) {
+            // Same bytes either way on a 'B' column (as the fixed-width path
+            // writes int8); elsewhere convert by value.
+            case 8: return base_type == TBYTE ? TBYTE : TSBYTE;
+            case 16: return TSHORT;
+            case 32: return TINT;
+            case 64: return TLONGLONG;
+        }
+    } else if (dt.code == (uint8_t)code::Float) {
+        if (dt.bits == 32) return TFLOAT;
+        if (dt.bits == 64) return TDOUBLE;
+    } else if (dt.code == (uint8_t)code::Complex) {
+        if (dt.bits == 64) return TCOMPLEX;
+        if (dt.bits == 128) return TDBLCOMPLEX;
+    }
+    return 0;
+}
+
+// True for a 'B' column using the signed-byte convention (TSCAL = 1,
+// TZERO = -128), which CFITSIO reports as equivalent type TSBYTE.
+bool column_is_signed_byte(fitsfile* fptr, int colnum) {
+    int eq_type = 0;
+    int st = 0;
+    fits_get_eqcoltype(fptr, colnum, &eq_type, nullptr, nullptr, &st);
+    return st == 0 && eq_type == TSBYTE;
+}
 
 // CFITSIO entry points (fits_close_file included) may return immediately
 // when *status != 0, so unwinding with the poisoned status would leak the
@@ -91,9 +135,9 @@ void write_fits_table(const char* filename, nb::dict tensor_dict, nb::dict heade
         if (!path.empty() && path[0] != '!') {
             path = "!" + path;
         }
-        fits_create_file(&fptr, path.c_str(), &status);
+        status = torchfits::create_fits_file(&fptr, path);
     } else {
-        fits_create_file(&fptr, filename, &status);
+        status = torchfits::create_fits_file(&fptr, filename ? filename : "");
     }
 
     if (status != 0) {
@@ -235,6 +279,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
                     continue;
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
+                if (arr.device_type() != nb::device::cpu::value) {
+                    rollback_inserted_rows(fptr, start_row, num_rows);
+                    require_cpu_ndarray(arr, "column " + col_name);  // throws
+                }
                 if (arr.ndim() > 1) {
                     rollback_inserted_rows(fptr, start_row, num_rows);
                     throw std::runtime_error("append_rows VLA rows must be 1D for " + col_name);
@@ -266,8 +314,18 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
                     }
                     data_ptr = logical.data();
                 }
+                int write_type = base_type;
+                if (base_type != TLOGICAL && base_type != TBIT && base_type != TSTRING &&
+                    nelements > 0) {
+                    write_type = vla_payload_fits_type(arr.dtype(), base_type);
+                    if (write_type == 0) {
+                        rollback_inserted_rows(fptr, start_row, num_rows);
+                        throw std::runtime_error(
+                            "append_rows unsupported VLA row dtype for " + col_name);
+                    }
+                }
 
-                fits_write_col(fptr, base_type, colnum, start_row + row, 1, nelements, data_ptr, &status);
+                fits_write_col(fptr, write_type, colnum, start_row + row, 1, nelements, data_ptr, &status);
             }
             continue;
         }
@@ -305,14 +363,7 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             // a single character.
             long width_chars = repeat > 1 ? repeat : width;
             std::vector<std::string> padded = pad_fits_strings(values, width_chars);
-            std::vector<const char*> ptrs;
-            ptrs.reserve(padded.size());
-            for (const auto& s : padded) {
-                ptrs.push_back(s.c_str());
-            }
-
-            fits_write_col(fptr, TSTRING, colnum, start_row, 1, num_rows,
-                           const_cast<char**>(ptrs.data()), &status);
+            torchfits::write_string_rows(fptr, colnum, start_row, padded, &status);
             continue;
         }
 
@@ -325,6 +376,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             // maps uint8 -> TBYTE and writes num_rows * repeat bytes, overflowing
             // into the following rows.
             nb::ndarray<> t = nb::cast<nb::ndarray<>>(item.second);
+            if (t.device_type() != nb::device::cpu::value) {
+                rollback_inserted_rows(fptr, start_row, num_rows);
+                require_cpu_ndarray(t, "column " + col_name);  // throws
+            }
             int ndim_t = t.ndim();
             long rows_t = 1;
             long user_repeat = 1;
@@ -380,12 +435,14 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             const bool* src_bool_b = static_cast<const bool*>(t.data());
             const uint8_t* src_u8_b = static_cast<const uint8_t*>(t.data());
 
+            // A 0-d payload is one element and has no stride(0) to read.
+            const long row_stride_t = ndim_t == 0 ? 0 : static_cast<long>(t.stride(0));
             for (long i = 0; i < num_rows; ++i) {
                 for (long j = 0; j < user_repeat; ++j) {
                     bool val = false;
                     long byte_off = (ndim_t == 2)
-                        ? i * t.stride(0) + j * t.stride(1)
-                        : i * t.stride(0) + j;
+                        ? i * row_stride_t + j * t.stride(1)
+                        : i * row_stride_t + j;
                     if (
                         dt_b.code == (uint8_t)nb::dlpack::dtype_code::Bool &&
                         dt_b.bits == 8
@@ -427,6 +484,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         }
 
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(item.second);
+        if (tensor.device_type() != nb::device::cpu::value) {
+            rollback_inserted_rows(fptr, start_row, num_rows);
+            require_cpu_ndarray(tensor, "column " + col_name);  // throws
+        }
         int ndim = tensor.ndim();
         long rows = 1;
         long repeat_vals = 1;
@@ -483,11 +544,16 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) {
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) {
-            // FITS TBYTE storage is signed bytes (bit-identical with unsigned
-            // interpretation), so Int8 payloads map to TBYTE.
-            fits_type = TBYTE;
+            // Int8 payloads keep their bit pattern on a plain 'B' column; on a
+            // signed-byte column (TZERO = -128) CFITSIO must apply the offset.
+            fits_type = column_is_signed_byte(fptr, colnum) ? TSBYTE : TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
+        } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
+                   (dt.bits == 16 || dt.bits == 32 || dt.bits == 64)) {
+            // Physical unsigned values: CFITSIO applies the column's
+            // TZERO (2**15 / 2**31 / 2**63 unsigned convention) on write.
+            fits_type = dt.bits == 16 ? TUSHORT : dt.bits == 32 ? TUINT : TULONGLONG;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) {
             fits_type = TINT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) {
@@ -719,6 +785,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     continue;
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
+                require_cpu_ndarray(arr, "column " + col_name);
                 if (arr.ndim() > 1) {
                     throw std::runtime_error("update_rows VLA rows must be 1D for " + col_name);
                 }
@@ -761,7 +828,16 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     col.owned.push_back(std::move(logical));
                     planned_ptr = col.owned.back().data();
                 }
-                col.writes.push_back({base_type, colnum, start_row + row, nelements, planned_ptr});
+                int write_type = base_type;
+                if (base_type != TLOGICAL && base_type != TBIT && base_type != TSTRING &&
+                    nelements > 0) {
+                    write_type = vla_payload_fits_type(arr.dtype(), base_type);
+                    if (write_type == 0) {
+                        throw std::runtime_error(
+                            "update_rows unsupported VLA row dtype for " + col_name);
+                    }
+                }
+                col.writes.push_back({write_type, colnum, start_row + row, nelements, planned_ptr});
             }
             plan.push_back(std::move(col));
             continue;
@@ -793,6 +869,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 // right-pad with ASCII spaces (0x20) so short user
                 // payloads land the same bytes as the mmap writer.
                 nb::ndarray<> t_str = nb::cast<nb::ndarray<>>(obj);
+                require_cpu_ndarray(t_str, "column " + col_name);
                 nb::dlpack::dtype dt_str = t_str.dtype();
                 if (
                     !(dt_str.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
@@ -835,12 +912,15 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 const uint8_t* src_str = static_cast<const uint8_t*>(t_str.data());
                 std::vector<std::string> padded_str;
                 padded_str.reserve(static_cast<size_t>(num_rows));
+                // A 0-d payload is one element and has no stride(0) to read.
+                const long row_stride_str =
+                    ndim_str == 0 ? 0 : static_cast<long>(t_str.stride(0));
                 for (long i = 0; i < num_rows; ++i) {
                     std::string row(static_cast<size_t>(width_chars_str), ' ');
                     for (long j = 0; j < user_repeat_str; ++j) {
                         long byte_off_str = (ndim_str == 2)
-                            ? i * t_str.stride(0) + j * t_str.stride(1)
-                            : i * t_str.stride(0) + j;
+                            ? i * row_stride_str + j * t_str.stride(1)
+                            : i * row_stride_str + j;
                         row[static_cast<size_t>(j)] =
                             static_cast<char>(src_str[byte_off_str]);
                     }
@@ -884,6 +964,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             // run across rows, so reject it exactly like every other
             // fixed-width column below.
             nb::ndarray<> t = nb::cast<nb::ndarray<>>(item.second);
+            require_cpu_ndarray(t, "column " + col_name);
             int ndim_t = t.ndim();
             long rows_t = 1;
             long user_repeat = 1;
@@ -936,11 +1017,13 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             std::vector<unsigned char> logical(
                 static_cast<size_t>(nelements_bits), 0
             );
+            // A 0-d payload is one element and has no stride(0) to read.
+            const long row_stride_t = ndim_t == 0 ? 0 : static_cast<long>(t.stride(0));
             for (long i = 0; i < num_rows; ++i) {
                 for (long j = 0; j < repeat; ++j) {
                     long byte_off = (ndim_t == 2)
-                        ? i * t.stride(0) + j * t.stride(1)
-                        : i * t.stride(0) + j;
+                        ? i * row_stride_t + j * t.stride(1)
+                        : i * row_stride_t + j;
                     unsigned char val;
                     if (is_bool) {
                         val = src_bool_b[byte_off] ? 1 : 0;
@@ -968,6 +1051,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         }
 
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(item.second);
+        require_cpu_ndarray(tensor, "column " + col_name);
         int ndim = tensor.ndim();
         long rows = 1;
         long repeat_vals = 1;
@@ -1020,11 +1104,16 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) {
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) {
-            // FITS TBYTE storage is signed bytes (bit-identical with unsigned
-            // interpretation), so Int8 payloads map to TBYTE.
-            fits_type = TBYTE;
+            // Int8 payloads keep their bit pattern on a plain 'B' column; on a
+            // signed-byte column (TZERO = -128) CFITSIO must apply the offset.
+            fits_type = column_is_signed_byte(fptr, colnum) ? TSBYTE : TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
+        } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
+                   (dt.bits == 16 || dt.bits == 32 || dt.bits == 64)) {
+            // Physical unsigned values: CFITSIO applies the column's
+            // TZERO (2**15 / 2**31 / 2**63 unsigned convention) on write.
+            fits_type = dt.bits == 16 ? TUSHORT : dt.bits == 32 ? TUINT : TULONGLONG;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) {
             fits_type = TINT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) {
@@ -1057,18 +1146,11 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
     // Commit. Every column is resolved and converted by now, so nothing below
     // can reject the payload: a non-zero status here is a CFITSIO I/O failure.
     int commit_status = 0;
-    std::vector<const char*> ptrs;
     for (const PlannedColumn& col : plan) {
         if (col.is_string) {
-            ptrs.clear();
-            ptrs.reserve(col.strings.size());
-            for (const std::string& s : col.strings) {
-                ptrs.push_back(s.c_str());
-            }
             const PlannedWrite& w = col.writes[0];
-            fits_write_col(fptr, w.typecode, w.colnum, w.first_row, 1,
-                           static_cast<long>(col.strings.size()),
-                           const_cast<char**>(ptrs.data()), &commit_status);
+            torchfits::write_string_rows(fptr, w.colnum, w.first_row, col.strings,
+                                         &commit_status);
             continue;
         }
         for (const PlannedWrite& w : col.writes) {
@@ -1148,6 +1230,29 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         throw std::runtime_error("Failed to move to table HDU");
     }
 
+    // Resolve and validate the whole mapping before writing any keyword.
+    // CFITSIO caches column names, so a fits_get_colnum after a TTYPEn update
+    // still sees the old name: resolving rename-by-rename half-applied a valid
+    // rotation ({"B": "C", "A": "B"}) before failing, and let two sources take
+    // the same target.
+    int ncols = 0;
+    fits_get_num_cols(fptr, &ncols, &status);
+    if (status != 0) {
+        close_file_ignore_status(fptr);
+        throw std::runtime_error("Failed to read column count for rename_columns");
+    }
+    std::vector<std::string> final_names(static_cast<size_t>(ncols));
+    for (int c = 1; c <= ncols; ++c) {
+        char keyname[FLEN_KEYWORD];
+        char value[FLEN_VALUE] = {0};
+        int key_status = 0;
+        fits_make_keyn("TTYPE", c, keyname, &key_status);
+        fits_read_key(fptr, TSTRING, keyname, value, nullptr, &key_status);
+        final_names[c - 1] = key_status == 0 ? std::string(value) : std::string();
+    }
+
+    std::vector<std::pair<int, std::string>> renames;
+    std::vector<bool> renamed(static_cast<size_t>(ncols), false);
     for (auto item : mapping) {
         std::string old_name = nb::cast<std::string>(item.first);
         std::string new_name = nb::cast<std::string>(item.second);
@@ -1156,27 +1261,45 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         }
 
         int colnum = 0;
-        // CASEINSEN: see the name-resolution policy note above.
+        // CASEINSEN: see the name-resolution policy note above. Nothing has
+        // been written yet, so CFITSIO's cached names are the file's names.
         fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(old_name.c_str()), &colnum, &status);
-        if (status != 0) {
+        if (status != 0 || colnum < 1 || colnum > ncols) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for rename_columns: " + old_name);
         }
-
-        int check_status = 0;
-        int existing = 0;
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(new_name.c_str()), &existing, &check_status);
-        if (check_status == 0 && existing > 0) {
+        if (renamed[colnum - 1]) {
             close_file_ignore_status(fptr);
-            throw std::runtime_error("Target column already exists: " + new_name);
+            throw std::runtime_error("Column renamed more than once: " + old_name);
         }
+        renamed[colnum - 1] = true;
+        final_names[colnum - 1] = new_name;
+        renames.emplace_back(colnum, new_name);
+    }
 
+    auto fold = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+        return s;
+    };
+    for (const auto& [colnum, new_name] : renames) {
+        const std::string key = fold(new_name);
+        for (int c = 0; c < ncols; ++c) {
+            if (c != colnum - 1 && fold(final_names[c]) == key) {
+                close_file_ignore_status(fptr);
+                throw std::runtime_error("Target column already exists: " + new_name);
+            }
+        }
+    }
+
+    for (const auto& [colnum, new_name] : renames) {
         char keyname[FLEN_KEYWORD];
         fits_make_keyn("TTYPE", colnum, keyname, &status);
         fits_update_key(fptr, TSTRING, keyname, (void*)new_name.c_str(), nullptr, &status);
         if (status != 0) {
             close_file_ignore_status(fptr);
-            throw std::runtime_error("Failed to update column name for " + old_name);
+            throw std::runtime_error("Failed to update column name for column " +
+                                     std::to_string(colnum));
         }
     }
 

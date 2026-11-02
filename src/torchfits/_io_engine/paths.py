@@ -11,7 +11,9 @@ __all__ = [
     "cfitsio_base_path",
     "coerce_fits_path",
     "guard_fits_path",
+    "guard_write_path",
     "has_bz2_support",
+    "has_curl_support",
     "has_cfitsio_filter",
     "is_cfitsio_network_url",
 ]
@@ -43,6 +45,36 @@ def require_bz2_support(path: str) -> None:
         )
 
 
+def has_curl_support() -> bool:
+    """True when this build's CFITSIO can open ``https://`` / ``ftps://`` URLs.
+
+    CFITSIO reaches TLS URLs through libcurl and is compiled without them when
+    libcurl is not found; ``_C.HAS_CURL`` mirrors that build-time result.
+    """
+    try:
+        import torchfits._C as _C
+
+        return bool(getattr(_C, "HAS_CURL", True))
+    except Exception:
+        return True
+
+
+_TLS_URL_PREFIXES = ("https", "ftps")
+
+
+def require_curl_support(path: str) -> None:
+    """Raise the actionable error for TLS URLs on builds without libcurl."""
+    lowered = str(path).lstrip().lstrip("!").lstrip().lower()
+    scheme, sep, _ = lowered.partition("://")
+    if sep and scheme.startswith(_TLS_URL_PREFIXES) and not has_curl_support():
+        raise ValueError(
+            f"{path}: this torchfits build's CFITSIO was compiled without "
+            "libcurl, so https:// and ftps:// URLs cannot be opened. Download "
+            "the file first, use an http:// URL, or install a build with "
+            "libcurl."
+        )
+
+
 def coerce_fits_path(path: Any) -> Any:
     """Normalize an ``os.PathLike`` path to ``str`` at the read boundary.
 
@@ -62,15 +94,47 @@ def coerce_fits_path(path: Any) -> Any:
     return path
 
 
-def guard_fits_path(path: str) -> str:
+def guard_fits_path(path: str, *, cfitsio_opens: bool = True) -> str:
     """SSRF-check CFITSIO network URLs; return *path* unchanged for CFITSIO.
+
+    ``cfitsio_opens=False`` is for callers that fetch ``http(s)`` URLs in
+    Python (range cutouts, cached downloads): they need the SSRF check but not
+    CFITSIO's libcurl driver.
 
     Guard-time validation only: CFITSIO-driver connections re-resolve the
     hostname after this check (residual TOCTOU / DNS rebinding); Python-side
     fetches pin instead — see ``http_util.guard_cfitsio_remote_path``.
     """
     guard_cfitsio_remote_path(path)
+    if cfitsio_opens:
+        require_curl_support(path)
     return path
+
+
+def guard_write_path(path: str) -> str:
+    """``guard_fits_path`` plus a refusal of CFITSIO write-path syntax.
+
+    CFITSIO deletes an existing file named after a leading ``!``, which would
+    bypass ``overwrite=False``; the prefix is not part of the torchfits API.
+    A trailing ``[compress]`` / ``(template)`` section is refused too: the
+    atomic writer takes the name literally, so ``c.fits[compress]`` became a
+    file of that name rather than a compressed ``c.fits``.
+    """
+    if str(path).lstrip(" ").startswith("!"):
+        raise ValueError(
+            f"Write path {path!r} starts with '!': CFITSIO clobber syntax is not "
+            "supported; pass overwrite=True instead."
+        )
+    name = os.path.basename(str(path).rstrip(" "))
+    for open_, close in (("[", "]"), ("(", ")")):
+        if name.endswith(close) and open_ in name:
+            raise ValueError(
+                f"Write path {path!r} ends with a CFITSIO extended-syntax "
+                f"'{open_}...{close}' section, which writes do not support; "
+                "pass compress= (e.g. compress='RICE') for tile compression "
+                "and name the file plainly. A '[' in a directory name is fine."
+            )
+    return guard_fits_path(path)
 
 
 def cfitsio_base_path(path: str) -> str:

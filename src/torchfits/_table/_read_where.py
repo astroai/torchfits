@@ -37,24 +37,22 @@ from ._read_schema import (
 logger = logging.getLogger(__name__)
 
 
-def _tnull_in_tensor(tensor: Any, sentinel: Any) -> Any:
-    """TNULL as stored in ``tensor``.
+def _not_null(tensor: Any, sentinel: Any) -> Any:
+    """Rows of ``tensor`` that do not hold the decoded TNULL ``sentinel``.
 
-    Unsigned columns hold the physical value. A negative raw TNULL does not
-    fit; comparing against it wraps (uint16 ``-32768`` becomes ``32768``) and
-    drops the real row instead of the null.
+    ``sentinel`` comes from :func:`fits_schema.column_null_sentinel_map`: the
+    raw TNULL for unscaled columns, ``raw + TZERO`` for unsigned ones, and NaN
+    for scaled columns (whose TNULL cells decode to NaN).
     """
+    import math
+
     import torch
 
-    if not isinstance(sentinel, int) or sentinel >= 0 or tensor.dtype.is_floating_point:
-        return sentinel
-    if tensor.dtype == torch.uint16:
-        return sentinel + 32768
-    if tensor.dtype == torch.uint32:
-        return sentinel + 2147483648
-    if tensor.dtype == torch.uint8:
-        return sentinel + 128
-    return sentinel
+    if isinstance(sentinel, float) and math.isnan(sentinel):
+        if tensor.dtype.is_floating_point:
+            return ~torch.isnan(tensor)
+        return torch.ones(tensor.shape, dtype=torch.bool)
+    return torch.ne(tensor, sentinel)
 
 
 # NOTE: ceiling — full-table torch WHERE materializes all selected columns before
@@ -105,8 +103,112 @@ def _compile_where_to_simple_predicates(
     return tuple(predicates)
 
 
+def _integer_literal(op: str, literal: Any) -> tuple[str, Any]:
+    """Map a float literal compared with an integer column to an exact form.
+
+    Returns ``(op, int_literal)``, or ``("const", bool)`` when the comparison
+    is the same for every integer value (NaN, infinities, ``==`` against a
+    non-integral value). Comparing in float would round large integers
+    (``J > 16777216.5`` in float32, ``K == 2**53 + 0.0`` in float64).
+    """
+    import math
+
+    if not isinstance(literal, float):
+        return op, literal
+    if math.isnan(literal):
+        return "const", op == "!="
+    if math.isinf(literal):
+        above = literal > 0  # every value is below +inf, above -inf
+        return "const", op in ({"<", "<=", "!="} if above else {">", ">=", "!="})
+    low = math.floor(literal)
+    if low == literal:
+        return op, int(literal)
+    # Exact integer bound for a non-integral literal.
+    if op in {">", ">="}:
+        return ">", low
+    if op in {"<", "<="}:
+        return "<", low + 1
+    return "const", op == "!="
+
+
+def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
+    """Compare a uint64 column exactly.
+
+    torch has no CPU compare kernels for uint64, and widening to int64 would
+    wrap values >= 2**63. Flipping the sign bit maps [0, 2**64) onto int64
+    in order, so compare there against the literal mapped the same way.
+    """
+    import torch
+
+    if op not in {"==", "!=", ">", ">=", "<", "<="}:
+        raise ValueError(f"Unsupported where operator '{op}'")
+
+    def constant(value: bool) -> torch.Tensor:
+        return torch.full(tensor.shape, value, dtype=torch.bool)
+
+    op, literal = _integer_literal(op, literal)
+    if op == "const":
+        return constant(literal)
+    if isinstance(literal, bool) or not isinstance(literal, int):
+        raise TypeError(f"Unsupported literal for uint64 column: {literal!r}")
+    if literal < 0:
+        return constant(op in {">", ">=", "!="})
+    if literal >= 2**64:
+        return constant(op in {"<", "<=", "!="})
+
+    keys = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
+    target = literal - 2**63
+    fn = {
+        "==": torch.eq,
+        "!=": torch.ne,
+        ">": torch.gt,
+        ">=": torch.ge,
+        "<": torch.lt,
+        "<=": torch.le,
+    }[op]
+    return fn(keys, target)
+
+
 def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
     import torch
+
+    # Same literal coercions as the Arrow filter (_aligned_scalar): T/F/TRUE
+    # for logical columns, a numeric word such as inf for float columns.
+    if tensor.dtype == torch.bool:
+        literal = _boolean_literal(literal, "")
+    elif tensor.dtype.is_floating_point and isinstance(literal, str):
+        try:
+            literal = float(literal)
+        except ValueError:
+            raise ValueError(
+                f"where compares a float column with {literal!r}, which is not a number"
+            ) from None
+    elif isinstance(literal, str):
+        raise ValueError(
+            f"where compares a numeric column with {literal!r}, which is not a number"
+        )
+
+    if tensor.dtype == torch.uint64:
+        return _uint64_cmp_mask(tensor, op, literal)
+
+    if not tensor.dtype.is_floating_point and tensor.dtype != torch.bool:
+        if op not in {"==", "!=", ">", ">=", "<", "<="}:
+            raise ValueError(f"Unsupported where operator '{op}'")
+        op, literal = _integer_literal(op, literal)
+        if op == "const":
+            return torch.full(tensor.shape, bool(literal), dtype=torch.bool)
+        if (
+            tensor.dtype == torch.int64
+            and isinstance(literal, int)
+            and not isinstance(literal, bool)
+            and not (-(2**63) <= literal < 2**63)
+        ):
+            above = literal > 0  # every int64 value is below / above it
+            return torch.full(
+                tensor.shape,
+                op in ({"<", "<=", "!="} if above else {">", ">=", "!="}),
+                dtype=torch.bool,
+            )
 
     # PyTorch wraps an out-of-range Python int scalar to the tensor's dtype
     # (e.g. comparing an int16 column against 40000 becomes `> -25536`), which
@@ -179,13 +281,12 @@ def _try_torch_tensor_where_filter(
         return None
 
     # This is an optimisation: the caller falls through to the Arrow-side
-    # filter when we return None. In a torch-free environment the Arrow filter
-    # is the only one that can run, so an ImportError here would turn a
-    # supported `where=` read into a hard failure instead of a slower success.
-    try:
-        import torch
-    except ImportError:
+    # filter when we return None. Like the native pushdown, it only runs when
+    # torch is already loaded: an Arrow-only `where=` read must neither fail
+    # without torch nor import it just to filter faster.
+    if "torch" not in sys.modules:
         return None
+    import torch
     import torchfits._C as cpp
 
     output_cols = columns
@@ -257,7 +358,7 @@ def _try_torch_tensor_where_filter(
     # torch engine agrees with the Arrow engine (comparisons against NULL
     # never match) regardless of which strategy runs.
     tnull_map = (
-        fits_schema.column_tnull_map(header)
+        fits_schema.column_null_sentinel_map(header)
         if apply_fits_nulls and header is not None
         else {}
     )
@@ -266,12 +367,14 @@ def _try_torch_tensor_where_filter(
     try:
         for pred_col, op, literal in predicates:
             tensor = chunk.get(pred_col)
-            if not isinstance(tensor, torch.Tensor):
+            if not isinstance(tensor, torch.Tensor) or tensor.dim() != 1:
+                # Vector cells: leave them to the Arrow filter, which refuses
+                # them with a clear error instead of comparing elements.
                 return None
             part = _torch_cmp_mask(tensor, op, literal)
             sentinel = tnull_map.get(pred_col)
             if sentinel is not None:
-                part = part & torch.ne(tensor, _tnull_in_tensor(tensor, sentinel))
+                part = part & _not_null(tensor, sentinel)
             mask = part if mask is None else (mask & part)
     except (RuntimeError, TypeError, ValueError) as exc:
         logger.debug("torch WHERE mask build failed; falling back: %s", exc)
@@ -376,23 +479,44 @@ def _boolean_literal(value: Any, column_name: str) -> bool:
     )
 
 
-def _aligned_scalar(pa: Any, column: Any, value: Any, column_name: str = "") -> Any:
+def _aligned_scalar(
+    pa: Any, column: Any, value: Any, column_name: str = "", op: str = "=="
+) -> tuple[str, Any]:
     """Build an Arrow scalar that matches the C++ pushdown comparison rule.
 
     Both engines must select identical rows for a given predicate. The C++
     mmap-filtered scan casts the literal to the column's storage precision
     before comparing, so the Arrow engine must do the same for float32
     columns instead of comparing against a float64 scalar (which would drop
-    rows whose stored float32 equals the literal). Wider/integer columns keep
-    Arrow's exact widening. Logical columns take a coerced bool so Arrow has a
-    matching kernel.
+    rows whose stored float32 equals the literal). Logical columns take a
+    coerced bool so Arrow has a matching kernel.
+
+    Integer columns compare exactly: a float literal becomes an integer bound
+    and the scalar takes the column's type (an untyped scalar cannot hold a
+    uint64 value >= 2**63, and int64 vs a float scalar casts the column to
+    float). A literal outside the column's range answers the same for every
+    row. Returns ``(op, scalar)``, or ``("const", bool)`` for such a constant.
     """
     if pa.types.is_boolean(column.type):
-        return pa.scalar(_boolean_literal(value, column_name), type=column.type)
-    if pa.types.is_float32(column.type):
-        return pa.scalar(float(value), type=column.type)
+        return op, pa.scalar(_boolean_literal(value, column_name), type=column.type)
+    if pa.types.is_floating(column.type):
+        # float() also reads numeric words (inf, nan) like the torch mask.
+        return op, pa.scalar(float(value), type=column.type)
+    if pa.types.is_integer(column.type) and isinstance(value, (int, float)):
+        op, value = _integer_literal(op, value)
+        if op == "const":
+            return op, value
+        if not isinstance(value, bool):
+            import numpy as np
 
-    return pa.scalar(value)
+            info = np.iinfo(column.type.to_pandas_dtype())
+            if value < int(info.min):
+                return "const", op in {">", ">=", "!="}
+            if value > int(info.max):
+                return "const", op in {"<", "<=", "!="}
+            return op, pa.scalar(value, type=column.type)
+
+    return op, pa.scalar(value)
 
 
 def _where_mask_for_table(
@@ -425,40 +549,64 @@ def _where_mask_for_table(
             return mask
         return pc.and_(mask, pc.invert(pc.is_nan(column)))
 
-    def _cmp_mask(column_name: str, op: str, literal: Any) -> Any:
-        column = _get_predicate_column(column_name)
-
-        if literal is None:
-            if op == "==":
-                return pc.is_null(column)
-            if op == "!=":
-                return pc.invert(pc.is_null(column))
-            raise ValueError("where comparisons with null only support == and !=")
-
-        scalar = _aligned_scalar(pa, column, literal, column_name)
+    def _compare(column: Any, column_name: str, op: str, literal: Any) -> Any:
+        """Nullable comparison mask; third-party errors become ValueError."""
+        kernels = {
+            "==": pc.equal,
+            "!=": pc.not_equal,
+            ">": pc.greater,
+            ">=": pc.greater_equal,
+            "<": pc.less,
+            "<=": pc.less_equal,
+        }
+        if op not in kernels:
+            raise ValueError(f"Unsupported where operator '{op}'")
         try:
-            if op == "==":
-                mask = pc.equal(column, scalar)
-            elif op == "!=":
-                mask = pc.not_equal(column, scalar)
-            elif op == ">":
-                mask = pc.greater(column, scalar)
-            elif op == ">=":
-                mask = pc.greater_equal(column, scalar)
-            elif op == "<":
-                mask = pc.less(column, scalar)
-            elif op == "<=":
-                mask = pc.less_equal(column, scalar)
-            else:
-                raise ValueError(f"Unsupported where operator '{op}'")
-        except pa.ArrowNotImplementedError as exc:
+            kind, scalar = _aligned_scalar(pa, column, literal, column_name, op)
+            if kind == "const":
+                # Same answer for every row; a null row stays unknown.
+                return pc.if_else(
+                    pc.is_valid(column),
+                    pa.scalar(bool(scalar)),
+                    pa.scalar(None, pa.bool_()),
+                )
+            return kernels[kind](column, scalar)
+        except (
+            pa.ArrowNotImplementedError,
+            pa.ArrowInvalid,
+            OverflowError,
+            TypeError,
+        ) as exc:
             # Never let a third-party error type escape: name the column and
             # operator so the caller can see what could not be compared.
             raise ValueError(
                 f"where cannot compare column '{column_name}' ({column.type}) "
                 f"with {literal!r} using '{op}': {exc}"
             ) from exc
-        return _exclude_float_nan(column, mask)
+
+    def _cmp_mask(column_name: str, op: str, literal: Any) -> Any:
+        column = _get_predicate_column(column_name)
+
+        if literal is None:
+            if (
+                pa.types.is_integer(column.type)
+                or pa.types.is_floating(column.type)
+                or pa.types.is_boolean(column.type)
+            ):
+                # Documented dialect and reference evaluator: numeric FITS
+                # nulls are TNULLn / NaN, tested with IS NULL, not == / !=.
+                raise ValueError(
+                    f"where cannot compare numeric column '{column_name}' with "
+                    f"NULL using '{op}'; use '{column_name} IS NULL' or "
+                    f"'{column_name} IS NOT NULL'"
+                )
+            if op == "==":
+                return pc.is_null(column)
+            if op == "!=":
+                return pc.invert(pc.is_null(column))
+            raise ValueError("where comparisons with null only support == and !=")
+
+        return _exclude_float_nan(column, _compare(column, column_name, op, literal))
 
     def _in_mask(column_name: str, literals: list[Any], negate: bool) -> Any:
         column = _get_predicate_column(column_name)
@@ -500,11 +648,9 @@ def _where_mask_for_table(
         column = _get_predicate_column(column_name)
         if low is None or high is None:
             raise ValueError("where BETWEEN does not support NULL bounds")
-        low_s = _aligned_scalar(pa, column, low, column_name)
-        high_s = _aligned_scalar(pa, column, high, column_name)
-        ge = pc.greater_equal(column, low_s)
-        le = pc.less_equal(column, high_s)
-        mask = pc.and_(ge, le)
+        ge = _compare(column, column_name, ">=", low)
+        le = _compare(column, column_name, "<=", high)
+        mask = pc.and_kleene(ge, le)
         # Nullable in both directions, for the same reason as _in_mask: the
         # null is resolved once, at the top, not here. A NaN is not inside the
         # interval under IEEE, so negation must drop it as well.
@@ -514,7 +660,8 @@ def _where_mask_for_table(
 
     def _isnull_mask(column_name: str, negate: bool) -> Any:
         column = _get_predicate_column(column_name)
-        mask = pc.is_null(column)
+        # A float NaN counts as NULL, as in the reference evaluator.
+        mask = pc.is_null(column, nan_is_null=True)
         mask = pc.fill_null(mask, False)
         if negate:
             return pc.invert(mask)
@@ -535,9 +682,9 @@ def _where_mask_for_table(
 
         Every level returns a **nullable** mask and the single
         ``fill_null(..., False)`` below the tree is the only place nulls are
-        resolved: an unknown (null) row is not selected. pyarrow's ``and_`` /
-        ``or_`` already implement Kleene logic, so the tree needs no null
-        handling of its own.
+        resolved: an unknown (null) row is not selected. ``and_kleene`` /
+        ``or_kleene`` implement Kleene logic (plain ``and_`` / ``or_``
+        propagate null, so ``A IS NULL OR A > 3`` lost the null rows).
 
         Resolving nulls *inside* each node instead -- what this used to do --
         destroyed the information ``not`` needs: ``fill_null(equal, False)``
@@ -556,9 +703,9 @@ def _where_mask_for_table(
         if kind == "isnull":
             return _isnull_mask(node[1], bool(node[2]))
         if kind == "and":
-            return pc.and_(_eval(node[1]), _eval(node[2]))
+            return pc.and_kleene(_eval(node[1]), _eval(node[2]))
         if kind == "or":
-            return pc.or_(_eval(node[1]), _eval(node[2]))
+            return pc.or_kleene(_eval(node[1]), _eval(node[2]))
         if kind == "not":
             # Comparisons already fill unknown to False, so a bare invert would
             # select the NaN rows (NOT false). Drop rows whose referenced
@@ -613,6 +760,44 @@ def _try_cpp_where_pushdown(
     filters = _compile_where_to_simple_predicates(where)
     if filters is None:
         return None
+    if header is None:
+        return None
+    pred_names = {col for col, _o, _l in filters}
+    for col in fits_schema.iter_table_columns(header, selected=pred_names):
+        info = col.tform_info
+        if info.vla or col.tdim or (info.repeat != 1 and info.code != "A"):
+            # Vector cells: the native scan compares only some elements. The
+            # Arrow filter refuses them with a clear error.
+            return None
+    if any(isinstance(lit, float) for _c, _o, lit in filters):
+        # The native scan compares a float literal with integer cells through
+        # an int64-clamped proxy; hand it the exact integer bound instead and
+        # leave constant or out-of-int64 comparisons to the exact engines.
+        int_cols = {
+            col.name
+            for col in fits_schema.iter_table_columns(header)
+            if col.tform_info.code in {"B", "I", "J", "K"}
+            and not col.tform_info.vla
+            and (col.tscal or 1.0) == 1.0
+            and float(col.tzero or 0.0).is_integer()
+        }
+        # The scan also takes an exact uint64 bound in [2**63, 2**64).
+        u64_cols = {
+            name
+            for name, dtype in fits_schema.unsigned_column_dtype_names_from_header(
+                header
+            ).items()
+            if dtype == "uint64"
+        }
+        exact: list[tuple[str, str, Any]] = []
+        for col_name, op, lit in filters:
+            if isinstance(lit, float) and col_name in int_cols:
+                op, lit = _integer_literal(op, lit)
+                high = 2**64 if col_name in u64_cols else 2**63
+                if op == "const" or not (-(2**63) <= lit < high):
+                    return None
+            exact.append((col_name, op, lit))
+        filters = tuple(exact)
     try:
         target_cols = columns
         if target_cols is None:
@@ -631,7 +816,7 @@ def _try_cpp_where_pushdown(
         # the Arrow engine treats them as NULL and excludes them. Drop rows
         # whose match came only from a sentinel so both engines agree.
         full_tnull_map = (
-            fits_schema.column_tnull_map(header)
+            fits_schema.column_null_sentinel_map(header)
             if apply_fits_nulls and header is not None
             else {}
         )
@@ -645,7 +830,7 @@ def _try_cpp_where_pushdown(
                 # Predicate column not in the projection: cannot verify
                 # sentinel matches here — defer to the Arrow engine.
                 return None
-            valid = torch.ne(col_tensor, _tnull_in_tensor(col_tensor, sentinel))
+            valid = _not_null(col_tensor, sentinel)
             keep = valid if keep is None else (keep & valid)
         if keep is not None:
             if bool(keep.any()):

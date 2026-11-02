@@ -13,6 +13,7 @@ from torch import Tensor
 from ..fits_schema import bit_column_names, unsigned_column_dtypes_from_header
 from ..hdu import Header
 from .device import to_device, validate_device
+from ._hdu_lookup import raise_hdu_index_error, raise_lookup_failure
 from .paths import coerce_fits_path, require_bz2_support
 from .options import ReadOptions
 from .caches import (
@@ -132,7 +133,14 @@ def _validate_single_path_params(
     if not isinstance(path, str):
         raise ValueError("Path must be a string or list of strings")
     require_bz2_support(path)
+    _reject_negative_hdu(path, hdu)
     return _validate_read_params(hdu, device, mmap, mode)
+
+
+def _reject_negative_hdu(path: str, hdu: Any) -> None:
+    """A negative index is an HDUNotFoundError naming the file, on every route."""
+    if isinstance(hdu, int) and not isinstance(hdu, bool) and hdu < 0:
+        raise_hdu_index_error(path, hdu)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +148,23 @@ def _validate_single_path_params(
 # ---------------------------------------------------------------------------
 
 
-def read_unified(
+def read_unified(**kwargs: Any) -> Any:
+    """Unified root FITS read dispatcher.
+
+    A failed single-path read is re-checked once: a missing local file raises
+    ``FileNotFoundError`` and an absent HDU raises ``HDUNotFoundError``
+    instead of the CFITSIO-flavoured RuntimeError of whichever strategy ran.
+    """
+    try:
+        return _read_unified(**kwargs)
+    except Exception as exc:
+        path = coerce_fits_path(kwargs.get("path"))
+        if isinstance(path, str):
+            raise_lookup_failure(path, kwargs.get("hdu"), exc)
+        raise
+
+
+def _read_unified(
     *,
     cpp_module: Any,
     path: Any,
@@ -156,11 +180,10 @@ def read_unified(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Any:
-    """Unified root FITS read dispatcher implementation."""
+    """Unified root FITS read dispatcher implementation (see read_unified)."""
     # --- parse options ---
     opts = _parse_read_options(options, kwargs)
     device = str(device)
@@ -213,7 +236,6 @@ def read_unified(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -234,8 +256,9 @@ def read_unified(
         hdu = autodetect_hdu(path)
 
     hdu_type_hint = get_cached_hdu_type(path, hdu) if isinstance(hdu, int) else None
+    # An explicit mode='image' wins over a cached table type.
     is_cached_table_hdu = force_table or (
-        hdu_type_hint in {"ASCII_TABLE", "BINARY_TABLE"}
+        not force_image and hdu_type_hint in {"ASCII_TABLE", "BINARY_TABLE"}
     )
     skip_generic_image_fast_path = is_cached_table_hdu
 
@@ -251,6 +274,7 @@ def read_unified(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
+            mode=mode,
             device=device,
             mmap=mmap,
             fp16=fp16,
@@ -269,7 +293,6 @@ def read_unified(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -345,7 +368,6 @@ def read_unified(
             scale_on_device=scale_on_device,
             force_image=force_image,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             resolve_image_mmap=resolve_image_mmap,
             read_exc_types=read_exc_types,
             logger=logger,
@@ -400,7 +422,6 @@ def _read_batch_paths(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> list[Any]:
@@ -418,6 +439,7 @@ def _read_batch_paths(
     column selection and row windows reach the per-file loop instead of being
     dropped on the floor.
     """
+    _reject_negative_hdu(path[0], hdu)
     force_image, force_table = _validate_read_params(hdu, device, mmap, options.mode)
     if force_image and (
         options.columns is not None or options.start_row != 1 or options.num_rows != -1
@@ -494,7 +516,6 @@ def _read_batch_paths(
                 read_check_cache=read_check_cache,
                 read_header=read_header,
                 debug_scale=debug_scale,
-                cold_nocache=cold_nocache,
                 read_exc_types=read_exc_types,
                 logger=logger,
             )
@@ -507,6 +528,7 @@ def _read_batch_hdus(
     cpp_module: Any,
     path: str,
     hdu: list[int] | tuple[int, ...],
+    mode: str,
     device: str,
     mmap: bool | str,
     fp16: bool,
@@ -525,20 +547,33 @@ def _read_batch_hdus(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Any:
     """Dispatch multiple HDUs from one FITS path."""
-    if not (fp16 or bf16 or raw_scale):
+    # The native batch reads integer-indexed images only. EXTNAMEs, tables and
+    # mode='table' go through the per-HDU loop, which also honors mode.
+    native_ok = (
+        not (fp16 or bf16 or raw_scale)
+        and str(mode).strip().lower() != "table"
+        and all(isinstance(h, int) and not isinstance(h, bool) for h in hdu)
+    )
+    if native_ok:
         if mmap is False:
             use_mmap = False
         elif mmap is True:
             use_mmap = True
         else:
             use_mmap = None
+        data = None
         if use_mmap is not None:
-            data = cpp_module.read_hdus_batch(path, list(hdu), use_mmap)
+            try:
+                data = cpp_module.read_hdus_batch(path, list(hdu), use_mmap)
+            except read_exc_types as exc:
+                # e.g. a table among the HDUs: the per-HDU loop handles it
+                # (and raises per HDU for mode='image').
+                logger.debug("read_hdus_batch failed (%s); falling back per HDU", exc)
+        if data is not None:
             if len(data) != len(hdu):
                 # Never pair tensors with the wrong HDUs (r4a-01): fall
                 # through to the per-HDU loop, which attributes failures.
@@ -570,6 +605,7 @@ def _read_batch_hdus(
                 num_rows=num_rows,
                 cache_capacity=cache_capacity,
                 fast_header=fast_header,
+                mode=mode,
             ),
             autodetect_hdu=autodetect_hdu,
             batch_to_device=batch_to_device,
@@ -577,7 +613,6 @@ def _read_batch_hdus(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -657,13 +692,11 @@ def _read_generic_fast_path(
     scale_on_device: bool,
     force_image: bool,
     debug_scale: bool,
-    cold_nocache: bool,
     resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Tensor | None:
     """Try the generic image fast path; return None when fallback is required."""
-    _ = cold_nocache
     _ = read_exc_types  # callers still pass; fallback catch is intentionally narrow
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)

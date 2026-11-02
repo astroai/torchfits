@@ -76,7 +76,7 @@ def run(args: argparse.Namespace) -> int:
     for path in paths:
         try:
             with torchfits.open(path) as hdul:
-                indices = selected_hdu_indices(len(hdul), args.hdu)
+                indices = selected_hdu_indices(len(hdul), args.hdu, path=path)
                 for index in indices:
                     hdu = hdul[index]
                     header = hdu.header

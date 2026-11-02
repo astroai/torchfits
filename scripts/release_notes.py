@@ -2,8 +2,9 @@
 
 Used by .github/workflows/build_wheels.yml (github_release job) so the
 GitHub Release page carries the curated changelog section instead of only
-auto-generated PR lists. Falls back to the ``## Unreleased`` section when
-the requested version has not been stamped yet (prerelease cuts).
+auto-generated PR lists. A prerelease (``a``/``b``/``rc``) falls back to the
+``## Unreleased`` section when it has not been stamped; a final release
+without its stamped section is an error.
 
 Usage:
     python scripts/release_notes.py --version 1.1.0 [--out FILE]
@@ -46,6 +47,13 @@ def extract(text: str, version: str) -> tuple[str, str]:
     stamped = _section(text, rf"## \[{escaped}\](\s*—.*)?")
     if stamped:
         return f"[{version}]", stamped
+    if not re.search(r"(a|b|rc)\d*$", version):
+        # A final release must ship its stamped notes, never the in-flight
+        # Unreleased text (run `pixi run changelog-release X.Y.Z` first).
+        raise SystemExit(
+            f"release notes: final release {version} has no '## [{version}]' "
+            f"section in {CHANGELOG}; stamp the changelog before tagging"
+        )
     unreleased = _section(text, r"## Unreleased")
     if unreleased:
         return "Unreleased", unreleased

@@ -21,6 +21,12 @@ from .caches import (
     set_cached_hdu_type,
     signature_cached_get,
 )
+from .._errors import FITSFileNotFoundError, HDUNotFoundError
+from ._hdu_lookup import (
+    call_with_lookup,
+    raise_hdu_index_error,
+    require_existing_file,
+)
 from .paths import (
     cfitsio_base_path,
     coerce_fits_path,
@@ -158,7 +164,7 @@ def _reassemble_longstr_cards(cards: Any) -> list[Any] | None:
     """
     from ..header_parser import FastHeaderParser
 
-    from .._hdu.card import _is_string_typed
+    from .._hdu.card import _COMMENTARY_KEYS, _is_string_typed
 
     out: list[Any] = []
     target: int | None = None  # index of the string card CONTINUE extends
@@ -175,10 +181,13 @@ def _reassemble_longstr_cards(cards: Any) -> list[Any] | None:
 
     for card in cards:
         if card.key != "CONTINUE":
-            # Any non-CONTINUE card ends the chain: the '&' is content again.
+            # Any non-CONTINUE card ends the chain: the '&' is content again,
+            # and only a string-valued card can be the next CONTINUE target
+            # (a CONTINUE after a number or COMMENT is an orphan).
             restore_marker()
             out.append(card)
-            if not isinstance(card.value, str):
+            target = None
+            if not isinstance(card.value, str) or card.key in _COMMENTARY_KEYS:
                 continue
             if card.value.endswith("&"):
                 # A trailing '&' is the quoted-chain signal (see _hdu/card.py):
@@ -232,7 +241,7 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
         and not is_cfitsio_network_url(path)
         and not os.path.exists(check_path)
     ):
-        raise FileNotFoundError(f"FITS file not found: {path}")
+        raise FITSFileNotFoundError(f"FITS file not found: {path}")
 
     try:
         hdul = HDUList.fromfile(path, mode)
@@ -249,8 +258,14 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
         return hdul
     except PermissionError:
         raise PermissionError(f"Permission denied accessing file: {path}")
+    except (ValueError, FileNotFoundError, KeyError):
+        # Argument errors (unsupported mode=, bad path) keep their type.
+        raise
     except Exception as exc:
-        raise RuntimeError(f"Failed to open FITS file '{path}': {exc}") from exc
+        prefix = f"Failed to open FITS file '{path}'"
+        if isinstance(exc, RuntimeError) and str(exc).startswith(prefix):
+            raise  # HDUList.fromfile already said it; do not repeat the prefix
+        raise RuntimeError(f"{prefix}: {exc}") from exc
 
 
 def _resolve_hdu_index(
@@ -263,14 +278,12 @@ def _resolve_hdu_index(
     path = coerce_fits_path(path)
     guard_fits_path(path)
     if hdu is None or (isinstance(hdu, str) and hdu.strip().lower() == "auto"):
-        return int(autodetect_hdu(path))
+        return int(call_with_lookup(path, None, autodetect_hdu, path))
     if isinstance(hdu, int):
-        # Every sibling entry point (read, read_tensor, read_subset, read_table,
-        # read_fallback) rejects a negative index up front. Do the same here so
-        # a wrong HDU surfaces the same actionable ValueError instead of the
-        # CFITSIO "could not move to HDU" RuntimeError.
+        # A negative index is never valid: say so up front, with the same
+        # HDUNotFoundError every route raises for an index past the end.
         if hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(path, hdu)
         return int(hdu)
     if not isinstance(hdu, str):
         raise TypeError(f"hdu must be int, str, None, or 'auto', got {type(hdu)!r}")
@@ -296,15 +309,25 @@ def _resolve_hdu_index(
     # reported as "HDU not found" after probing phantom HDUs.
     from .. import _core_api
 
+    require_existing_file(path)
     n_hdus = _core_api.read_num_hdus(path)
+    # Same rule as CFITSIO fits_movnam_hdu: EXTNAME, else HDUNAME, compared
+    # trimmed and case-insensitively.
+    wanted = hdu.strip().upper()
     for i in range(max(0, n_hdus)):
+        # One keyword read per HDU; an absent EXTNAME/HDUNAME is left out
+        # rather than raised (a native exception per HDU on every scan).
         try:
-            keys = _core_api.read_keys(path, i, ["EXTNAME"])
+            names = _core_api.read_keys(
+                path, i, ["EXTNAME", "HDUNAME"], missing_ok=True
+            )
         except Exception:
             continue
-        if keys.get("EXTNAME") == hdu:
-            return i
-    raise ValueError(f"HDU '{hdu}' not found")
+        for keyword in ("EXTNAME", "HDUNAME"):
+            value = names.get(keyword)
+            if isinstance(value, str) and value.strip().upper() == wanted:
+                return i
+    raise HDUNotFoundError.for_request(path, hdu, n_hdus)
 
 
 def read_nrows(path: str, hdu: Union[int, str, None] = 1) -> int:
@@ -316,7 +339,7 @@ def read_nrows(path: str, hdu: Union[int, str, None] = 1) -> int:
 
     path = coerce_fits_path(path)
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    return _core_api.read_nrows(path, hdu_index)
+    return call_with_lookup(path, hdu_index, _core_api.read_nrows, path, hdu_index)
 
 
 def read_keys(
@@ -335,7 +358,9 @@ def read_keys(
     path = coerce_fits_path(path)
     key_list = [str(k) for k in keys]
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    return _core_api.read_keys(path, hdu_index, key_list)
+    return call_with_lookup(
+        path, hdu_index, _core_api.read_keys, path, hdu_index, key_list
+    )
 
 
 def read_shape(
@@ -349,7 +374,7 @@ def read_shape(
 
     path = coerce_fits_path(path)
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    return _core_api.read_shape(path, hdu_index)
+    return call_with_lookup(path, hdu_index, _core_api.read_shape, path, hdu_index)
 
 
 def read_hdu_type(path: str, hdu: Union[int, str, None] = 0) -> str:
@@ -358,7 +383,7 @@ def read_hdu_type(path: str, hdu: Union[int, str, None] = 0) -> str:
 
     path = coerce_fits_path(path)
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    return _core_api.read_hdu_type(path, hdu_index)
+    return call_with_lookup(path, hdu_index, _core_api.read_hdu_type, path, hdu_index)
 
 
 def read_num_hdus(path: str) -> int:
@@ -367,7 +392,7 @@ def read_num_hdus(path: str) -> int:
 
     path = coerce_fits_path(path)
     guard_fits_path(path)
-    return _core_api.read_num_hdus(path)
+    return call_with_lookup(path, None, _core_api.read_num_hdus, path)
 
 
 def read_colnames(path: str, hdu: Union[int, str, None] = 1) -> list[str]:
@@ -376,15 +401,21 @@ def read_colnames(path: str, hdu: Union[int, str, None] = 1) -> list[str]:
 
     path = coerce_fits_path(path)
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    return _core_api.read_colnames(path, hdu_index)
+    return call_with_lookup(path, hdu_index, _core_api.read_colnames, path, hdu_index)
 
 
 def read_extname(path: str, hdu: Union[int, str, None] = 0) -> str | None:
     """Return EXTNAME for an HDU, or None if absent."""
-    try:
-        return read_keys(path, ["EXTNAME"], hdu=hdu).get("EXTNAME")
-    except RuntimeError:
-        return None
+    from .. import _core_api
+
+    path = coerce_fits_path(path)
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    # missing_ok: an HDU without EXTNAME is the common case (most primaries),
+    # so it must not go through an exception and the lookup re-check.
+    values = call_with_lookup(
+        path, hdu_index, _core_api.read_keys, path, hdu_index, ["EXTNAME"], True
+    )
+    return values.get("EXTNAME")
 
 
 def read_table_info(path: str, hdu: Union[int, str, None] = 1) -> dict[str, Any]:
@@ -393,7 +424,7 @@ def read_table_info(path: str, hdu: Union[int, str, None] = 1) -> dict[str, Any]
 
     path = coerce_fits_path(path)
     hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
-    info = _core_api.read_table_info(path, hdu_index)
+    info = call_with_lookup(path, hdu_index, _core_api.read_table_info, path, hdu_index)
     info["nrows"] = int(info["nrows"])
     info["colnames"] = [str(n) for n in info["colnames"]]
     info["tforms"] = [str(t) for t in info["tforms"]]
@@ -460,4 +491,4 @@ def get_header(
             )
         return header
 
-    return _read_header(path, hdu_index)
+    return call_with_lookup(path, hdu_index, _read_header, path, hdu_index)

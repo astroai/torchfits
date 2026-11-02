@@ -274,6 +274,23 @@ def _core_build_artifacts(repo_root: Path) -> tuple[Path, Path] | None:
     return libs[0], archives[0]
 
 
+def _compile_probe(args: list[str]) -> None:
+    """Compile a C++ probe with ``$CXX``, showing the compiler's output on failure.
+
+    A probe that links the built core must use the same instrumentation as the
+    core: under the sanitizer job the core references the ASan/UBSan runtime,
+    so that job sets ``CXX`` to the instrumented compiler line.
+    """
+    compiler = shlex.split(os.environ.get("CXX", "c++"))
+    result = subprocess.run(
+        [*compiler, *args], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, (
+        f"compiling the probe failed (rc={result.returncode}): "
+        f"{shlex.join([*compiler, *args])}\n{result.stdout}\n{result.stderr}"
+    )
+
+
 def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
     """One ``Metadata`` handle, many threads: every answer must match its HDU.
 
@@ -284,6 +301,11 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
     Rice-compressed MegaCam MEF with four threads it produced wrong answers,
     spurious ``Could not read image dimensions``, and a segfault. The fix holds
     the lock across the whole move-then-read.
+
+    A synthetic MEF is enough: the probe needs HDUs whose type and shape all
+    differ, so any cross-HDU answer is visible. Measured: with the accessor
+    lock removed from ``FitsReader::hdu_type``/``shape``, this file fails the
+    probe; with it in place, it passes.
     """
     repo_root = Path(__file__).resolve().parents[1]
     artifacts = _core_build_artifacts(repo_root)
@@ -291,23 +313,28 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
         pytest.skip("no build tree with libtorchfits_core; run `pixi run dev` first")
     library, cfitsio = artifacts
 
-    # A synthetic multi-extension file is not enough: the probe needs several
-    # HDUs whose type and shape differ, which the real corpus guarantees.
-    mef_candidates = sorted(
-        (repo_root / "benchmarks_data" / "cfht_megacam").glob("*.fits.fz")
-    )
-    mef = mef_candidates[0] if mef_candidates else None
-    if mef is None:
-        pytest.skip(
-            "no real MegaCam MEF; run scripts/fetch_cfht_megacam_sample.sh first"
-        )
+    mef = tmp_path / "mef.fits"
+    torchfits.HDUList(
+        [
+            torchfits.TensorHDU(torch.arange(64, dtype=torch.int16).reshape(8, 8)),
+            torchfits.TensorHDU(
+                torch.ones(16, 24), header=torchfits.Header({"EXTNAME": "SCI1"})
+            ),
+            torchfits.TensorHDU(
+                torch.zeros(3, 4, 5, dtype=torch.int32),
+                header=torchfits.Header({"EXTNAME": "CUBE"}),
+            ),
+            torchfits.TensorHDU(
+                torch.zeros(7, 2, dtype=torch.float64),
+                header=torchfits.Header({"EXTNAME": "SCI2"}),
+            ),
+        ]
+    ).write(str(mef), overwrite=True)
 
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     source = repo_root / "tests" / "cpp" / "test_fitsreader_threads.cpp"
     executable = tmp_path / "test_fitsreader_threads"
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-O2",
             "-I",
@@ -320,10 +347,7 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
             "-lpthread",
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     env = dict(os.environ)
     env["DYLD_LIBRARY_PATH"] = f"{library.parent}:{env.get('DYLD_LIBRARY_PATH', '')}"
@@ -379,7 +403,6 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
         str(path), torch.arange(16, dtype=torch.int16).reshape(4, 4), overwrite=True
     )
 
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     source = repo_root / "tests" / "cpp" / "test_open_for_write_conflict.cpp"
     executable = tmp_path / "test_open_for_write_conflict"
     # Link the shared core rather than the static CFITSIO archive: the core
@@ -387,9 +410,8 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
     # CFITSIO"), so every fits_* symbol resolves and zlib/bzip2/curl come along
     # transitively. Naming those libraries here instead would hard-code a
     # platform-specific link line.
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-O2",
             "-I",
@@ -398,10 +420,7 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
             str(library),
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     env = dict(os.environ)
     env["DYLD_LIBRARY_PATH"] = f"{library.parent}:{env.get('DYLD_LIBRARY_PATH', '')}"
@@ -493,14 +512,12 @@ def test_thread_pool_survives_worker_side_nesting(tmp_path: Path) -> None:
     The C++ probe is compiled and run at several pool sizes with a wall-clock
     timeout, so a regression fails the test rather than hanging the suite.
     """
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     repo_root = Path(__file__).resolve().parents[1]
     source = repo_root / "tests" / "cpp" / "test_parallel_for_nesting.cpp"
     parallel_cpp = repo_root / "src" / "torchfits" / "cpp_src" / "core" / "parallel.cpp"
     executable = tmp_path / "test_parallel_for_nesting"
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-I",
             str(repo_root / "src" / "torchfits" / "cpp_src"),
@@ -509,10 +526,7 @@ def test_thread_pool_survives_worker_side_nesting(tmp_path: Path) -> None:
             "-lpthread",
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     for threads in ("1", "2", "4", "8"):
         result = subprocess.run(
@@ -538,8 +552,11 @@ def test_thread_pool_is_bounded_and_pinned(sample) -> None:
         [sys.executable, "-c", "import torchfits._core as c; print(c.thread_count())"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         env=dict(os.environ, TORCHFITS_NUM_THREADS="3"),
+    )
+    assert probe.returncode == 0, (
+        f"child failed (rc={probe.returncode})\n{probe.stdout}\n{probe.stderr}"
     )
     assert probe.stdout.strip().splitlines()[-1] == "3"
 
@@ -575,8 +592,12 @@ def test_parallel_signbit_xor_matches_a_single_threaded_read(tmp_path) -> None:
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
             env=env,
+        )
+        assert proc.returncode == 0, (
+            f"child failed (rc={proc.returncode}, "
+            f"TORCHFITS_XOR_PARALLEL_MIN_BYTES={min_bytes})\n{proc.stderr}"
         )
         return json.loads(proc.stdout.strip().splitlines()[-1])
 

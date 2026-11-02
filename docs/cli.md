@@ -89,7 +89,7 @@ iterators and deep learning training pipelines), use the in-process Python API
 | Code | Meaning | Example |
 |---|---|---|
 | `0` | Success | Command completed successfully |
-| `1` | Difference found | `torchfits diff` found header or image discrepancies |
+| `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
 | `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
 | `3` | I/O error | File not found, permission denied, or invalid FITS structure |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
@@ -107,7 +107,7 @@ A downstream consumer that closes the pipe early (`torchfits info many.fits | he
 | [`info`](#info) | Summary of HDUs (extension index, name, type, dimensions, data type) |
 | [`header`](#header) | Display header cards, filter keywords, or build multi-file summary tables |
 | [`verify`](#verify) | Validate `DATASUM` and `CHECKSUM` integrity across HDUs |
-| [`diff`](#diff) | Compare header keywords and pixel statistics between two FITS files |
+| [`diff`](#diff) | Compare header keywords, image pixels, and table data between two FITS files |
 | [`stats`](#stats) | Compute image statistics (min, max, mean, standard deviation, median) |
 | [`table`](#table) | Inspect binary/ASCII table schemas and preview rows |
 | [`cutout`](#cutout) | Extract sub-regions using pixel coordinates or CFITSIO sections |
@@ -186,8 +186,10 @@ Output statuses:
 
 Compares two FITS files HDU by HDU. Header card order, repeated cards, values,
 and comments must match (transient `CHECKSUM`/`DATASUM` cards are ignored).
-Image extensions also compare shapes, minimums, maximums, and means. Returns
-exit code `0` if identical, `1` if different.
+Image HDUs are compared pixel by pixel (shape, dtype, and every value exactly;
+`NaN`, including `BLANK` pixels read as `NaN`, equals `NaN`), and table HDUs
+row by row in every column. Returns exit code `0` only if headers and data are
+identical, `1` if anything differs; each difference is listed on stderr.
 
 ```bash
 # Compare two files
@@ -200,6 +202,10 @@ torchfits diff image_v1.fits image_v2.fits
 
 Computes pixel statistics for image HDUs: minimum, maximum, mean, standard deviation, and median.
 
+- Only finite pixels count: `NaN`, `±Infinity`, and integer `BLANK` pixels are excluded, and their number is reported as `nbad`.
+- Statistics are computed in float64; integer images report exact integer `min` / `max`.
+- `std` is the population standard deviation, and `median` is the conventional midpoint median (as in numpy and IRAF `imstat`): the mean of the two middle values for an even pixel count.
+
 ```bash
 # Compute statistics for primary HDU
 torchfits stats science.fits -e 0
@@ -211,7 +217,7 @@ torchfits stats science.fits -e 0 -f json
 torchfits stats *.fits -e 0 -J 0 -f jsonl
 ```
 
-Non-finite values in JSON output: `stats` and `table` serialize `NaN`/`±Infinity` floats as `null` in `-f json` / `-f jsonl` (`--json` / `--jsonl`) — JSON has no NaN or Infinity literals. An empty image region therefore reports `null` for `min`, `max`, `mean`, `std`, and `median`.
+Non-finite values in JSON output: `stats` and `table` serialize `NaN`/`±Infinity` floats as `null` in `-f json` / `-f jsonl` (`--json` / `--jsonl`) — JSON has no NaN or Infinity literals. An empty image region, or one with no finite pixel, therefore reports `null` for `min`, `max`, `mean`, `std`, and `median`.
 
 ---
 
@@ -236,20 +242,23 @@ torchfits table catalog.fits -e 1 -n 0
 
 ### `cutout`
 
-Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header: `CRPIX*` is not shifted to the cutout origin. Shift those cards yourself when the stamp must stay on the sky (see the WCS cutout example).
+Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged.
 
 Supports two coordinate formats:
 
 1. **CFITSIO Section Syntax (1-based inclusive):**
    ```bash
    torchfits cutout 'science.fits[101:256,101:256]' cutout.fits
+   # A section of extension 1: put the extension in the path
+   torchfits cutout 'science.fits[1][101:256,101:256]' cutout.fits
    ```
+   A bare section always applies to the primary HDU, so combining it with `-e N` (N ≠ 0) is a usage error (exit 2).
 2. **Bounding Box Syntax (0-based half-open `x1,y1,x2,y2`):**
    ```bash
    torchfits cutout science.fits -o cutout.fits -e 0 --box 100,100,256,256
    ```
 
-`--box` values must be integers with non-negative `x1,y1` and `x1 < x2`, `y1 < y2` (0-based, half-open); an empty, inverted, or negative-origin box is a usage error (exit 2). A box that extends past the image edge is clamped to the image, so the output region is the box intersected with the image. A box that misses the image entirely — `x1 >= NAXIS1` or `y1 >= NAXIS2` — selects no pixels and is also a usage error (exit 2) rather than a silently written 0x0 image. On 3D+ cubes the box addresses the trailing `(y, x)` axes, so it is checked against `NAXIS2 x NAXIS1`.
+`--box` values must be integers with non-negative `x1,y1` and `x1 < x2`, `y1 < y2` (0-based, half-open); an empty, inverted, or negative-origin box is a usage error (exit 2). A box that extends past the image edge is clamped to the image, so the output region is the box intersected with the image. A box that misses the image entirely — `x1 >= NAXIS1` or `y1 >= NAXIS2` — selects no pixels and is also a usage error (exit 2) rather than a silently written 0x0 image. On 3D+ cubes the box addresses the trailing `(y, x)` axes, so it is checked against `NAXIS2 x NAXIS1`. For a tile-compressed image HDU the check uses the image size (`ZNAXIS2 x ZNAXIS1`), not the tile table's `NAXIS*`.
 
 ```bash
 # Batch extract cutouts across multiple files
@@ -274,6 +283,10 @@ torchfits convert catalog.fits -o catalog.csv -e 1 -c RA,DEC,MAG_G
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "MAG_G < 19.5 AND DEC > 0" -c RA,DEC,MAG_G
 ```
 
+An unknown `--columns` name or an invalid `--where` predicate (unknown column,
+syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
+HDU stays an I/O error (exit `3`).
+
 #### RGB PNG Rendering
 ```bash
 # Auto RGB (default): files in blue → red order
@@ -287,7 +300,14 @@ torchfits convert r.fits g.fits b.fits -o preview.png --to png --recipe lupton -
 
 # Cube or MEF: HDU list is shortest → longest
 torchfits convert multi_band.fits -o preview.png --bands 0,1,2 --to png
+
+# Keep array row 0 at the top of the PNG instead of the bottom
+torchfits convert g.fits r.fits i.fits -o preview.png --origin upper
 ```
+
+`--origin {lower,upper}` sets the PNG row order. `lower` (default) puts FITS
+pixel (1,1) at the bottom-left, so standard WCS images display north up as in
+ds9; `upper` puts array row 0 on top.
 
 With several input files, `--bands` is one HDU index **per input file** and its length must match the number of inputs. A band read that fails names the file and HDU it was reading (for example `g.fits: HDU 1: Could not move to HDU`), so a bad index is attributable.
 
@@ -322,6 +342,13 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 `--out-dir` and rejects `--out`. Every generated destination is checked before
 processing so it cannot overwrite either input operand.
 
+| Flag | Purpose |
+|---|---|
+| `--value FLOAT` | Scalar operand B |
+| `--operand2 PATH` | Image operand B; required for several A inputs with `--out-dir`, otherwise an alternative to the second positional path |
+| `--hdu2 N` | HDU of image operand B (default: the same index as each A HDU, else 0) |
+| `--dtype {auto,float32,float64}` | `auto` (default) keeps each A HDU's dtype (`div` on an integer A gives float64); integer results are saturated to the dtype's range and fractional parts truncated, with a warning. `float32` / `float64` cast both operands to that dtype, compute, and store in it |
+
 ```bash
 # Add scalar value
 torchfits arith science.fits --op add --value 50.0 -o offset.fits
@@ -346,6 +373,9 @@ The default `GZIP_1` codec is lossless for integer and floating-point images.
 Also available: `RICE_1`, `GZIP_2`, `HCOMPRESS_1`, and `PLIO_1`; `BZIP2_1` is
 listed when the build includes bzip2. The non-default codecs use CFITSIO float
 quantization and are lossy for floating-point images; `PLIO_1` rejects floats.
+No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
+`tile compression does not support 64-bit integer images` and exits `3`
+without writing the output.
 `--hdu` applies only with `--split hdu`.
 
 ```bash
@@ -367,6 +397,13 @@ torchfits compress *.fits --out-dir /tmp/compressed -J 0
 ### `decompress`
 
 Expands tile-compressed `.fits.fz` files back into standard uncompressed FITS files.
+
+A FITS primary HDU cannot hold a compressed image, so `compress` moves a
+primary image into HDU 1 behind an empty primary and marks it with `ZSIMPLE = T`
+(as `fpack` does). `decompress` restores such an image as the primary, like
+`funpack`, so HDU indices round-trip; files whose primary was already empty
+keep it. Compression bookkeeping cards (`ZSIMPLE`, `ZTENSION`, `ZPCOUNT`, …)
+are not copied into the uncompressed output.
 
 ```bash
 # Decompress single file
@@ -410,6 +447,22 @@ torchfits transform *.fits --name LogStretch --out-dir /tmp/log_images -J 0
 
 Inserts, updates, renames, or deletes header keywords in place via CFITSIO card updates. Preserves tile compression on compressed files.
 
+Structural keywords describe the data layout and cannot be set, renamed, or
+deleted: `SIMPLE`, `XTENSION`, `BITPIX`, `NAXIS`, `NAXISn`, `PCOUNT`, `GCOUNT`,
+`TFIELDS`, `TFORMn`, `TBCOLn`, `EXTEND`, `THEAP`, and, on tile-compressed HDUs,
+the compression cards (`ZIMAGE`, `ZBITPIX`, `ZNAXISn`, `ZTILEn`, `ZCMPTYPE`,
+`ZNAMEn`, `ZVALn`, `ZQUANTIZ`, …). Such an edit is a usage error (exit `2`)
+and leaves the file untouched.
+
+An edited HDU that already carries `CHECKSUM`/`DATASUM` has both recomputed
+after the edit, so `torchfits verify` keeps passing; HDUs without them do not
+gain them. An edit that names `CHECKSUM` or `DATASUM` itself is applied as
+written.
+
+With `-o` / `--out-dir` the edit is validated against the input before the
+copy is made, so a rejected edit (missing keyword, structural keyword, …)
+leaves no output file behind.
+
 !!! note "Card comments"
     `setkey` writes the value only; it cannot set a card's comment text. Use a
     full header edit (`torchfits header`, or `HDUList` / `Header` in Python)
@@ -419,12 +472,16 @@ Inserts, updates, renames, or deletes header keywords in place via CFITSIO card 
 # Set or update keyword
 torchfits setkey science.fits -k OBJECT --value "NGC 1234"
 
-# Values are coerced: true/false become booleans, numeric strings become int or float
+# Values are coerced: true/false become booleans, plain numeric literals
+# (12, -3, 300.0, 1.5e3) become int or float; anything else stays a string
 torchfits setkey science.fits -k OKFLAG --value true
 torchfits setkey science.fits -k EXPTIME --value 300.0
+# A leading-zero ID such as 007 stays the string '007'
+torchfits setkey science.fits -k OBSID --value 007
 
-# Set HIERARCH / long keyword
+# Set HIERARCH / long keyword (--delete and --rename accept the same spelling)
 torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42"
+torchfits setkey science.fits --delete "ESO DET CHIP1 ID"
 
 # Apply across all HDUs
 torchfits setkey science.fits -k OBSERVER --value "astronomer" -e all
@@ -472,7 +529,7 @@ torchfits probe vos:username/data/sample.fits
 | `info` | [`fitsinfo`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsinfo) (Astropy) | Overview of HDU extensions, dimensions, and data types |
 | `header` | [`fitsheader`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsheader) (Astropy), [`dfits` / `fitsort`](https://www.eso.org/sci/software/eclipse/eug/eug/node13.html) (ESO Eclipse) | Dump header cards; filter by keyword; multi-file summary tables |
 | `verify` | [`fitscheck`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitscheck) (Astropy), [`fitsverify`](https://heasarc.gsfc.nasa.gov/docs/software/ftools/fitsverify/) (NASA HEASARC) | Check `DATASUM` and `CHECKSUM` keyword integrity |
-| `diff` | [`fitsdiff`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsdiff) (Astropy) | Compare headers and image statistics between two FITS files |
+| `diff` | [`fitsdiff`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsdiff) (Astropy) | Compare headers, image pixels, and table data between two FITS files |
 | `stats` | [`imstat`](https://iraf.net/irafdocs/imstat.php) (IRAF), [`aststatistics`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-aststatistics.html) (Gnuastro) | Compute min, max, mean, standard deviation, and median pixel values |
 | `table` | [`asttable`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-asttable.html) (Gnuastro), `tablist` (NASA HEASARC FTOOLS) | Preview binary/ASCII table schema and row values |
 | `cutout` | [`astcrop`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-astcrop.html) (Gnuastro), CFITSIO image sections | Extract sub-regions using pixel ranges (`[x1:x2, y1:y2]`) or bounding boxes |

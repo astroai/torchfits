@@ -12,6 +12,7 @@ mix, optional per-band MAD equalize, coupled asinh, saturation, sRGB.
 from __future__ import annotations
 
 import binascii
+import ctypes
 import math
 import struct
 import zlib
@@ -77,7 +78,12 @@ def lupton_rgb(
         q = _LUPTON_Q_MAX
 
     r_t = torch.as_tensor(r)
-    work_dtype = torch.float32 if r_t.device.type == "mps" else torch.float64
+    # float32 inputs stay float32 (display path, full survey tiles); anything
+    # else is computed in float64 on CPU for accuracy.
+    if r_t.device.type == "mps" or r_t.dtype == torch.float32:
+        work_dtype = torch.float32
+    else:
+        work_dtype = torch.float64
     red = torch.as_tensor(r, dtype=work_dtype) - float(minimum)
     green = torch.as_tensor(g, dtype=work_dtype) - float(minimum)
     blue = torch.as_tensor(b, dtype=work_dtype) - float(minimum)
@@ -153,7 +159,9 @@ _MAD_SCALE: Final = 1.4826  # estimate_background returns MAD × this
 
 
 def _work_dtype(device: torch.device) -> torch.dtype:
-    return torch.float32 if device.type == "mps" else torch.float64
+    # Display RGB ends as 8-bit; float32 halves memory and is ~2x faster on
+    # full survey tiles (10k x 10k x 4 bands). Statistics use subsamples.
+    return torch.float32
 
 
 def _as_band_stack(*bands: Any) -> torch.Tensor:
@@ -334,9 +342,10 @@ def rgb(
     stack = _as_band_stack(*bands)
     # Keep NaN through stats / equalize so mosaic holes are not a fake sky
     # floor (zero-fill made HiPS footprints look filled and washed-out).
-    stack = torch.where(
-        torch.isfinite(stack), stack, torch.full_like(stack, float("nan"))
-    )
+    # In-place below: never mutate a caller's tensor that came through as-is.
+    if any(stack.data_ptr() == torch.as_tensor(b).data_ptr() for b in bands):
+        stack = stack.clone()
+    stack.masked_fill_(~torch.isfinite(stack), float("nan"))
     n_band = int(stack.shape[0])
     use_calibrated = bool(calibrated) or zeropoints is not None
     if zeropoints is not None:
@@ -350,7 +359,7 @@ def rgb(
             dtype=stack.dtype,
             device=stack.device,
         )
-        stack = stack * scales.reshape(n_band, 1, 1)
+        stack.mul_(scales.reshape(n_band, 1, 1))
 
     if not use_calibrated:
         stack = _equalize_bands(stack)
@@ -365,7 +374,8 @@ def rgb(
     span = p_hi - p_lo
     frac = (med - p_lo) / span if span > 0.0 else 1.0
 
-    finite_luma = luma[torch.isfinite(luma)]
+    luma_sample = _subsample(luma)
+    finite_luma = luma_sample[torch.isfinite(luma_sample)]
     p90_sigma = (
         float(_quantile(finite_luma, 0.90, dim=(-1,)).reshape(()))
         if finite_luma.numel() > 0
@@ -413,6 +423,16 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
 
+def _tensor_bytes(t: torch.Tensor) -> bytes:
+    """Raw bytes of a contiguous CPU tensor in one copy (stdlib only).
+
+    ``bytes(t.untyped_storage())`` iterates element by element in Python and
+    dominated PNG export (~100 s for a 3000x3000 RGB).
+    """
+    t = t.contiguous()
+    return ctypes.string_at(t.data_ptr(), t.numel() * t.element_size())
+
+
 def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
     """Write RGB float image as PNG (stdlib only; no Pillow / NumPy import)."""
     if rgb.dim() != 3 or int(rgb.shape[-1]) != 3:
@@ -438,9 +458,7 @@ def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
     png = (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(
-            b"IDAT", zlib.compress(bytes(scanlines.untyped_storage()), level=6)
-        )
+        + _png_chunk(b"IDAT", zlib.compress(_tensor_bytes(scanlines), level=6))
         + _png_chunk(b"IEND", b"")
     )
     with open(path, "wb") as handle:

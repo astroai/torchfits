@@ -12,9 +12,10 @@ def _parse_where_literal(raw: str) -> Any:
         raise ValueError("where literal cannot be empty")
 
     if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        # Taken literally, as the engine reads quoted literals: a doubled
+        # quote is one quote character, a backslash is an ordinary character.
         quote = token[0]
-        inner = token[1:-1]
-        return inner.replace(f"\\{quote}", quote)
+        return token[1:-1].replace(quote * 2, quote)
 
     token_lower = token.lower()
     if token_lower == "true":
@@ -79,8 +80,10 @@ def _tokenize_where_expression(where: str) -> List[Tuple[str, str]]:
             buf: List[str] = []
             while i < n:
                 cur = where[i]
-                if cur == "\\" and i + 1 < n:
-                    buf.append(where[i + 1])
+                if cur == quote and i + 1 < n and where[i + 1] == quote:
+                    # Doubled quote: one quote character (backslashes are
+                    # ordinary characters, as in _normalize_where_syntax).
+                    buf.append(quote)
                     i += 2
                     continue
                 if cur == quote:
@@ -114,9 +117,10 @@ def _normalize_where_syntax(where: str) -> str:
 
     Rewrites apply only *outside* quoted literals, so values such as
     ``'AT&T'`` or ``'x||y'`` survive verbatim instead of being silently
-    rewritten into ``AND``/``OR``. FITS-style doubled-quote escapes inside
-    single-quoted literals (``'O''NEIL'``) are converted to Python
-    backslash escapes so ``ast.parse`` yields the intended value.
+    rewritten into ``AND``/``OR``. Quoted literals are taken literally,
+    SQL style: a doubled quote (``'O''NEIL'``) is one quote character and a
+    backslash is an ordinary character. Each literal is re-emitted with
+    ``repr`` so ``ast.parse`` yields exactly that value.
     """
     out: list[str] = []
     i = 0
@@ -130,34 +134,24 @@ def _normalize_where_syntax(where: str) -> str:
             closed = False
             while i < n:
                 cur = where[i]
-                if quote == "'" and cur == "'" and i + 1 < n and where[i + 1] == "'":
-                    # FITS escaped quote -> Python escape sequence.
-                    buf.append("\\'")
-                    i += 2
-                    continue
-                if cur == "\\" and i + 1 < n:
-                    buf.append(cur)
-                    buf.append(where[i + 1])
+                if cur == quote and i + 1 < n and where[i + 1] == quote:
+                    # SQL/FITS escape: a doubled quote is one quote character.
+                    buf.append(quote)
                     i += 2
                     continue
                 if cur == quote:
                     closed = True
                     break
+                # Everything else, backslashes included, is taken literally.
                 buf.append(cur)
                 i += 1
             if not closed:
                 raise ValueError("Unterminated quoted literal in where expression")
             i += 1  # consume closing quote
-            content = "".join(buf)
-            if quote == '"':
-                # Re-emit as a safe double-quoted literal for ast.parse.
-                out.append('"')
-                out.append(content.replace('"', '\\"'))
-                out.append('"')
-            else:
-                out.append("'")
-                out.append(content)
-                out.append("'")
+            # repr() is a Python literal ast.parse reads back to exactly this
+            # value: no escape processing ('a\nb' stays four characters) and
+            # no SyntaxWarning for sequences like '\d'.
+            out.append(repr("".join(buf)))
             continue
         two = where[i : i + 2]
         if two == "&&":
@@ -207,7 +201,7 @@ def _normalize_logical_operators(where: str) -> str:
 # Numeric literal or bare-word pattern used for BETWEEN boundary values.
 # Prefer explicit numeric/word matching over bare \S+ to avoid accidentally
 # capturing comparison operators or parentheses in pathological expressions.
-_BOUNDARY_VALUE = r"('[^']*'|\"[^\"]*\"|[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\w+)"
+_BOUNDARY_VALUE = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|\w+)"
 
 # Quoted string literal (with backslash escapes) captured so the keyword
 # rewrites below can leave literal content verbatim. Odd indices of
@@ -223,6 +217,19 @@ def _rewrite_outside_quotes(where: str, rewrite: Callable[[str], str]) -> str:
 
 
 def _normalize_between(where: str) -> str:
+    # Quoted bounds are swapped for placeholder words first so the rewrite
+    # sees the whole BETWEEN clause; splitting on the quotes hid them.
+    literals: list[str] = []
+
+    def _stash(match: "re.Match[str]") -> str:
+        literals.append(match.group(0))
+        return f"__tf_where_lit{len(literals) - 1}__"
+
+    def _restore(text: str) -> str:
+        return re.sub(
+            r"__tf_where_lit(\d+)__", lambda m: literals[int(m.group(1))], text
+        )
+
     def _rewrite(text: str) -> str:
         text = re.sub(
             r"\b(\w+)\s+NOT\s+BETWEEN\s+"
@@ -240,7 +247,7 @@ def _normalize_between(where: str) -> str:
             flags=re.IGNORECASE,
         )
 
-    return _rewrite_outside_quotes(where, _rewrite)
+    return _restore(_rewrite(re.sub(_QUOTED_SEGMENT, _stash, where)))
 
 
 def _normalize_nulls(where: str) -> str:

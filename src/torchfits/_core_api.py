@@ -24,6 +24,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Protocol
 
+from torchfits._io_engine import gz_index
 from torchfits._io_engine.paths import guard_fits_path
 
 
@@ -37,6 +38,7 @@ class _CoreModule(Protocol):
     """
 
     __build_id__: str
+    Metadata: Any  # read-only handle class (one open, many probes)
 
     def core_library_build_id(self) -> str: ...
     def thread_count(self) -> int: ...
@@ -50,7 +52,7 @@ class _CoreModule(Protocol):
     def read_colnames(self, filename: str, hdu_num: int) -> list[str]: ...
     def read_table_info(self, filename: str, hdu_num: int) -> dict[str, Any]: ...
     def read_keys(
-        self, filename: str, hdu_num: int, keys: list[str]
+        self, filename: str, hdu_num: int, keys: list[str], missing_ok: bool = ...
     ) -> dict[str, Any]: ...
     def read_shape(
         self, filename: str, hdu_num: int
@@ -145,17 +147,30 @@ def read_header_dict(path: str, hdu: int) -> list[tuple[str, str, str]]:
 
 def read_header_string(path: str, hdu: int) -> str:
     """Bulk header text for ``hdu`` (0-based), for the Python fast parser."""
-    return _core().read_header_string(_guarded(path), hdu)
+    path = _guarded(path)
+    # A .gz file would be fully decompressed by CFITSIO on every call.
+    text = gz_index.header_string(path, hdu)
+    if text is not None:
+        return text
+    return _core().read_header_string(path, hdu)
 
 
 def read_num_hdus(path: str) -> int:
     """HDU count, with the truncation check that catches a corrupt header tail."""
-    return int(_core().read_num_hdus(_guarded(path)))
+    path = _guarded(path)
+    count = gz_index.num_hdus(path)
+    if count is not None:
+        return count
+    return int(_core().read_num_hdus(path))
 
 
 def read_hdu_type(path: str, hdu: int) -> str:
     """``IMAGE`` / ``ASCII_TABLE`` / ``BINARY_TABLE`` / ``UNKNOWN`` for ``hdu``."""
-    return str(_core().read_hdu_type(_guarded(path), hdu))
+    path = _guarded(path)
+    kind = gz_index.hdu_type(path, hdu)
+    if kind is not None:
+        return kind
+    return str(_core().read_hdu_type(path, hdu))
 
 
 def read_nrows(path: str, hdu: int) -> int:
@@ -173,9 +188,14 @@ def read_table_info(path: str, hdu: int) -> dict[str, Any]:
     return dict(_core().read_table_info(_guarded(path), hdu))
 
 
-def read_keys(path: str, hdu: int, keys: list[str]) -> dict[str, Any]:
-    """Named header keywords, typed the way :func:`torchfits.read_header` types them."""
-    return dict(_core().read_keys(_guarded(path), hdu, list(keys)))
+def read_keys(
+    path: str, hdu: int, keys: list[str], missing_ok: bool = False
+) -> dict[str, Any]:
+    """Named header keywords, typed the way :func:`torchfits.read_header` types them.
+
+    With ``missing_ok`` absent keywords are left out instead of raising.
+    """
+    return dict(_core().read_keys(_guarded(path), hdu, list(keys), missing_ok))
 
 
 def read_shape(path: str, hdu: int) -> tuple[int, tuple[int, ...]]:

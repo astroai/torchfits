@@ -157,6 +157,8 @@ The root `torchfits.__all__` (public surface; see `__all__`):
 - **Interop:** `to_astropy`, `to_pandas`, `to_arrow`, `to_polars`
 - **HDU types:** `Header`, `Card`, `HDUList`, `TensorHDU`, `TableHDU`,
   `TableHDURef`
+- **Exceptions:** `HDUNotFoundError` (unknown EXTNAME or HDU index out of
+  range; see [Missing files and HDUs](api-core-io.md#missing-files-and-hdus))
 - **Namespaces:** `table`, `cache`, `transforms`, `data`, `where`, `hdu`
 
 Each entry has a reference on the pages above; common calls also have a
@@ -186,8 +188,9 @@ Row windows, projections and batching share one contract:
 | `TableHDURef.select(cols)` / `TableHDURef(columns=...)` | `cols` must name at least one column. An empty list is refused with `ValueError` — the read path treats an empty projection as *unset*, so it cannot mean "no columns" |
 | `TableHDU.iter_rows(batch_size)` / `TableHDURef.iter_rows(batch_size)` | `batch_size >= 1`, else `ValueError: batch_size must be > 0` (both implementations, same message) |
 | `Header.update(other_header)` | Card-lossless: comments and repeated `HISTORY` / `COMMENT` lines are preserved, and a duplicated value keyword keeps its **first** occurrence. Mapping / card-sequence / keyword arguments are unchanged |
+| `Header.copy()`, `h \| other`, `h \|= other`, `copy.copy` / `copy.deepcopy` / `pickle` | Return or keep a `Header` with the full card list (comments, every `HISTORY` / `COMMENT` line); `\|` and `\|=` merge like `update()`, so the merged keywords are written |
 | `TableHDU.num_rows` | Derived from the column data when the table has columns, else from the header's `NAXIS2`; the header-derived form tracks `Header` edits |
-| Long header string values | A value over 68 chars is stored as a `LONGSTRN` `&`+`CONTINUE` chain. `read_header(path, hdu)[key]`, `open(path)[hdu].header[key]` and `read_header_cards` return the **same** characters for every content — including a chain that looks numeric (`'1234…'`) or complex (`'(1.5,2.5)…'`). A `&` with no CONTINUE after it stays literal content |
+| Long header string values | A value over 68 chars is stored as a `LONGSTRN` `&`+`CONTINUE` chain. `read_header(path, hdu)[key]`, `open(path)[hdu].header[key]` and the matching `Card` in `Header.cards` return the **same** characters for every content — including a chain that looks numeric (`'1234…'`) or complex (`'(1.5,2.5)…'`). A `&` with no CONTINUE after it stays literal content. `HIERARCH` keywords chain the same way. A CONTINUE card that does not directly follow a string value (after a number or a `COMMENT` card, say) is kept as its own `CONTINUE` card |
 | `to_arrow` / `to_polars` `vla_policy` | `"list"` or `"drop"`, checked before the data is walked (so a typo is refused even for a table with no VLA column). `to_pandas` spells its own `"object"` / `"drop"` |
 
 ---

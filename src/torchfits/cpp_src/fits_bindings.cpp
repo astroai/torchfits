@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <ATen/Parallel.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -78,7 +79,7 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
     fitsfile* fptr = nullptr;
     int open_status = d::open_fits_readonly(&fptr, path);
     if (open_status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, open_status));
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
@@ -327,7 +328,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     fitsfile* fptr = nullptr;
     int open_status = d::open_fits_readonly(&fptr, path);
     if (open_status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, open_status));
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
@@ -376,7 +377,11 @@ int checked_num_hdus(FITSFile& file) {
     // The completeness check (trailing bytes that begin another HDU header mean
     // fits_get_num_hdus stopped early) lives in the torch-free core so the
     // metadata module and the tensor extension apply the same rule.
-    return core::checked_num_hdus(file.get_fptr(), file.get_start_hdu());
+    // Under the handle lock: the walk moves CFITSIO's current HDU, which a
+    // concurrent read on the same handle would otherwise race with.
+    return file.with_open_fptr([&](fitsfile* fptr) {
+        return core::checked_num_hdus(fptr, file.get_start_hdu());
+    });
 }
 }  // namespace
 
@@ -547,7 +552,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
     auto shared_meta = d::get_shared_meta_for_path(path);
     status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, status));
     }
 
     auto close_guard = [&]() {
@@ -738,6 +743,59 @@ namespace {
 // image and table write paths).
 using torchfits::internal::ndarray_is_c_contiguous;
 using torchfits::internal::ensure_c_contiguous_ndarray;
+using torchfits::internal::require_cpu_ndarray;
+
+// Keywords CFITSIO derives from the HDU layout. A caller-supplied copy would
+// relabel the data (NAXIS2 shorter than the rows written, a different
+// TFIELDS, ...), so header writers skip them.
+bool is_structural_header_key(const std::string& key_upper) {
+    return key_upper == "END" ||
+           key_upper == "SIMPLE" ||
+           key_upper == "XTENSION" ||
+           key_upper == "BITPIX" ||
+           key_upper == "NAXIS" ||
+           key_upper == "EXTEND" ||
+           key_upper == "PCOUNT" ||
+           key_upper == "GCOUNT" ||
+           key_upper == "TFIELDS" ||
+           key_upper == "THEAP" ||
+           key_upper == "DATASUM" ||
+           key_upper == "CHECKSUM" ||
+           key_upper.rfind("NAXIS", 0) == 0;
+}
+
+// 1-based column index of an indexed table keyword such as TFORM12, or 0.
+long table_key_index(const std::string& key_upper, const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    if (key_upper.size() <= n || key_upper.compare(0, n, prefix) != 0) {
+        return 0;
+    }
+    long idx = 0;
+    for (size_t i = n; i < key_upper.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(key_upper[i])) || idx > 9999) {
+            return 0;
+        }
+        idx = idx * 10 + (key_upper[i] - '0');
+    }
+    return idx;
+}
+
+// True when two TFORM spellings describe the same cell layout (e.g. 'J' and
+// '1J'), so a caller spelling can replace the derived one without moving data.
+bool same_tform_layout(std::string a, std::string b, bool is_ascii) {
+    int st_a = 0, st_b = 0, code_a = 0, code_b = 0;
+    long rep_a = 0, rep_b = 0, width_a = 0, width_b = 0;
+    if (is_ascii) {
+        int dec_a = 0, dec_b = 0;
+        fits_ascii_tform(a.data(), &code_a, &width_a, &dec_a, &st_a);
+        fits_ascii_tform(b.data(), &code_b, &width_b, &dec_b, &st_b);
+    } else {
+        fits_binary_tform(a.data(), &code_a, &rep_a, &width_a, &st_a);
+        fits_binary_tform(b.data(), &code_b, &rep_b, &width_b, &st_b);
+    }
+    return st_a == 0 && st_b == 0 && code_a == code_b && rep_a == rep_b &&
+           width_a == width_b;
+}
 
 }  // namespace
 
@@ -806,14 +864,134 @@ static std::string commentary_text(nb::handle value, const std::string& comment,
 // Which FITS card type a caller-supplied header value maps to, or 0 when this
 // writer will not accept it at all. Stated once so the up-front validation in
 // write_table_hdu (which must run before fits_create_tbl creates anything) and
-// the card-writing loop itself cannot disagree about what is acceptable. The
-// order of the tests is the loop's original precedence: bool, str, int, float.
+// the card writer itself cannot disagree about what is acceptable. The order
+// of the tests is the writer's precedence: None, bool, str, int, float,
+// complex. An int outside long long is kBigIntCard (written as its literal).
+constexpr int kNullCard = -1;
+constexpr int kBigIntCard = -2;
+
 static int fits_header_value_type(nb::handle value) {
+    if (value.is_none()) return kNullCard;
     if (nb::isinstance<bool>(value)) return TLOGICAL;
     if (nb::isinstance<nb::str>(value)) return TSTRING;
-    if (PyLong_Check(value.ptr())) return TLONGLONG;
+    if (PyLong_Check(value.ptr())) {
+        int overflow = 0;
+        PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
+        if (PyErr_Occurred()) PyErr_Clear();
+        return overflow != 0 ? kBigIntCard : TLONGLONG;
+    }
     if (nb::isinstance<double>(value) || nb::isinstance<float>(value)) return TDOUBLE;
+    if (PyComplex_Check(value.ptr())) return TDBLCOMPLEX;
     return 0;
+}
+
+static const char* kHeaderTypeError =
+    "': expected str, bool, int, float, complex, or None";
+
+// FITS fixed-format integers are free-format decimal text: an int beyond
+// long long is still a legal card, so write its literal digits.
+static std::string big_int_literal(nb::handle value, const std::string& key) {
+    std::string text = nb::cast<std::string>(nb::str(value));
+    if (text.size() > 68) {
+        throw std::runtime_error("FITS header integer has too many digits for one card: " + key);
+    }
+    return text;
+}
+
+void update_header_value(fitsfile* fptr, const std::string& key, nb::handle value,
+                         const char* comment, int* status) {
+    switch (fits_header_value_type(value)) {
+        case kNullCard:
+            fits_update_key_null(fptr, key.c_str(), comment, status);
+            return;
+        case TLOGICAL: {
+            int val = nb::cast<bool>(value) ? 1 : 0;
+            fits_update_key(fptr, TLOGICAL, key.c_str(), &val, comment, status);
+            return;
+        }
+        case TSTRING: {
+            std::string val = d::require_fits_ascii(nb::cast<std::string>(value), "header value");
+            if (val.size() > 68) {
+                // fits_update_key truncates at 68 chars silently;
+                // fits_update_key_longstr splits into CONTINUE cards.
+                fits_update_key_longstr(fptr, key.c_str(), val.c_str(), comment, status);
+            } else {
+                fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), comment, status);
+            }
+            return;
+        }
+        case TLONGLONG: {
+            long long val = PyLong_AsLongLong(value.ptr());
+            fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment, status);
+            return;
+        }
+        case kBigIntCard: {
+            std::string literal = big_int_literal(value, key);
+            char card[FLEN_CARD];
+            fits_make_key(key.c_str(), literal.data(), comment, card, status);
+            fits_update_card(fptr, key.c_str(), card, status);
+            return;
+        }
+        case TDOUBLE:
+            d::update_key_double(fptr, key.c_str(), nb::cast<double>(value), comment, status);
+            return;
+        case TDBLCOMPLEX: {
+            double parts[2] = {PyComplex_RealAsDouble(value.ptr()),
+                               PyComplex_ImagAsDouble(value.ptr())};
+            char buf[40];
+            int decimals = -15;
+            for (double part : parts) {
+                std::snprintf(buf, sizeof(buf), "%.15G", part);
+                if (std::strtod(buf, nullptr) != part) decimals = -17;
+            }
+            fits_update_key_dblcmp(fptr, key.c_str(), parts, decimals, comment, status);
+            return;
+        }
+        default:
+            throw std::runtime_error(
+                "Unsupported FITS header value type for key '" + key + kHeaderTypeError);
+    }
+}
+
+void validate_header_values(nb::dict header) {
+    // Reads only the Python objects, so it can run before anything is created.
+    for (auto item : header) {
+        const std::string header_key =
+            d::sanitize_fits_key(nb::cast<std::string>(item.first));
+        const int card_type = fits_header_value_type(item.second);
+        if (card_type == 0) {
+            throw std::runtime_error(
+                "Unsupported FITS header value type for key '" + header_key +
+                kHeaderTypeError);
+        }
+        if (card_type == kBigIntCard) {
+            big_int_literal(item.second, header_key);
+        }
+        if (card_type == TSTRING) {
+            // Same check the writer performs before choosing fits_update_key vs
+            // fits_update_key_longstr, so a non-ASCII value is rejected here.
+            d::require_fits_ascii(nb::cast<std::string>(item.second), "header value");
+        }
+    }
+}
+
+void validate_hdu_list_headers(nb::list hdus) {
+    // Mirrors how write_hdus / write_hdus_compressed_images find each HDU's
+    // header, so every value they would reject is rejected before the first
+    // HDU (or, with overwrite, the replacement file) is created.
+    for (auto handle : hdus) {
+        nb::object hdu_obj = nb::borrow<nb::object>(handle);
+        nb::object header_obj;
+        if (nb::hasattr(hdu_obj, "header")) {
+            header_obj = hdu_obj.attr("header");
+        } else if (nb::isinstance<nb::dict>(hdu_obj)) {
+            nb::dict hd = nb::cast<nb::dict>(hdu_obj);
+            if (hd.contains("header")) header_obj = hd["header"];
+        }
+        if (header_obj.is_valid()) {
+            validate_header_values(nb::cast<nb::dict>(header_obj));
+        }
+    }
 }
 
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii) {
@@ -1043,6 +1221,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                         "for table mutations, not creates)");
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(elem);
+                require_cpu_ndarray(arr, "column " + col_key);
                 if (arr.ndim() > 1) {
                     throw std::runtime_error("VLA column rows must be 1D");
                 }
@@ -1123,7 +1302,17 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             if (has_schema_tform) {
                 col.tform = schema_tform;
                 TFormInfo info = parse_tform(schema_tform);
-                if (info.repeat > 0) {
+                if (is_ascii) {
+                    // An ASCII TFORM is "Aw": the width follows the code
+                    // letter and there is no leading repeat count.
+                    const size_t a = schema_tform.find_first_of("Aa");
+                    if (a != std::string::npos) {
+                        const long w = std::strtol(schema_tform.c_str() + a + 1, nullptr, 10);
+                        if (w > 0) {
+                            col.width = w;
+                        }
+                    }
+                } else if (info.repeat > 0) {
                     col.width = info.repeat;
                 }
             } else if (is_ascii) {
@@ -1145,6 +1334,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         }
 
       nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(obj);
+      require_cpu_ndarray(tensor, "column " + col_key);
       int ndim = tensor.ndim();
       if (ndim > 2) {
           // A FITS column is 1D (scalar, TFORM '1X') or 2D (vector, TFORM 'rX').
@@ -1188,6 +1378,16 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             if (schema_info.code == 'X') {
                 col.datatype = TBIT;
                 if (schema_info.repeat > 0) {
+                    // A 2-D payload carries its own bits-per-row; a different
+                    // schema repeat would pack rows at the wrong stride (and
+                    // used to overrun the copy buffer for strided input).
+                    if (ndim == 2 && schema_info.repeat != static_cast<long>(tensor.shape(1))) {
+                        throw std::runtime_error(
+                            "Column '" + col.name + "': schema format '" + schema_tform +
+                            "' has " + std::to_string(schema_info.repeat) +
+                            " bits per row but the data has " +
+                            std::to_string(static_cast<long>(tensor.shape(1))));
+                    }
                     col.repeat = schema_info.repeat;
                 }
             }
@@ -1245,32 +1445,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     // with a complete table already on disk: measured, a header value this
     // writer refuses left an 8640-byte file whose table read back perfectly and
     // carried none of the caller's cards (R2-012). Decide all of it here, while
-    // nothing exists yet. Both checks read only the Python objects.
-    for (auto item : header) {
-        const std::string header_key =
-            d::sanitize_fits_key(nb::cast<std::string>(item.first));
-        const int card_type = fits_header_value_type(item.second);
-        if (card_type == 0) {
-            throw std::runtime_error(
-                "Unsupported FITS header value type for key '" + header_key +
-                "': expected str, bool, int, or float"
-            );
-        }
-        if (card_type == TLONGLONG) {
-            int overflow = 0;
-            PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
-            if (overflow != 0 || PyErr_Occurred()) {
-                PyErr_Clear();
-                throw std::runtime_error(
-                    "FITS header integer out of long long range: " + header_key);
-            }
-        }
-        if (card_type == TSTRING) {
-            // Same check the loop performs before choosing fits_update_key vs
-            // fits_update_key_longstr, so a non-ASCII value is rejected here.
-            d::require_fits_ascii(nb::cast<std::string>(item.second), "header value");
-        }
-    }
+    // nothing exists yet.
+    validate_header_values(header);
 
     int num_cols = static_cast<int>(columns.size());
     std::vector<std::string> ttype_store(static_cast<size_t>(num_cols));
@@ -1335,13 +1511,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             long width_chars = col.width > 0 ? col.width : 1;
             std::vector<std::string> padded =
                 torchfits::internal::pad_fits_strings(col.string_values, width_chars);
-            std::vector<const char*> ptrs;
-            ptrs.reserve(padded.size());
-            for (const auto& s : padded) {
-                ptrs.push_back(s.c_str());
-            }
-            fits_write_col(fptr, TSTRING, i + 1, 1, 1, static_cast<long>(padded.size()),
-                           const_cast<char**>(ptrs.data()), &status);
+            write_string_rows(fptr, static_cast<int>(i + 1), 1, padded, &status);
         } else {
             nb::ndarray<> tensor = col.fixed;
             if (num_rows > 0 && col.repeat > 0 &&
@@ -1405,37 +1575,25 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     for (auto item : header) {
         std::string key = nb::cast<std::string>(item.first);
         key = d::sanitize_fits_key(key);
-        const int card_type = fits_header_value_type(item.second);
-        if (card_type == TLOGICAL) {
-            int val = nb::cast<bool>(item.second) ? 1 : 0;
-            fits_update_key(fptr, TLOGICAL, key.c_str(), &val, nullptr, &status);
-        } else if (card_type == TSTRING) {
-            std::string val = nb::cast<std::string>(item.second);
-            val = d::require_fits_ascii(val, "header value");
-            if (val.size() > 68) {
-                fits_update_key_longstr(fptr, key.c_str(), val.c_str(), nullptr, &status);
-            } else {
-                fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &status);
-            }
-        } else if (card_type == TLONGLONG) {
-            int overflow = 0;
-            long long val = PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
-            if (overflow != 0 || PyErr_Occurred()) {
-                PyErr_Clear();
-                throw std::runtime_error("FITS header integer out of long long range: " + key);
-            }
-            fits_update_key(fptr, TLONGLONG, key.c_str(), &val, nullptr, &status);
-        } else if (card_type == TDOUBLE) {
-            double val = nb::cast<double>(item.second);
-            fits_update_key(fptr, TDOUBLE, key.c_str(), &val, nullptr, &status);
-        } else {
-            // Unreachable: the pre-pass above rejected every value that lands
-            // here. Kept as the backstop the loop had before it.
-            throw std::runtime_error(
-                "Unsupported FITS header value type for key '" + key +
-                "': expected str, bool, int, or float"
-            );
+        std::string key_upper = key;
+        std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        // The table layout is already on disk: skip cards that would relabel
+        // it. A TFORMn is kept only when it spells the same layout as the
+        // derived one (callers preserve a source spelling such as 'J').
+        if (is_structural_header_key(key_upper) ||
+            table_key_index(key_upper, "TTYPE") > 0 ||
+            table_key_index(key_upper, "TBCOL") > 0) {
+            continue;
         }
+        if (const long n = table_key_index(key_upper, "TFORM"); n > 0) {
+            if (n > num_cols || !nb::isinstance<nb::str>(item.second) ||
+                !same_tform_layout(nb::cast<std::string>(item.second),
+                                   tform_store[static_cast<size_t>(n - 1)], is_ascii)) {
+                continue;
+            }
+        }
+        update_header_value(fptr, key, item.second, nullptr, &status);
     }
 
     for (int i = 0; i < num_cols; ++i) {
@@ -1446,18 +1604,20 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         }
         if (col.has_bscale) {
             double bscale = col.bscale;
-            fits_update_key(fptr, TDOUBLE, ("TSCAL" + std::to_string(i + 1)).c_str(), &bscale, nullptr, &status);
+            d::update_key_double(fptr, ("TSCAL" + std::to_string(i + 1)).c_str(), bscale, nullptr, &status);
         }
         if (col.has_bzero) {
             double bzero = col.bzero;
             double rounded = std::round(bzero);
             if (std::isfinite(bzero) && rounded == bzero &&
                 rounded >= static_cast<double>(std::numeric_limits<long long>::min()) &&
-                rounded <= static_cast<double>(std::numeric_limits<long long>::max())) {
+                rounded < static_cast<double>(std::numeric_limits<long long>::max())) {
                 long long bzero_int = static_cast<long long>(rounded);
                 fits_update_key(fptr, TLONGLONG, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero_int, nullptr, &status);
+            } else if (d::is_unsigned_longlong_offset(bzero)) {
+                d::update_key_uint64_offset(fptr, ("TZERO" + std::to_string(i + 1)).c_str(), nullptr, &status);
             } else {
-                fits_update_key(fptr, TDOUBLE, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero, nullptr, &status);
+                d::update_key_double(fptr, ("TZERO" + std::to_string(i + 1)).c_str(), bzero, nullptr, &status);
             }
         }
         if (!col.tdim.empty()) {
@@ -1475,8 +1635,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header) {
     write_table_hdu(fptr, tensor_dict, header, nb::none(), false);
 }
 
-void* get_fptr_from_python_object(nanobind::object obj) {
-    return reinterpret_cast<void*>(nanobind::cast<FITSFile&>(obj).get_fptr());
+std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj) {
+    return nanobind::cast<FITSFile&>(obj).share_fptr();
 }
 
 } // namespace torchfits
@@ -1658,6 +1818,7 @@ void bind_fits(nb::module_& m) {
         if (overwrite) {
             final_path = "!" + path;
         }
+        validate_hdu_list_headers(hdus);
         invalidate_shared_meta(path);
         FITSFile file(final_path.c_str(), 1);
         file.write_hdus(hdus, overwrite);
@@ -1694,6 +1855,7 @@ void bind_fits(nb::module_& m) {
                   }
               }
 
+              validate_hdu_list_headers(hdus);
               invalidate_shared_meta(path);
               FITSFile file(final_path.c_str(), 1);
               file.write_hdus_compressed_images(hdus, comptype);
@@ -1733,7 +1895,7 @@ void bind_fits(nb::module_& m) {
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(path);
-        fits_open_file(&fptr, path.c_str(), 0 /* READONLY */, &status);
+        status = d::open_fits_readonly(&fptr, path);
         if (status != 0 || !fptr) {
             throw std::runtime_error("Could not open FITS file for checksum verification");
         }
@@ -1780,22 +1942,6 @@ void bind_fits(nb::module_& m) {
         };
         move_to_hdu(fptr, hdu_num);
 
-        auto skip_structural = [](const std::string& key_upper) {
-            return key_upper == "END" ||
-                   key_upper == "SIMPLE" ||
-                   key_upper == "XTENSION" ||
-                   key_upper == "BITPIX" ||
-                   key_upper == "NAXIS" ||
-                   key_upper == "EXTEND" ||
-                   key_upper == "PCOUNT" ||
-                   key_upper == "GCOUNT" ||
-                   key_upper == "TFIELDS" ||
-                   key_upper == "THEAP" ||
-                   key_upper == "DATASUM" ||
-                   key_upper == "CHECKSUM" ||
-                   key_upper.rfind("NAXIS", 0) == 0;
-        };
-
         for (nb::handle card_h : cards) {
             nb::object card = nb::borrow<nb::object>(card_h);
             std::string key;
@@ -1825,7 +1971,7 @@ void bind_fits(nb::module_& m) {
             std::string key_upper = key;
             std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
                            [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            if (skip_structural(key_upper)) {
+            if (is_structural_header_key(key_upper)) {
                 continue;
             }
 
@@ -1842,36 +1988,8 @@ void bind_fits(nb::module_& m) {
                 std::string text = commentary_text(value, comment, "COMMENT");
                 text = d::require_fits_ascii(text, "COMMENT text");
                 fits_write_comment(fptr, text.c_str(), &key_status);
-            } else if (nb::isinstance<nb::str>(value)) {
-                std::string val = d::require_fits_ascii(
-                    nb::cast<std::string>(value), "header value");
-                if (val.size() > 68) {
-                    // Long strings: fits_update_key truncates at 68 chars
-                    // silently. fits_update_key_longstr splits the value into
-                    // CONTINUE cards (FITS standard), matching astropy/fitsio.
-                    fits_update_key_longstr(fptr, key.c_str(), val.c_str(), comment_ptr, &key_status);
-                } else {
-                    fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), comment_ptr, &key_status);
-                }
-            } else if (nb::isinstance<bool>(value)) {
-                int val = nb::cast<bool>(value) ? 1 : 0;
-                fits_update_key(fptr, TLOGICAL, key.c_str(), &val, comment_ptr, &key_status);
-            } else if (PyLong_Check(value.ptr())) {
-                int overflow = 0;
-                long long val = PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
-                if (overflow != 0 || PyErr_Occurred()) {
-                    PyErr_Clear();
-                    throw std::runtime_error("FITS header integer out of long long range: " + key);
-                }
-                fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment_ptr, &key_status);
-            } else if (nb::isinstance<float>(value) || nb::isinstance<double>(value)) {
-                double val = nb::cast<double>(value);
-                fits_update_key(fptr, TDOUBLE, key.c_str(), &val, comment_ptr, &key_status);
             } else {
-                throw std::runtime_error(
-                    "Unsupported FITS header value type for key '" + key +
-                    "': expected str, bool, int, or float"
-                );
+                update_header_value(fptr, key, value, comment_ptr, &key_status);
             }
             if (key_status != 0) {
                 status = key_status;
@@ -2053,6 +2171,9 @@ void bind_fits(nb::module_& m) {
                     case core::KeyValue::Kind::Int:   out[key] = kv.int_value; break;
                     case core::KeyValue::Kind::Double: out[key] = kv.double_value; break;
                     case core::KeyValue::Kind::Str:   out[key] = kv.str_value; break;
+                    case core::KeyValue::Kind::BigInt:
+                        out[key] = nb::steal(PyLong_FromString(kv.str_value.c_str(), nullptr, 10));
+                        break;
                 }
             }
             return out;

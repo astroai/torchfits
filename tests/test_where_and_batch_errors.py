@@ -134,7 +134,6 @@ def test_read_batch_paths_uses_read_exc_types_and_degrades_per_file():
             read_check_cache=lambda *a, **k: (False, None, None),
             read_header=lambda *a, **k: {},
             debug_scale=False,
-            cold_nocache=False,
             read_exc_types=io._READ_EXC_TYPES,
             logger=logger,
         )
@@ -224,7 +223,6 @@ def test_read_batch_paths_short_batch_result_falls_back_per_file():
             read_check_cache=lambda *a, **k: (False, None, None),
             read_header=lambda *a, **k: {},
             debug_scale=False,
-            cold_nocache=False,
             read_exc_types=io._READ_EXC_TYPES,
             logger=logger,
         )
@@ -253,7 +251,6 @@ def test_read_batch_paths_does_not_swallow_keyboardinterrupt():
             read_check_cache=lambda *a, **k: (False, None, None),
             read_header=lambda *a, **k: {},
             debug_scale=False,
-            cold_nocache=False,
             read_exc_types=io._READ_EXC_TYPES,
             logger=logger,
         )
