@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -110,6 +111,9 @@ struct TORCHFITS_CORE_API SharedReadMeta {
     int64_t last_stat_check_ns = 0;
     std::shared_ptr<RawFdHolder> raw_fd;
     std::shared_mutex mutex;
+    // Position in the bounded registry's recency list; guarded by
+    // g_shared_meta_mutex and meaningful only while the entry is registered.
+    std::list<std::string>::iterator lru_pos;
 };
 
 extern TORCHFITS_CORE_API std::mutex g_shared_meta_mutex;

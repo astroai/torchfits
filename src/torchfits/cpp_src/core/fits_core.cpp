@@ -179,6 +179,23 @@ std::mutex g_shared_meta_mutex;
 std::unordered_map<std::string, std::shared_ptr<SharedReadMeta>> g_shared_meta;
 std::atomic<uint64_t> g_shared_meta_uid{1};
 
+namespace {
+
+// g_shared_meta gained one entry per distinct path and never shed any, so a
+// process scanning a large tree held every path it had ever touched. Cap it and
+// drop the least recently used path. Eviction only unregisters: a caller still
+// holding the shared_ptr keeps a valid entry, and the next lookup of that path
+// starts a fresh one with a new uid, so uid-keyed caches cannot mix the two.
+constexpr size_t kMaxSharedMetaEntries = 4096;
+
+// Most recently used path at the back. Guarded by g_shared_meta_mutex.
+std::list<std::string>& shared_meta_lru() {
+    static std::list<std::string> order;
+    return order;
+}
+
+}  // namespace
+
 const bool kValidateSharedMeta = []() {
     return torchfits::internal::env_flag_default_true("TORCHFITS_SHARED_META_VALIDATE");
 }();
@@ -235,14 +252,21 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
     std::shared_ptr<SharedReadMeta> meta;
     {
         std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+        auto& order = shared_meta_lru();
         auto it = g_shared_meta.find(filename);
         if (it == g_shared_meta.end()) {
             meta = std::make_shared<SharedReadMeta>();
             meta->uid.store(g_shared_meta_uid.fetch_add(1, std::memory_order_relaxed),
                             std::memory_order_relaxed);
+            meta->lru_pos = order.insert(order.end(), filename);
             g_shared_meta.emplace(filename, meta);
+            while (g_shared_meta.size() > kMaxSharedMetaEntries) {
+                g_shared_meta.erase(order.front());
+                order.pop_front();
+            }
         } else {
             meta = it->second;
+            order.splice(order.end(), order, meta->lru_pos);
         }
     }
     if (!kValidateSharedMeta) return meta;
@@ -454,12 +478,16 @@ bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes) {
 
 void invalidate_shared_meta_for_path(const std::string& filename) {
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
-    g_shared_meta.erase(filename);
+    auto it = g_shared_meta.find(filename);
+    if (it == g_shared_meta.end()) return;
+    shared_meta_lru().erase(it->second->lru_pos);
+    g_shared_meta.erase(it);
 }
 
 void clear_shared_meta_cache() {
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
     g_shared_meta.clear();
+    shared_meta_lru().clear();
 }
 
 std::string sanitize_fits_string(const std::string& input) {
