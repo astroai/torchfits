@@ -528,6 +528,8 @@ def _read_cpp_table_chunk(
             num_rows=num_rows,
             mmap=mmap,
             apply_fits_nulls=apply_fits_nulls,
+            encoding=encoding,
+            strip=strip,
         )
         if where_rows is None:
             return None
@@ -784,8 +786,14 @@ def _resolve_rows_from_where_cpp(
     num_rows: int,
     mmap: bool,
     apply_fits_nulls: bool,
+    encoding: str = "utf-8",
+    strip: bool = True,
 ) -> Optional[list[int]]:
-    """Resolve WHERE predicate to a sorted list of 0-based row indices via C++ chunk read."""
+    """Resolve WHERE predicate to a sorted list of 0-based row indices via C++ chunk read.
+
+    String predicates see the values the caller reads (same ``encoding`` and
+    ``strip``), as on every other backend.
+    """
     where_ast = parse_where_expression(where)
     where_columns = where_columns_from_ast(where_ast)
     predicate_table = _read_cpp_table_chunk(
@@ -797,8 +805,8 @@ def _resolve_rows_from_where_cpp(
         where=None,
         mmap=mmap,
         decode_bytes=True,
-        encoding="utf-8",
-        strip=True,
+        encoding=encoding,
+        strip=strip,
         include_fits_metadata=False,
         apply_fits_nulls=apply_fits_nulls,
     )

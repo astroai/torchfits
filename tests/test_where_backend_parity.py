@@ -287,3 +287,47 @@ def test_nan_is_null_and_numeric_null_compare_is_rejected(tmp_path):
     for expr in ("F == NULL", "F != NULL"):
         with pytest.raises(ValueError, match="IS NULL"):
             torchfits.table.read(path, where=expr)
+
+
+@pytest.fixture
+def padded_string_table(tmp_path):
+    path = str(tmp_path / "strs.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            "S": np.array([b"ab  ", b"cafe", b"a   "], dtype="S4"),
+        },
+        overwrite=True,
+    )
+    raw = open(path, "rb").read()
+    # A latin-1 cell: table.write only takes ASCII, so patch the stored byte.
+    with open(path, "wb") as fh:
+        fh.write(raw.replace(b"cafe", b"caf\xe9", 1))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("expr", "kwargs", "expected"),
+    [
+        ("S == 'ab'", {"strip": False}, []),
+        ("S == 'ab  '", {"strip": False}, [0]),
+        ("S == 'ab'", {}, [0]),
+        ("S == 'café'", {"encoding": "latin-1"}, [1]),
+        ("S == 'caf'", {"encoding": "latin-1"}, []),
+    ],
+)
+def test_string_predicate_uses_callers_decoding(
+    padded_string_table, expr, kwargs, expected
+):
+    for backend in ("auto", "cpp", "torch"):
+        for mmap in (True, False):
+            got = torchfits.table.read(
+                padded_string_table,
+                where=expr,
+                backend=backend,
+                mmap=mmap,
+                columns=["ID", "S"],
+                **kwargs,
+            )
+            assert got["ID"].to_pylist() == expected, (backend, mmap)
