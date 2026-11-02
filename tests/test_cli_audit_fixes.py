@@ -236,6 +236,29 @@ def test_setkey_failed_edit_leaves_no_copy(tmp_path):
     assert "OBJECT" not in torchfits.read_header(str(src), 0)
 
 
+def test_cutout_box_shifts_crpix_like_a_section(tmp_path):
+    src = tmp_path / "wcs.fits"
+    data = torch.arange(20 * 30, dtype=torch.float32).reshape(20, 30)
+    hdr = {"CRPIX1": 10.0, "CRPIX2": 20.0, "CRPIX1A": 5.0, "CRPIX3": 1.0}
+    torchfits.write(str(src), data, header=hdr)
+    boxed = tmp_path / "box.fits"
+    sectioned = tmp_path / "section.fits"
+    # 0-based half-open box (2,4)-(10,12) == 1-based inclusive [3:10,5:12].
+    assert main(["cutout", str(src), "--box", "2,4,10,12", "-o", str(boxed)]) == 0
+    assert main(["cutout", f"{src}[3:10,5:12]", "-o", str(sectioned)]) == 0
+    box_hdr = torchfits.read_header(str(boxed), 0)
+    sec_hdr = torchfits.read_header(str(sectioned), 0)
+    assert box_hdr["CRPIX1"] == 8.0
+    assert box_hdr["CRPIX2"] == 16.0
+    assert box_hdr["CRPIX1A"] == 3.0
+    for key in ("CRPIX1", "CRPIX2", "CRPIX1A"):
+        assert box_hdr[key] == sec_hdr[key], key
+    assert torch.equal(
+        torchfits.read_tensor(str(boxed), hdu=0),
+        torchfits.read_tensor(str(sectioned), hdu=0),
+    )
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

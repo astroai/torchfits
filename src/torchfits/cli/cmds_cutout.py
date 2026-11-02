@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+from typing import Any
 
 import torchfits
 from torchfits._io_engine.paths import has_cfitsio_filter
@@ -122,6 +124,27 @@ def _check_box_intersects_image(
         )
 
 
+_CRPIX_XY = re.compile(r"^CRPIX([12])([A-Z]?)$")
+
+
+def _shift_crpix(header: Any, x1: int, y1: int) -> None:
+    """Move ``CRPIX1``/``CRPIX2`` (and alternate ``CRPIXna``) to the cutout.
+
+    The reference pixel is 1-based in the source frame; a cutout starting at
+    0-based ``(x1, y1)`` moves it by ``-x1`` / ``-y1``, exactly what CFITSIO
+    does to the header of an image section.
+    """
+    for key in list(header.keys()):
+        match = _CRPIX_XY.match(str(key))
+        if match is None:
+            continue
+        try:
+            value = float(header[key])
+        except (TypeError, ValueError):
+            continue
+        header[key] = value - (x1 if match.group(1) == "1" else y1)
+
+
 def _cutout_one(
     pair: tuple[str, str],
     *,
@@ -157,6 +180,8 @@ def _cutout_one(
                 (x1, y1, x2, y2), header, path=input_path, hdu=hdu
             )
             tensor = torchfits.read_subset(input_path, hdu, x1, y1, x2, y2)
+            # Keep the stamp on the sky, as CFITSIO does for a section.
+            _shift_crpix(header, x1, y1)
         torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
     except UsageError:
         raise
