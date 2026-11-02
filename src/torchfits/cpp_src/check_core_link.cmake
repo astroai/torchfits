@@ -22,7 +22,8 @@ if(NOT _NM_EXECUTABLE)
     return()
 endif()
 
-if(APPLE)
+# CHECK_CORE_LINK_FORCE_ELF lets the tests drive the ELF branch from macOS.
+if(APPLE AND NOT CHECK_CORE_LINK_FORCE_ELF)
     # macOS uses a two-level namespace: `nm -u` lists every symbol _C does not
     # define itself, including the ones the linker bound to a specific dylib.
     # `nm -m` appends "from <dylib>" to those, so a CFITSIO symbol with no
@@ -94,7 +95,10 @@ else()
         message(STATUS "check_core_link: nm failed (${_NM_ERR}); skipping")
         return()
     endif()
-    string(REGEX MATCHALL "[ \t_](fits|ff)[a-z0-9_]+" _LEAKED "${_UNDEF}")
+    # Whole C symbol names only: a mangled C++ name such as
+    # _ZN9torchfits6detail17open_fits_readonlyE... contains "_fits_" and must
+    # not be read as a CFITSIO symbol (it broke every Linux build).
+    string(REGEX MATCHALL "[ \t]_?(fits|ff)[a-z0-9_]+" _LEAKED "${_UNDEF}")
     # Undefined `ff*`/`fits_*` in a shared object is how a dynamic import
     # looks. They are filled at load when libtorchfits_core is NEEDED -- but
     # only if the core actually defines them: NEEDED alone excused a symbol
@@ -120,13 +124,13 @@ else()
                         RESULT_VARIABLE _CORE_NM_RC
                     )
                     if(_CORE_NM_RC EQUAL 0)
-                        string(REGEX MATCHALL "[ \t](fits|ff)[a-z0-9_]+" _CORE_DEFINED "${_CORE_SYMS}")
-                        string(REGEX REPLACE "[ \t]" "" _CORE_DEFINED "${_CORE_DEFINED}")
+                        string(REGEX MATCHALL "[ \t]_?(fits|ff)[a-z0-9_]+" _CORE_DEFINED "${_CORE_SYMS}")
+                        string(REGEX REPLACE "[ \t]_?" "" _CORE_DEFINED "${_CORE_DEFINED}")
                     endif()
                 endif()
                 set(_UNRESOLVED "")
                 foreach(_sym IN LISTS _LEAKED)
-                    string(REGEX REPLACE "^[ \t_]" "" _name "${_sym}")
+                    string(REGEX REPLACE "^[ \t]_?" "" _name "${_sym}")
                     list(FIND _CORE_DEFINED "${_name}" _found)
                     if(_found EQUAL -1)
                         list(APPEND _UNRESOLVED "${_name}")

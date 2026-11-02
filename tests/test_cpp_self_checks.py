@@ -294,3 +294,82 @@ def test_core_link_gate_never_reports_success_without_looking(tmp_path: Path) ->
     assert "skipping" in output, (
         f"a failed nm should say so rather than pass quietly: {output}"
     )
+
+
+_FAKE_ELF_NM = """#!/bin/sh
+# `nm -D --defined-only <core>` lists what the core exports; any other call
+# lists the target's undefined symbols.
+case " $* " in
+  *" --defined-only "*) printf '%s' "$R2_NM_CORE" ;;
+  *) printf '%s' "$R2_NM_OUT" ;;
+esac
+"""
+_FAKE_READELF = """#!/bin/sh
+printf ' 0x0000000000000001 (NEEDED)  Shared library: [libtorchfits_core.so]\\n'
+"""
+
+
+def _run_elf_gate(
+    tmp_path: Path, undefined: str, core_defined: str
+) -> subprocess.CompletedProcess[str]:
+    """Drive the ELF branch (as on Linux) with fake nm/readelf, from any host."""
+    fake_bin = tmp_path / "elfbin"
+    fake_bin.mkdir(exist_ok=True)
+    for name, body in (("nm", _FAKE_ELF_NM), ("readelf", _FAKE_READELF)):
+        tool = fake_bin / name
+        tool.write_text(body, encoding="utf-8")
+        tool.chmod(0o755)
+    target = tmp_path / "_C.so"
+    target.write_bytes(b"")
+    core = tmp_path / "libtorchfits_core.so"
+    core.write_bytes(b"")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "R2_NM_OUT": undefined,
+        "R2_NM_CORE": core_defined,
+    }
+    return subprocess.run(
+        [
+            "cmake",
+            f"-DCMAKE_TARGET={target}",
+            f"-DCORE_LIBRARY={core}",
+            "-DCHECK_CORE_LINK_FORCE_ELF=1",
+            "-P",
+            str(GATE),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_ignores_mangled_cpp_names_containing_fits(tmp_path: Path) -> None:
+    """A C++ core function such as detail::open_fits_readonly is not CFITSIO.
+
+    Its mangled name contains "_fits_", and the ELF gate read it as an unbound
+    CFITSIO symbol, failing every Linux build once _C imported it.
+    """
+    undefined = (
+        "                 U ffclos\n"
+        "                 U _ZN9torchfits6detail17open_fits_readonlyEPP8fitsfileRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE\n"
+    )
+    core_defined = "0000000000012340 T ffclos\n0000000000012400 T _ZN9torchfits6detail17open_fits_readonlyE\n"
+    result = _run_elf_gate(tmp_path, undefined, core_defined)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "resolves every CFITSIO symbol" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_still_fails_on_a_cfitsio_symbol_the_core_lacks(
+    tmp_path: Path,
+) -> None:
+    result = _run_elf_gate(
+        tmp_path,
+        "                 U ffclos\n                 U ffpcks\n",
+        "0000000000012340 T ffclos\n",
+    )
+    assert result.returncode != 0
+    assert "ffpcks" in result.stdout + result.stderr
