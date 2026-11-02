@@ -285,8 +285,12 @@ def test_release_notes_extracts_stamped_then_unreleased(tmp_path) -> None:
     label, body = rn.extract(text, "1.1.0")
     assert label == "[1.1.0]" and body == "Stamped highlights."
 
-    label, body = rn.extract(text, "1.2.0")  # unstamped -> prerelease fallback
+    label, body = rn.extract(text, "1.2.0rc1")  # unstamped -> prerelease fallback
     assert label == "Unreleased" and body.startswith("Fresh work.")
+
+    # A final release must not silently ship the Unreleased text.
+    with pytest.raises(SystemExit, match="final release 1.2.0"):
+        rn.extract(text, "1.2.0")
 
     with pytest.raises(SystemExit):
         rn.extract("# Changelog\n", "9.9.9")
