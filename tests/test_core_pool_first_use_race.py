@@ -17,7 +17,7 @@ import pytest
 
 SCRIPT = textwrap.dedent(
     """
-    import os, subprocess, sys, threading
+    import os, subprocess, sys, threading, time
     import torch, torchfits
     from torchfits import _core
 
@@ -49,6 +49,11 @@ SCRIPT = textwrap.dedent(
                 t.start()
             for t in ts:
                 t.join()
+            # Before Python 3.13, join() returns before the OS thread has
+            # exited, so just-joined threads can still be listed briefly.
+            deadline = time.monotonic() + 5
+            while nthreads() - base > workers and time.monotonic() < deadline:
+                time.sleep(0.01)
             os._exit(0 if nthreads() - base <= workers else 1)
         _, status = os.waitpid(pid, 0)
         if os.waitstatus_to_exitcode(status) != 0:
