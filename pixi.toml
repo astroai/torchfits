@@ -89,7 +89,7 @@ dev = "pip install -e . --no-build-isolation"
 build = "pixi build"
 # Install exactly the checked-in lock before the complete local gate.
 current-source-gate = "pixi install --locked && pixi run preflight-push && pixi run ci-local"
-# test runs the full suite including performance markers; the GHA PR matrix excludes them. release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
+# test runs the full suite; the GHA PR matrix deselects the performance marker (no test carries it today). release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
 test = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/"
 release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_transforms.py tests/test_release_smoke.py tests/test_public_boundary.py tests/test_http_probe_fixture.py -q && pixi run docs-contract && pixi run docs-links"
 lint = "ruff check . && ruff format ."
