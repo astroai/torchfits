@@ -94,3 +94,78 @@ def null_table(tmp_path):
 )
 def test_or_with_null_operand_uses_kleene_logic(null_table, expr, expected):
     _assert_parity(null_table, expr, expected)
+
+
+@pytest.fixture
+def wide_int_table(tmp_path):
+    path = str(tmp_path / "wide.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            "J": np.array([16777217, 16777216, 2147483647], dtype=np.int32),
+            "K": np.array([2**53 + 1, 2**53, 5], dtype=np.int64),
+        },
+        overwrite=True,
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("J > 16777216.5", [0, 2]),
+        ("J == 16777216.0", [1]),
+        ("J > 2147483646.5", [2]),
+        ("J < 16777216.5", [1]),
+        ("J != 16777216.5", [0, 1, 2]),
+        ("K == 9007199254740992.0", [1]),
+        ("K > 9007199254740992.0", [0]),
+        ("K < 1e300", [0, 1, 2]),
+        ("K > -1e300", [0, 1, 2]),
+    ],
+)
+def test_integer_column_float_literal_is_exact(wide_int_table, expr, expected):
+    # The reference evaluator compares in float64 and rounds 2**53 + 1, so
+    # the exact answer is asserted directly here.
+    got = _backend_ids(wide_int_table, expr)
+    assert got == {k: expected for k in got}, expr
+
+
+@pytest.fixture
+def u64_table(tmp_path):
+    path = str(tmp_path / "u64.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            "U": np.array([1, 2**63, 2**64 - 1], dtype=np.uint64),
+            "S": np.array(["aa", "bb", "cc"]),
+        },
+        overwrite=True,
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("U >= 0", [0, 1, 2]),
+        ("U == 1", [0]),
+        ("U > 9223372036854775807", [1, 2]),
+        ("U == 18446744073709551615", [2]),
+        ("U < 18446744073709551616", [0, 1, 2]),
+        ("U > -1", [0, 1, 2]),
+        ("U >= 1.5", [1, 2]),
+        ("U BETWEEN 0.5 AND 9.2233720368547758e18", [0, 1]),
+    ],
+)
+def test_uint64_column_compares_exactly(u64_table, expr, expected):
+    got = _backend_ids(u64_table, expr)
+    assert got == {k: expected for k in got}, expr
+
+
+def test_where_type_mismatch_raises_value_error(u64_table):
+    for kwargs in ({}, {"backend": "cpp"}, {"backend": "torch"}):
+        with pytest.raises(ValueError):
+            torchfits.table.read(u64_table, where="S > 3", **kwargs)

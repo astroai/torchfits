@@ -107,6 +107,34 @@ def _compile_where_to_simple_predicates(
     return tuple(predicates)
 
 
+def _integer_literal(op: str, literal: Any) -> tuple[str, Any]:
+    """Map a float literal compared with an integer column to an exact form.
+
+    Returns ``(op, int_literal)``, or ``("const", bool)`` when the comparison
+    is the same for every integer value (NaN, infinities, ``==`` against a
+    non-integral value). Comparing in float would round large integers
+    (``J > 16777216.5`` in float32, ``K == 2**53 + 0.0`` in float64).
+    """
+    import math
+
+    if not isinstance(literal, float):
+        return op, literal
+    if math.isnan(literal):
+        return "const", op == "!="
+    if math.isinf(literal):
+        above = literal > 0  # every value is below +inf, above -inf
+        return "const", op in ({"<", "<=", "!="} if above else {">", ">=", "!="})
+    low = math.floor(literal)
+    if low == literal:
+        return op, int(literal)
+    # Exact integer bound for a non-integral literal.
+    if op in {">", ">="}:
+        return ">", low
+    if op in {"<", "<="}:
+        return "<", low + 1
+    return "const", op == "!="
+
+
 def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
     """Compare a uint64 column exactly.
 
@@ -114,8 +142,6 @@ def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tenso
     wrap values >= 2**63. Flipping the sign bit maps [0, 2**64) onto int64
     in order, so compare there against the literal mapped the same way.
     """
-    import math
-
     import torch
 
     if op not in {"==", "!=", ">", ">=", "<", "<="}:
@@ -124,23 +150,9 @@ def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tenso
     def constant(value: bool) -> torch.Tensor:
         return torch.full(tensor.shape, value, dtype=torch.bool)
 
-    if isinstance(literal, float):
-        if math.isnan(literal):
-            return constant(op == "!=")
-        if math.isinf(literal):
-            above = literal > 0  # every value is below +inf, above -inf
-            return constant(op in ({"<", "<=", "!="} if above else {">", ">=", "!="}))
-        low = math.floor(literal)
-        if low != literal:
-            # Exact integer bound for a non-integral literal.
-            if op in {">", ">="}:
-                op, literal = ">", low
-            elif op in {"<", "<="}:
-                op, literal = "<", low + 1
-            else:
-                return constant(op == "!=")
-        else:
-            literal = int(literal)
+    op, literal = _integer_literal(op, literal)
+    if op == "const":
+        return constant(literal)
     if isinstance(literal, bool) or not isinstance(literal, int):
         raise TypeError(f"Unsupported literal for uint64 column: {literal!r}")
     if literal < 0:
@@ -166,6 +178,25 @@ def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor
 
     if tensor.dtype == torch.uint64:
         return _uint64_cmp_mask(tensor, op, literal)
+
+    if not tensor.dtype.is_floating_point and tensor.dtype != torch.bool:
+        if op not in {"==", "!=", ">", ">=", "<", "<="}:
+            raise ValueError(f"Unsupported where operator '{op}'")
+        op, literal = _integer_literal(op, literal)
+        if op == "const":
+            return torch.full(tensor.shape, bool(literal), dtype=torch.bool)
+        if (
+            tensor.dtype == torch.int64
+            and isinstance(literal, int)
+            and not isinstance(literal, bool)
+            and not (-(2**63) <= literal < 2**63)
+        ):
+            above = literal > 0  # every int64 value is below / above it
+            return torch.full(
+                tensor.shape,
+                op in ({"<", "<=", "!="} if above else {">", ">=", "!="}),
+                dtype=torch.bool,
+            )
 
     # PyTorch wraps an out-of-range Python int scalar to the tensor's dtype
     # (e.g. comparing an int16 column against 40000 becomes `> -25536`), which
@@ -435,23 +466,43 @@ def _boolean_literal(value: Any, column_name: str) -> bool:
     )
 
 
-def _aligned_scalar(pa: Any, column: Any, value: Any, column_name: str = "") -> Any:
+def _aligned_scalar(
+    pa: Any, column: Any, value: Any, column_name: str = "", op: str = "=="
+) -> tuple[str, Any]:
     """Build an Arrow scalar that matches the C++ pushdown comparison rule.
 
     Both engines must select identical rows for a given predicate. The C++
     mmap-filtered scan casts the literal to the column's storage precision
     before comparing, so the Arrow engine must do the same for float32
     columns instead of comparing against a float64 scalar (which would drop
-    rows whose stored float32 equals the literal). Wider/integer columns keep
-    Arrow's exact widening. Logical columns take a coerced bool so Arrow has a
-    matching kernel.
+    rows whose stored float32 equals the literal). Logical columns take a
+    coerced bool so Arrow has a matching kernel.
+
+    Integer columns compare exactly: a float literal becomes an integer bound
+    and the scalar takes the column's type (an untyped scalar cannot hold a
+    uint64 value >= 2**63, and int64 vs a float scalar casts the column to
+    float). A literal outside the column's range answers the same for every
+    row. Returns ``(op, scalar)``, or ``("const", bool)`` for such a constant.
     """
     if pa.types.is_boolean(column.type):
-        return pa.scalar(_boolean_literal(value, column_name), type=column.type)
+        return op, pa.scalar(_boolean_literal(value, column_name), type=column.type)
     if pa.types.is_float32(column.type):
-        return pa.scalar(float(value), type=column.type)
+        return op, pa.scalar(float(value), type=column.type)
+    if pa.types.is_integer(column.type) and isinstance(value, (int, float)):
+        op, value = _integer_literal(op, value)
+        if op == "const":
+            return op, value
+        if not isinstance(value, bool):
+            import numpy as np
 
-    return pa.scalar(value)
+            info = np.iinfo(column.type.to_pandas_dtype())
+            if value < int(info.min):
+                return "const", op in {">", ">=", "!="}
+            if value > int(info.max):
+                return "const", op in {"<", "<=", "!="}
+            return op, pa.scalar(value, type=column.type)
+
+    return op, pa.scalar(value)
 
 
 def _where_mask_for_table(
@@ -484,6 +535,41 @@ def _where_mask_for_table(
             return mask
         return pc.and_(mask, pc.invert(pc.is_nan(column)))
 
+    def _compare(column: Any, column_name: str, op: str, literal: Any) -> Any:
+        """Nullable comparison mask; third-party errors become ValueError."""
+        kernels = {
+            "==": pc.equal,
+            "!=": pc.not_equal,
+            ">": pc.greater,
+            ">=": pc.greater_equal,
+            "<": pc.less,
+            "<=": pc.less_equal,
+        }
+        if op not in kernels:
+            raise ValueError(f"Unsupported where operator '{op}'")
+        try:
+            kind, scalar = _aligned_scalar(pa, column, literal, column_name, op)
+            if kind == "const":
+                # Same answer for every row; a null row stays unknown.
+                return pc.if_else(
+                    pc.is_valid(column),
+                    pa.scalar(bool(scalar)),
+                    pa.scalar(None, pa.bool_()),
+                )
+            return kernels[kind](column, scalar)
+        except (
+            pa.ArrowNotImplementedError,
+            pa.ArrowInvalid,
+            OverflowError,
+            TypeError,
+        ) as exc:
+            # Never let a third-party error type escape: name the column and
+            # operator so the caller can see what could not be compared.
+            raise ValueError(
+                f"where cannot compare column '{column_name}' ({column.type}) "
+                f"with {literal!r} using '{op}': {exc}"
+            ) from exc
+
     def _cmp_mask(column_name: str, op: str, literal: Any) -> Any:
         column = _get_predicate_column(column_name)
 
@@ -494,30 +580,7 @@ def _where_mask_for_table(
                 return pc.invert(pc.is_null(column))
             raise ValueError("where comparisons with null only support == and !=")
 
-        scalar = _aligned_scalar(pa, column, literal, column_name)
-        try:
-            if op == "==":
-                mask = pc.equal(column, scalar)
-            elif op == "!=":
-                mask = pc.not_equal(column, scalar)
-            elif op == ">":
-                mask = pc.greater(column, scalar)
-            elif op == ">=":
-                mask = pc.greater_equal(column, scalar)
-            elif op == "<":
-                mask = pc.less(column, scalar)
-            elif op == "<=":
-                mask = pc.less_equal(column, scalar)
-            else:
-                raise ValueError(f"Unsupported where operator '{op}'")
-        except pa.ArrowNotImplementedError as exc:
-            # Never let a third-party error type escape: name the column and
-            # operator so the caller can see what could not be compared.
-            raise ValueError(
-                f"where cannot compare column '{column_name}' ({column.type}) "
-                f"with {literal!r} using '{op}': {exc}"
-            ) from exc
-        return _exclude_float_nan(column, mask)
+        return _exclude_float_nan(column, _compare(column, column_name, op, literal))
 
     def _in_mask(column_name: str, literals: list[Any], negate: bool) -> Any:
         column = _get_predicate_column(column_name)
@@ -559,11 +622,9 @@ def _where_mask_for_table(
         column = _get_predicate_column(column_name)
         if low is None or high is None:
             raise ValueError("where BETWEEN does not support NULL bounds")
-        low_s = _aligned_scalar(pa, column, low, column_name)
-        high_s = _aligned_scalar(pa, column, high, column_name)
-        ge = pc.greater_equal(column, low_s)
-        le = pc.less_equal(column, high_s)
-        mask = pc.and_(ge, le)
+        ge = _compare(column, column_name, ">=", low)
+        le = _compare(column, column_name, "<=", high)
+        mask = pc.and_kleene(ge, le)
         # Nullable in both directions, for the same reason as _in_mask: the
         # null is resolved once, at the top, not here. A NaN is not inside the
         # interval under IEEE, so negation must drop it as well.
@@ -672,6 +733,28 @@ def _try_cpp_where_pushdown(
     filters = _compile_where_to_simple_predicates(where)
     if filters is None:
         return None
+    if any(isinstance(lit, float) for _c, _o, lit in filters):
+        # The native scan compares a float literal with integer cells through
+        # an int64-clamped proxy; hand it the exact integer bound instead and
+        # leave constant or out-of-int64 comparisons to the exact engines.
+        if header is None:
+            return None
+        int_cols = {
+            col.name
+            for col in fits_schema.iter_table_columns(header)
+            if col.tform_info.code in {"B", "I", "J", "K"}
+            and not col.tform_info.vla
+            and (col.tscal or 1.0) == 1.0
+            and float(col.tzero or 0.0).is_integer()
+        }
+        exact: list[tuple[str, str, Any]] = []
+        for col_name, op, lit in filters:
+            if isinstance(lit, float) and col_name in int_cols:
+                op, lit = _integer_literal(op, lit)
+                if op == "const" or not (-(2**63) <= lit < 2**63):
+                    return None
+            exact.append((col_name, op, lit))
+        filters = tuple(exact)
     try:
         target_cols = columns
         if target_cols is None:
