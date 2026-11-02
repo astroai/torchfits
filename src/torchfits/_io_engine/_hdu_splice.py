@@ -11,6 +11,7 @@ assemble the output from byte ranges, and publish it atomically.
 from __future__ import annotations
 
 import gzip
+import os
 from typing import IO, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ._write_helpers import _atomic_replace_target, _invalidate_written_target
@@ -155,7 +156,13 @@ def publish_spliced(
 
     ``restamp`` lists the HDU indices (in the new file) whose CHECKSUM/DATASUM
     are recomputed before the file is published.
+
+    This is an in-place edit, so a file the caller may not write is refused
+    with :class:`PermissionError` even though the rename itself would only
+    need a writable directory.
     """
+    if not os.access(path, os.W_OK):
+        raise PermissionError(f"Cannot edit read-only FITS file in place: {path}")
     with _atomic_replace_target(path) as temp_path:
         with open(temp_path, "wb") as dst:
             for piece in pieces:

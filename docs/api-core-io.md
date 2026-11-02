@@ -548,6 +548,11 @@ applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
 HDU is stamped too. Bytes after the last HDU that do not start an extension
 (junk, zero or blank padding, which readers ignore) stay at the end of the file.
 
+These are in-place edits: a file you cannot write (for example mode `0444`)
+raises `PermissionError` and is left unchanged. `write(path, ...,
+overwrite=True)` instead replaces the whole file, which needs only a writable
+directory, and keeps the old file's mode.
+
 ```python
 # Add a RICE-compressed extension; HDUs 0 and 1 are left exactly as they were.
 torchfits.insert_hdu(
