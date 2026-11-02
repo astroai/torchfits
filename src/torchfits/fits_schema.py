@@ -350,6 +350,47 @@ def column_tnull_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
 
 _UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2147483648, "K": 2**63}
 
+# Keywords indexed by table column (FITS 4.0 sec. 7.2-7.3, WCS paper III),
+# optionally followed by a WCS alternate-version letter.
+_COLUMN_CARD_RE = re.compile(
+    r"^(TTYPE|TFORM|TUNIT|TNULL|TSCAL|TZERO|TDISP|TDIM|TBCOL|TLMIN|TLMAX|TDMIN"
+    r"|TDMAX|TCTYP|TCUNI|TCRPX|TCRVL|TCDLT|TCROT|TCRDE|TCSYE|TCNAM|TRPOS)"
+    r"(\d+)([A-Z]?)$"
+)
+
+
+def remap_table_column_cards(
+    cards: Any,
+    old_names: Mapping[int, str],
+    new_names: list[str],
+    *,
+    drop: frozenset[str] = frozenset(),
+) -> list[Any]:
+    """Renumber column-indexed cards by column name.
+
+    ``old_names`` maps the source header's column index to its name and
+    ``new_names`` lists the output columns in order. A card for a column that
+    is not kept, or whose keyword stem is in ``drop``, is left out; any other
+    card (HISTORY/COMMENT included) passes through unchanged. Cards are
+    ``(key, value, comment)`` records and keep their type.
+    """
+    new_index = {name: idx for idx, name in enumerate(new_names, start=1)}
+    out: list[Any] = []
+    for card in cards:
+        key, value, comment = card[0], card[1], card[2]
+        match = _COLUMN_CARD_RE.match(str(key).upper())
+        if match is None:
+            out.append(card)
+            continue
+        stem, index, alt = match.groups()
+        if stem in drop:
+            continue
+        target = new_index.get(old_names.get(int(index), ""))
+        if target is None:
+            continue
+        out.append(type(card)(f"{stem}{target}{alt}", value, comment))
+    return out
+
 
 def decoded_tnull(tnull: Any, tform: Any, tscal: Any, tzero: Any) -> Any:
     """TNULL in the domain of the decoded column values.

@@ -19,7 +19,7 @@ from .._table.write import (
     _ordered_dict_for_columns,
     _resolve_table_hdu_index_and_columns,
     _rewrite_table_hdu_with_schema,
-    _sanitize_table_header_for_rewrite,
+    _rewrite_table_header,
 )
 
 from ._mutation_coerce import (
@@ -80,7 +80,6 @@ def insert_column(
     existing_data = _read_table_for_rewrite(path, target_hdu, columns)
     existing_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     existing_schema = _extract_table_schema_from_header(header_map, columns)
-    table_header = _sanitize_table_header_for_rewrite(header_map)
     table_type = (
         "ascii"
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
@@ -89,6 +88,7 @@ def insert_column(
 
     new_columns = list(columns)
     new_columns.insert(index, name)
+    table_header = _rewrite_table_header(path, target_hdu, header_map, new_columns)
     data_by_name = dict(existing_data)
     data_by_name[name] = normalized_values
     rewritten_data = _ordered_dict_for_columns(new_columns, data_by_name)
@@ -159,7 +159,7 @@ def replace_column(
 
     normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
 
-    table_header = _sanitize_table_header_for_rewrite(header_map)
+    table_header = _rewrite_table_header(path, target_hdu, header_map, columns)
     table_type = (
         "ascii"
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"

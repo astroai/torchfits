@@ -235,28 +235,40 @@ _TABLE_STRUCTURAL_SKIP_KEYS: frozenset[str] = frozenset(
         "THEAP",
     }
 )
-_TABLE_COLUMN_SKIP_PREFIXES: tuple[str, ...] = (
-    "TTYPE",
-    "TFORM",
-    "TUNIT",
-    "TDIM",
-    "TNULL",
-    "TSCAL",
-    "TZERO",
+# Column cards the writer re-derives from the schema; TBCOL is recomputed for
+# the new ASCII-table layout.
+_TABLE_COLUMN_REDERIVED: frozenset[str] = frozenset(
+    {"TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO", "TBCOL"}
 )
 
 
-def _sanitize_table_header_for_rewrite(header_map: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in header_map.items():
-        key_s = str(key)
-        key_u = key_s.upper()
-        if key_u in _TABLE_STRUCTURAL_SKIP_KEYS:
-            continue
-        if key_u.startswith(_TABLE_COLUMN_SKIP_PREFIXES):
-            continue
-        out[key_s] = value
-    return out
+def _rewrite_table_header(
+    path: str, hdu: int, header_map: dict[str, Any], new_columns: list[str]
+) -> Any:
+    """Header cards to carry onto a table rewritten with ``new_columns``.
+
+    Typed cards from ``read_header`` (numbers stay numbers, every HISTORY /
+    COMMENT line survives), minus structural keywords and the column cards
+    the writer re-derives; other column-indexed cards (TDISPn, TLMINn,
+    TCTYPn, ...) are renumbered by column name.
+    """
+    import torchfits
+    from ..fits_schema import remap_table_column_cards
+
+    source = torchfits.read_header(path, hdu)
+    cards = [
+        card
+        for card in source.cards
+        if str(card.key).upper() not in _TABLE_STRUCTURAL_SKIP_KEYS
+    ]
+    return torchfits.Header(
+        remap_table_column_cards(
+            cards,
+            _column_name_index_map(header_map),
+            new_columns,
+            drop=_TABLE_COLUMN_REDERIVED,
+        )
+    )
 
 
 def _ordered_dict_for_columns(
@@ -435,10 +447,12 @@ def _rewrite_table_hdu_with_schema(
             tmp_path,
             data=data,
             schema=schema,
-            header=header,
             overwrite=True,
             table_type=table_type,
         )
+        # Replayed card by card: the mapping write path re-emits HISTORY and
+        # COMMENT as valued cards and collapses repeated lines.
+        _write_header_cards_if_supported(tmp_path, 1, header)
         new_start, _new_data, new_end = _hdu_byte_spans(tmp_path)[1]
         spans = _hdu_byte_spans(path)
         old_start, _old_data, old_end = spans[target_hdu]

@@ -99,3 +99,61 @@ def test_scaled_column_survives_column_rewrite(scaled_table, op):
     assert float(cards[f"TZERO{s_idx}"]) == 10.0
     assert _hdu_bytes(scaled_table, 2) == tail_before
     assert torchfits.table.read_torch(scaled_table, hdu=2)["y"].tolist() == [3.0, 5.0]
+
+
+def test_column_rewrite_keeps_typed_cards_and_renumbers_column_cards(tmp_path):
+    path = str(tmp_path / "cards.fits")
+    header = torchfits.Header(
+        {"EXPTIME": 30.5, "NUM": 7, "FLAG": True, "OBJ": "M31", "TDISP2": "I6"}
+    )
+    header["TLMIN1"] = 0
+    header.add_history("first history")
+    header.add_history("second history")
+    header.add_comment("a comment")
+    torchfits.table.write(
+        path,
+        {"a": np.arange(3, dtype=np.float64), "b": np.arange(3, dtype=np.int32)},
+        header=header,
+        overwrite=True,
+    )
+    torchfits.table.insert_column(
+        path, "new", np.array([9, 8, 7], dtype=np.int32), index=0
+    )
+
+    cards = _hdu_cards(path, 1)
+    values = _card_values(cards)
+    assert values["EXPTIME"] == "30.5"
+    assert values["NUM"] == "7"
+    assert values["FLAG"] == "T"
+    assert [c[8:].strip() for c in cards if c.startswith("HISTORY ")] == [
+        "first history",
+        "second history",
+    ]
+    assert [c[8:].strip() for c in cards if c.startswith("COMMENT ")] == ["a comment"]
+    assert not any(c.startswith(("HISTORY =", "COMMENT =")) for c in cards)
+    # 'a' moved from column 1 to 2, 'b' from 2 to 3.
+    assert values["TLMIN2"] == "0"
+    assert values["TDISP3"].strip("'").strip() == "I6"
+    assert "TLMIN1" not in values and "TDISP2" not in values
+
+    got = torchfits.read_header(path, 1)
+    assert got["NUM"] == 7 and got["EXPTIME"] == 30.5 and got["FLAG"] is True
+
+
+def test_ascii_table_column_rewrite(tmp_path):
+    path = str(tmp_path / "ascii.fits")
+    torchfits.table.write(
+        path,
+        {"a": np.array([1, 2, 3], dtype=np.int32), "s": ["ab", "cd", "ef"]},
+        table_type="ascii",
+        overwrite=True,
+    )
+    torchfits.table.replace_column(path, "a", np.array([7, 8, 9], dtype=np.int32))
+    torchfits.table.insert_column(
+        path, "z", np.array([4, 5, 6], dtype=np.int32), format="I5", index=0
+    )
+    values = _card_values(_hdu_cards(path, 1))
+    assert values["XTENSION"].strip("'").strip() == "TABLE"
+    assert int(values["TBCOL1"]) == 1
+    got = torchfits.table.read(path, hdu=1).to_pydict()
+    assert got == {"z": [4, 5, 6], "a": [7, 8, 9], "s": ["ab", "cd", "ef"]}
