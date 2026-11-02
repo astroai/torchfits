@@ -4,6 +4,7 @@ They compared EXTNAME case-sensitively, so replace_hdu(p, "sci", ...) raised
 KeyError on a file that read(p, hdu="sci") reads.
 """
 
+import pytest
 import torch
 
 import torchfits
@@ -65,3 +66,30 @@ def test_edits_that_would_renumber_hdus_raise(tmp_path):
     torchfits.write(comp, [torch.ones(4, 4)], compress=True)
     torchfits.insert_hdu(comp, torch.zeros(4, 4), index=2, compress=True)
     assert torchfits.read(comp, hdu=2).shape == (4, 4)
+
+
+def test_hdulist_name_lookup_matches_read(tmp_path):
+    """open(p)["name"] resolves like read(p, hdu="name"): case-insensitive,
+    first match, HDUNAME fallback; ``in`` reports the same."""
+    path = str(tmp_path / "names.fits")
+    torchfits.write(
+        path,
+        [
+            torch.zeros(1, 1),
+            {"data": torch.ones(2, 2), "header": {"EXTNAME": "Sci"}},
+            {"data": torch.full((2, 2), 2.0), "header": {"EXTNAME": "sci"}},
+            {"data": torch.full((3, 3), 3.0), "header": {"HDUNAME": "MASK"}},
+        ],
+    )
+    with torchfits.open(path) as hdul:
+        assert hdul["SCI"] is hdul[1]
+        assert hdul[" sci "] is hdul[1]
+        assert hdul["mask"] is hdul[3]
+        assert "SCI" in hdul
+        assert "Mask" in hdul
+        assert "NOPE" not in hdul
+        assert hdul[2] in hdul
+        with pytest.raises(KeyError):
+            hdul["NOPE"]
+    assert torchfits.read(path, hdu="SCI")[0, 0].item() == 1.0
+    assert torchfits.read(path, hdu="mask").shape == (3, 3)

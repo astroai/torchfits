@@ -190,18 +190,36 @@ class HDUList:
     def __len__(self) -> int:
         return len(self._hdus)
 
+    def _index_of_name(self, name: str) -> Optional[int]:
+        """First HDU whose EXTNAME (else HDUNAME) matches *name*, like CFITSIO.
+
+        Same rule as ``read(path, hdu=name)`` (``fits_movnam_hdu``): the match
+        is case-insensitive and surrounding blanks are ignored. Scanned
+        live (a few header.get calls per lookup): a cached name index went
+        stale as soon as a caller renamed EXTNAME on a live header, and HDU
+        counts are tiny.
+        """
+        wanted = name.strip().upper()
+        for i, hdu in enumerate(self._hdus):
+            for keyword in ("EXTNAME", "HDUNAME"):
+                value = hdu.header.get(keyword)
+                if isinstance(value, str) and value.strip().upper() == wanted:
+                    return i
+        return None
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            return self._index_of_name(key) is not None
+        return any(key is hdu for hdu in self._hdus)
+
     def __getitem__(
         self, key: Union[int, str]
     ) -> Union[TensorHDU, TableHDU, TableHDURef]:
         if isinstance(key, str):
-            # Scanned live (a few header.get calls per lookup): a cached name
-            # index went stale as soon as a caller renamed EXTNAME on a live
-            # header, and HDU counts are tiny.
-            for i, hdu in enumerate(self._hdus):
-                name = hdu.header.get("EXTNAME")
-                if name is not None and name == key:
-                    return self._hdus[i]
-            raise KeyError(f"HDU '{key}' not found")
+            index = self._index_of_name(key)
+            if index is None:
+                raise KeyError(f"HDU '{key}' not found")
+            return self._hdus[index]
 
         try:
             return self._hdus[operator.index(key)]

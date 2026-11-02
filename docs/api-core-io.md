@@ -311,7 +311,9 @@ torchfits `open` surface yet.
 
 !!! info "EXTNAME lookup returns first match"
     When indexing by EXTNAME (`hdul["SCI"]`), only the **first** HDU with
-    that name is returned. FITS files with duplicate EXTNAMEs (e.g.,
+    that name is returned. The match follows `read(path, hdu="SCI")`:
+    case-insensitive, surrounding blanks ignored, and an HDU without a
+    matching EXTNAME matches on `HDUNAME`. `"SCI" in hdul` uses the same rule. FITS files with duplicate EXTNAMEs (e.g.,
     multi-chip detectors with repeated ``SCI`` extensions) must use
     numeric indices for the second and subsequent occurrences.
 
