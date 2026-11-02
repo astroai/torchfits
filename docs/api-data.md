@@ -179,7 +179,7 @@ cubes = FitsCubeDataset("cubes/*.fits", hdu=0, slice_index=None)
 **Returns per item:** same as `FitsTensorDataset` — `(payload, label)`.
 
 `FitsImageIterableDataset` stays first-class for loaders (same knobs as the
-tensor iterable, channel dim default on).
+tensor iterable, channel dim default on, including `labels=` / `label_key=`).
 
 ### Cubes and IFU cubes
 
@@ -319,8 +319,24 @@ ds = FitsTensorIterableDataset(
 | `seed` | `int` | `0` | Base seed for shuffling — the same `seed` replays the same *sequence* of epochs |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
+| `label_key` | `str` or `None` | `None` | Keyword-only. Header keyword of the first flux HDU holding each file's integer label |
+| `labels` | `list[int]`, `Tensor` or `None` | `None` | Keyword-only. Explicit per-file labels (overrides `label_key`); length must match the files |
 
-**Returns per item:** payload (`Tensor` or flux/ivar/mask dict) — no label.
+**Returns per item:** payload (`Tensor` or flux/ivar/mask dict) alone. With
+`labels=` or `label_key=` the item becomes `(payload, label)`, `label` a
+`torch.long` scalar. Each label stays with its own file through rank and
+worker sharding, `shuffle=` and `shuffle_buffer_size=` (duplicate paths keep
+their own labels):
+
+```python
+from torchfits.data import FitsImageIterableDataset, make_loader
+
+files = ["a.fits", "b.fits", "c.fits"]
+ds = FitsImageIterableDataset(files, labels=[0, 1, 0], shuffle=True, seed=0)
+if __name__ == "__main__":
+    for image, label in make_loader(ds, batch_size=2, num_workers=2):
+        ...
+```
 
 !!! info "When to use"
     Use when you have many files and want deterministic multi-worker loading
@@ -588,6 +604,7 @@ ds = FitsCubeIterableDataset(
 | `shuffle_buffer_size` | `int` or `None` | `None` | Rolling reservoir buffer for in-flight random mixing |
 | `rank` | `int` or `None` | `None` | Distributed worker rank |
 | `world_size` | `int` or `None` | `None` | Distributed world size |
+| `label_key` / `labels` | `str` / `list[int]` or `Tensor` or `None` | `None` | Per-file labels; items become `(payload, label)` |
 
 ---
 

@@ -377,8 +377,8 @@ def _resolve_file_labels(
     files: list[str],
     *,
     label_key: str | None,
-    labels: list[int] | None,
-    hdu: int = 0,
+    labels: Sequence[int] | None,
+    hdu: HduRef = 0,
     cache_dir: Path | None = None,
 ) -> list[int] | None:
     """Per-file integer labels from an explicit list or a primary-header key.
@@ -1002,6 +1002,8 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
         *,
         mask_is_dq: bool = False,
         bad_bits: int | Sequence[int] | None = None,
+        label_key: str | None = None,
+        labels: Sequence[int] | torch.Tensor | None = None,
     ) -> None:
         self.files = _resolve_paths(paths)
         self.hdus = _as_hdu_list(hdu)
@@ -1016,6 +1018,16 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
         self.transform = transform
         self.device = device
         self.mmap = mmap
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        # Per-file labels, as in FitsImageDataset; None keeps the payload-only
+        # stream. A label tensor is accepted and turned into a list of ints.
+        self.labels = _resolve_file_labels(
+            self.files,
+            label_key=label_key,
+            labels=labels.tolist() if isinstance(labels, torch.Tensor) else labels,
+            cache_dir=self.cache_dir,
+            hdu=self.hdus[0],
+        )
         self.shuffle = shuffle
         self.shuffle_buffer_size = shuffle_buffer_size
         self.seed = seed
@@ -1023,12 +1035,18 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
         self.rank = rank
         self.world_size = world_size
         self.add_channel_dim = add_channel_dim
-        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.hdu = self.hdus[0] if len(self.hdus) == 1 else self.hdus
 
     def _generate(self) -> Iterator[Any]:
-        sharded_files, indices, worker_seed, _, _ = _shard_work_plan(
+        sharded_files, indices, worker_seed, rank, world_size = _shard_work_plan(
             self.files, self.rank, self.world_size, self._epoch, self.shuffle
+        )
+        # Positional shard of the label list (same split as the files) so a
+        # label follows its file through rank/worker sharding and shuffling.
+        sharded_labels = (
+            _shard_sequence(self.labels, rank, world_size)
+            if self.labels is not None
+            else None
         )
 
         for i, idx in enumerate(indices):
@@ -1039,7 +1057,7 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
             path = _local_read_path(
                 sharded_files[idx], prefetch_ahead=ahead, cache_dir=self.cache_dir
             )
-            yield _load_image_payload(
+            payload = _load_image_payload(
                 path,
                 hdus=self.hdus,
                 ivar_hdus=self.ivar_hdus,
@@ -1051,6 +1069,10 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
                 mask_is_dq=self.mask_is_dq,
                 bad_bits=self.bad_bits,
             )
+            if sharded_labels is None:
+                yield payload
+            else:
+                yield payload, torch.tensor(sharded_labels[idx], dtype=torch.long)
 
     def __iter__(self) -> Iterator[Any]:
         # One epoch boundary: every stochastic stream below reads self._epoch,
@@ -1114,13 +1136,15 @@ class FitsCubeIterableDataset(FitsTensorIterableDataset):
         super().__init__(paths, hdu=hdu, add_channel_dim=add_channel_dim, **kwargs)
 
     def __iter__(self) -> Iterator[Any]:
-        for payload in super().__iter__():
-            yield _slice_leading(
+        for item in super().__iter__():
+            payload, label = item if self.labels is not None else (item, None)
+            sliced = _slice_leading(
                 payload,
                 index=self.slice_index,
                 window=self.spectral_slice,
                 axis=1 if len(self.hdus) > 1 else 0,
             )
+            yield sliced if self.labels is None else (sliced, label)
 
     def __repr__(self) -> str:
         return (
