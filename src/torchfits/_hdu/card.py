@@ -15,6 +15,10 @@ class Card(NamedTuple):
         return self.key
 
 
+# Text cards that carry no keyword value and are never continued.
+_COMMENTARY_KEYS = frozenset({"COMMENT", "HISTORY", ""})
+
+
 def _is_string_typed(key: str, value: str) -> bool:
     """Whether ``FastHeaderParser._parse_card`` would type ``value`` as ``str``.
 
@@ -84,10 +88,13 @@ def _reassemble_longstr_cards(
         key = str(key)
         comment = "" if comment is None else str(comment)
         if key != "CONTINUE":
-            # Any non-CONTINUE card ends the chain: the '&' is content again.
+            # Any non-CONTINUE card ends the chain: the '&' is content again,
+            # and only a string-valued card can be the next CONTINUE target
+            # (a CONTINUE after a number or COMMENT is an orphan).
             restore_marker()
             out.append(Card(key, value, comment))
-            if isinstance(value, str):
+            target = None
+            if isinstance(value, str) and key not in _COMMENTARY_KEYS:
                 if value.endswith("&"):
                     out[-1] = Card(key, value[:-1], comment)
                     marker = len(out) - 1

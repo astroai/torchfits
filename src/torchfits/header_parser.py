@@ -100,14 +100,17 @@ class FastHeaderParser:
 
             # Any card that is not a CONTINUE card ends a LONGSTRN '&' chain:
             # the '&' then belongs to the value itself.
-            if (
-                not startswith(card, "CONTINUE")
-                and pending_ampersand_keyword is not None
-            ):
-                prev_val = header.get(pending_ampersand_keyword)
-                if isinstance(prev_val, str):
-                    header[pending_ampersand_keyword] = prev_val + "&"
-                pending_ampersand_keyword = None
+            if not startswith(card, "CONTINUE"):
+                if pending_ampersand_keyword is not None:
+                    prev_val = header.get(pending_ampersand_keyword)
+                    if isinstance(prev_val, str):
+                        header[pending_ampersand_keyword] = prev_val + "&"
+                    pending_ampersand_keyword = None
+                # ... and any card that is not CONTINUE retires the target: a
+                # CONTINUE after a number, COMMENT or blank card is an orphan,
+                # not more text for an earlier string. Re-set below only for
+                # a string-valued card.
+                last_string_keyword = None
 
             # Bolt optimization: stop parsing immediately at first END card.
             # FITS headers are padded with 2880-byte blocks of spaces. Breaking
@@ -230,8 +233,6 @@ class FastHeaderParser:
                         )
                 elif keyword:
                     header[keyword] = card[8:].strip()
-                    if keyword in string_keywords:
-                        last_string_keyword = keyword
             else:
                 # No equals sign - might be a comment-only keyword
                 keyword = card[:8].rstrip()
@@ -255,10 +256,15 @@ class FastHeaderParser:
                         # after '/' is dropped here.
                         vstr = value_comment[:idx2].strip()
                     value2: Any = None
+                    hier_marker = False
                     if vstr:
                         fc2 = vstr[0]
                         if fc2 == "'":
                             value2 = _parse_string_value(vstr)
+                            if vstr.endswith("&'") and isinstance(value2, str):
+                                # LONGSTRN marker, as for an 8-char keyword.
+                                value2 = value2[:-1]
+                                hier_marker = True
                         elif fc2 == '"':
                             value2 = vstr.strip('"')
                         elif fc2 in "+-0123456789.":
@@ -276,6 +282,8 @@ class FastHeaderParser:
                         header[hier_key] = value2 if value2 is not None else vstr
                         if isinstance(value2, str):
                             last_string_keyword = hier_key
+                            if hier_marker:
+                                pending_ampersand_keyword = hier_key
                 elif keyword:
                     header[keyword] = card[8:].strip()
 
@@ -489,6 +497,19 @@ def fast_parse_header(header_string: str) -> Dict[str, Any]:
     return FastHeaderParser.parse_header_string(header_string)
 
 
+def _value_field(card: str) -> Optional[str]:
+    """Value text (comment removed) of a ``KEY = ...`` or HIERARCH card, else None."""
+    if len(card) > 8 and card[8] == "=":
+        raw = card[9:]
+    elif card.startswith("HIERARCH") and "=" in card[8:]:
+        rest = card[8:]
+        raw = rest[rest.find("=") + 1 :]
+    else:
+        return None
+    cpos = FastHeaderParser._find_comment_separator(raw)
+    return (raw[:cpos] if cpos != -1 else raw).strip()
+
+
 def fast_parse_header_cards(
     header_string: str,
 ) -> list[tuple[str, Any, str]]:
@@ -516,6 +537,10 @@ def fast_parse_header_cards(
                 pk, pv, pc = cards[pending_ampersand]
                 cards[pending_ampersand] = (pk, pv + "&", pc)
             break
+        if not card.startswith("CONTINUE"):
+            # Only the card right before a CONTINUE can be its target: a
+            # number, COMMENT or blank card in between makes it an orphan.
+            last_value_index = -1
         if not card or card.isspace():
             continue
         if len(card) < 80:
@@ -552,14 +577,13 @@ def fast_parse_header_cards(
             cards[pending_ampersand] = (pk, pv + "&", pc)
             pending_ampersand = -1
         cards.append((kw, val, "" if comment is None else str(comment)))
-        if isinstance(val, str):
+        # Value cards only (``KEY = ...`` or ``HIERARCH ... = ...``): COMMENT,
+        # HISTORY and other text cards are never continued.
+        value_field = _value_field(card)
+        if isinstance(val, str) and value_field is not None:
             last_value_index = len(cards) - 1
-        if isinstance(val, str) and len(card) > 8 and card[8] == "=":
             # LONGSTRN marker detection on the VALUE field only: a comment
             # after the closing quote must not hide the ``&'`` marker.
-            raw_field = card[9:]
-            cpos = FastHeaderParser._find_comment_separator(raw_field)
-            value_field = (raw_field[:cpos] if cpos != -1 else raw_field).strip()
             if value_field.startswith("'") and value_field.endswith("&'"):
                 # Drop the '&' from the stored value; a CONTINUE card must
                 # follow (restored if it does not).

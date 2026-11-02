@@ -158,7 +158,7 @@ def _reassemble_longstr_cards(cards: Any) -> list[Any] | None:
     """
     from ..header_parser import FastHeaderParser
 
-    from .._hdu.card import _is_string_typed
+    from .._hdu.card import _COMMENTARY_KEYS, _is_string_typed
 
     out: list[Any] = []
     target: int | None = None  # index of the string card CONTINUE extends
@@ -175,10 +175,13 @@ def _reassemble_longstr_cards(cards: Any) -> list[Any] | None:
 
     for card in cards:
         if card.key != "CONTINUE":
-            # Any non-CONTINUE card ends the chain: the '&' is content again.
+            # Any non-CONTINUE card ends the chain: the '&' is content again,
+            # and only a string-valued card can be the next CONTINUE target
+            # (a CONTINUE after a number or COMMENT is an orphan).
             restore_marker()
             out.append(card)
-            if not isinstance(card.value, str):
+            target = None
+            if not isinstance(card.value, str) or card.key in _COMMENTARY_KEYS:
                 continue
             if card.value.endswith("&"):
                 # A trailing '&' is the quoted-chain signal (see _hdu/card.py):
