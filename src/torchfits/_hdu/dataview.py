@@ -75,24 +75,24 @@ class DataView:
                 bzero = float(self._header.get("BZERO", 0.0))
             except (TypeError, ValueError):
                 return base
-            tol = 1e-5
-            if bitpix == 8 and abs(bscale - 1.0) < tol and abs(bzero + 128.0) < tol:
-                return _dtype("int8")
-            if bitpix == 16 and abs(bscale - 1.0) < tol and abs(bzero - 32768.0) < tol:
-                return _dtype("uint16")
-            if (
-                bitpix == 32
-                and abs(bscale - 1.0) < tol
-                and abs(bzero - 2147483648.0) < tol
-            ):
-                return _dtype("uint32")
-            # FITS 4.0 unsigned 64-bit convention; 2**63 is exact in float64.
-            if bitpix == 64 and bscale == 1.0 and bzero == 9223372036854775808.0:
-                return _dtype("uint64")
+            # Mirror read_tensor_canonical (fits_detail.h) exactly: scale is
+            # "BSCALE != 1 or BZERO != 0" with no tolerance, BSCALE must be
+            # exactly 1 for every integer convention, and only the uint16 /
+            # uint32 offsets get is_unsigned_*_offset's 1e-5 slack.
+            if bscale == 1.0:
+                if bitpix == 8 and bzero == -128.0:
+                    return _dtype("int8")
+                if bitpix == 16 and abs(bzero - 32768.0) < 1e-5:
+                    return _dtype("uint16")
+                if bitpix == 32 and abs(bzero - 2147483648.0) < 1e-5:
+                    return _dtype("uint32")
+                # FITS 4.0 unsigned 64-bit convention; 2**63 is exact in float64.
+                if bitpix == 64 and bzero == 9223372036854775808.0:
+                    return _dtype("uint64")
             # Anything else with a scale or BLANK is the scaled-float read.
             # BITPIX=8/16 stay float32 (those codes are exact). BITPIX=32/64
             # are float64 so values above 2^24 do not round.
-            scaled = abs(bscale - 1.0) >= tol or abs(bzero) >= tol
+            scaled = bscale != 1.0 or bzero != 0.0
             if scaled or "BLANK" in self._header:
                 return _dtype("float32" if bitpix in (8, 16) else "float64")
         return base
