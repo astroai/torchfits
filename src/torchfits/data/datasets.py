@@ -373,6 +373,24 @@ def _label_hdu(hdus: list[HduRef]) -> int:
     return hdus[0] if hdus and isinstance(hdus[0], int) else 0
 
 
+def _check_return_label(
+    return_label: bool | None, labels: Any, label_key: str | None = None
+) -> bool:
+    """Resolve ``return_label=`` for the datasets that always paired a label.
+
+    ``None`` keeps the historical ``(payload, label)`` item (label 0 when none
+    is configured); ``False`` returns the payload alone, which contradicts
+    asking for labels.
+    """
+    if return_label is None:
+        return True
+    if not isinstance(return_label, bool):
+        raise TypeError("return_label must be a bool or None")
+    if not return_label and (labels is not None or label_key is not None):
+        raise ValueError("return_label=False cannot be combined with labels/label_key")
+    return return_label
+
+
 def _resolve_file_labels(
     files: list[str],
     *,
@@ -732,7 +750,9 @@ class FitsTensorDataset(Dataset[Any]):
         *,
         mask_is_dq: bool = False,
         bad_bits: int | Sequence[int] | None = None,
+        return_label: bool | None = None,
     ) -> None:
+        self._return_label = _check_return_label(return_label, labels, label_key)
         self.files = _resolve_paths(paths)
         self.hdus = _as_hdu_list(hdu)
         self.ivar_hdus = None if ivar_hdu is None else _as_hdu_list(ivar_hdu)
@@ -789,12 +809,14 @@ class FitsTensorDataset(Dataset[Any]):
             bad_bits=self.bad_bits,
         )
 
-    def __getitem__(self, idx: int) -> tuple[Any, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Any:
         ahead = self.files[idx + 1 : idx + 3]
         path = _local_read_path(
             self.files[idx], prefetch_ahead=ahead, cache_dir=self.cache_dir
         )
         payload = self._load(path)
+        if not self._return_label:
+            return payload
         label = torch.tensor(self._labels[idx], dtype=torch.long)
         return payload, label
 
@@ -960,17 +982,16 @@ class FitsCubeDataset(FitsTensorDataset):
         )
         super().__init__(paths, hdu=hdu, add_channel_dim=add_channel_dim, **kwargs)
 
-    def __getitem__(self, idx: int) -> tuple[Any, torch.Tensor]:
-        payload, label = super().__getitem__(idx)
-        return (
-            _slice_leading(
-                payload,
-                index=self.slice_index,
-                window=self.spectral_slice,
-                axis=1 if len(self.hdus) > 1 else 0,
-            ),
-            label,
+    def __getitem__(self, idx: int) -> Any:
+        item = super().__getitem__(idx)
+        payload, label = item if self._return_label else (item, None)
+        sliced = _slice_leading(
+            payload,
+            index=self.slice_index,
+            window=self.spectral_slice,
+            axis=1 if len(self.hdus) > 1 else 0,
         )
+        return (sliced, label) if self._return_label else sliced
 
     def __repr__(self) -> str:
         return (

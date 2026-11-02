@@ -115,9 +115,22 @@ loader = make_loader(ds, batch_size=32, num_workers=4)
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
 | `mask_is_dq` | `bool` | `False` | Decode `mask_hdu` as a FITS `DQ` bitfield via `mask_from_dq` |
 | `bad_bits` | `int` or `sequence` or `None` | `None` | Fatal DQ bit positions; default treats any non-zero value as invalid |
+| `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(payload, label)`; `False`: the payload alone (cannot be combined with `labels` / `label_key`) |
 
 **Returns per item:** `(payload, label)` where payload is a `Tensor` or
-`{"flux", "ivar"?, "mask"?}`.
+`{"flux", "ivar"?, "mask"?}` and `label` is a `torch.long` scalar. Without
+`labels=` or `label_key=` the label is still there and is always
+`tensor(0)` — kept so existing `for x, y in loader` loops keep working.
+`FitsCutoutDataset`, `FitsSpectrumDataset` and the iterable datasets return
+the payload alone instead when no labels are configured. Pass
+`return_label=False` to get the same payload-only items here:
+
+```python
+from torchfits.data import FitsImageDataset
+
+images = FitsImageDataset("obs/*.fits", return_label=False)
+x = images[0]  # a Tensor, no (x, tensor(0)) pair
+```
 
 !!! warning "Masks are validity masks"
     A `mask_hdu` companion always comes back as a **boolean** tensor where
@@ -176,7 +189,9 @@ cubes = FitsCubeDataset("cubes/*.fits", hdu=0, slice_index=None)
     the literal pattern, so it fails at read time with the path you actually
     asked for in the message.
 
-**Returns per item:** same as `FitsTensorDataset` — `(payload, label)`.
+**Returns per item:** same as `FitsTensorDataset` — `(payload, label)`, with
+`label == tensor(0)` when no labels are configured; `return_label=False`
+returns the payload alone.
 
 `FitsImageIterableDataset` stays first-class for loaders (same knobs as the
 tensor iterable, channel dim default on, including `labels=` / `label_key=`).
@@ -387,8 +402,11 @@ ds = FitsTableDataset(
 | `transform` | `callable` or `None` | `None` | Applied to each row dict |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
+| `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(row_dict, label)`; `False`: the row dict alone (cannot be combined with `labels`) |
 
-**Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and `torch.long` label.
+**Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and
+`torch.long` label, which is `tensor(0)` for every row when `labels` is
+omitted. `return_label=False` returns the row dict alone.
 
 Rows hold the values as stored, whether or not `where=` is set: `where=`
 only selects rows. Integer columns keep their dtype and a `TNULL` null comes

@@ -37,6 +37,7 @@ from .datasets import (
     FitsTensorDataset,
     FitsTensorIterableDataset,
     _buffered_shuffle,
+    _check_return_label,
     _EpochSeed,
     _resolve_rank_and_world_size,
     discover_bands,
@@ -54,7 +55,8 @@ class FitsTableDataset(Dataset[Any]):
     """Map-style dataset for row-indexable FITS binary tables.
 
     Each ``__getitem__`` returns a ``(row_dict, label)`` tuple where *label*
-    is a ``torch.long`` tensor (zero when no ``labels`` are provided).
+    is a ``torch.long`` tensor (zero when no ``labels`` are provided). Pass
+    ``return_label=False`` to get the row dict alone.
     Supports column projection and ``where=`` pushdown for filtered access.
     **Loads the full filtered table at ``__init__``** — small/medium catalogs
     only; use :class:`FitsTableIterableDataset` for large files.
@@ -77,6 +79,9 @@ class FitsTableDataset(Dataset[Any]):
         Torch device for tensors.
     mmap : bool or str
         Mmap policy.
+    return_label : bool or None
+        ``None`` (default) and ``True`` return ``(row_dict, label)``;
+        ``False`` returns the row dict alone (and refuses ``labels``).
     """
 
     def __init__(
@@ -89,7 +94,10 @@ class FitsTableDataset(Dataset[Any]):
         transform: Callable[..., Any] | None = None,
         device: str = "cpu",
         mmap: bool | str = "auto",
+        *,
+        return_label: bool | None = None,
     ) -> None:
+        self._return_label = _check_return_label(return_label, labels)
         self.path = resolve_local_path(path)
         self.hdu = hdu
         self.columns = columns
@@ -139,12 +147,14 @@ class FitsTableDataset(Dataset[Any]):
     def __len__(self) -> int:
         return self._n_rows
 
-    def __getitem__(self, idx: int) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    def __getitem__(self, idx: int) -> Any:
         if not -self._n_rows <= idx < self._n_rows:
             raise IndexError(f"index {idx} out of range for {self._n_rows} rows")
         row = {k: v[idx] for k, v in self._data.items()}
         if self.transform is not None:
             row = self.transform(row)
+        if not self._return_label:
+            return row
         label_val = 0 if self._labels is None else self._labels[idx]
         label = torch.tensor(label_val, dtype=torch.long)
         return row, label

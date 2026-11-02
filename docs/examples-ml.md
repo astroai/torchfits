@@ -188,13 +188,13 @@ The `torchfits.data` module provides specialized PyTorch `Dataset` implementatio
 
 | Dataset Class | Input Source | Primary Use Case | Output Item Shape |
 |---|---|---|---|
-| `FitsImageDataset` | File paths or glob pattern (`"*.fits"`) | 2D/3D images, multi-band stacks, supervised vision models | `(tensor, label)` |
+| `FitsImageDataset` | File paths or glob pattern (`"*.fits"`) | 2D/3D images, multi-band stacks, supervised vision models | `(tensor, label)`; label is `tensor(0)` without `labels=`/`label_key=`; `tensor` alone with `return_label=False` |
 | `FitsCutoutDataset` | Mosaic path + list of coordinate bounding boxes | On-the-fly stamp extraction from large survey images | `cutout_tensor` |
-| `FitsCubeDataset` | 3D datacubes (radio/IFU/spectral) | Spectral line classification, velocity channel modeling | `(slice_tensor, label)` |
+| `FitsCubeDataset` | 3D datacubes (radio/IFU/spectral) | Spectral line classification, velocity channel modeling | `(slice_tensor, label)`; same label rules as `FitsImageDataset` |
 | `FitsSpectrumDataset` | 1D FITS tables or spectral arrays | Stellar/galactic spectral classification (e.g. DESI/SDSS) | `{"flux", …}` dict; `(dict, label)` with `labels=` or `label_key=` |
-| `FitsTableDataset` | FITS binary/ASCII table | Tabular catalog features in RAM for ML models | `(row_dict, label)` |
+| `FitsTableDataset` | FITS binary/ASCII table | Tabular catalog features in RAM for ML models | `(row_dict, label)`; label is `tensor(0)` without `labels=`; `row_dict` alone with `return_label=False` |
 | `FitsTableIterableDataset` | Massive multi-million row table | Out-of-core streaming iteration without loading to RAM | `row_dict` |
-| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `tensor` |
+| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `tensor`; `(tensor, label)` with `labels=` or `label_key=` |
 
 ---
 
