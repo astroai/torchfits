@@ -352,7 +352,9 @@ def _try_torch_tensor_where_filter(
     try:
         for pred_col, op, literal in predicates:
             tensor = chunk.get(pred_col)
-            if not isinstance(tensor, torch.Tensor):
+            if not isinstance(tensor, torch.Tensor) or tensor.dim() != 1:
+                # Vector cells: leave them to the Arrow filter, which refuses
+                # them with a clear error instead of comparing elements.
                 return None
             part = _torch_cmp_mask(tensor, op, literal)
             sentinel = tnull_map.get(pred_col)
@@ -742,12 +744,19 @@ def _try_cpp_where_pushdown(
     filters = _compile_where_to_simple_predicates(where)
     if filters is None:
         return None
+    if header is None:
+        return None
+    pred_names = {col for col, _o, _l in filters}
+    for col in fits_schema.iter_table_columns(header, selected=pred_names):
+        info = col.tform_info
+        if info.vla or col.tdim or (info.repeat != 1 and info.code != "A"):
+            # Vector cells: the native scan compares only some elements. The
+            # Arrow filter refuses them with a clear error.
+            return None
     if any(isinstance(lit, float) for _c, _o, lit in filters):
         # The native scan compares a float literal with integer cells through
         # an int64-clamped proxy; hand it the exact integer bound instead and
         # leave constant or out-of-int64 comparisons to the exact engines.
-        if header is None:
-            return None
         int_cols = {
             col.name
             for col in fits_schema.iter_table_columns(header)

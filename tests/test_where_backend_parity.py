@@ -331,3 +331,28 @@ def test_string_predicate_uses_callers_decoding(
                 **kwargs,
             )
             assert got["ID"].to_pylist() == expected, (backend, mmap)
+
+
+def test_vector_column_predicate_is_refused_on_every_backend(tmp_path):
+    path = str(tmp_path / "vec.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(4, dtype=np.int32),
+            "V": np.arange(12, dtype=np.float32).reshape(4, 3),
+        },
+        overwrite=True,
+    )
+    for columns in (None, ["V"], ["ID", "V"], ["ID"]):
+        for backend in ("auto", "cpp", "torch"):
+            for mmap in (True, False):
+                with pytest.raises(ValueError, match="vector column 'V'"):
+                    torchfits.table.read(
+                        path,
+                        where="V > 4",
+                        columns=columns,
+                        backend=backend,
+                        mmap=mmap,
+                    )
+        with pytest.raises(ValueError, match="vector column 'V'"):
+            torchfits.table.read_torch(path, where="V > 4", columns=columns)

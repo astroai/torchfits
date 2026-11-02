@@ -350,6 +350,10 @@ def read_table(
             values = data[col]
             if not isinstance(values, torch.Tensor):
                 values = torch.as_tensor(values)
+            if values.dim() != 1:
+                raise ValueError(
+                    f"where does not support fixed-size vector column '{col}'"
+                )
             part = _torch_cmp_mask(values, op, lit)
             sentinel = tnull_map.get(col)
             if sentinel is not None:
