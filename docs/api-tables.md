@@ -492,8 +492,18 @@ polars_df = torchfits.to_polars(table_dict, decode_bytes=False)
 ### DuckDB
 
 ```python
-# Register and query (share the relation name between both calls)
-con = torchfits.table.to_duckdb("catalog.fits", hdu=1, relation_name="tbl")
+import duckdb
+
+# to_duckdb registers the table and returns a DuckDB relation (DuckDBPyRelation).
+# Pass connection= to run SQL against the registered name on your own connection.
+con = duckdb.connect()
+rel = torchfits.table.to_duckdb(
+    "catalog.fits", hdu=1, relation_name="tbl", connection=con
+)
+bright = rel.filter("MAG < 20")
+counts = con.sql("SELECT count(*) FROM tbl WHERE MAG < 20").fetchall()
+
+# One-shot query: registers the file under relation_name on a fresh connection
 result = torchfits.table.duckdb_query(
     "catalog.fits",
     "SELECT * FROM tbl WHERE MAG < 20",
