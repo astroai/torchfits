@@ -594,9 +594,9 @@ def _where_mask_for_table(
 
         Every level returns a **nullable** mask and the single
         ``fill_null(..., False)`` below the tree is the only place nulls are
-        resolved: an unknown (null) row is not selected. pyarrow's ``and_`` /
-        ``or_`` already implement Kleene logic, so the tree needs no null
-        handling of its own.
+        resolved: an unknown (null) row is not selected. ``and_kleene`` /
+        ``or_kleene`` implement Kleene logic (plain ``and_`` / ``or_``
+        propagate null, so ``A IS NULL OR A > 3`` lost the null rows).
 
         Resolving nulls *inside* each node instead -- what this used to do --
         destroyed the information ``not`` needs: ``fill_null(equal, False)``
@@ -615,9 +615,9 @@ def _where_mask_for_table(
         if kind == "isnull":
             return _isnull_mask(node[1], bool(node[2]))
         if kind == "and":
-            return pc.and_(_eval(node[1]), _eval(node[2]))
+            return pc.and_kleene(_eval(node[1]), _eval(node[2]))
         if kind == "or":
-            return pc.or_(_eval(node[1]), _eval(node[2]))
+            return pc.or_kleene(_eval(node[1]), _eval(node[2]))
         if kind == "not":
             # Comparisons already fill unknown to False, so a bare invert would
             # select the NaN rows (NOT false). Drop rows whose referenced
