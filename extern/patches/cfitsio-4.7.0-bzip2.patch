@@ -1,5 +1,5 @@
---- a/imcompress.c	2026-08-01 18:44:22.905767683 +0000
-+++ b/imcompress.c	2026-08-01 19:28:25.010720725 +0000
+--- a/imcompress.c
++++ b/imcompress.c
 @@ -6,6 +6,9 @@
  # include <time.h>
  # include <limits.h>
@@ -10,7 +10,17 @@
  
  #define NULL_VALUE -2147483647 /* value used to represent undefined pixels */
  #define ZERO_VALUE -2147483646 /* value used to represent zero-valued pixels */
-@@ -2052,6 +2064,7 @@
+@@ -1460,7 +1463,8 @@
+         /* To guarantee that the compressed data will fit, allocate an output
+ 	   buffer of size 1% larger than the uncompressed data, plus 600 bytes */
+ 
+-            return((int) (nx * 1.01 * zbitpix / 8. + 601.));
++            /* zbitpix is negative for float images; size by bytes per pixel */
++            return((int) (nx * 1.01 * (zbitpix < 0 ? -zbitpix : zbitpix) / 8. + 601.));
+     }
+      else if (comptype == HCOMPRESS_1)
+     {
+@@ -2052,6 +2056,7 @@
          /* =========================================================================== */
          } else if ( (outfptr->Fptr)->compress_type == BZIP2_1) {
  
@@ -18,7 +28,7 @@
  #if BYTESWAPPED
  	   if (intlength == 2)
                 ffswap2((short *) idata, tilelen); 
-@@ -2063,10 +2076,8 @@
+@@ -2063,10 +2068,8 @@
  	   
             /* call bzip2 with blocksize = 900K, verbosity = 0, and default workfactor */
  
@@ -29,7 +39,7 @@
  	   {
                     free(cbuf);
                     ffpmsg("bzip2 compression error");
-@@ -2076,6 +2087,11 @@
+@@ -2076,6 +2079,11 @@
  	    /* Write the compressed byte stream. */
              ffpclb(outfptr, (outfptr->Fptr)->cn_compressed, row, 1,
                       bzlen, (unsigned char *) cbuf, status);
@@ -41,7 +51,7 @@
  
          /* =========================================================================== */
          }  else if ( (outfptr->Fptr)->compress_type == HCOMPRESS_1)     {
-@@ -6435,17 +6451,17 @@
+@@ -6440,16 +6448,28 @@
      /* ************************************************************* */
      } else if ((infptr->Fptr)->compress_type == BZIP2_1) {
  
@@ -58,12 +68,23 @@
              free(idata);
              free (cbuf);
              return (*status = DATA_DECOMPRESSION_ERR);
-         }
++        }
 +        idatalen = bzlen;
++        {
++            /* A short stream would leave the rest of the malloc'd tile as
++               uninitialized pixels (the GZIP path checks this too). */
++            size_t pixbytes = ((infptr->Fptr)->zbitpix == BYTE_IMG) ? 1 :
++                              ((infptr->Fptr)->zbitpix == SHORT_IMG) ? 2 : 4;
++            if ((size_t) bzlen != (size_t) tilelen * pixbytes) {
++                ffpmsg("bzip2: uncompressed tile has wrong size");
++                free(idata);
++                free (cbuf);
++                return (*status = DATA_DECOMPRESSION_ERR);
++            }
+         }
  
          if ((infptr->Fptr)->zbitpix == BYTE_IMG) {
- 	     tiledatatype = TBYTE;
-@@ -6460,6 +6476,12 @@
+@@ -6465,6 +6485,12 @@
              ffswap4(idata, tilelen);
  #endif
  	}
