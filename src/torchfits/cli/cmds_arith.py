@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -42,12 +43,20 @@ _OPS: dict[str, Callable[[torch.Tensor, torch.Tensor | float], torch.Tensor]] = 
 _DTYPE_CHOICES = ("auto", "float32", "float64")
 
 
+# Integral floats up to 2**53 are exact; beyond that a float scalar is not a
+# trustworthy integer and could overflow the int64 accumulator.
+_EXACT_INT_LIMIT = 2**53
+
+
 def _promote_scalar(value: float) -> float | int:
-    """Keep integer scalars exact so integer adds stay in integer arithmetic."""
-    try:
-        as_int = int(value)
-    except (ValueError, OverflowError):
+    """Keep integer scalars exact so integer adds stay in integer arithmetic.
+
+    Huge integral floats (``1e20``) stay floats: they take the float64 path
+    and saturate to the output dtype instead of overflowing int64.
+    """
+    if not math.isfinite(value) or abs(value) > _EXACT_INT_LIMIT:
         return value
+    as_int = int(value)
     return as_int if float(as_int) == value else value
 
 

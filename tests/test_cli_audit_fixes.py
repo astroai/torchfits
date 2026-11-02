@@ -290,3 +290,20 @@ def test_arith_output_dtype_ignores_float64_operand_b(tmp_path):
         result = torchfits.read_tensor(str(out), hdu=0)
         assert result.dtype == torch.float32, dtype
         assert torch.equal(result, torch.full((2, 2), 1.5))
+
+
+def test_arith_huge_integral_scalar_saturates(tmp_path):
+    import warnings
+
+    src = tmp_path / "i16.fits"
+    torchfits.write(str(src), torch.tensor([[1, -2]], dtype=torch.int16))
+    out = tmp_path / "out.fits"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        assert (
+            main(["arith", str(src), "--op", "add", "--value", "1e20", "-o", str(out)])
+            == 0
+        )
+    result = torchfits.read_tensor(str(out), hdu=0)
+    assert result.dtype == torch.int16
+    assert torch.equal(result, torch.tensor([[32767, 32767]], dtype=torch.int16))
