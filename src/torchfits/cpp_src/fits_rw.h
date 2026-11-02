@@ -34,7 +34,9 @@ std::vector<torch::Tensor> read_hdus_batch(const std::string& path, const std::v
 std::pair<FITSFile*, std::vector<HDUInfo>> open_and_read_headers(const std::string& path, int mode);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
-void* get_fptr_from_python_object(nanobind::object obj);
+// Shared owner of a Python FITSFile's fitsfile*. Throws if the handle is
+// closed; keeps it open while held (see FITSFile::share_fptr).
+std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj);
 
 void invalidate_shared_meta(const std::string& filename);
 void clear_shared_read_meta_cache();

@@ -376,7 +376,11 @@ int checked_num_hdus(FITSFile& file) {
     // The completeness check (trailing bytes that begin another HDU header mean
     // fits_get_num_hdus stopped early) lives in the torch-free core so the
     // metadata module and the tensor extension apply the same rule.
-    return core::checked_num_hdus(file.get_fptr(), file.get_start_hdu());
+    // Under the handle lock: the walk moves CFITSIO's current HDU, which a
+    // concurrent read on the same handle would otherwise race with.
+    return file.with_open_fptr([&](fitsfile* fptr) {
+        return core::checked_num_hdus(fptr, file.get_start_hdu());
+    });
 }
 }  // namespace
 
@@ -1475,8 +1479,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header) {
     write_table_hdu(fptr, tensor_dict, header, nb::none(), false);
 }
 
-void* get_fptr_from_python_object(nanobind::object obj) {
-    return reinterpret_cast<void*>(nanobind::cast<FITSFile&>(obj).get_fptr());
+std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj) {
+    return nanobind::cast<FITSFile&>(obj).share_fptr();
 }
 
 } // namespace torchfits

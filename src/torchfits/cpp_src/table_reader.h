@@ -14,6 +14,7 @@
 #include <nanobind/stl/unordered_map.h>
 #include <ATen/Parallel.h>
 #include <functional>
+#include <memory>
 #include <new>
 #include <mutex>
 #include <algorithm>
@@ -101,6 +102,10 @@ public:
         }
         analyze_table();
     }
+
+    // A reader built on a borrowed handle keeps that handle's owner alive, so
+    // closing the Python FITSFile first cannot free the fitsfile under it.
+    void hold_fptr_owner(std::shared_ptr<void> owner) { fptr_owner_ = std::move(owner); }
 
     ~TableReader() {
         if (data_fd_cached_ >= 0) {
@@ -3523,6 +3528,7 @@ private:
     int hdu_num_;
     int target_hdu_ = 1;
     bool owns_fptr_ = false;
+    std::shared_ptr<void> fptr_owner_;
     long nrows_;
     int ncols_;
     long row_width_bytes_ = 0;

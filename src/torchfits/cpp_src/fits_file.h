@@ -39,6 +39,25 @@ public:
     fitsfile* get_fptr() const { return fptr_; }
     int get_start_hdu() const { return start_hdu_; }
 
+    // For code that drives CFITSIO on this handle directly (bindings, table
+    // readers). Throws on a closed handle instead of handing out nullptr. The
+    // returned owner keeps the fitsfile open until the borrower drops it, so a
+    // close() while a TableReader still uses the handle is deferred, not a
+    // use-after-free.
+    std::shared_ptr<fitsfile> share_fptr() {
+        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        if (!fptr_) throw std::runtime_error("FITSFile is closed");
+        return fptr_owner_;
+    }
+
+    // Run fn(fitsfile*) under the handle lock; throws on a closed handle.
+    template <class F>
+    auto with_open_fptr(F&& fn) {
+        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        if (!fptr_) throw std::runtime_error("FITSFile is closed");
+        return fn(fptr_);
+    }
+
     void ensure_hdu(int hdu_num, int* status);
     // Same move, but throws naming the query that needed it. Used by the
     // HDU-keyed cache lookups below, which read the CFITSIO current-HDU cursor:
@@ -84,6 +103,8 @@ private:
     std::string filename_;
     int mode_;
     fitsfile* fptr_ = nullptr;
+    // Owns fptr_; its deleter closes the file. Shared with borrowers.
+    std::shared_ptr<fitsfile> fptr_owner_;
     int start_hdu_ = 1;
     int current_hdu_ = 1;
     int raw_fd_ = -1;

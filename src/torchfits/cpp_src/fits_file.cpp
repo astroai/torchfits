@@ -79,6 +79,10 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         }
         throw std::runtime_error("Could not open FITS file: " + filename_);
     }
+    fptr_owner_.reset(fptr_, [](fitsfile* f) {
+        int close_status = 0;
+        fits_close_file(f, &close_status);
+    });
     if (mode == 0) {
         shared_meta_ = detail::get_shared_meta_for_path(filename_);
         capture_open_identity();
@@ -147,17 +151,21 @@ void FITSFile::publish_compressed(int hdu_num, bool compressed) const {
 void FITSFile::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     close_raw_fd();
-    if (fptr_) {
-        int status = 0;
-        fits_close_file(fptr_, &status);
-        fptr_ = nullptr;
-    }
+    fptr_ = nullptr;
+    // Closes the file now, or when the last borrower (share_fptr) lets go.
+    fptr_owner_.reset();
 }
 
 void FITSFile::ensure_hdu(int hdu_num, int* status) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (!fptr_) throw std::runtime_error("FITSFile is closed");
     int target_hdu = hdu_num + start_hdu_;
+    // Ask CFITSIO where the cursor is instead of trusting current_hdu_:
+    // bindings and handle-based TableReaders move it on this same fitsfile
+    // (fits_get_num_hdus walks to the last HDU), so a cached value goes stale.
+    int actual_hdu = 0;
+    fits_get_hdu_num(fptr_, &actual_hdu);
+    current_hdu_ = actual_hdu;
     if (current_hdu_ != target_hdu) {
         fits_movabs_hdu(fptr_, target_hdu, nullptr, status);
         if (*status == 0) {

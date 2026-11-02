@@ -573,8 +573,11 @@ void bind_table(nb::module_& m) {
             new (self) torchfits::TableReader(filename, hdu_num);
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("__init__", [](torchfits::TableReader* self, nb::object file_obj, int hdu_num) {
-            fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
-            new (self) torchfits::TableReader(fptr, hdu_num);
+            auto owner = torchfits::share_fptr_from_python_object(file_obj);
+            new (self) torchfits::TableReader(owner.get(), hdu_num);
+            // Keep the fitsfile open for this reader even if the FITSFile is
+            // closed or collected first.
+            self->hold_fptr_owner(std::move(owner));
         }, nb::arg("file_obj"), nb::arg("hdu_num") = 1)
         .def_prop_ro("num_rows", &torchfits::TableReader::get_num_rows)
         .def("read_rows", [](torchfits::TableReader& self,
@@ -677,7 +680,8 @@ void bind_table(nb::module_& m) {
     });
 
     m.def("read_fits_table_from_handle", [](nb::object file_obj, int hdu_num) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns({}, 1, -1, true);
@@ -688,7 +692,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_from_handle", [](nb::object file_obj, int hdu_num,
                                                  const std::vector<std::string>& column_names,
                                                  long start_row, long num_rows) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
@@ -701,7 +706,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_raw_from_handle", [](nb::object file_obj, int hdu_num,
                                                      const std::vector<std::string>& column_names,
                                                      long start_row, long num_rows) -> nb::dict {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
@@ -805,7 +811,8 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_numpy_from_handle", [](nb::object file_obj, int hdu_num,
                                                        const std::vector<std::string>& column_names,
                                                        long start_row, long num_rows) -> nb::object {
-        fitsfile* fptr = reinterpret_cast<fitsfile*>(torchfits::get_fptr_from_python_object(file_obj));
+        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
+        fitsfile* fptr = fptr_owner.get();
         nb::gil_scoped_release release;
         torchfits::TableReader reader(fptr, hdu_num);
         auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
