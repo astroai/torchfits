@@ -111,3 +111,23 @@ def test_table_reader_outlives_closed_handle(tmp_path):
     )
     assert res.returncode == 0, (res.returncode, res.stderr)
     assert res.stdout.strip() == "[0, 1, 2, 3, 4]"
+
+
+def test_table_read_through_write_handle_sees_unflushed_rows(tmp_path):
+    """A table written through a handle must read back before the handle is closed.
+
+    The reader validated the HDU extent and read rows from the file on disk,
+    which CFITSIO had not flushed yet ("exceeds physical file size 0").
+    """
+    path = str(tmp_path / "hw.fits")
+
+    class _TableHDU:
+        _raw_data = {"A": torch.arange(5, dtype=torch.int32)}
+        header = {}
+        _schema = None
+
+    f = C.open_fits_file(path, "w")
+    f.write_hdus([{"data": torch.zeros(1, dtype=torch.uint8)}, _TableHDU()], True)
+    assert C.read_fits_table_from_handle(f, 1)["A"].tolist() == [0, 1, 2, 3, 4]
+    assert C.read_fits_table_rows_from_handle(f, 1, ["A"], 2, 2)["A"].tolist() == [1, 2]
+    f.close()

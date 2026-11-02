@@ -93,6 +93,14 @@ public:
                 "Invalid table geometry for HDU " + std::to_string(hdu_num_) +
                 ": " + std::string(err_msg));
         }
+        // Several paths below (extent validation, buffered pread, VLA heap
+        // pread) read the file on disk, not CFITSIO's buffers. A borrowed
+        // handle may have just written this HDU, so flush first; this is a
+        // no-op for a read-only handle.
+        {
+            int flush_status = 0;
+            fits_flush_buffer(fptr_, 0, &flush_status);
+        }
         // Needed for VLA heap pread coalesce (diskfile path).
         char fname[FLEN_FILENAME] = {0};
         int name_status = 0;
