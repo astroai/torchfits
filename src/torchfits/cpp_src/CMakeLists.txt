@@ -818,11 +818,13 @@ target_compile_definitions(_C PRIVATE TORCHFITS_CORE_BUILD_ID="${TORCHFITS_CORE_
 # Prove the CFITSIO symbols actually bound to the core (see check_core_link.cmake).
 add_custom_command(TARGET _C POST_BUILD
     COMMAND "${CMAKE_COMMAND}" "-DCMAKE_TARGET=$<TARGET_FILE:_C>"
+            "-DCORE_LIBRARY=$<TARGET_FILE:torchfits_core>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/check_core_link.cmake"
     VERBATIM
 )
 add_custom_command(TARGET _core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" "-DCMAKE_TARGET=$<TARGET_FILE:_core>"
+            "-DCORE_LIBRARY=$<TARGET_FILE:torchfits_core>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/check_core_link.cmake"
     VERBATIM
 )
