@@ -338,8 +338,18 @@ std::string open_failure_message(const std::string& path, int status) {
     char msg[FLEN_ERRMSG];
     while (fits_read_errmsg(msg) != 0) {
         std::string line(msg);
-        while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) {
+        while (!line.empty() &&
+               (line.back() == ' ' || line.back() == '\n' || line.back() == '\r')) {
             line.pop_back();
+        }
+        // CFITSIO truncates messages at a byte boundary (splitting UTF-8) and
+        // may echo raw server bytes; keep printable ASCII so the exception
+        // text always decodes.
+        for (char& c : line) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (u < 0x20 || u > 0x7e) {
+                c = '?';
+            }
         }
         if (line.empty()) {
             continue;

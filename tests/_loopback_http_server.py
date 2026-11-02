@@ -12,6 +12,7 @@ Routes:
 * ``/redirect-same`` -- 302 to ``http://localhost:<port>/data.fits``
 * ``/redirect-other`` -- 302 to ``http://127.0.0.1:<port>/secret.fits``
 * ``/error-page.fits`` -- 200 with an HTML body (a CDN-style soft error)
+* ``/no-reply.fits`` -- the connection is closed without any response
 * anything else -- 404
 """
 
@@ -67,6 +68,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(302, b"", Location=f"http://127.0.0.1:{port}/secret.fits")
         elif path == "/error-page.fits":
             self._send(200, b"<html><body>quota exceeded</body></html>")
+        elif path == "/no-reply.fits":
+            self.close_connection = True
         else:
             self._send(404, b"not found")
 

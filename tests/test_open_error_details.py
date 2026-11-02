@@ -57,3 +57,27 @@ def test_open_does_not_repeat_its_prefix(loopback):
 def test_cross_host_redirect_error_says_why(loopback):
     with pytest.raises((OSError, RuntimeError), match="redirect .* refused"):
         torchfits.read_header(f"http://localhost:{loopback}/redirect-other")
+
+
+def test_server_closing_without_reply_raises_readable_error(loopback):
+    """CFITSIO formatted an uninitialised buffer into the error stack when the
+    server closed without a status line; the garbage surfaced as a
+    UnicodeDecodeError instead of an I/O error."""
+    url = f"http://localhost:{loopback}/no-reply.fits"
+    for _ in range(3):
+        with pytest.raises((OSError, RuntimeError)) as excinfo:
+            torchfits.read_header(url)
+        message = str(excinfo.value)
+        # Nothing (stale stack bytes) after the CFITSIO reason.
+        assert "http header short (http_open_network);" in message
+        assert message.isascii() and message.isprintable()
+
+
+@pytest.mark.parametrize("pad", [0, 2])
+def test_truncated_utf8_in_error_stack_still_raises_readable_error(loopback, pad):
+    """CFITSIO splits long messages at 80 bytes, which can cut a UTF-8 sequence
+    in half; that used to raise UnicodeDecodeError instead of an I/O error."""
+    url = f"http://localhost:{loopback}/" + "a" * pad + "é" * 60 + ".fits"
+    with pytest.raises((OSError, RuntimeError)) as excinfo:
+        torchfits.read_header(url)
+    assert str(excinfo.value).startswith(f"Could not open FITS file: {url} (")
