@@ -268,9 +268,14 @@ class HDUList:
                 hdu.mark_closed()
 
     def write(self, path: str, overwrite: bool = False) -> None:
-        from .._io_engine._hdu_rewrite import _write_hdus_uncompressed
+        """Write every HDU to *path*; same contract as ``torchfits.write``.
 
-        _write_hdus_uncompressed(path, list(self._hdus), overwrite)
+        Raises FileExistsError when *path* exists and ``overwrite`` is False;
+        the file is written to a temporary name and published atomically.
+        """
+        from .._io_engine.write_api import write
+
+        write(path, self, overwrite=overwrite)
 
     def append(self, hdu: Union[TensorHDU, TableHDU]) -> None:
         self._hdus.append(hdu)
