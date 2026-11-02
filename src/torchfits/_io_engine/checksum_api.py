@@ -33,9 +33,16 @@ def write_checksums(path: str, hdu: int = 0) -> None:
     """Compute and write DATASUM/CHECKSUM keywords for an HDU (CFITSIO)."""
     from .paths import coerce_fits_path, guard_fits_path
 
+    from .caches import invalidate_path_caches
+
     path = coerce_fits_path(path)
     guard_fits_path(path)
-    _cpp().write_hdu_checksums(str(path), _validate_hdu(hdu))
+    cpp = _cpp()
+    cpp.write_hdu_checksums(str(path), _validate_hdu(hdu))
+    # The header just gained CHECKSUM/DATASUM; cached headers keyed on an
+    # unchanged size/mtime (coarse filesystems) would keep serving the old one.
+    invalidate_path_caches(str(path))
+    cpp.clear_shared_read_meta_cache()
 
 
 def verify_checksums(path: str, hdu: int = 0) -> Dict[str, Any]:

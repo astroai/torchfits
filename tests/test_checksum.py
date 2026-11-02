@@ -122,3 +122,18 @@ def test_checksum_api_accepts_numpy_integer_hdu(tmp_path):
     torchfits.write(str(path), torch.zeros(2, 2), overwrite=True)
     torchfits.write_checksums(str(path), hdu=np.int64(0))
     assert torchfits.verify_checksums(str(path), hdu=np.int64(0))["status"] == "ok"
+
+
+def test_write_checksums_invalidates_cached_header(tmp_path):
+    # On a filesystem with coarse mtimes the stamped file keeps its size and
+    # mtime, so the header cached before write_checksums used to be served.
+    import os
+
+    path = str(tmp_path / "ckc.fits")
+    torchfits.write(path, torch.ones(3, 3))
+    st = os.stat(path)
+    assert "CHECKSUM" not in torchfits.read_header(path, 0)
+    torchfits.write_checksums(path, 0)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert os.stat(path).st_size == st.st_size
+    assert "CHECKSUM" in torchfits.read_header(path, 0)
