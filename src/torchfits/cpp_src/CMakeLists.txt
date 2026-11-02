@@ -445,39 +445,6 @@ else()
     if(EXISTS "${CFITSIO_SOURCE_DIR}/CMakeLists.txt")
         message(STATUS "Building vendored CFITSIO from ${CFITSIO_SOURCE_DIR}")
 
-        # CFITSIO hard-defines NIOBUF/MINDIRECT in headers. When we want to tune these
-        # compile-time constants, patch in #ifndef guards once so command-line -D values
-        # can actually take effect.
-        if(TORCHFITS_NIOBUF OR TORCHFITS_MINDIRECT)
-            set(_CFITSIO_FITSIO_H "${CFITSIO_SOURCE_DIR}/fitsio.h")
-            if(EXISTS "${_CFITSIO_FITSIO_H}")
-                file(READ "${_CFITSIO_FITSIO_H}" _fitsio_h_content)
-                if(NOT _fitsio_h_content MATCHES "#ifndef NIOBUF")
-                    string(REPLACE
-                        "#define NIOBUF  40  /* number of IO buffers to create (default = 40) */"
-                        "#ifndef NIOBUF\n#define NIOBUF  40  /* number of IO buffers to create (default = 40) */\n#endif"
-                        _fitsio_h_content
-                        "${_fitsio_h_content}"
-                    )
-                    file(WRITE "${_CFITSIO_FITSIO_H}" "${_fitsio_h_content}")
-                endif()
-            endif()
-
-            set(_CFITSIO_FITSIO2_H "${CFITSIO_SOURCE_DIR}/fitsio2.h")
-            if(EXISTS "${_CFITSIO_FITSIO2_H}")
-                file(READ "${_CFITSIO_FITSIO2_H}" _fitsio2_h_content)
-                if(NOT _fitsio2_h_content MATCHES "#ifndef MINDIRECT")
-                    string(REPLACE
-                        "#define MINDIRECT 8640   /* minimum size for direct reads and writes */"
-                        "#ifndef MINDIRECT\n#define MINDIRECT 8640   /* minimum size for direct reads and writes */\n#endif"
-                        _fitsio2_h_content
-                        "${_fitsio2_h_content}"
-                    )
-                    file(WRITE "${_CFITSIO_FITSIO2_H}" "${_fitsio2_h_content}")
-                endif()
-            endif()
-        endif()
-
         # CFITSIO Build Options
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
         set(TESTS OFF CACHE BOOL "Disable tests" FORCE)
@@ -574,15 +541,33 @@ else()
         # GNU ld rejects every member ("is not an object").
         set_target_properties(cfitsio PROPERTIES
             INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+        # NIOBUF (fitsio.h) sizes arrays inside CFITSIO's FITSfile struct and
+        # MINDIRECT (fitsio2.h) is the direct-I/O threshold. The vendored
+        # headers take both from the command line through #ifndef guards
+        # (extern/patches/cfitsio-4.7.0-niobuf-guards.patch), and every target
+        # that includes them must see the same values -- a NIOBUF that only
+        # CFITSIO saw gave torchfits a different FITSfile layout from the one
+        # CFITSIO built. Applied to the torchfits targets below as well.
+        set(_TORCHFITS_CFITSIO_TUNING_DEFS "")
         if(TORCHFITS_NIOBUF)
-            # CFITSIO reads this compile-time macro directly from fitsio.h.
-            target_compile_definitions(cfitsio PRIVATE NIOBUF=${TORCHFITS_NIOBUF})
+            list(APPEND _TORCHFITS_CFITSIO_TUNING_DEFS NIOBUF=${TORCHFITS_NIOBUF})
             message(STATUS "Overriding CFITSIO NIOBUF=${TORCHFITS_NIOBUF}")
         endif()
         if(TORCHFITS_MINDIRECT)
-            # CFITSIO direct I/O threshold (bytes), defined in fitsio2.h.
-            target_compile_definitions(cfitsio PRIVATE MINDIRECT=${TORCHFITS_MINDIRECT})
+            list(APPEND _TORCHFITS_CFITSIO_TUNING_DEFS MINDIRECT=${TORCHFITS_MINDIRECT})
             message(STATUS "Overriding CFITSIO MINDIRECT=${TORCHFITS_MINDIRECT}")
+        endif()
+        if(_TORCHFITS_CFITSIO_TUNING_DEFS)
+            # Without the guards the header's own #define wins and the -D is
+            # silently ignored, so refuse a tree vendored before the patch.
+            file(STRINGS "${CFITSIO_SOURCE_DIR}/fitsio.h" _niobuf_guard REGEX "^#ifndef NIOBUF")
+            file(STRINGS "${CFITSIO_SOURCE_DIR}/fitsio2.h" _mindirect_guard REGEX "^#ifndef MINDIRECT")
+            if(NOT _niobuf_guard OR NOT _mindirect_guard)
+                message(FATAL_ERROR
+                    "${CFITSIO_SOURCE_DIR} lacks the NIOBUF/MINDIRECT #ifndef guards; "
+                    "re-run ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt")
+            endif()
+            target_compile_definitions(cfitsio PRIVATE ${_TORCHFITS_CFITSIO_TUNING_DEFS})
         endif()
     else()
         message(FATAL_ERROR
@@ -814,6 +799,13 @@ target_compile_features(_C PRIVATE cxx_std_20)
 # Build identity. _C records the core's id so a mismatched pair fails loudly at
 # import (torchfits/__init__.py) instead of crossing an ABI boundary quietly.
 target_compile_definitions(_C PRIVATE TORCHFITS_CORE_BUILD_ID="${TORCHFITS_CORE_BUILD_ID}")
+
+# Same NIOBUF/MINDIRECT as the vendored CFITSIO build (see where they are set).
+if(_TORCHFITS_CFITSIO_TUNING_DEFS)
+    foreach(_torchfits_target IN ITEMS torchfits_core _core _C)
+        target_compile_definitions(${_torchfits_target} PRIVATE ${_TORCHFITS_CFITSIO_TUNING_DEFS})
+    endforeach()
+endif()
 
 # Prove the CFITSIO symbols actually bound to the core (see check_core_link.cmake).
 add_custom_command(TARGET _C POST_BUILD
