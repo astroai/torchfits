@@ -313,8 +313,8 @@ def _weighted_quantile(
         )
     valid = torch.isfinite(flat)
     if mask is not None:
-        valid = valid & _flatten_dims(mask.to(torch.bool), dims)
-    w = _weight_flat(flat, dims=dims, ivar=ivar)
+        valid = valid & _flatten_dims(mask.to(torch.bool).expand_as(xf), dims)
+    w = _weight_flat(flat, dims=dims, ivar=None if ivar is None else ivar.expand_as(xf))
     w = torch.where(valid, w, torch.zeros_like(w))
     values = torch.where(valid, flat, torch.full_like(flat, float("nan")))
 
@@ -350,8 +350,8 @@ def _weighted_dispersion(
     flat = _flatten_dims(xf, dims)
     valid = torch.isfinite(flat)
     if mask is not None:
-        valid = valid & _flatten_dims(mask.to(torch.bool), dims)
-    w = _weight_flat(flat, dims=dims, ivar=ivar)
+        valid = valid & _flatten_dims(mask.to(torch.bool).expand_as(xf), dims)
+    w = _weight_flat(flat, dims=dims, ivar=None if ivar is None else ivar.expand_as(xf))
     w = torch.where(valid, w, torch.zeros_like(w))
     c = _flatten_dims(center.to(xf.dtype), dims)
     d2 = torch.where(valid, (flat - c) ** 2, torch.zeros_like(flat))
@@ -695,9 +695,13 @@ def _zscale_iraf(
         sample = flat.reshape(groups, n)
         valid = torch.isfinite(sample)
         if mask is not None:
-            valid = valid & _flatten_dims(mask.to(torch.bool), dims).reshape(groups, n)
+            valid = valid & _flatten_dims(
+                mask.to(torch.bool).expand_as(xf), dims
+            ).reshape(groups, n)
         if weighted and ivar is not None:
-            w = _weight_flat(sample, dims=dims, ivar=ivar).reshape(groups, n)
+            w = _weight_flat(sample, dims=dims, ivar=ivar.expand_as(xf)).reshape(
+                groups, n
+            )
             valid = valid & torch.isfinite(w) & (w > 0)
         # astropy drops non-finite values first, then strides the remaining
         # values in their *original* order by ``n_finite / n_samples`` and

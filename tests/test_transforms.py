@@ -2099,6 +2099,41 @@ class TestThreadSafety:
             clone.inverse(torch.zeros(8, 8))
 
 
+class TestBroadcastMask:
+    """A spatial (H, W) mask applies to every plane of a (C, H, W) cube."""
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: ZScaleNormalize(algorithm="iraf"),
+            lambda: SigmaNormalize(stat="std"),
+        ],
+    )
+    def test_matches_expanded_mask(self, make) -> None:
+        g = torch.Generator().manual_seed(1)
+        x = torch.randn(3, 16, 16, generator=g)
+        mask = torch.ones(16, 16, dtype=torch.bool)
+        mask[0, 0] = False
+        mask[5:9, 2:6] = False
+        got = make()(x, mask=mask)
+        want = make()(x, mask=mask.expand_as(x).clone())
+        assert torch.allclose(got, want, equal_nan=True)
+
+    def test_weighted_quantile_broadcast_mask_and_ivar(self) -> None:
+        x = torch.randn(3, 8, 8)
+        mask = torch.rand(8, 8) > 0.2
+        ivar = torch.rand(8, 8) + 0.5
+        got = _weighted_quantile(x, 0.5, (-2, -1), mask=mask, ivar=ivar)
+        want = _weighted_quantile(
+            x,
+            0.5,
+            (-2, -1),
+            mask=mask.expand_as(x).clone(),
+            ivar=ivar.expand_as(x).clone(),
+        )
+        assert torch.equal(got, want)
+
+
 class TestMeshFilterNaNTiles:
     def test_masked_tile_does_not_wipe_its_neighbourhood(self) -> None:
         # Linear sky gradient; one tile fully masked. The 3x3 mesh filter must
