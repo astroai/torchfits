@@ -923,6 +923,9 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) { bitpix = BYTE_IMG; datatype = TBYTE; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) { bitpix = SBYTE_IMG; datatype = TSBYTE; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) { bitpix = SHORT_IMG; datatype = TSHORT; }
+        // uint16 (BZERO = 32768): PLIO cannot store the negative signed
+        // codes, but CFITSIO compresses TUSHORT pixels of a USHORT_IMG.
+        else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 16) { bitpix = USHORT_IMG; datatype = TUSHORT; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) { bitpix = LONG_IMG; datatype = TINT; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 64) { bitpix = LONGLONG_IMG; datatype = TLONGLONG; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) { bitpix = FLOAT_IMG; datatype = TFLOAT; }

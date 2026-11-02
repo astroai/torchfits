@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Union
 
+import torch
 from torch import Tensor
 
 from ..hdu import Header, TableHDU, TableHDURef, TensorHDU
@@ -385,6 +386,16 @@ def _write_hdus_with_optional_compression(
                 raise RuntimeError(
                     "PLIO_1 compression algorithm does not support floating-point image data"
                 )
+            scale = replay_header if replay_header is not None else {}
+            if (
+                isinstance(d, Tensor)
+                and d.dtype == torch.int16
+                and scale.get("BZERO") == 32768
+                and scale.get("BSCALE", 1) == 1
+            ):
+                # PLIO only stores values in [0, 2**24): hand CFITSIO the
+                # physical uint16 pixels instead of the signed -32768 codes.
+                hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
         payload.append(hdu_dict)
 
     _invalidate_path_caches(path)
