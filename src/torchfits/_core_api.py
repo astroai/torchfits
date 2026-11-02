@@ -52,7 +52,7 @@ class _CoreModule(Protocol):
     def read_colnames(self, filename: str, hdu_num: int) -> list[str]: ...
     def read_table_info(self, filename: str, hdu_num: int) -> dict[str, Any]: ...
     def read_keys(
-        self, filename: str, hdu_num: int, keys: list[str]
+        self, filename: str, hdu_num: int, keys: list[str], missing_ok: bool = ...
     ) -> dict[str, Any]: ...
     def read_shape(
         self, filename: str, hdu_num: int
@@ -188,9 +188,14 @@ def read_table_info(path: str, hdu: int) -> dict[str, Any]:
     return dict(_core().read_table_info(_guarded(path), hdu))
 
 
-def read_keys(path: str, hdu: int, keys: list[str]) -> dict[str, Any]:
-    """Named header keywords, typed the way :func:`torchfits.read_header` types them."""
-    return dict(_core().read_keys(_guarded(path), hdu, list(keys)))
+def read_keys(
+    path: str, hdu: int, keys: list[str], missing_ok: bool = False
+) -> dict[str, Any]:
+    """Named header keywords, typed the way :func:`torchfits.read_header` types them.
+
+    With ``missing_ok`` absent keywords are left out instead of raising.
+    """
+    return dict(_core().read_keys(_guarded(path), hdu, list(keys), missing_ok))
 
 
 def read_shape(path: str, hdu: int) -> tuple[int, tuple[int, ...]]:

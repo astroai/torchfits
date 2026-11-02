@@ -314,7 +314,8 @@ TableInfo table_info(fitsfile* fptr) {
     return info;
 }
 
-std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::string>& keys) {
+std::vector<KeyValue> read_keywords(
+    fitsfile* fptr, const std::vector<std::string>& keys, bool missing_ok) {
     std::vector<KeyValue> out;
     out.reserve(keys.size());
     for (const auto& key : keys) {
@@ -329,6 +330,7 @@ std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::strin
         int status = 0;
         if (fits_read_keyword(fptr, key.c_str(), value, comment, &status) != 0) {
             if (status == KEY_NO_EXIST) {
+                if (missing_ok) continue;
                 throw std::runtime_error("read_keys: keyword not found: " + key);
             }
             char err_text[FLEN_ERRMSG] = {0};
@@ -545,12 +547,13 @@ TableInfo table_info_path(const std::string& path, int hdu) {
 }
 
 std::vector<KeyValue> keywords_path(
-    const std::string& path, int hdu, const std::vector<std::string>& keys) {
+    const std::string& path, int hdu, const std::vector<std::string>& keys,
+    bool missing_ok) {
     return with_open(path, [&](fitsfile* fptr) {
         int status = 0;
         fits_movabs_hdu(fptr, absolute_hdu(fptr, hdu), nullptr, &status);
         if (status != 0) throw std::runtime_error("read_keys: could not move to HDU");
-        return read_keywords(fptr, keys);
+        return read_keywords(fptr, keys, missing_ok);
     });
 }
 

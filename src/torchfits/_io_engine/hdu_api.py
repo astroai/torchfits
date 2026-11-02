@@ -401,10 +401,16 @@ def read_colnames(path: str, hdu: Union[int, str, None] = 1) -> list[str]:
 
 def read_extname(path: str, hdu: Union[int, str, None] = 0) -> str | None:
     """Return EXTNAME for an HDU, or None if absent."""
-    try:
-        return read_keys(path, ["EXTNAME"], hdu=hdu).get("EXTNAME")
-    except RuntimeError:
-        return None
+    from .. import _core_api
+
+    path = coerce_fits_path(path)
+    hdu_index = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
+    # missing_ok: an HDU without EXTNAME is the common case (most primaries),
+    # so it must not go through an exception and the lookup re-check.
+    values = call_with_lookup(
+        path, hdu_index, _core_api.read_keys, path, hdu_index, ["EXTNAME"], True
+    )
+    return values.get("EXTNAME")
 
 
 def read_table_info(path: str, hdu: Union[int, str, None] = 1) -> dict[str, Any]:

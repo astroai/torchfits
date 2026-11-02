@@ -69,8 +69,10 @@ struct KeyValue {
     double double_value = 0.0;
     std::string str_value;
 };
+// missing_ok: leave absent keywords out of the result instead of throwing,
+// so "is it there?" lookups (read_extname) never take an exception path.
 TORCHFITS_CORE_API std::vector<KeyValue> read_keywords(
-    fitsfile* fptr, const std::vector<std::string>& keys);
+    fitsfile* fptr, const std::vector<std::string>& keys, bool missing_ok = false);
 
 // num_hdus, then the truncation check: fits_get_num_hdus stops silently at the
 // first unparsable HDU, so a file truncated mid-header under-reports its
@@ -90,7 +92,8 @@ TORCHFITS_CORE_API long long nrows_path(const std::string& path, int hdu);
 TORCHFITS_CORE_API std::vector<std::string> colnames_path(const std::string& path, int hdu);
 TORCHFITS_CORE_API TableInfo table_info_path(const std::string& path, int hdu);
 TORCHFITS_CORE_API std::vector<KeyValue> keywords_path(
-    const std::string& path, int hdu, const std::vector<std::string>& keys);
+    const std::string& path, int hdu, const std::vector<std::string>& keys,
+    bool missing_ok = false);
 // (bitpix, row-major shape) for an image HDU.
 TORCHFITS_CORE_API std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int hdu);
 
