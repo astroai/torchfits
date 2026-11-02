@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - io: Read and write uint64 with the FITS BZERO/TZERO = 2**63 convention
+- io: Accept an EXTNAME in write_checksums and verify_checksums
 ### Fixed
 - table: Allow update_rows/append_rows on unsigned columns
 - table: Gather complex columns at full width in filtered mmap reads
@@ -133,6 +134,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - transforms: Sigma-clip mesh background tiles with n_sigma and max_iter
 - table: Accept pathlib.Path in table.write cache invalidation
 - io: Let remote cutouts of tile-compressed HDUs fall back to a download
+- io: Create and open paths with '[' in a directory literally
+- io: Raise argument errors from open(mode=) and table.read(hdu<0) as is
+- io: Keep delete_hdu torch-free and correct the torch-free table
+- hdu: Refuse insert/replace/delete_hdu on a read-only file
+- hdu: Splice HDUs in files with trailing bytes after the last HDU
+- write: Skip an empty in-memory primary when writing a compressed MEF
+- hdu: Route HDUList.write through torchfits.write's path contract
+- io: Raise a readable open error when CFITSIO's error stack holds raw bytes
+- http: Refuse '@' in CFITSIO URLs and parse userinfo only in the authority
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
