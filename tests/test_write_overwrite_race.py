@@ -75,7 +75,7 @@ def test_new_file_written_and_failed_write_leaves_nothing(tmp_path):
     torchfits.write(path, torch.ones(2, 2))
     assert torchfits.read(path).tolist() == [[1.0, 1.0], [1.0, 1.0]]
     bad = str(tmp_path / "bad.fits")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="CFITSIO-native column types"):
         torchfits.write(bad, {"bad": object()})
     assert sorted(p.name for p in tmp_path.iterdir()) == ["new.fits"]
 

@@ -69,18 +69,18 @@ def test_explicit_mode_is_not_answered_from_cache(mef):
     torchfits.read(path, 1, return_header=True)  # caches the table read
     torchfits.read(path, 1)
     for kwargs in ({"return_header": True}, {}):
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="image parameters"):
             torchfits.read(path, 1, mode="image", **kwargs)
     torchfits.read(path, 2, return_header=True)
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="table extension"):
         torchfits.read(path, 2, mode="table", return_header=True)
 
 
 def test_hdu_list_honors_mode_names_and_mixed_types(mef):
     path, image = mef
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="image parameters"):
         torchfits.read(path, hdu=[1], mode="image")
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="table extension"):
         torchfits.read(path, hdu=[2], mode="table")
     got = torchfits.read(path, hdu=["SCI"], mmap=True)
     assert torch.equal(got[0], image + 100)
@@ -91,7 +91,7 @@ def test_hdu_list_honors_mode_names_and_mixed_types(mef):
 
 def test_missing_extname_reports_not_found(mef):
     path, _ = mef
-    with pytest.raises(Exception, match="not found"):
+    with pytest.raises(RuntimeError, match="'NOPE' not found"):
         torchfits.read(path, hdu="NOPE")
 
 

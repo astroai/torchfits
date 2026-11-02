@@ -40,5 +40,5 @@ def test_bzip2_short_tile_is_rejected(tmp_path):
     raw[at : at + len(short)] = short
     open(path, "wb").write(bytes(raw))
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="uncompressing"):
         torchfits.read(path, hdu=1)
