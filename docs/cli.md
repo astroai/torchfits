@@ -331,6 +331,13 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 `--out-dir` and rejects `--out`. Every generated destination is checked before
 processing so it cannot overwrite either input operand.
 
+| Flag | Purpose |
+|---|---|
+| `--value FLOAT` | Scalar operand B |
+| `--operand2 PATH` | Image operand B; required for several A inputs with `--out-dir`, otherwise an alternative to the second positional path |
+| `--hdu2 N` | HDU of image operand B (default: the same index as each A HDU, else 0) |
+| `--dtype {auto,float32,float64}` | `auto` (default) keeps each A HDU's dtype (`div` on an integer A gives float64); integer results are saturated to the dtype's range and fractional parts truncated, with a warning. `float32` / `float64` cast both operands to that dtype, compute, and store in it |
+
 ```bash
 # Add scalar value
 torchfits arith science.fits --op add --value 50.0 -o offset.fits

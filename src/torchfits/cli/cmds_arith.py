@@ -93,6 +93,10 @@ def _compute(
     import torch
 
     if out_dtype.is_floating_point:
+        # Cast an image operand B too: float32 A (or --dtype float32) with a
+        # float64 B must not be promoted to a float64 result.
+        if isinstance(right, torch.Tensor):
+            right = right.to(out_dtype)
         return op_fn(left.to(out_dtype), right)
 
     if left.dtype.is_floating_point:
@@ -162,9 +166,10 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         choices=_DTYPE_CHOICES,
         default="auto",
         help=(
-            "output/compute dtype: 'auto' keeps the input dtype, warning on "
-            "saturation or fractional truncation; float32/float64 compute and "
-            "store in that dtype"
+            "output/compute dtype: 'auto' keeps operand A's dtype (div on an "
+            "integer A gives float64), warning on saturation or fractional "
+            "truncation; float32/float64 cast both operands to that dtype, "
+            "compute, and store in it"
         ),
     )
     parser.add_argument(

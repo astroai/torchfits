@@ -266,3 +266,27 @@ def test_arith_mixed_dtype_hdus_keep_their_dtypes(tmp_path):
     assert first.dtype == torch.int16
     assert torch.equal(first, torch.tensor([[2, 3], [4, 5]], dtype=torch.int16))
     assert second.dtype == torch.float32
+
+
+def test_arith_output_dtype_ignores_float64_operand_b(tmp_path):
+    a = tmp_path / "a.fits"
+    b = tmp_path / "b.fits"
+    torchfits.write(str(a), torch.ones(2, 2, dtype=torch.float32))
+    torchfits.write(str(b), torch.full((2, 2), 0.5, dtype=torch.float64))
+    for dtype in ("float32", "auto"):
+        out = tmp_path / f"out_{dtype}.fits"
+        argv = [
+            "arith",
+            str(a),
+            str(b),
+            "--op",
+            "add",
+            "--dtype",
+            dtype,
+            "-o",
+            str(out),
+        ]
+        assert main(argv) == 0
+        result = torchfits.read_tensor(str(out), hdu=0)
+        assert result.dtype == torch.float32, dtype
+        assert torch.equal(result, torch.full((2, 2), 1.5))
