@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <ATen/Parallel.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -1129,7 +1130,17 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             if (has_schema_tform) {
                 col.tform = schema_tform;
                 TFormInfo info = parse_tform(schema_tform);
-                if (info.repeat > 0) {
+                if (is_ascii) {
+                    // An ASCII TFORM is "Aw": the width follows the code
+                    // letter and there is no leading repeat count.
+                    const size_t a = schema_tform.find_first_of("Aa");
+                    if (a != std::string::npos) {
+                        const long w = std::strtol(schema_tform.c_str() + a + 1, nullptr, 10);
+                        if (w > 0) {
+                            col.width = w;
+                        }
+                    }
+                } else if (info.repeat > 0) {
                     col.width = info.repeat;
                 }
             } else if (is_ascii) {

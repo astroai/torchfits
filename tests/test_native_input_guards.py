@@ -114,3 +114,12 @@ def test_native_writes_refuse_device_arrays(tmp_path):
     with pytest.raises(RuntimeError, match="CPU"):
         C.update_fits_table_rows(table, 1, {"a": col}, 1, 4)
     assert C.read_fits_table(table, 1)["a"].tolist() == [0.0] * 4
+
+
+def test_ascii_schema_width_follows_the_code_letter(tmp_path):
+    path = str(tmp_path / "ascii.fits")
+    C.write_fits_table(
+        path, {"s": ["hello", "worlds"]}, {}, True, {"s": {"format": "A10"}}, "ascii"
+    )
+    rows = C.read_fits_table(path, 1)["s"]
+    assert [bytes(r).rstrip().decode() for r in rows.tolist()] == ["hello", "worlds"]
