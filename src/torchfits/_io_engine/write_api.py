@@ -23,6 +23,7 @@ from ._write_helpers import (
     UInt64WriteError,
     _TableHDUWriteProxy,
     _apply_image_quantize,
+    _atomic_create_target,
     _atomic_replace_target,
     _can_use_cpp_table_writer,
     _coerce_compressed_hdu_item,
@@ -70,22 +71,24 @@ def _write_all_checksums(path: str) -> None:
 
 @contextlib.contextmanager
 def atomic_write_target(path: str, overwrite: bool) -> Iterator[str]:
-    """Yield the path to write to, replacing ``path`` only on clean exit.
+    """Yield a temp path to write to, published at ``path`` only on clean exit.
 
-    Yields ``path`` unchanged when there is no existing file to protect, which is
-    the only case where nothing can be lost. Otherwise the caller writes to a
-    temp path that ``_atomic_replace_target`` renames over ``path`` once the
-    write returns cleanly.
+    An existing file is replaced (``overwrite=True``) by
+    ``_atomic_replace_target``; a new file is published by
+    ``_atomic_create_target``, which never clobbers a file another writer
+    created meanwhile when ``overwrite=False``. Either way a failed write
+    leaves ``path`` untouched.
 
     Callers must invalidate the path caches *after* the block, not inside it;
     ``_atomic_replace_target`` documents why, and ``_table/write.py`` and
     ``write()`` here both follow it.
     """
-    if not overwrite or not os.path.exists(path):
-        yield path
+    if overwrite and os.path.exists(path):
+        with _atomic_replace_target(path) as temp_path:
+            yield temp_path
         return
 
-    with _atomic_replace_target(path) as temp_path:
+    with _atomic_create_target(path, replace=overwrite) as temp_path:
         yield temp_path
 
 
@@ -131,30 +134,36 @@ def write(
         raise FileExistsError(
             f"File '{path}' already exists. Use overwrite=True to overwrite."
         )
+    if path_exists and os.path.isdir(path):
+        raise IsADirectoryError(path)
 
-    if overwrite and path_exists:
-        if os.path.isdir(path):
-            raise IsADirectoryError(path)
+    # Always write a fresh temp file and publish it afterwards: a failed write
+    # then never creates or deletes anything at ``path`` (the old error path
+    # removed whatever was there, including a file another writer created
+    # after the existence check), and overwrite=False never clobbers it.
+    with atomic_write_target(path, overwrite) as temp_path:
+        _write_new_file(
+            temp_path,
+            data,
+            header=header,
+            compress=compress,
+            quantize=quantize,
+            checksum=checksum,
+        )
+    # After the rename, never before: see atomic_write_target.
+    _invalidate_written_target(path)
 
-        with atomic_write_target(path, overwrite) as temp_path:
-            write(
-                temp_path,
-                data,
-                header=header,
-                overwrite=False,
-                compress=compress,
-                quantize=quantize,
-                checksum=checksum,
-            )
-        # After the rename, never before: see atomic_write_target.
-        _invalidate_written_target(path)
-        return
 
-    # Python-side metadata caches and the native shared-read metadata can
-    # otherwise return stale views of an overwritten file (mtime/size can be
-    # unchanged).
-    _invalidate_path_caches(path)
-
+def _write_new_file(
+    path: str,
+    data: Any,
+    header: Optional[Header | Dict[str, Any]],
+    compress: Union[bool, str],
+    quantize: Any,
+    checksum: bool,
+) -> None:
+    """write() body: ``path`` is a temp path that does not exist yet."""
+    overwrite = False
     try:
         import torchfits._C as cpp
 
@@ -231,7 +240,7 @@ def write(
                 )
 
             _write_hdus_with_optional_compression(
-                path, compressed_hdus, compress=compress
+                path, compressed_hdus, compress=compress, overwrite=overwrite
             )
             if checksum:
                 _write_all_checksums(path)
@@ -378,14 +387,6 @@ def write(
         _invalidate_path_caches(path)
 
     except (UInt64WriteError, QuantizeError):
-        if not path_exists and os.path.exists(path):
-            os.remove(path)
         raise
-    except ValueError as e:
-        if not path_exists and os.path.exists(path):
-            os.remove(path)
-        raise RuntimeError(f"Failed to write FITS file '{path}': {e}") from e
     except Exception as e:
-        if not path_exists and os.path.exists(path):
-            os.remove(path)
         raise RuntimeError(f"Failed to write FITS file '{path}': {e}") from e

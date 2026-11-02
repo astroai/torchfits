@@ -429,18 +429,62 @@ def _atomic_replace_target(path: str) -> Iterator[str]:
     under the path and keep serving them after the rename.
     """
     target = os.path.realpath(path)
-    target_dir = os.path.dirname(target) or "."
     original_mode = stat.S_IMODE(os.stat(target).st_mode)
-    fd, temp_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
-    )
-    os.close(fd)
-    # CFITSIO creates the file itself, so hand it a path that does not exist.
-    os.unlink(temp_path)
+    temp_path = _sibling_temp_path(target)
     try:
         yield temp_path
         os.chmod(temp_path, original_mode)
         os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def _sibling_temp_path(target: str) -> str:
+    """A fresh, non-existent hidden path next to ``target`` (same filesystem,
+    so publishing it is atomic). CFITSIO creates the file itself."""
+    target_dir = os.path.dirname(target) or "."
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
+    )
+    os.close(fd)
+    os.unlink(temp_path)
+    return temp_path
+
+
+@contextlib.contextmanager
+def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
+    """Yield a temp path published at ``path`` on clean exit, for a new file.
+
+    The payload is written to a sibling temp file, so a failed write never
+    creates -- or deletes -- anything at ``path``. With ``replace=False`` the
+    temp file is published with ``os.link``, which refuses an existing target:
+    a file another writer created after the caller's existence check is never
+    clobbered and raises ``FileExistsError`` instead. ``replace=True``
+    (overwrite requested) publishes with ``os.replace``.
+    """
+    target = os.path.realpath(path)
+    temp_path = _sibling_temp_path(target)
+    try:
+        yield temp_path
+        if replace:
+            os.replace(temp_path, target)
+        else:
+            try:
+                os.link(temp_path, target)
+            except FileExistsError:
+                raise FileExistsError(
+                    f"File '{path}' already exists. Use overwrite=True to overwrite."
+                ) from None
+            except OSError:
+                # No hard links on this filesystem: best effort, still never
+                # replacing a file that is already there.
+                if os.path.lexists(target):
+                    raise FileExistsError(
+                        f"File '{path}' already exists. "
+                        "Use overwrite=True to overwrite."
+                    ) from None
+                os.rename(temp_path, target)
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)

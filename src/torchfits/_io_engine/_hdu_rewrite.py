@@ -309,7 +309,11 @@ def _hdus_have_checksums(hdus: List[Any]) -> bool:
 
 
 def _write_hdus_with_optional_compression(
-    path: str, hdus: List[Any], compress: Union[bool, str] = False
+    path: str,
+    hdus: List[Any],
+    compress: Union[bool, str] = False,
+    *,
+    overwrite: bool = True,
 ) -> None:
     """Rewrite HDUs, optionally using CFITSIO compressed-image writer.
 
@@ -322,7 +326,7 @@ def _write_hdus_with_optional_compression(
     guard_fits_path(path)
     algorithm = _resolve_compression_algorithm(compress)
     if algorithm is None:
-        _write_hdus_uncompressed(path, hdus, overwrite=True)
+        _write_hdus_uncompressed(path, hdus, overwrite=overwrite)
         return
 
     import torchfits._C as cpp
@@ -359,7 +363,7 @@ def _write_hdus_with_optional_compression(
         payload.append(hdu_dict)
 
     _invalidate_path_caches(path)
-    cpp.write_fits_file_compressed_images(path, payload, True, algorithm)
+    cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)
     for j, item in enumerate(payload):
         _write_header_cards_if_supported(
             path, j + 1, _payload_replay_header(item), invalidate=False
