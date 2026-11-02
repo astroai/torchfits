@@ -112,6 +112,29 @@ class Header(dict[str, Any]):
 
         return type(self)([_copy.deepcopy(card, memo) for card in self._cards])
 
+    # dict.copy / | / |= build or fill a plain mapping and skip the card list
+    # that write() serializes, so those values vanished on write.
+    def copy(self) -> "Header":
+        return self.__copy__()
+
+    def __ior__(self, other: Any) -> "Header":  # type: ignore[override]
+        self.update(other)
+        return self
+
+    def __or__(self, other: Any) -> "Header":  # type: ignore[override]
+        if not isinstance(other, dict):
+            return NotImplemented
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ror__(self, other: Any) -> "Header":  # type: ignore[override]
+        if not isinstance(other, dict):
+            return NotImplemented
+        merged = type(self)(other)
+        merged.update(self)
+        return merged
+
     def __setitem__(self, key: str, value: Any) -> None:
         if (
             not isinstance(value, (str, bytes))
