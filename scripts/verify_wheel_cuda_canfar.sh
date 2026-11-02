@@ -109,9 +109,13 @@ print(m.group(1) if m else "")
 
   canfar logs "${session_id}" > "$dir/canfar_logs.txt" 2>&1 || true
 
+  # grep, not rg: rg is not on the bash PATH everywhere (maintainer's macOS).
   if [[ "${status}" == "Succeeded" || "${status}" == "Completed" ]]; then
-    if rg -q '^\[ OK \]' "$dir/canfar_logs.txt"; then
-      rg '^\[ OK \]' "$dir/canfar_logs.txt"
+    if grep -q '^\[FAIL\]' "$dir/canfar_logs.txt"; then
+      grep '^\[FAIL\]' "$dir/canfar_logs.txt"
+      rc=1
+    elif grep -q '^\[ OK \]' "$dir/canfar_logs.txt"; then
+      grep '^\[ OK \]' "$dir/canfar_logs.txt"
     else
       echo "[FAIL] lane=${lane}: session ${status} but no [ OK ] marker in logs"
       rc=1
@@ -123,21 +127,47 @@ print(m.group(1) if m else "")
   return "$rc"
 }
 
-export -f verify_lane
+# Record each lane's verdict in <lane>/result so the summary counts launcher
+# failures (create/parse/timeout) too, not only [FAIL] lines in session logs.
+run_lane() {
+  local lane="$1" rc=0
+  verify_lane "$lane" || rc=$?
+  mkdir -p "$LOCAL_OUT/$lane"
+  if (( rc == 0 )); then
+    echo OK > "$LOCAL_OUT/$lane/result"
+  else
+    echo FAIL > "$LOCAL_OUT/$lane/result"
+  fi
+  return "$rc"
+}
+
+export -f verify_lane run_lane
 export ROOT_DIR LANES RUN_ID LOCAL_OUT IMAGE CPU MEMORY GIT_REF REPO_URL CLONE_DIR
 export WHEEL_URL MAX_WAIT_SECS POLL_SECS
 
 echo "=== CANFAR CUDA wheel verification (soft-fail, strict=${STRICT}) ==="
 echo "lanes=${LANES} jobs=${JOBS} ref=${GIT_REF} image=${IMAGE} results=${LOCAL_OUT}"
-set +e
 # Soft-fail by contract (see the header): a failing lane must still reach the
 # summary below, so the runner may not abort the script under `set -e`.
-echo "${LANES}" | tr ',' '\n' | xargs -P "${JOBS}" -I{} bash -c 'verify_lane "$1"' _ {}
-FAILED="$(grep -h '^\[FAIL\]' "${LOCAL_OUT}"/*/canfar_logs.txt 2>/dev/null | wc -l)"
-set -e
-echo "=== summary: $(grep -rh '^\[ OK \]' "${LOCAL_OUT}" 2>/dev/null | wc -l) ok, ${FAILED} failed ==="
-if [[ "${FAILED}" -gt 0 ]]; then
-  grep -rh '^\[FAIL\]' "${LOCAL_OUT}" 2>/dev/null || true
+XARGS_RC=0
+echo "${LANES}" | tr ',' '\n' | xargs -P "${JOBS}" -I{} bash -c 'run_lane "$1"' _ {} ||
+  XARGS_RC=$?
+OK=0
+FAILED_LANES=()
+for lane in $(echo "${LANES}" | tr ',' ' '); do
+  if [[ "$(cat "${LOCAL_OUT}/${lane}/result" 2>/dev/null)" == "OK" ]]; then
+    OK=$((OK + 1))
+  else
+    FAILED_LANES+=("${lane}")
+  fi
+done
+FAILED="${#FAILED_LANES[@]}"
+if [[ "${FAILED}" -eq 0 && "${XARGS_RC}" -ne 0 ]]; then
+  FAILED=1  # every lane wrote OK, yet xargs itself failed
+fi
+echo "=== summary: ${OK} ok, ${FAILED} failed (xargs rc=${XARGS_RC}) ==="
+if [[ "${#FAILED_LANES[@]}" -gt 0 ]]; then
+  echo "failed lanes: ${FAILED_LANES[*]}"
 fi
 if [[ "${STRICT}" == "1" && "${FAILED}" -gt 0 ]]; then
   exit 1
