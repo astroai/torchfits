@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import shutil
@@ -209,7 +210,10 @@ def _prepare_edits(
     return set_key, set_value, rename_pair, del_keys
 
 
-def _apply_edits(
+_Plan = list[tuple[int, list[tuple[Any, ...]], bool]]
+
+
+def _plan_edits(
     path: str,
     *,
     hdu_spec: str,
@@ -217,7 +221,8 @@ def _apply_edits(
     set_value: Any,
     rename_pair: tuple[str, str] | None,
     del_keys: list[str],
-) -> None:
+) -> _Plan:
+    """Validate the edit against ``path``'s headers; read-only."""
     with torchfits.open(path) as hdul:
         n_hdus = len(hdul)
     hdus = _parse_hdus(hdu_spec, n_hdus)
@@ -271,11 +276,14 @@ def _apply_edits(
             ops.append(("set", set_key, set_value, ""))
             header[set_key] = set_value
         plans.append(ops)
+    return list(zip(hdus, plans, refresh))
 
+
+def _write_plan(path: str, plan: _Plan) -> None:
     # Phase 2: apply via CFITSIO card update/delete only (never an HDUList
     # rewrite) and only for the edited cards -- replaying a full header would
     # append a second copy of the file's HISTORY/COMMENT cards.
-    for hdu, ops, refresh_sums in zip(hdus, plans, refresh):
+    for hdu, ops, refresh_sums in plan:
         for op in ops:
             if op[0] == "delete":
                 torchfits.io._delete_header_key_if_supported(path, hdu, op[1])
@@ -293,21 +301,31 @@ def _apply_edits(
 def _edit_one(job: tuple[str, str, str, tuple[Any, ...]]) -> None:
     src, dest, hdu_spec, (set_key, set_value, rename_pair, del_keys) = job
     try:
-        if os.path.realpath(src) != os.path.realpath(dest):
-            shutil.copy2(src, dest)
-            target = dest
-        else:
-            # dest resolves to src (e.g. --out-dir reaching the input's
-            # directory through a symlink): edit in place, as with dest == src.
-            target = src
-        _apply_edits(
-            target,
+        # Validate against the source first: a rejected edit must not leave
+        # an unedited copy behind at the destination.
+        plan = _plan_edits(
+            src,
             hdu_spec=hdu_spec,
             set_key=set_key,
             set_value=set_value,
             rename_pair=rename_pair,
             del_keys=del_keys,
         )
+        if os.path.realpath(src) == os.path.realpath(dest):
+            # dest resolves to src (e.g. --out-dir reaching the input's
+            # directory through a symlink): edit in place, as with dest == src.
+            _write_plan(src, plan)
+            return
+        created = not os.path.lexists(dest)
+        try:
+            shutil.copy2(src, dest)
+            _write_plan(dest, plan)
+        except BaseException:
+            # Never leave a half-edited copy that this run created.
+            if created:
+                with contextlib.suppress(OSError):
+                    os.remove(dest)
+            raise
     except UsageError:
         raise
     except IoError:

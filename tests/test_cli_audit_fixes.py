@@ -218,6 +218,24 @@ def test_setkey_refreshes_existing_checksums(tmp_path):
     assert "CHECKSUM" not in torchfits.read_header(str(plain), 0)
 
 
+def test_setkey_failed_edit_leaves_no_copy(tmp_path):
+    src = tmp_path / "img.fits"
+    torchfits.write(str(src), torch.zeros(2, 2))
+    out = tmp_path / "out.fits"
+    assert main(["setkey", str(src), "-o", str(out), "--delete", "MISSING"]) == 2
+    assert not out.exists()
+    out_dir = tmp_path / "edited"
+    argv = ["setkey", str(src), "--out-dir", str(out_dir), "--delete", "MISSING"]
+    assert main(argv) == 2
+    assert not (out_dir / "img.fits").exists()
+    # A successful edit still writes the copy and leaves the input alone.
+    assert (
+        main(["setkey", str(src), "-o", str(out), "-k", "OBJECT", "--value", "x"]) == 0
+    )
+    assert torchfits.read_header(str(out), 0)["OBJECT"] == "x"
+    assert "OBJECT" not in torchfits.read_header(str(src), 0)
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

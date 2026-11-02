@@ -431,6 +431,10 @@ after the edit, so `torchfits verify` keeps passing; HDUs without them do not
 gain them. An edit that names `CHECKSUM` or `DATASUM` itself is applied as
 written.
 
+With `-o` / `--out-dir` the edit is validated against the input before the
+copy is made, so a rejected edit (missing keyword, structural keyword, …)
+leaves no output file behind.
+
 !!! note "Card comments"
     `setkey` writes the value only; it cannot set a card's comment text. Use a
     full header edit (`torchfits header`, or `HDUList` / `Header` in Python)
