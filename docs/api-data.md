@@ -375,9 +375,24 @@ ds = FitsTableDataset(
 
 **Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and `torch.long` label.
 
+Rows hold the values as stored, whether or not `where=` is set: `where=`
+only selects rows. Integer columns keep their dtype and a `TNULL` null comes
+back as its sentinel value; character columns are `uint8` byte tensors
+(space padded). Convert nulls to NaN with `TNullToNan`:
+
+```python
+import torchfits
+from torchfits.data import FitsTableDataset
+from torchfits.transforms import TNullToNan
+
+header = torchfits.read_header("catalog.fits", 1)
+ds = FitsTableDataset(
+    "catalog.fits", where="MAG_G < 20", transform=TNullToNan.from_header(header)
+)
+```
+
 !!! info "When to use"
-    Use for catalogs up to a few million rows that fit in memory. The
-    `where=` predicate is pushed down so only matching rows are loaded. For
+    Use for catalogs up to a few million rows that fit in memory. For
     larger catalogs, use `FitsTableIterableDataset`.
 
 ---
@@ -421,14 +436,11 @@ HDU, including when every column is variable-length. A variable-length column
 arrives from `scan_torch` as a Python `list` rather than a tensor, so the
 per-chunk row count is read from tensor *or* list columns.
 
-!!! warning "where= performance"
-    The ``where=`` path uses ``table.scan()`` which yields Arrow
-    ``RecordBatch`` objects and converts each row to Python individually.
-    This is slower than the non-``where=`` path which uses
-    ``table.scan_torch`` for direct tensor-column chunks. For
-    performance-sensitive filtered streaming on large catalogs, consider
-    reading the full table with ``table.scan_torch`` and filtering in
-    PyTorch.
+Rows and chunks follow the same convention as `FitsTableDataset`: values as
+stored, with or without `where=`. A `TNULL` null is its sentinel value and
+character columns are `uint8` byte tensors; use `TNullToNan` for NaN nulls.
+`where=` accepts the full `table.read` predicate dialect and is evaluated per
+chunk on the predicate columns only.
 
 !!! info "When to use"
     Use for large catalogs that don't fit in memory. Each worker (and each
@@ -439,10 +451,9 @@ per-chunk row count is read from tensor *or* list columns.
 
 !!! tip "Per-row vs tensor-space"
     Per-row mode (`as_batches=False`, the default) is what you want for
-    `collate_fn`-style row sampling and for `where=` predicates. When every
-    column is numeric, `as_batches=True` keeps the data as tensors end to end
-    and skips the Arrow→Python conversion per row — markedly faster for wide
-    catalogs. Character (`TFORM` `A`) and bit (`X`) columns are omitted so both
+    `collate_fn`-style row sampling. `as_batches=True` keeps the data as
+    tensor chunks end to end and skips the per-row split — markedly faster
+    for wide catalogs; `where=` works in both modes. Character (`TFORM` `A`) and bit (`X`) columns are omitted so both
     scanner paths agree; read them in per-row mode. The two modes are not
     mixable with `shuffle_buffer_size=`, which needs individual rows.
 

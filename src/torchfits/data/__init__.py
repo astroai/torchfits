@@ -188,21 +188,30 @@ def _eager_table_columns(
     device: str,
     mmap: bool | str,
 ) -> dict[str, Any]:
-    """Load a full table into columnar storage (tensors or python lists)."""
-    if where is None:
-        try:
-            import torchfits._C as cpp
+    """Load a full table into columnar storage (tensors or python lists).
 
-            col_list = list(columns) if columns else []
-            chunk = cpp.read_fits_table(path, hdu, col_list, _resolve_table_mmap(mmap))
-            if chunk:
-                return _move_table_chunk(chunk, device)
-        except Exception:
-            _log.debug(
-                "C++ table read failed for %r, falling back to pyarrow",
-                path,
-                exc_info=True,
-            )
+    ``where=`` selects rows but never changes the representation: the
+    selected rows come back exactly as an unfiltered read returns them
+    (stored TNULL sentinels, raw ``uint8`` character bytes).
+    """
+    row_mask = None
+    if where is not None:
+        row_mask = _where_row_mask(path, hdu, where, mmap=mmap)
+    try:
+        import torchfits._C as cpp
+
+        col_list = list(columns) if columns else []
+        chunk = cpp.read_fits_table(path, hdu, col_list, _resolve_table_mmap(mmap))
+        if chunk:
+            if row_mask is not None:
+                chunk = _select_table_rows(chunk, row_mask)
+            return _move_table_chunk(chunk, device)
+    except Exception:
+        _log.debug(
+            "C++ table read failed for %r, falling back to pyarrow",
+            path,
+            exc_info=True,
+        )
 
     import torchfits.table
     import pyarrow.types as pt
@@ -234,40 +243,52 @@ def _eager_table_columns(
     return result
 
 
-def _tensor_columns_from_record_batch(batch: Any) -> dict[str, torch.Tensor | None]:
-    """Numeric Arrow columns as tensors; None marks non-numeric columns."""
-    import pyarrow.types as pt
+def _where_row_mask(
+    path: str,
+    hdu: int,
+    where: str,
+    *,
+    mmap: bool | str,
+    row_slice: tuple[int, int] | None = None,
+) -> torch.Tensor:
+    """Boolean row mask for *where* over the table (or a ``row_slice`` window).
 
-    columns: dict[str, torch.Tensor | None] = {}
-    for name in batch.schema.names:
-        col = batch.column(name)
-        col_type = col.type
-        if (
-            pt.is_integer(col_type)
-            or pt.is_floating(col_type)
-            or pt.is_boolean(col_type)
-        ):
-            columns[name] = torch.as_tensor(col.to_numpy(zero_copy_only=False).copy())
+    Evaluated with the full ``table.read`` predicate dialect on the predicate
+    columns only, so the selected rows can be taken from a torch-native read.
+    """
+    import numpy as np
+
+    import torchfits.table
+    from .._table._read_where import _where_mask_for_table
+    from .._where import parse_where_expression, where_columns_from_ast
+
+    ast = parse_where_expression(where)
+    pred_cols = where_columns_from_ast(ast)
+    pa_table = torchfits.table.read(
+        path,
+        hdu=hdu,
+        columns=pred_cols,
+        row_slice=row_slice,
+        mmap=_resolve_table_mmap(mmap),
+    )
+    mask = _where_mask_for_table(pa_table, where, parsed_ast=ast)
+    values = mask.to_numpy(zero_copy_only=False) if hasattr(mask, "to_numpy") else mask
+    return torch.from_numpy(np.asarray(values, dtype=bool).copy())
+
+
+def _select_table_rows(chunk: dict[str, Any], row_mask: torch.Tensor) -> dict[str, Any]:
+    """Keep the rows of a columnar chunk where *row_mask* is True."""
+    keep = row_mask.nonzero().flatten()
+    picked = keep.tolist()
+    out: dict[str, Any] = {}
+    for name, value in chunk.items():
+        if isinstance(value, torch.Tensor):
+            out[name] = value.index_select(0, keep.to(value.device))
+        elif isinstance(value, list):
+            out[name] = [value[i] for i in picked]
         else:
-            columns[name] = None
-    return columns
-
-
-def _row_from_record_batch(
-    batch: Any,
-    row_idx: int,
-    tensor_cols: dict[str, torch.Tensor | None],
-    device: str,
-) -> dict[str, Any]:
-    row: dict[str, Any] = {}
-    for name in batch.schema.names:
-        tensor_col = tensor_cols.get(name)
-        if tensor_col is not None:
-            value = tensor_col[row_idx]
-            row[name] = to_device(value, device) if str(device) != "cpu" else value
-        else:
-            row[name] = batch.column(name)[row_idx].as_py()
-    return row
+            out[name] = value
+    return out
 
 
 def _row_from_torch_chunk(chunk: dict[str, Any], row_idx: int) -> dict[str, Any]:
@@ -403,70 +424,53 @@ class FitsTableIterableDataset(IterableDataset[Any]):
 
         skipped = self._non_numeric_columns() if self.as_batches else set()
 
-        if self.where is None:
-            import torchfits.table
-
-            for chunk in torchfits.table.scan_torch(
-                self.path,
-                hdu=self.hdu,
-                columns=self.columns,
-                row_slice=window,
-                batch_size=self.batch_size,
-                mmap=_resolve_table_mmap(self.mmap),
-                device=self.device,
-            ):
-                if not chunk:
-                    continue
-                if self.as_batches:
-                    if skipped:
-                        chunk = {k: v for k, v in chunk.items() if k not in skipped}
-                    if self.transform is not None:
-                        chunk = self.transform(chunk)
-                    yield chunk
-                    continue
-                n_rows = next(
-                    (
-                        v.shape[0] if isinstance(v, torch.Tensor) else len(v)
-                        for v in chunk.values()
-                        if isinstance(v, (torch.Tensor, list))
-                    ),
-                    0,
-                )
-                for row_idx in range(n_rows):
-                    row = _row_from_torch_chunk(chunk, row_idx)
-                    if self.transform is not None:
-                        row = self.transform(row)
-                    yield row
-            return
-
         import torchfits.table
 
-        for batch in torchfits.table.scan(
+        # where= only selects rows: each chunk is filtered with a row mask
+        # evaluated over the same row range, so rows keep the exact
+        # representation of an unfiltered scan.
+        offset = 0 if window is None else window[0]
+        for chunk in torchfits.table.scan_torch(
             self.path,
             hdu=self.hdu,
             columns=self.columns,
             row_slice=window,
-            where=self.where,
             batch_size=self.batch_size,
             mmap=_resolve_table_mmap(self.mmap),
+            device=self.device,
         ):
-            tensor_cols = _tensor_columns_from_record_batch(batch)
-            if self.as_batches:
-                numeric = {
-                    k: v
-                    for k, v in tensor_cols.items()
-                    if v is not None and k not in skipped
-                }
-                if not numeric:
-                    continue
-                if str(self.device) != "cpu":
-                    numeric = _move_table_chunk(numeric, self.device)
-                if self.transform is not None:
-                    numeric = self.transform(numeric)
-                yield numeric
+            if not chunk:
                 continue
-            for row_idx in range(batch.num_rows):
-                row = _row_from_record_batch(batch, row_idx, tensor_cols, self.device)
+            n_rows = next(
+                (
+                    v.shape[0] if isinstance(v, torch.Tensor) else len(v)
+                    for v in chunk.values()
+                    if isinstance(v, (torch.Tensor, list))
+                ),
+                0,
+            )
+            if self.where is not None:
+                row_mask = _where_row_mask(
+                    self.path,
+                    self.hdu,
+                    self.where,
+                    mmap=self.mmap,
+                    row_slice=(offset, offset + n_rows),
+                )
+                offset += n_rows
+                if not bool(row_mask.any()):
+                    continue
+                chunk = _select_table_rows(chunk, row_mask)
+                n_rows = int(row_mask.sum())
+            if self.as_batches:
+                if skipped:
+                    chunk = {k: v for k, v in chunk.items() if k not in skipped}
+                if self.transform is not None:
+                    chunk = self.transform(chunk)
+                yield chunk
+                continue
+            for row_idx in range(n_rows):
+                row = _row_from_torch_chunk(chunk, row_idx)
                 if self.transform is not None:
                     row = self.transform(row)
                 yield row
