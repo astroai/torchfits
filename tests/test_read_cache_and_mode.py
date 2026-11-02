@@ -108,3 +108,31 @@ def test_http_cutout_refuses_table_hdu(mef, monkeypatch):
     info = http_subset.locate_uncompressed_2d("https://example.org/mef.fits", 2)
     assert (info["naxis1"], info["naxis2"]) == (4, 3)
     assert np.dtype(str(info["dtype"]).replace("torch.", "")) == np.float32
+
+
+def test_http_cutout_of_compressed_hdu_falls_back(tmp_path, monkeypatch):
+    """A tile-compressed image is a BINTABLE: it must ask for a full download
+    (HttpRangeUnsupported), not be rejected as a table."""
+    path = str(tmp_path / "c.fits")
+    torchfits.write(
+        path,
+        torch.arange(64, dtype=torch.int16).reshape(8, 8),
+        compress="RICE",
+        overwrite=True,
+    )
+    blob = open(path, "rb").read()
+
+    def fake_range(url, start, end, timeout=None):
+        return blob[start : end + 1]
+
+    monkeypatch.setattr(http_subset, "http_read_range", fake_range)
+    with pytest.raises(http_subset.HttpRangeUnsupported):
+        http_subset.locate_uncompressed_2d("https://example.org/c.fits", 1)
+
+
+def test_table_write_accepts_pathlib_path(tmp_path):
+    import torchfits.table as table
+
+    path = tmp_path / "t.fits"
+    table.write(path, {"A": np.array([1, 2], dtype=np.uint16)}, overwrite=True)
+    assert torchfits.read(str(path), hdu=1)["A"].tolist() == [1, 2]
