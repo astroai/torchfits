@@ -172,6 +172,34 @@ def test_setkey_delete_and_rename_hierarch_keys(tmp_path):
     assert header["OTHERLONGKEY"] == 3
 
 
+def test_setkey_refuses_structural_keywords(tmp_path):
+    path = tmp_path / "img.fits"
+    torchfits.write(str(path), torch.zeros(2, 2))
+    before = path.read_bytes()
+    for argv in (
+        ["-k", "NAXIS1", "--value", "7"],
+        ["-k", "bitpix", "--value", "16"],
+        ["--delete", "NAXIS2"],
+        ["--rename", "EXTEND=EXTENDED"],
+        ["--rename", "OBJECT=NAXIS3"],
+    ):
+        assert main(["setkey", str(path), *argv]) == 2, argv
+    assert path.read_bytes() == before
+    cat = tmp_path / "cat.fits"
+    tf_table.write(str(cat), {"A": np.array([1.0, 2.0])}, overwrite=True)
+    assert main(["setkey", str(cat), "-e", "1", "-k", "TFORM1", "--value", "J"]) == 2
+
+
+def test_setkey_refuses_compression_keywords_on_compressed_hdu(tmp_path):
+    packed, _ = _compressed_wide_image(tmp_path)
+    before = packed.read_bytes()
+    argv = ["setkey", str(packed), "-e", "1", "-k", "ZCMPTYPE", "--value", "RICE_1"]
+    assert main(argv) == 2
+    assert packed.read_bytes() == before
+    # Ordinary keys (even Z-prefixed ones) stay editable.
+    assert main(["setkey", str(packed), "-e", "1", "-k", "ZPOINT", "--value", "1"]) == 0
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

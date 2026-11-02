@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .common import (
     add_hdu_arg,
     ensure_unique_basenames,
     expand_at_list_paths,
+    is_compressed_image_header,
     resolve_file_jobs,
     resolve_paths,
     run_file_jobs,
@@ -106,6 +108,30 @@ def _normalize_keyword(raw: str) -> str:
     return key.upper()
 
 
+# Cards that define the HDU's data layout. CFITSIO maintains them; an edit
+# would either be dropped silently or corrupt the file, so they are refused.
+_STRUCTURAL_KEY = re.compile(
+    r"^(SIMPLE|XTENSION|BITPIX|NAXIS[0-9]*|PCOUNT|GCOUNT|TFIELDS|TFORM[0-9]+"
+    r"|TBCOL[0-9]+|EXTEND|THEAP|END)$"
+)
+# Tile-compression cards: on a compressed HDU they describe how to rebuild
+# the image from the tile table.
+_COMPRESSION_KEY = re.compile(
+    r"^Z(IMAGE|SIMPLE|TENSION|EXTEND|BITPIX|NAXIS[0-9]*|TILE[0-9]+|CMPTYPE"
+    r"|NAME[0-9]+|VAL[0-9]+|QUANTIZ|DITHER0|PCOUNT|GCOUNT|BLANK|SCALE|ZERO"
+    r"|MASKCMP|HECKSUM|DATASUM|THEAP)$"
+)
+
+
+def _reject_structural(key: str, *, compressed: bool = False, where: str = "") -> None:
+    name = key.upper()
+    if _STRUCTURAL_KEY.match(name) or (compressed and _COMPRESSION_KEY.match(name)):
+        prefix = f"{where}: " if where else ""
+        raise UsageError(
+            f"{prefix}{key} is a structural keyword and cannot be edited with setkey"
+        )
+
+
 def _header_key(header: Any, key: str) -> str | None:
     """The spelling under which ``key`` is stored in ``header``, if present.
 
@@ -169,6 +195,8 @@ def _prepare_edits(
             raise UsageError(f"--rename {old_raw}={new_raw} names the same keyword")
         rename_pair = (old_key, new_key)
     set_key = _normalize_keyword(key) if key is not None else None
+    for edited in (*del_keys, *(rename_pair or ()), *([set_key] if set_key else [])):
+        _reject_structural(edited)
     if key is None:
         set_value = None
     elif value is None:  # unreachable: run() validates --key/--value pairing
@@ -198,6 +226,12 @@ def _apply_edits(
     plans: list[list[tuple[Any, ...]]] = []
     for hdu in hdus:
         header = Header(torchfits.read_header(path, hdu))
+        if is_compressed_image_header(header):
+            edited_keys = [*del_keys, *(rename_pair or ())]
+            if set_key is not None:
+                edited_keys.append(set_key)
+            for edited in edited_keys:
+                _reject_structural(edited, compressed=True, where=f"{path}[{hdu}]")
         ops: list[tuple[Any, ...]] = []
         for del_key in del_keys:
             present = _header_key(header, del_key)

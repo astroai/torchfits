@@ -419,6 +419,13 @@ torchfits transform *.fits --name LogStretch --out-dir /tmp/log_images -J 0
 
 Inserts, updates, renames, or deletes header keywords in place via CFITSIO card updates. Preserves tile compression on compressed files.
 
+Structural keywords describe the data layout and cannot be set, renamed, or
+deleted: `SIMPLE`, `XTENSION`, `BITPIX`, `NAXIS`, `NAXISn`, `PCOUNT`, `GCOUNT`,
+`TFIELDS`, `TFORMn`, `TBCOLn`, `EXTEND`, `THEAP`, and, on tile-compressed HDUs,
+the compression cards (`ZIMAGE`, `ZBITPIX`, `ZNAXISn`, `ZTILEn`, `ZCMPTYPE`,
+`ZNAMEn`, `ZVALn`, `ZQUANTIZ`, …). Such an edit is a usage error (exit `2`)
+and leaves the file untouched.
+
 !!! note "Card comments"
     `setkey` writes the value only; it cannot set a card's comment text. Use a
     full header edit (`torchfits header`, or `HDUList` / `Header` in Python)
