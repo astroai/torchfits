@@ -582,20 +582,38 @@ def _unsigned_image_storage_for_fits_write(
 
 _INTEGER_STORAGE_SCALE_KEYS = ("BSCALE", "BZERO", "BLANK")
 
+# BITPIX each tensor dtype is stored with (unsigned/int8 via their BZERO
+# conventions).
+_STORAGE_BITPIX = {
+    torch.uint8: 8,
+    torch.int8: 8,
+    torch.int16: 16,
+    torch.uint16: 16,
+    torch.int32: 32,
+    torch.uint32: 32,
+    torch.int64: 64,
+    torch.uint64: 64,
+    torch.float32: -32,
+    torch.float64: -64,
+}
+
 
 def _drop_stale_integer_scale_cards(
     header: Optional[Dict[str, Any]],
     tensor: Tensor,
 ) -> Optional[Dict[str, Any]]:
-    """Drop integer-storage scale cards copied onto an already-decoded float.
+    """Drop scale cards copied from a header whose storage the tensor left.
 
-    CFITSIO applies BSCALE/BZERO to BITPIX=-32 payloads. Replaying a quantized
+    CFITSIO applies BSCALE/BZERO to every payload. Replaying a quantized
     source header (BITPIX=16 plus a tiny BSCALE) onto physical floats
-    double-scales on the next read. Quantize runs first and leaves int16, so
-    those writes keep the cards. Float headers (BITPIX < 0) keep an explicit
-    BSCALE.
+    double-scales on the next read, and a uint16 header's BZERO=32768 on an
+    int32 tensor (user arithmetic promoted the dtype) shifts every value. So
+    BSCALE/BZERO/BLANK go whenever the header BITPIX is not the tensor's
+    storage BITPIX; the unsigned/int8 conventions then add their own cards.
+    Float headers (BITPIX < 0) keep an explicit BSCALE on floats; quantize
+    stamps BITPIX=16 on its own header, so those writes keep the cards.
     """
-    if header is None or not tensor.is_floating_point():
+    if header is None:
         return header
     getter = getattr(header, "get", None)
     bitpix = getter("BITPIX") if getter is not None else None
@@ -603,10 +621,18 @@ def _drop_stale_integer_scale_cards(
         bp = int(bitpix) if bitpix is not None else None
     except (TypeError, ValueError):
         bp = None
-    if bp is None or bp < 0:
+    if bp is None:
+        return header
+    if tensor.is_floating_point():
+        if bp < 0:
+            return header
+    elif _STORAGE_BITPIX.get(tensor.dtype, bp) == bp:
         return header
     out = Header(header)
-    for key in _INTEGER_STORAGE_SCALE_KEYS:
+    # BITPIX goes too: it no longer describes this payload, and a later pass
+    # on the converted storage must not mistake the convention cards for
+    # stale ones.
+    for key in (*_INTEGER_STORAGE_SCALE_KEYS, "BITPIX"):
         if key in out:
             del out[key]
     return out
@@ -634,7 +660,7 @@ def _apply_image_quantize(
     packed = quantize_int16_robust(
         tensor, lo_q=opts.lo_q, hi_q=opts.hi_q, keep_zero=opts.keep_zero
     )
-    extra = {"BSCALE": packed.scale, "BZERO": packed.zero}
+    extra = {"BITPIX": 16, "BSCALE": packed.scale, "BZERO": packed.zero}
     if packed.blank_code is not None:
         extra["BLANK"] = int(packed.blank_code)
     return packed.codes, _merge_fits_write_header(header, extra)
@@ -1273,12 +1299,12 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                         " for dict HDUs. Could not convert"
                         f" {type(img).__name__} to a tensor."
                     ) from None
+            header = _drop_stale_integer_scale_cards(item.get("header", {}), img)
             img, img_header = _unsigned_image_storage_for_fits_write(img)
             return TensorHDU(
                 data=img,
                 header=_merge_fits_write_header(
-                    _write_boundary_header(item.get("header", {})),
-                    img_header,
+                    _write_boundary_header(header), img_header
                 ),
             )
         return _TableHDUWriteProxy(item, Header())
