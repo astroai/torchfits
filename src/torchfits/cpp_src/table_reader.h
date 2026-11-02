@@ -1546,6 +1546,9 @@ public:
             // True when target_i is representable in the column's integer
             // storage width; EQ/NE raw-byte compare is exact only then.
             bool target_fits_storage = true;
+            // Effective operator: equal to filter->op except when a
+            // non-integral float literal meets an integer column (see below).
+            FilterOp op = FilterOp::EQ;
         };
 
         std::vector<FilterContext> ctxs;
@@ -1588,8 +1591,40 @@ public:
                     // compare is exact only when the effective target fits the
                     // column's integer storage width; ordering comparisons are
                     // promoted to int64 and never truncate.
+                    ctx.op = f.op;
                     ctx.target_i = f.val_i;
-                    if (c.is_unsigned_int) {
+                    bool constant_predicate = false;
+                    if (f.type_idx == 0 && !ctx.is_float && !ctx.is_double &&
+                        std::floor(f.val_d) != f.val_d) {
+                        // A non-integral float literal on an integer column:
+                        // val_i is the literal truncated toward zero, which
+                        // makes `X >= 2.5` match 2. Rewrite to exact integer
+                        // bounds (|val_d| < 2^52 here, so floor fits int64).
+                        const auto lo = static_cast<int64_t>(std::floor(f.val_d));
+                        switch (f.op) {
+                            case FilterOp::GT:
+                            case FilterOp::GE:
+                                ctx.op = FilterOp::GT;  // X > 2.5  <=>  X > 2
+                                ctx.target_i = lo;
+                                break;
+                            case FilterOp::LT:
+                            case FilterOp::LE:
+                                ctx.op = FilterOp::LT;  // X < 2.5  <=>  X < 3
+                                ctx.target_i = lo + 1;
+                                break;
+                            case FilterOp::EQ:  // never true
+                                ctx.op = FilterOp::LT;
+                                ctx.target_i = std::numeric_limits<int64_t>::min();
+                                constant_predicate = true;
+                                break;
+                            case FilterOp::NE:  // always true
+                                ctx.op = FilterOp::GE;
+                                ctx.target_i = std::numeric_limits<int64_t>::min();
+                                constant_predicate = true;
+                                break;
+                        }
+                    }
+                    if (c.is_unsigned_int && !constant_predicate) {
                         ctx.target_i -= c.unsigned_offset;
                     }
                     if (ctx.is_short) {
@@ -1626,7 +1661,7 @@ public:
         if (ctxs.size() == 1) {
             const auto& ctx = ctxs[0];
             const size_t offset = ctx.offset;
-            const FilterOp op = ctx.filter->op;
+            const FilterOp op = ctx.op;
 
             // Pre-byte-swap the target so we can compare raw FITS bytes directly,
             // eliminating per-row bswap instructions for EQ/NE on integers.
@@ -1855,7 +1890,7 @@ public:
                         uint64_t tmp; std::memcpy(&tmp, val_ptr, 8); tmp = bswap_64(tmp);
                         double val; std::memcpy(&val, &tmp, 8);
                         double target = ctx.filter->val_d;
-                        switch (ctx.filter->op) {
+                        switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target) && (val == val); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1867,7 +1902,7 @@ public:
                         uint32_t tmp; std::memcpy(&tmp, val_ptr, 4); tmp = bswap_32(tmp);
                         float val; std::memcpy(&val, &tmp, 4);
                         float target = (float)ctx.filter->val_d;
-                        switch (ctx.filter->op) {
+                        switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target) && (val == val); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1879,7 +1914,7 @@ public:
                        uint64_t tmp; memcpy(&tmp, val_ptr, 8);
                        int64_t val = (int64_t)bswap_64(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1891,7 +1926,7 @@ public:
                        uint32_t tmp; memcpy(&tmp, val_ptr, 4);
                        int32_t val = (int32_t)bswap_32(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1903,7 +1938,7 @@ public:
                        uint16_t tmp; memcpy(&tmp, val_ptr, 2);
                        int16_t val = (int16_t)bswap_16(tmp);
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
@@ -1914,7 +1949,7 @@ public:
                     } else if (ctx.is_byte) {
                        uint8_t val = *val_ptr;
                        int64_t target = ctx.target_i;
-                       switch (ctx.filter->op) {
+                       switch (ctx.op) {
                            case FilterOp::EQ: match = (val == target); break;
                            case FilterOp::NE: match = (val != target); break;
                            case FilterOp::GT: match = (val > target); break;
