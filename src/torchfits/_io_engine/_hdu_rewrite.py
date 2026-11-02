@@ -396,6 +396,33 @@ def _write_hdus_with_optional_compression(
     _invalidate_path_caches(path)
 
 
+def _require_hdus_land_in_place(hdus: List[Any], compress: Union[bool, str]) -> None:
+    """Refuse an edit whose HDUs the writer would silently renumber.
+
+    A table cannot be the primary HDU, and the compressed writer always emits
+    its own empty primary: either way the writer would prepend an HDU and
+    shift every index by one (an insert at 0 landing at 1, a deleted primary
+    being recreated).
+    """
+    if not hdus:
+        return
+    first = hdus[0]
+    if isinstance(first, (TableHDU, TableHDURef)) or hasattr(first, "_raw_data"):
+        raise ValueError(
+            "A table cannot be the primary HDU (index 0): the file would gain an "
+            "empty primary and every HDU would shift by one. Insert or replace "
+            "the table at index >= 1, or keep an HDU in front of it."
+        )
+    if _resolve_compression_algorithm(compress) is not None and not (
+        _is_skippable_empty_primary(0, first)
+    ):
+        raise ValueError(
+            "compress= rewrites put every image in an extension behind an empty "
+            "primary, but HDU 0 holds data and would move to index 1. Rewrite "
+            "without compress=, or move the data out of the primary first."
+        )
+
+
 def _atomic_rewrite_hdus(
     path: str,
     hdus: List[Any],
@@ -404,6 +431,7 @@ def _atomic_rewrite_hdus(
     restamp_checksums: bool = False,
 ) -> None:
     """Rewrite an existing HDU sequence without exposing a partial file."""
+    _require_hdus_land_in_place(hdus, compress)
     with _atomic_replace_target(path) as temp_path:
         from . import write_api
 

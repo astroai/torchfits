@@ -527,6 +527,16 @@ torchfits.replace_hdu(path, hdu, data, header=None, compress=False)
 torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
+`hdu` is an index or an EXTNAME (matched case-insensitively, as in `read()`).
+Every other HDU keeps its index. An edit that cannot land where asked raises
+`ValueError` and leaves the file unchanged:
+
+- a table at index 0 (`insert_hdu(..., index=0)`, `replace_hdu(path, 0, table)`,
+  or `delete_hdu(path, 0)` when HDU 1 is a table) — a table cannot be the
+  primary HDU;
+- `compress=` when HDU 0 holds image data — compressed files keep an empty
+  primary, so the data would move to index 1.
+
 ---
 
 ## Checksums
