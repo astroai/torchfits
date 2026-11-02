@@ -7,7 +7,6 @@ import os
 from collections.abc import Iterator
 from typing import Any, Dict, List, Optional, Union
 
-import torch
 
 from torch import Tensor
 
@@ -34,6 +33,7 @@ from ._write_helpers import (
     _invalidate_written_target,
     _merge_fits_write_header,
     _merged_write_header,
+    _ndarray_to_tensor,
     _normalize_cpp_table_data,
     _normalize_table_input,
     _payload_replay_header,
@@ -181,7 +181,7 @@ def _write_new_file(
         compressed_hdus: List[Any] = []
         if isinstance(data, (Tensor, np.ndarray)):
             if isinstance(data, np.ndarray):
-                data = torch.as_tensor(data)
+                data = _ndarray_to_tensor(data)
             data, header = _apply_image_quantize(data, header, quantize)
             header = _drop_stale_integer_scale_cards(header, data)
             img, img_header = _unsigned_image_storage_for_fits_write(data)
@@ -305,7 +305,7 @@ def _write_new_file(
     elif isinstance(data, np.ndarray):
         hdus_to_write.append(
             _image_hdu_dict_for_fits_write(
-                torch.as_tensor(data), header, quantize=quantize
+                _ndarray_to_tensor(data), header, quantize=quantize
             )
         )
 
@@ -314,7 +314,7 @@ def _write_new_file(
         _require_image_hdu_dict_keys(data)
         payload = data["data"]
         if isinstance(payload, np.ndarray):
-            payload = torch.as_tensor(payload)
+            payload = _ndarray_to_tensor(payload)
         if not isinstance(payload, Tensor):
             raise TypeError("HDU dictionary 'data' must be a torch.Tensor")
         base = (
@@ -339,7 +339,7 @@ def _write_new_file(
                     _require_image_hdu_dict_keys(item)
                     payload = item["data"]
                     if isinstance(payload, np.ndarray):
-                        payload = torch.as_tensor(payload)
+                        payload = _ndarray_to_tensor(payload)
                     if isinstance(payload, Tensor):
                         base = (
                             _merged_write_header(item.get("header"), overlay)

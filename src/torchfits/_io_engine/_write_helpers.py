@@ -540,6 +540,16 @@ def _invalidate_written_target(path: str) -> None:
         _invalidate_path_caches(target)
 
 
+def _ndarray_to_tensor(arr: Any) -> Tensor:
+    """``torch.as_tensor`` for numpy images; torch cannot view negative
+    strides (``a[::-1]``), so those are copied to a contiguous array first."""
+    if any(stride < 0 for stride in getattr(arr, "strides", ())):
+        import numpy as np
+
+        arr = np.ascontiguousarray(arr)
+    return torch.as_tensor(arr)
+
+
 def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
     """Move image tensors to CPU and make them contiguous for CFITSIO writes.
 
@@ -1334,7 +1344,7 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                     import numpy as np
 
                     if isinstance(img, np.ndarray):
-                        img = torch.from_numpy(img)
+                        img = _ndarray_to_tensor(img)
                     elif isinstance(img, (list, tuple)):
                         img = torch.tensor(img)
                     else:
