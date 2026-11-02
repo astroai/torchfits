@@ -99,9 +99,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - io: Report missing libcurl and CFITSIO's reason on open failures
 - http: Stop CFITSIO following redirects to unguarded hosts
 - http: Refuse non-canonical numeric hosts and non-global addresses
+- scripts: No --user cibuildwheel install; fail CFHT fetch on missing frames
+- release: Refuse Unreleased notes for a final release
+- scripts: Make ci-local build first and run mypy, changelog-check, full tests
+- scripts: Never pick a pre-release tag for the stable docs root
+- scripts: Count launcher failures in the CANFAR CUDA verify summary
+- scripts: Report failing wheel build/verify cells as FAIL
+- scripts: Parse breaking and revert subjects; reject non-conventional ones
+- data: Collate nested per-arm dicts in fits_collate_fn
+- data: Keep table dataset rows torch-native under where=
+- transforms: Broadcast spatial masks in weighted stats and IRAF zscale
+- transforms: Ignore empty tiles in the mesh background 3x3 filter
+- transforms: Run IRAF zscale on MPS in float32
+- transforms: Keep NaN/masked pixels out of the IRAF zscale fit
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
+
+### Docs
+- Say the real-CFHT suites never run in CI and list both files
+- Correct AGENTS.md claims about test markers, changelog-check, stubs
 
 ## [1.3.1] — 2026-10-26
 
