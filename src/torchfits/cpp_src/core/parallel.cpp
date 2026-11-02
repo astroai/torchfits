@@ -1,5 +1,6 @@
 #include "core/parallel.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
@@ -127,30 +128,42 @@ int resolve_thread_count() {
 }
 
 // The pool pointer lives at namespace scope rather than inside a function-local
-// static so the fork handler below can drop it.
-Pool* g_pool = nullptr;
+// static so the fork handlers below can drop it. Creation is double-checked
+// under g_pool_mutex: two threads making their first parallel_for call at once
+// each used to see null and each build a pool, leaking the loser's workers.
+std::atomic<Pool*> g_pool{nullptr};
+std::mutex g_pool_mutex;
 
 // fork() hands the child a copy of this address space: the std::thread objects
 // the pool holds name threads that do not exist in the child, so a batch queued
 // there is never worked on and the caller waits on its condition variable
 // forever. Measured: a child that had not forked before the pool was warm hung
 // until SIGALRM (10s) with no output. `tests/cpp/test_fork_after_pool.cpp`
-// guards it. Assigning the pointer is async-signal-safe, which is all an
-// atfork child handler may do.
+// guards it. The mutex is held across fork() so the child never inherits it
+// locked by a thread that does not exist there; the forking thread owns it on
+// both sides and releases it after the child has dropped the pool.
+void lock_pool_before_fork() { g_pool_mutex.lock(); }
+void unlock_pool_in_parent() { g_pool_mutex.unlock(); }
 void drop_pool_in_forked_child() {
-    g_pool = nullptr;
+    g_pool.store(nullptr, std::memory_order_relaxed);
+    g_pool_mutex.unlock();
 }
 
 Pool& pool() {
     static const bool registered = [] {
-        pthread_atfork(nullptr, nullptr, drop_pool_in_forked_child);
+        pthread_atfork(lock_pool_before_fork, unlock_pool_in_parent, drop_pool_in_forked_child);
         return true;
     }();
     (void)registered;
-    if (!g_pool) {
-        g_pool = new Pool(resolve_thread_count() - 1);
+    Pool* current = g_pool.load(std::memory_order_acquire);
+    if (current) return *current;
+    std::lock_guard<std::mutex> lock(g_pool_mutex);
+    current = g_pool.load(std::memory_order_relaxed);
+    if (!current) {
+        current = new Pool(resolve_thread_count() - 1);
+        g_pool.store(current, std::memory_order_release);
     }
-    return *g_pool;
+    return *current;
 }
 
 }  // namespace
