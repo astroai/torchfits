@@ -183,3 +183,26 @@ def test_bad_header_value_is_rejected_before_overwriting(tmp_path):
     g = C.open_fits_file(path, "r")
     assert g.get_num_hdus() == 1
     g.close()
+
+
+def test_vla_rows_are_converted_to_the_column_type(tmp_path):
+    path = str(tmp_path / "vla.fits")
+    write_table(
+        path,
+        {"V": [np.array([1.0, 2.0]), np.array([3.0])], "N": np.array([1, 2], np.int32)},
+        schema={"V": {"format": "PD()"}},
+        overwrite=True,
+    )
+    C.update_fits_table_rows(
+        path, 1, {"V": [np.arange(4, dtype=np.int8), np.array([-5], np.int8)]}, 1, 2
+    )
+    C.append_fits_table_rows(
+        path,
+        1,
+        {"V": [np.array([7, 300], np.int16)], "N": np.array([3], np.int32)},
+    )
+    rows = [r.tolist() for r in C.read_fits_table(path, 1)["V"]]
+    assert rows == [[0.0, 1.0, 2.0, 3.0], [-5.0], [7.0, 300.0]]
+
+    with pytest.raises(RuntimeError, match="dtype"):
+        C.update_fits_table_rows(path, 1, {"V": [np.array([1.0], np.float16)]}, 1, 1)

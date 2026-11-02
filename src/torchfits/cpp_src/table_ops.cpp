@@ -31,6 +31,40 @@ using torchfits::internal::ensure_c_contiguous_ndarray;
 using torchfits::internal::require_cpu_ndarray;
 using torchfits::internal::pad_fits_strings;
 
+// CFITSIO datatype describing a numeric VLA row payload as it sits in memory,
+// or 0 if unsupported. fits_write_col reads nelements * sizeof(datatype)
+// bytes, so passing the column's base type for a narrower payload (int8 rows
+// on a 'PD' column) reads past the buffer; passing the payload's own type lets
+// CFITSIO convert to the column type instead.
+int vla_payload_fits_type(const nb::dlpack::dtype& dt, int base_type) {
+    using code = nb::dlpack::dtype_code;
+    if (dt.code == (uint8_t)code::Bool && dt.bits == 8) return TBYTE;
+    if (dt.code == (uint8_t)code::UInt) {
+        switch (dt.bits) {
+            case 8: return TBYTE;
+            case 16: return TUSHORT;
+            case 32: return TUINT;
+            case 64: return TULONGLONG;
+        }
+    } else if (dt.code == (uint8_t)code::Int) {
+        switch (dt.bits) {
+            // Same bytes either way on a 'B' column (as the fixed-width path
+            // writes int8); elsewhere convert by value.
+            case 8: return base_type == TBYTE ? TBYTE : TSBYTE;
+            case 16: return TSHORT;
+            case 32: return TINT;
+            case 64: return TLONGLONG;
+        }
+    } else if (dt.code == (uint8_t)code::Float) {
+        if (dt.bits == 32) return TFLOAT;
+        if (dt.bits == 64) return TDOUBLE;
+    } else if (dt.code == (uint8_t)code::Complex) {
+        if (dt.bits == 64) return TCOMPLEX;
+        if (dt.bits == 128) return TDBLCOMPLEX;
+    }
+    return 0;
+}
+
 // CFITSIO entry points (fits_close_file included) may return immediately
 // when *status != 0, so unwinding with the poisoned status would leak the
 // handle. Error paths close with a fresh status; only the success-path
@@ -271,8 +305,18 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
                     }
                     data_ptr = logical.data();
                 }
+                int write_type = base_type;
+                if (base_type != TLOGICAL && base_type != TBIT && base_type != TSTRING &&
+                    nelements > 0) {
+                    write_type = vla_payload_fits_type(arr.dtype(), base_type);
+                    if (write_type == 0) {
+                        rollback_inserted_rows(fptr, start_row, num_rows);
+                        throw std::runtime_error(
+                            "append_rows unsupported VLA row dtype for " + col_name);
+                    }
+                }
 
-                fits_write_col(fptr, base_type, colnum, start_row + row, 1, nelements, data_ptr, &status);
+                fits_write_col(fptr, write_type, colnum, start_row + row, 1, nelements, data_ptr, &status);
             }
             continue;
         }
@@ -770,7 +814,16 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     col.owned.push_back(std::move(logical));
                     planned_ptr = col.owned.back().data();
                 }
-                col.writes.push_back({base_type, colnum, start_row + row, nelements, planned_ptr});
+                int write_type = base_type;
+                if (base_type != TLOGICAL && base_type != TBIT && base_type != TSTRING &&
+                    nelements > 0) {
+                    write_type = vla_payload_fits_type(arr.dtype(), base_type);
+                    if (write_type == 0) {
+                        throw std::runtime_error(
+                            "update_rows unsupported VLA row dtype for " + col_name);
+                    }
+                }
+                col.writes.push_back({write_type, colnum, start_row + row, nelements, planned_ptr});
             }
             plan.push_back(std::move(col));
             continue;
