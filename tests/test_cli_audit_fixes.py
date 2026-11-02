@@ -200,6 +200,24 @@ def test_setkey_refuses_compression_keywords_on_compressed_hdu(tmp_path):
     assert main(["setkey", str(packed), "-e", "1", "-k", "ZPOINT", "--value", "1"]) == 0
 
 
+def test_setkey_refreshes_existing_checksums(tmp_path):
+    path = tmp_path / "ck.fits"
+    torchfits.write(str(path), [torch.zeros(2, 2), torch.ones(3, 3)], checksum=True)
+    plain = tmp_path / "plain.fits"
+    torchfits.write(str(plain), torch.zeros(2, 2))
+    assert (
+        main(["setkey", str(path), "-e", "all", "-k", "OBJECT", "--value", "M31"]) == 0
+    )
+    assert main(["setkey", str(path), "-e", "1", "--rename", "OBJECT=TARGET"]) == 0
+    assert main(["verify", str(path)]) == 0
+    for hdu in (0, 1):
+        status = torchfits.verify_checksums(str(path), hdu=hdu)
+        assert status["status"] == "ok", status
+    # A file without checksums does not grow them.
+    assert main(["setkey", str(plain), "-k", "OBJECT", "--value", "M31"]) == 0
+    assert "CHECKSUM" not in torchfits.read_header(str(plain), 0)
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

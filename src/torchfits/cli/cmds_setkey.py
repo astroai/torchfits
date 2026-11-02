@@ -123,6 +123,9 @@ _COMPRESSION_KEY = re.compile(
 )
 
 
+_CHECKSUM_KEYS = frozenset({"CHECKSUM", "DATASUM"})
+
+
 def _reject_structural(key: str, *, compressed: bool = False, where: str = "") -> None:
     name = key.upper()
     if _STRUCTURAL_KEY.match(name) or (compressed and _COMPRESSION_KEY.match(name)):
@@ -224,8 +227,18 @@ def _apply_edits(
     # whole batch is known to succeed, so a failed run leaves the file
     # untouched.
     plans: list[list[tuple[Any, ...]]] = []
+    refresh: list[bool] = []
     for hdu in hdus:
         header = Header(torchfits.read_header(path, hdu))
+        # An HDU that carried CHECKSUM/DATASUM gets them recomputed after the
+        # edit (as fthedit / astropy do); a stale CHECKSUM would make verify
+        # fail. Edits that name those cards themselves are left as requested.
+        touched = {*del_keys, *(rename_pair or ())}
+        if set_key is not None:
+            touched.add(set_key)
+        refresh.append(
+            any(k in header for k in _CHECKSUM_KEYS) and not touched & _CHECKSUM_KEYS
+        )
         if is_compressed_image_header(header):
             edited_keys = [*del_keys, *(rename_pair or ())]
             if set_key is not None:
@@ -262,7 +275,7 @@ def _apply_edits(
     # Phase 2: apply via CFITSIO card update/delete only (never an HDUList
     # rewrite) and only for the edited cards -- replaying a full header would
     # append a second copy of the file's HISTORY/COMMENT cards.
-    for hdu, ops in zip(hdus, plans):
+    for hdu, ops, refresh_sums in zip(hdus, plans, refresh):
         for op in ops:
             if op[0] == "delete":
                 torchfits.io._delete_header_key_if_supported(path, hdu, op[1])
@@ -272,6 +285,9 @@ def _apply_edits(
                 torchfits.io._write_header_cards_if_supported(
                     path, hdu, {card_key: write_value}
                 )
+        if refresh_sums and ops:
+            torchfits.write_checksums(path, hdu)
+            torchfits.io._invalidate_path_caches(path)
 
 
 def _edit_one(job: tuple[str, str, str, tuple[Any, ...]]) -> None:

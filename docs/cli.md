@@ -426,6 +426,11 @@ the compression cards (`ZIMAGE`, `ZBITPIX`, `ZNAXISn`, `ZTILEn`, `ZCMPTYPE`,
 `ZNAMEn`, `ZVALn`, `ZQUANTIZ`, …). Such an edit is a usage error (exit `2`)
 and leaves the file untouched.
 
+An edited HDU that already carries `CHECKSUM`/`DATASUM` has both recomputed
+after the edit, so `torchfits verify` keeps passing; HDUs without them do not
+gain them. An edit that names `CHECKSUM` or `DATASUM` itself is applied as
+written.
+
 !!! note "Card comments"
     `setkey` writes the value only; it cannot set a card's comment text. Use a
     full header edit (`torchfits header`, or `HDUList` / `Header` in Python)
