@@ -80,3 +80,76 @@ def test_table_where(tmp_path, where, pick):
         got = table.read(path, hdu=1, where=where, **kwargs)["U"]
         got = got.to_pylist() if hasattr(got, "to_pylist") else got.numpy().tolist()
         assert got == expected, (where, kwargs)
+
+
+def _raw_cards(path, hdu):
+    """Header cards of HDU *hdu* straight from the 2880-byte blocks."""
+    data = open(path, "rb").read()
+    off = 0
+    for idx in range(hdu + 1):
+        cards = []
+        while True:
+            block = data[off : off + 2880]
+            off += 2880
+            chunk = [block[i : i + 80].decode("ascii") for i in range(0, 2880, 80)]
+            cards.extend(chunk)
+            if any(c.startswith("END     ") for c in chunk):
+                break
+        kv = {
+            c[:8].strip(): c[10:].split("/")[0].strip()
+            for c in cards
+            if c[8:10] == "= "
+        }
+        if idx == hdu:
+            return kv
+        naxis = int(kv["NAXIS"])
+        n = 0
+        if naxis:
+            n = 1
+            for k in range(1, naxis + 1):
+                n *= int(kv[f"NAXIS{k}"])
+            n = (n + int(kv.get("PCOUNT", 0))) * abs(int(kv["BITPIX"])) // 8
+        off += (n + 2879) // 2880 * 2880
+    raise IndexError(hdu)
+
+
+def _write_direct(path, col):
+    torchfits.write(path, {"U": col})
+
+
+def _write_compressed(path, col):
+    torchfits.write(path, {"U": col}, compress=True)
+
+
+def _write_hdulist(path, col):
+    torchfits.write(path, torchfits.HDUList([torchfits.TableHDU({"U": col})]))
+
+
+def _insert_into(path, col):
+    torchfits.write(path, [torch.zeros(1, 1)])
+    torchfits.insert_hdu(path, {"U": col}, index=1)
+
+
+def _edit_other_hdu(path, col):
+    torchfits.write(path, {"U": col})
+    torchfits.insert_hdu(path, torch.ones(2, 2), index=2)
+    torchfits.replace_hdu(path, 2, torch.zeros(2, 2))
+    torchfits.delete_hdu(path, 2)
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [_write_direct, _write_compressed, _write_hdulist, _insert_into, _edit_other_hdu],
+)
+def test_table_tzero_card_is_exactly_two_pow_63(tmp_path, writer):
+    # TZERO = 2**63 used to be clamped to LLONG_MAX on the direct path and to
+    # make every rewrite path raise "out of long long range".
+    path = str(tmp_path / "u.fits")
+    col = _u64(EDGES)
+    writer(path, col)
+    text = _raw_cards(path, 1)["TZERO1"]
+    assert float(text) == 2.0**63
+    assert "." in text or "E" in text.upper()  # not the clamped integer
+    got = torchfits.read(path, hdu=1)["U"]
+    assert got.dtype == torch.uint64
+    assert got.tolist() == EDGES

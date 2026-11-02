@@ -942,7 +942,13 @@ def _table_schema_scale_header_cards(
             out[f"TSCAL{idx}"] = float(meta["bscale"])
         if "bzero" in meta:
             bzero = meta["bzero"]
-            out[f"TZERO{idx}"] = int(bzero) if float(bzero).is_integer() else bzero
+            # The native card writer only takes ints in long long range; the
+            # uint64 offset 2**63 must stay a float (written exactly).
+            out[f"TZERO{idx}"] = (
+                int(bzero)
+                if float(bzero).is_integer() and abs(float(bzero)) < 2**63
+                else float(bzero)
+            )
         if "null" in meta:
             out[f"TNULL{idx}"] = int(meta["null"])
     return out

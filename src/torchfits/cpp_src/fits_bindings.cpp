@@ -1569,7 +1569,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             double rounded = std::round(bzero);
             if (std::isfinite(bzero) && rounded == bzero &&
                 rounded >= static_cast<double>(std::numeric_limits<long long>::min()) &&
-                rounded <= static_cast<double>(std::numeric_limits<long long>::max())) {
+                rounded < static_cast<double>(std::numeric_limits<long long>::max())) {
                 long long bzero_int = static_cast<long long>(rounded);
                 fits_update_key(fptr, TLONGLONG, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero_int, nullptr, &status);
             } else {
