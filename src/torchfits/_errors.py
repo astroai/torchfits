@@ -10,13 +10,13 @@ import os
 from typing import Any
 
 
-class HDUNotFoundError(KeyError, IndexError, ValueError):
+class HDUNotFoundError(KeyError, IndexError, ValueError, RuntimeError):
     """The requested HDU does not exist in the file.
 
     Raised for an EXTNAME (or HDUNAME) that no HDU carries and for an integer
     index that is negative or past the last HDU. It subclasses ``KeyError``,
-    ``IndexError`` and ``ValueError`` so code written against any of the types
-    earlier releases raised keeps catching it.
+    ``IndexError``, ``ValueError`` and ``RuntimeError`` so code written against
+    any of the types earlier releases raised keeps catching it.
 
     Attributes ``hdu``, ``path`` and ``n_hdus`` (``None`` when unknown) carry
     the request and the file's HDU count.
@@ -60,6 +60,16 @@ class HDUNotFoundError(KeyError, IndexError, ValueError):
             if isinstance(hdu, int) and hdu < 0:
                 message += ": an HDU index must be non-negative"
         return cls(message, hdu=hdu, path=where, n_hdus=n_hdus)
+
+
+class FITSFileNotFoundError(FileNotFoundError, RuntimeError):
+    """A local FITS path that does not exist.
+
+    A ``FileNotFoundError`` (so an ``OSError``) that is also a
+    ``RuntimeError``, the type most readers raised for a missing file before
+    1.3.2, so ``except RuntimeError`` written against those releases keeps
+    working.
+    """
 
 
 def _rebuild_hdu_not_found(

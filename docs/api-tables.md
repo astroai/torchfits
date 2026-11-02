@@ -21,8 +21,8 @@ Supports `where=` filters, column projection, streaming, mutations, and
 handoff to Astropy, Polars, DuckDB, Pandas, and PyArrow.
 
 Every table reader and mutator raises `FileNotFoundError` for a missing local
-file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError` and
-`ValueError`) for an `hdu` index or EXTNAME the file does not have; see
+file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError`,
+`ValueError` and `RuntimeError`) for an `hdu` index or EXTNAME the file does not have; see
 [Missing files and HDUs](api-core-io.md#missing-files-and-hdus).
 
 ---

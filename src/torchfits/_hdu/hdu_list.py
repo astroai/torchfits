@@ -15,7 +15,7 @@ from torchfits._io_engine.paths import (
     is_cfitsio_network_url,
 )
 
-from .._errors import HDUNotFoundError
+from .._errors import FITSFileNotFoundError, HDUNotFoundError
 from ._repr import render_html_table
 from .card import _reassemble_longstr_cards
 from .header import Header
@@ -119,7 +119,7 @@ class HDUList:
             and not is_cfitsio_network_url(path)
             and not os.path.exists(cfitsio_base_path(path))
         ):
-            raise FileNotFoundError(f"FITS file not found: {path}")
+            raise FITSFileNotFoundError(f"FITS file not found: {path}")
 
         hdul = cls()
         hdul._source_path = path

@@ -8,6 +8,7 @@ import torch
 from torch import Tensor
 
 
+from .._errors import FITSFileNotFoundError
 from ._repr import render_html_table
 from .header import Header
 
@@ -702,7 +703,7 @@ class TableHDU:
 
         guard_fits_path(file_path)
         if not is_cfitsio_network_url(file_path) and not os.path.exists(file_path):
-            raise FileNotFoundError(f"FITS file not found: {file_path}")
+            raise FITSFileNotFoundError(f"FITS file not found: {file_path}")
         if hdu_index < 0:
             raise_hdu_index_error(file_path, hdu_index)
 

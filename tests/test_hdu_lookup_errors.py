@@ -7,9 +7,9 @@ past the end was OSError, RuntimeError or IndexError; a missing file was
 RuntimeError from most readers and FileNotFoundError from ``open``.
 
 Now an absent HDU (unknown EXTNAME, index negative or past the end) raises
-``torchfits.HDUNotFoundError`` -- a KeyError, IndexError and ValueError at
-once, so every earlier ``except`` keeps working -- and a missing local file
-raises ``FileNotFoundError``.
+``torchfits.HDUNotFoundError`` -- a KeyError, IndexError, ValueError and
+RuntimeError at once, so every earlier ``except`` keeps working -- and a
+missing local file raises ``FileNotFoundError`` that is also a RuntimeError.
 """
 
 from __future__ import annotations
@@ -96,6 +96,7 @@ def _assert_hdu_not_found(exc_info, path, needle):
     assert isinstance(exc, KeyError)
     assert isinstance(exc, IndexError)
     assert isinstance(exc, ValueError)
+    assert isinstance(exc, RuntimeError)
     message = str(exc)
     assert os.path.basename(path) in message, message
     assert needle in message, message
@@ -149,12 +150,16 @@ def test_missing_file(tmp_path, route):
     else:
         fn = {**ROUTES, **INDEX_ONLY_ROUTES}[route]
         call = lambda: fn(path, 1)  # noqa: E731
-    with pytest.raises(FileNotFoundError, match="missing.fits"):
+    with pytest.raises(FileNotFoundError, match="missing.fits") as exc_info:
         call()
+    # 1.3.1 raised RuntimeError for a missing file on most routes.
+    assert isinstance(exc_info.value, RuntimeError), repr(exc_info.value)
     assert not os.path.exists(path)
 
 
-@pytest.mark.parametrize("builtin", [KeyError, IndexError, ValueError, LookupError])
+@pytest.mark.parametrize(
+    "builtin", [KeyError, IndexError, ValueError, LookupError, RuntimeError]
+)
 def test_earlier_except_clauses_still_catch_it(mef, builtin):
     try:
         torchfits.read_header(mef, "NOPE")
@@ -162,6 +167,22 @@ def test_earlier_except_clauses_still_catch_it(mef, builtin):
         assert isinstance(exc, HDUNotFoundError)
     else:  # pragma: no cover - the call must raise
         pytest.fail("read_header did not raise")
+
+
+def test_hdu_not_found_mro():
+    mro = HDUNotFoundError.__mro__
+    for base in (KeyError, IndexError, LookupError, ValueError, RuntimeError):
+        assert base in mro
+
+
+def test_missing_file_error_pickles_and_is_runtime_error(tmp_path):
+    path = str(tmp_path / "missing.fits")
+    with pytest.raises(RuntimeError) as exc_info:
+        torchfits.read(path)
+    exc = exc_info.value
+    assert isinstance(exc, FileNotFoundError) and isinstance(exc, OSError)
+    clone = pickle.loads(pickle.dumps(exc))
+    assert type(clone) is type(exc) and str(clone) == str(exc)
 
 
 def test_attributes_and_pickling(mef):

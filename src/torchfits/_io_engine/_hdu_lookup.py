@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, NoReturn, TypeVar
 
-from .._errors import HDUNotFoundError
+from .._errors import FITSFileNotFoundError, HDUNotFoundError
 from .paths import cfitsio_base_path, is_cfitsio_network_url
 
 _T = TypeVar("_T")
@@ -35,13 +35,13 @@ def is_local_fits_path(path: Any) -> bool:
     return not stripped.lower().startswith(("vos:", "vault:"))
 
 
-def missing_file_error(path: Any) -> FileNotFoundError | None:
+def missing_file_error(path: Any) -> FITSFileNotFoundError | None:
     """``FileNotFoundError`` for a local path that does not exist, else ``None``."""
     if not is_local_fits_path(path):
         return None
     if os.path.exists(cfitsio_base_path(path)):
         return None
-    return FileNotFoundError(f"FITS file not found: {path}")
+    return FITSFileNotFoundError(f"FITS file not found: {path}")
 
 
 def require_existing_file(path: Any) -> None:

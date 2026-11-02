@@ -21,7 +21,7 @@ from .caches import (
     set_cached_hdu_type,
     signature_cached_get,
 )
-from .._errors import HDUNotFoundError
+from .._errors import FITSFileNotFoundError, HDUNotFoundError
 from ._hdu_lookup import (
     call_with_lookup,
     raise_hdu_index_error,
@@ -241,7 +241,7 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
         and not is_cfitsio_network_url(path)
         and not os.path.exists(check_path)
     ):
-        raise FileNotFoundError(f"FITS file not found: {path}")
+        raise FITSFileNotFoundError(f"FITS file not found: {path}")
 
     try:
         hdul = HDUList.fromfile(path, mode)

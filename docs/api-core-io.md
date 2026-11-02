@@ -14,12 +14,15 @@ Every route that takes a path and an `hdu` (the readers on this page,
 
 | Failure | Exception |
 |---|---|
-| Local path does not exist | `FileNotFoundError` (an `OSError`) |
+| Local path does not exist | `FileNotFoundError` (an `OSError`, and also a `RuntimeError`) |
 | EXTNAME / HDUNAME that no HDU carries | `torchfits.HDUNotFoundError` |
 | Integer `hdu` that is negative or past the last HDU | `torchfits.HDUNotFoundError` |
 
-`HDUNotFoundError` subclasses `KeyError`, `IndexError` and `ValueError`, so
-code that caught any of those keeps working. Its message names the request
+`HDUNotFoundError` subclasses `KeyError`, `IndexError`, `ValueError` and
+`RuntimeError`, so code that caught any of those keeps working. The
+missing-file error is a `FileNotFoundError` subclass that is also a
+`RuntimeError`, the type most readers raised for it in 1.3.1, so an
+`except RuntimeError` written against 1.3.1 still catches both. Its message names the request
 and the file, and the attributes `hdu`, `path` and `n_hdus` carry the same
 values (`n_hdus` is `None` when the count is unknown):
 

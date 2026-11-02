@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, Iterator, Optional, cast
 
+from .._errors import FITSFileNotFoundError
 from ..hdu import Header
 
 
@@ -46,7 +47,7 @@ def stream_table(
     if not is_cfitsio_network_url(file_path):
         check_path = cfitsio_base_path(file_path)
         if not os.path.exists(check_path):
-            raise FileNotFoundError(file_path)
+            raise FITSFileNotFoundError(file_path)
 
     col_list = columns if columns else []
 
