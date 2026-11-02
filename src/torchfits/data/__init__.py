@@ -592,12 +592,31 @@ class FitsCutoutDataset(Dataset[Any]):
 # ---------------------------------------------------------------------------
 
 
+def _collate_dicts(samples: list[Any], prefix: str = "") -> dict[str, Any]:
+    """Stack a list of (possibly nested) ``dict[str, Tensor]`` samples per key."""
+    out: dict[str, Any] = {}
+    for key in samples[0]:
+        values = [sample[key] for sample in samples]
+        name = f"{prefix}{key}"
+        if all(isinstance(v, dict) for v in values):
+            out[key] = _collate_dicts(values, prefix=f"{name}.")
+            continue
+        if not all(isinstance(v, torch.Tensor) for v in values):
+            raise ValueError(
+                f"Cannot collate non-tensor column {name!r}. "
+                f"Drop string/VLA columns or supply a custom collate_fn."
+            )
+        out[key] = torch.stack(values)
+    return out
+
+
 def fits_collate_fn(
     batch: list[Any],
 ) -> Any:
     """Collate a list of samples into a batch.
 
-    - Lists of ``dict[str, Tensor]`` are stacked per key.
+    - Lists of ``dict[str, Tensor]`` are stacked per key; nested dicts (e.g.
+      multi-arm spectra ``{arm: {"flux": ...}}``) are collated recursively.
     - Lists of ``Tensor`` are stacked with ``torch.stack``.
     - Lists of ``(dict[str, Tensor], Tensor)`` (table row, label) pairs are
       stacked into ``(dict, labels)``.
@@ -620,29 +639,12 @@ def fits_collate_fn(
     first = batch[0]
 
     if isinstance(first, dict):
-        out: dict[str, torch.Tensor] = {}
-        for key in first:
-            values = [sample[key] for sample in batch]
-            if not all(isinstance(v, torch.Tensor) for v in values):
-                raise ValueError(
-                    f"Cannot collate non-tensor column {key!r}. "
-                    f"Drop string/VLA columns or supply a custom collate_fn."
-                )
-            out[key] = torch.stack(values)
-        return out
+        return _collate_dicts(batch)
 
     if isinstance(first, tuple) and len(first) == 2:
         if isinstance(first[0], dict):
             # (dict[str, Tensor], Tensor) — table rows with labels
-            stacked: dict[str, torch.Tensor] = {}
-            for key in first[0]:
-                values = [s[0][key] for s in batch]
-                if not all(isinstance(v, torch.Tensor) for v in values):
-                    raise ValueError(
-                        f"Cannot collate non-tensor column {key!r}. "
-                        f"Drop string/VLA columns or supply a custom collate_fn."
-                    )
-                stacked[key] = torch.stack(values)
+            stacked = _collate_dicts([s[0] for s in batch])
             labels = torch.stack([s[1] for s in batch])
             return stacked, labels
         # (Tensor, Tensor) — image, label pairs

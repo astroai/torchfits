@@ -549,6 +549,8 @@ Default collation function for torchfits datasets:
 - `list[(Tensor, Tensor)]` → `(stacked_images, stacked_labels)`
 - `list[dict[str, Tensor]]` → `dict[str, stacked_Tensor]`
 - `list[(dict[str, Tensor], Tensor)]` → `(stacked_dict, stacked_labels)`
+- Nested dicts, such as multi-arm spectra `{arm: {"flux": Tensor, ...}}`, are
+  collated per leaf: `batch["R"]["flux"]` has shape `(batch, n_pixels)`
 
 All tensors in a batch must have identical shapes — `torch.stack` is used
 under the hood. Raises `ValueError` on non-tensor columns (strings, VLA
