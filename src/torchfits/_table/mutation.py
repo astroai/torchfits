@@ -13,6 +13,7 @@ from .._table.utils import (
     _parse_tform,
 )
 from .._table.write import (
+    _scaled_columns_as_stored,
     _extract_table_schema_from_header,
     _ordered_dict_for_columns,
     _resolve_table_hdu_index_and_columns,
@@ -75,6 +76,7 @@ def insert_column(
     normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
 
     existing_data = _read_table_for_rewrite(path, target_hdu, columns)
+    existing_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     existing_schema = _extract_table_schema_from_header(header_map, columns)
     table_header = _sanitize_table_header_for_rewrite(header_map)
     table_type = (
@@ -113,6 +115,7 @@ def insert_column(
         rewritten_schema,
         table_header,
         table_type,
+        restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
     )
     _mutation_cache_barrier(path)
 
@@ -161,6 +164,7 @@ def replace_column(
         else "binary"
     )
     rewritten_data = _read_table_for_rewrite(path, target_hdu, columns)
+    rewritten_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     rewritten_data[name] = normalized_values
 
     merged_meta = dict(existing_meta)
@@ -187,6 +191,7 @@ def replace_column(
         rewritten_schema,
         table_header,
         table_type,
+        restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
     )
     _mutation_cache_barrier(path)
 

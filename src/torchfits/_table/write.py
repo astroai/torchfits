@@ -258,6 +258,144 @@ def _ordered_dict_for_columns(
     return out
 
 
+_FITS_BLOCK = 2880
+
+
+def _hdu_byte_spans(path: str) -> list[tuple[int, int, int]]:
+    """``(header_start, data_start, end)`` of every HDU, from the raw bytes."""
+    from ..header_parser import fast_parse_header_cards
+
+    spans: list[tuple[int, int, int]] = []
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        pos = 0
+        while pos < size:
+            start = pos
+            chunks: list[bytes] = []
+            while True:
+                block = fh.read(_FITS_BLOCK)
+                if len(block) < _FITS_BLOCK:
+                    raise ValueError(f"truncated FITS header at byte {pos}")
+                pos += _FITS_BLOCK
+                chunks.append(block)
+                if any(
+                    block[i : i + 8] == b"END     " for i in range(0, _FITS_BLOCK, 80)
+                ):
+                    break
+            text = b"".join(chunks).decode("latin-1")
+            cards = {k: v for k, v, _c in fast_parse_header_cards(text)}
+            naxis = int(cards.get("NAXIS", 0) or 0)
+            nbytes = 0
+            if naxis > 0:
+                count = 1
+                for i in range(1, naxis + 1):
+                    count *= int(cards.get(f"NAXIS{i}", 0) or 0)
+                nbytes = (
+                    abs(int(cards.get("BITPIX", 8)))
+                    // 8
+                    * int(cards.get("GCOUNT", 1) or 1)
+                    * (int(cards.get("PCOUNT", 0) or 0) + count)
+                )
+            data_start = pos
+            pos += -(-nbytes // _FITS_BLOCK) * _FITS_BLOCK
+            fh.seek(pos)
+            spans.append((start, data_start, min(pos, size)))
+    return spans
+
+
+_BINTABLE_CELL_BYTES = {
+    "L": 1,
+    "B": 1,
+    "I": 2,
+    "J": 4,
+    "K": 8,
+    "A": 1,
+    "E": 4,
+    "D": 8,
+    "C": 8,
+    "M": 16,
+    "P": 8,
+    "Q": 16,
+}
+
+
+def _scaled_columns_as_stored(
+    path: str, hdu: int, header_map: dict[str, Any]
+) -> dict[str, Any]:
+    """Stored (pre-TSCAL/TZERO) cells of every scaled numeric column.
+
+    A rewrite hands its columns back to ``write``, whose schema
+    ``bscale``/``bzero`` describe stored values; passing the decoded physical
+    values scaled them a second time. Binary-table cells are read from the
+    file as-is; ASCII-table cells are recovered by inverting the scaling.
+    Unsigned-convention columns are left to the unsigned write path.
+    """
+    import numpy as np
+
+    from .. import fits_schema
+
+    unsigned = fits_schema.unsigned_column_dtype_names_from_header(header_map)
+    ascii_table = str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+    columns = list(fits_schema.iter_table_columns(header_map))
+    scaled = [
+        col
+        for col in columns
+        if col.name not in unsigned
+        and not col.tform_info.vla
+        and col.tform_info.code in {"B", "I", "J", "K", "E", "D", "F"}
+        and ((col.tscal or 1.0) != 1.0 or (col.tzero or 0.0) != 0.0)
+    ]
+    if not scaled:
+        return {}
+
+    out: dict[str, Any] = {}
+    if ascii_table:
+        import torchfits
+
+        for col in scaled:
+            phys = np.asarray(
+                torchfits.table.read_torch(path, hdu=hdu, columns=[col.name])[
+                    col.name
+                ].numpy(),
+                dtype=np.float64,
+            )
+            stored = (phys - (col.tzero or 0.0)) / (col.tscal or 1.0)
+            if col.tform_info.code == "I":
+                if col.tnull is not None:
+                    stored = np.where(np.isnan(stored), float(col.tnull), stored)
+                stored = np.rint(stored).astype(np.int64)
+            out[col.name] = stored
+        return out
+
+    nrows = int(header_map.get("NAXIS2", 0) or 0)
+    width = int(header_map.get("NAXIS1", 0) or 0)
+    offsets: dict[str, int] = {}
+    offset = 0
+    for col in columns:
+        offsets[col.name] = offset
+        code = col.tform_info.code or ""
+        repeat = col.tform_info.repeat
+        if col.tform_info.vla:
+            offset += _BINTABLE_CELL_BYTES[col.tform_info.vla_descriptor or "P"]
+        elif code == "X":
+            offset += (repeat + 7) // 8
+        else:
+            offset += repeat * _BINTABLE_CELL_BYTES.get(code, 0)
+    data_start = _hdu_byte_spans(path)[hdu][1]
+    rows = np.fromfile(
+        path, dtype=np.uint8, count=nrows * width, offset=data_start
+    ).reshape(nrows, width)
+    big_endian = {"B": "u1", "I": ">i2", "J": ">i4", "K": ">i8", "E": ">f4", "D": ">f8"}
+    for col in scaled:
+        dtype = np.dtype(big_endian[col.tform_info.code or ""])
+        repeat = col.tform_info.repeat
+        start = offsets[col.name]
+        cells = np.ascontiguousarray(rows[:, start : start + repeat * dtype.itemsize])
+        values = cells.view(dtype).astype(dtype.newbyteorder("="))
+        out[col.name] = values.reshape(nrows) if repeat == 1 else values
+    return out
+
+
 def _rewrite_table_hdu_with_schema(
     path: str,
     target_hdu: int,
@@ -265,14 +403,20 @@ def _rewrite_table_hdu_with_schema(
     schema: dict[str, dict[str, Any]],
     header: dict[str, Any],
     table_type: str,
+    *,
+    restamp_checksums: bool = False,
 ) -> None:
-    import torchfits
+    from .._io_engine._write_helpers import (
+        _atomic_replace_target,
+        _invalidate_written_target,
+    )
 
     # Stage the single-HDU file in a temp path so building it never races with
     # CFITSIO's internal file-locking on the real file when another handle
-    # (e.g. torchfits.open()) is open on the same path. The atomic replace is
-    # replace_hdu's, not this temp file's: `path` is rewritten in place by
-    # _atomic_rewrite_hdus, and this scratch file is discarded either way.
+    # (e.g. torchfits.open()) is open on the same path. The new HDU's bytes are
+    # then spliced in place of the old ones: decoding the table back into a
+    # TableHDU for replace_hdu stored scaled columns as float and dropped
+    # their TSCAL/TZERO, and re-encoded every other HDU of the file.
     tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
     tmp_path = tmp.name
     tmp.close()
@@ -285,9 +429,23 @@ def _rewrite_table_hdu_with_schema(
             overwrite=True,
             table_type=table_type,
         )
-        with torchfits.open(tmp_path) as hdul:
-            replacement = hdul[1].materialize(device="cpu")  # type: ignore[union-attr,call-arg]
-        torchfits.replace_hdu(path, target_hdu, replacement)
+        new_start, _new_data, new_end = _hdu_byte_spans(tmp_path)[1]
+        spans = _hdu_byte_spans(path)
+        old_start, _old_data, old_end = spans[target_hdu]
+        with open(tmp_path, "rb") as fh:
+            fh.seek(new_start)
+            new_hdu = fh.read(new_end - new_start)
+        with _atomic_replace_target(path) as temp_target:
+            with open(path, "rb") as src, open(temp_target, "wb") as dst:
+                dst.write(src.read(old_start))
+                dst.write(new_hdu)
+                src.seek(old_end)
+                dst.write(src.read())
+        _invalidate_written_target(path)
+        if restamp_checksums:
+            from .._io_engine.checksum_api import write_checksums
+
+            write_checksums(path, hdu=target_hdu)
     finally:
         try:
             os.unlink(tmp_path)
