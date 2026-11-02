@@ -266,3 +266,81 @@ def test_runnable_workflow_snippets_execute(
             )
 
     assert executed > 0, "No runnable snippets executed"
+
+
+def _page_snippets(page: str) -> list[CodeSnippet]:
+    return [s for s in _extract_snippets("python") if s.file_path.name == page]
+
+
+def _run_snippet(snippet: CodeSnippet, scope: dict) -> None:
+    rel = snippet.file_path.relative_to(ROOT)
+    try:
+        exec(compile(snippet.code, f"{rel}:{snippet.line_number}", "exec"), scope)
+    except Exception as exc:
+        # A snippet may document the error it raises, e.g. "# DataStateError: ...".
+        if f"# {exc.__class__.__name__}:" in snippet.code:
+            return
+        pytest.fail(
+            f"Doc snippet in {rel}:{snippet.line_number} raised "
+            f"{exc.__class__.__name__}: {exc}\nCode:\n{snippet.code}"
+        )
+
+
+def test_api_transforms_snippets_execute_in_page_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every api-transforms.md fence runs, top to bottom, in one shared scope.
+
+    Fences build on each other (``pipeline`` is defined once and reused), so
+    they run in page order; the scope is seeded only with the sample arrays the
+    page names as inputs (``image``, ``counts``, ``payload``, ...).
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "images").mkdir()
+    torchfits.write(str(tmp_path / "images" / "a.fits"), torch.ones(8, 8))
+
+    gen = torch.Generator().manual_seed(0)
+    image = 100.0 + torch.randn(64, 64, generator=gen)
+    ivar = torch.full((64, 64), 4.0)
+    scope: dict = {
+        "torch": torch,
+        "image": image,
+        "counts": image.clone(),
+        "finite_mask": torch.isfinite(image),
+        "ivar": ivar,
+        "payload": {
+            "flux": image.clone(),
+            "ivar": ivar,
+            "dq": torch.zeros(64, 64, dtype=torch.int32),
+        },
+    }
+    snippets = _page_snippets("api-transforms.md")
+    assert len(snippets) >= 10
+    for snippet in snippets:
+        _run_snippet(snippet, scope)
+
+
+def test_examples_ml_pipeline_snippet_executes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Galaxy Zoo preprocessing fence builds its pipeline and loader.
+
+    ``file_paths`` / ``target_labels`` come from the download step the page
+    runs first; local stand-ins replace them here. The pipeline is applied to
+    one item so a child Compose cannot call is exercised, not just built.
+    """
+    monkeypatch.chdir(tmp_path)
+    paths = []
+    for i in range(2):
+        path = tmp_path / f"cutout_{i}.fits"
+        stamp = torch.randn(3, 16, 16, generator=torch.Generator().manual_seed(i))
+        stamp[0, 0, 0] = float("nan")
+        torchfits.write(str(path), stamp)
+        paths.append(str(path))
+
+    snippet = next(s for s in _page_snippets("examples-ml.md") if "Compose(" in s.code)
+    scope: dict = {"file_paths": paths, "target_labels": [0, 1]}
+    _run_snippet(snippet, scope)
+    image, label = scope["dataset"][0]
+    assert image.shape[-2:] == (16, 16)
+    assert int(label) == 0
