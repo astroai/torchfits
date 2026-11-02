@@ -592,6 +592,7 @@ Stamp CFITSIO `DATASUM`/`CHECKSUM` while writing with `checksum=True`
 ```python
 torchfits.write("img.fits", data, checksum=True)  # stamped at write time
 torchfits.write_checksums(path, hdu=0)
+torchfits.write_checksums(path, hdu="SCI")  # EXTNAME, case-insensitive as in read()
 result = torchfits.verify_checksums(path, hdu=0)
 # result: dict with "datastatus", "hdustatus", "ok", "present", and "status"
 # ("ok" / "no_checksums" / "fail"). Missing stamps set present=False; ok

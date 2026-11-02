@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 
 def _cpp() -> Any:
@@ -17,20 +17,30 @@ def _cpp() -> Any:
     return cpp
 
 
-def _validate_hdu(hdu: int) -> int:
+def _validate_hdu(hdu: Union[int, str], path: str) -> int:
+    """Index of ``hdu``: a non-negative int, or an EXTNAME resolved like read()."""
+    if isinstance(hdu, str):
+        from .hdu_api import _resolve_hdu_index, autodetect_hdu
+
+        return _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
     if isinstance(hdu, bool):
-        raise TypeError("hdu must be a non-negative integer")
+        raise TypeError("hdu must be a non-negative integer or an EXTNAME string")
     try:
         hdu = operator.index(hdu)
     except TypeError:
-        raise TypeError("hdu must be a non-negative integer") from None
+        raise TypeError(
+            "hdu must be a non-negative integer or an EXTNAME string"
+        ) from None
     if hdu < 0:
         raise ValueError("hdu must be a non-negative integer")
     return int(hdu)
 
 
-def write_checksums(path: str, hdu: int = 0) -> None:
-    """Compute and write DATASUM/CHECKSUM keywords for an HDU (CFITSIO)."""
+def write_checksums(path: str, hdu: Union[int, str] = 0) -> None:
+    """Compute and write DATASUM/CHECKSUM keywords for an HDU (CFITSIO).
+
+    ``hdu`` is an index or an EXTNAME (case-insensitive, as in ``read()``).
+    """
     from .paths import coerce_fits_path, guard_fits_path
 
     from .caches import invalidate_path_caches
@@ -38,15 +48,17 @@ def write_checksums(path: str, hdu: int = 0) -> None:
     path = coerce_fits_path(path)
     guard_fits_path(path)
     cpp = _cpp()
-    cpp.write_hdu_checksums(str(path), _validate_hdu(hdu))
+    cpp.write_hdu_checksums(str(path), _validate_hdu(hdu, str(path)))
     # The header just gained CHECKSUM/DATASUM; cached headers keyed on an
     # unchanged size/mtime (coarse filesystems) would keep serving the old one.
     invalidate_path_caches(str(path))
     cpp.clear_shared_read_meta_cache()
 
 
-def verify_checksums(path: str, hdu: int = 0) -> Dict[str, Any]:
+def verify_checksums(path: str, hdu: Union[int, str] = 0) -> Dict[str, Any]:
     """Verify DATASUM/CHECKSUM keywords for an HDU (CFITSIO).
+
+    ``hdu`` is an index or an EXTNAME (case-insensitive, as in ``read()``).
 
     CFITSIO ``ffvcks`` status codes (``datastatus`` / ``hdustatus``):
     - ``0`` — checksum keywords absent (nothing to verify)
@@ -63,7 +75,9 @@ def verify_checksums(path: str, hdu: int = 0) -> Dict[str, Any]:
 
     path = coerce_fits_path(path)
     guard_fits_path(path)
-    datastatus, hdustatus = _cpp().verify_hdu_checksums(str(path), _validate_hdu(hdu))
+    datastatus, hdustatus = _cpp().verify_hdu_checksums(
+        str(path), _validate_hdu(hdu, str(path))
+    )
     data_i = int(datastatus)
     hdu_i = int(hdustatus)
 

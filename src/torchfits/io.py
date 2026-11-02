@@ -582,13 +582,16 @@ def _shutdown_fits_io_caches() -> None:
 atexit.register(_shutdown_fits_io_caches)
 
 
-def write_checksums(path: str, hdu: int = 0) -> None:
-    """Write DATASUM and CHECKSUM keywords for the given HDU."""
+def write_checksums(path: str, hdu: int | str = 0) -> None:
+    """Write DATASUM and CHECKSUM keywords for the given HDU (index or EXTNAME)."""
     return _write_checksums_impl(path, hdu=hdu)
 
 
-def verify_checksums(path: str, hdu: int = 0) -> dict[str, Any]:
-    """Verify DATASUM and CHECKSUM for the given HDU. Returns dict of status."""
+def verify_checksums(path: str, hdu: int | str = 0) -> dict[str, Any]:
+    """Verify DATASUM and CHECKSUM for the given HDU (index or EXTNAME).
+
+    Returns a dict of status.
+    """
     return _verify_checksums_impl(path, hdu=hdu)
 
 
