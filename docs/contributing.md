@@ -143,12 +143,13 @@ Upstream parity against astropy and fitsio is `pixi run test` in torchfits-harne
 
 Two suites run against real CFHT data — three 1.6 GB MegaPipe mosaics
 (21404x20347, single HDU) and ten Rice-compressed MegaCam MEFs (37–41 HDUs,
-`1PB(nnnn)` tiles). That data is not in git, so both skip unless it is fetched:
+`1PB(nnnn)` tiles). That data is not in git, so both skip unless it is fetched.
+CI does not fetch it either, so these suites only ever run locally:
 
 ```bash
 bash scripts/fetch_cfht_megacam_sample.sh    # ~2.5 GB
 bash scripts/fetch_cfht_megapipe_sample.sh  # ~5 GB
-pixi run -e test -- pytest tests/test_core_library_real_data.py -q
+pixi run -e test -- pytest tests/test_core_library_real_data.py tests/test_real_data_reads.py -q -rs
 ```
 
 `tests/test_core_library_real_data.py` is about the **metadata** path: it
