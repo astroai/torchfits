@@ -610,7 +610,39 @@ def _coerce_table_complex_values(
 # -- column format inference (from write section) --------------------------------
 
 
-def _infer_column_format_for_insert(name: str, values: Any) -> str:
+# ASCII-table TFORMs for the binary codes inference produces; the same widths
+# the table writer picks for a new ASCII table.
+_ASCII_TFORM_FOR_BINARY = {
+    "B": "I3",
+    "I": "I6",
+    "J": "I11",
+    "K": "I20",
+    "E": "E15.7",
+    "D": "E25.15",
+}
+
+
+def _infer_column_format_for_insert(
+    name: str, values: Any, *, ascii_table: bool = False
+) -> str:
+    fmt = _infer_binary_column_format(name, values)
+    if not ascii_table:
+        return fmt
+    # An ASCII table holds scalar I/F/E/D/A fields only; a binary TFORM such
+    # as '1D' made the rewrite fail with "Failed to create table".
+    repeat, code = fmt[:-1], fmt[-1]
+    if code == "A":
+        return f"A{repeat or 1}"
+    if repeat in ("", "1") and code in _ASCII_TFORM_FOR_BINARY:
+        return _ASCII_TFORM_FOR_BINARY[code]
+    raise ValueError(
+        f"Column '{name}' (inferred binary TFORM '{fmt}') has no ASCII-table "
+        "format: ASCII tables hold scalar integer, float and string fields only. "
+        "Pass format= with an ASCII TFORM (e.g. 'I11', 'E15.7', 'A8')."
+    )
+
+
+def _infer_binary_column_format(name: str, values: Any) -> str:
     import numpy as np
 
     if isinstance(values, torch.Tensor):

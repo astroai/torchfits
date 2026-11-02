@@ -275,3 +275,28 @@ def test_file_edit_view_has_typed_header_cards(tmp_path):
         assert new.header["NAXIS2"] == 4
         assert new.header["LONG"] == "x" * 100
         assert dict(new.header) == dict(torchfits.read_header(path, 1))
+
+
+def test_ascii_insert_column_infers_ascii_tform(tmp_path):
+    # Inference produced a binary TFORM ('1D') that an ASCII table cannot
+    # hold; the rewrite failed with "Failed to create table".
+    path = str(tmp_path / "ascii.fits")
+    torchfits.table.write(
+        path, {"x": np.arange(3, dtype=np.int32)}, table_type="ascii", overwrite=True
+    )
+    torchfits.table.insert_column(path, "f", np.array([1.5, 2.5, 3.5]))
+    torchfits.table.insert_column(path, "i", np.array([4, 5, 6], dtype=np.int16))
+    torchfits.table.insert_column(path, "s", np.array(["a", "bcd", "x"]))
+    header = torchfits.read_header(path, 1)
+    assert [header["TFORM2"], header["TFORM3"], header["TFORM4"]] == [
+        "E25.15",
+        "I6",
+        "A3",
+    ]
+    table = torchfits.table.read(path, hdu=1)
+    assert table.column("f").to_pylist() == [1.5, 2.5, 3.5]
+    assert table.column("s").to_pylist() == ["a", "bcd", "x"]
+    before = open(path, "rb").read()
+    with pytest.raises(ValueError, match="format="):
+        torchfits.table.insert_column(path, "v", np.zeros((3, 2)))
+    assert open(path, "rb").read() == before

@@ -69,22 +69,24 @@ def insert_column(
         raise ValueError(f"index must be in [0, {len(columns)}]")
 
     num_rows = _naxis2_row_count(header_map, path)
+    table_type = (
+        "ascii"
+        if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+        else "binary"
+    )
 
     fmt = (
         str(format).strip().upper()
         if format is not None
-        else _infer_column_format_for_insert(name, values)
+        else _infer_column_format_for_insert(
+            name, values, ascii_table=table_type == "ascii"
+        )
     )
     normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
 
     existing_data = _read_table_for_rewrite(path, target_hdu, columns)
     existing_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     existing_schema = _extract_table_schema_from_header(header_map, columns)
-    table_type = (
-        "ascii"
-        if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
-        else "binary"
-    )
 
     new_columns = list(columns)
     new_columns.insert(index, name)
@@ -154,17 +156,19 @@ def replace_column(
         if format is not None
         else str(existing_meta.get("format", "")).strip().upper()
     )
-    if not fmt:
-        fmt = _infer_column_format_for_insert(name, values)
-
-    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
-
-    table_header = _rewrite_table_header(path, target_hdu, header_map, columns)
     table_type = (
         "ascii"
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
+    if not fmt:
+        fmt = _infer_column_format_for_insert(
+            name, values, ascii_table=table_type == "ascii"
+        )
+
+    normalized_values = _normalize_column_values_for_format(name, values, fmt, num_rows)
+
+    table_header = _rewrite_table_header(path, target_hdu, header_map, columns)
     rewritten_data = _read_table_for_rewrite(path, target_hdu, columns)
     rewritten_data.update(_scaled_columns_as_stored(path, target_hdu, header_map))
     rewritten_data[name] = normalized_values

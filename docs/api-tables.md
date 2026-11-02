@@ -429,6 +429,11 @@ value does not fit the column (for example `70000` into a `uint16` column);
 float values written into an integer column only warn that they are
 truncated toward zero.
 
+Without `format=`, `insert_column` / `replace_column` infer the TFORM from
+the values. On an ASCII table (`XTENSION = 'TABLE'`) the inferred format is an
+ASCII one (`I6`, `I11`, `E25.15`, `A8`, ...); values an ASCII table cannot
+hold (booleans, vectors, complex) raise `ValueError` asking for `format=`.
+
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
 `None` is written as a blank value, and a value longer than the column width
