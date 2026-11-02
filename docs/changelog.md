@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.3.2rc1] — 2026-11-03
+
+### Highlights
+A correctness and safety release from a full audit of the library. Many
+fixes change results that were silently wrong in 1.3.1 (BIT columns, `where=`
+on integer and NULL columns, uint64 and int8 data, scaled-column edits, stale
+handles after a file replace), close four ways around the remote-URL SSRF
+guard, and make every write atomic. Read **Behaviour changes** before
+upgrading.
+
+### Behaviour changes
+- **Exceptions.** A missing HDU (unknown EXTNAME, out-of-range or negative
+  index) raises `torchfits.HDUNotFoundError` on every route; it is also a
+  `KeyError`, `IndexError`, `ValueError` and `RuntimeError`, so existing
+  `except` clauses keep working. A missing local file raises
+  `FileNotFoundError` (also a `RuntimeError`) on every route. `write()` raises
+  `ValueError` / `TypeError` for bad arguments instead of wrapping them in
+  `RuntimeError`. `read_extname` raises for a missing file or HDU (it still
+  returns `None` when the HDU has no EXTNAME); `read_batch(strict=False)` keeps
+  those two error types.
+- **TNULL** is compared with the raw stored value (FITS standard), and
+  torchfits now writes it that way. Files written by 1.3.1 with a value-domain
+  unsigned TNULL still read their nulls.
+- **uint64 and int8.** uint64 images and columns (BZERO/TZERO = 2**63) read as
+  `torch.uint64` instead of float64 and can be written. int8 table columns are
+  written with TZERO = -128 and read back as int8 (1.3.1 stored them as uint8).
+- **`where=`:** `IS NULL` also matches NaN; `== NULL` / `!= NULL` on numeric
+  columns raise; quoted literals are taken literally (only `''` escapes);
+  predicates on vector columns raise on every backend.
+- **Refused operations** (they used to corrupt or silently misbehave):
+  - HDU edits that would renumber other HDUs, edits on a read-only file, and
+    `delete_hdu(..., compress=...)`;
+  - `update_rows` with out-of-range integers, non-ASCII strings in table
+    mutations, `delete_rows(path, None)`;
+  - a leading `!` or a CFITSIO `[...]` / `(...)` section in a write path;
+  - tile compression of 64-bit integer images;
+  - remote URLs containing `@`, non-canonical numeric hosts, non-global
+    addresses, and redirects to another host.
+- **HDU edits** (`insert_hdu`, `replace_hdu`, `delete_hdu`) copy untouched
+  HDUs byte for byte, so they keep their tile compression and scaled storage;
+  `compress=` applies only to the HDU being written.
+- **Table datasets** return the same torch-native values with and without
+  `where=` (nulls as stored sentinels; use `TNullToNan`).
+- **`replace_column`** takes physical values on scaled or unsigned columns,
+  and an unsigned dtype without `format=` replaces the column layout.
+- **Transforms:** `rgb()` returns float32; `MeshBackgroundSubtract` now really
+  sigma-clips each tile with `n_sigma` / `max_iter` (`max_iter=0` restores the
+  plain tile median).
+- **CLI:** `diff` compares pixels and table rows exactly (exit 0 means
+  identical data); `stats` skips NaN/BLANK pixels, reports them as `nbad`,
+  uses float64 and a midpoint median, and gives exact integer min/max for
+  integer images; `convert` to PNG puts pixel (1,1) bottom-left by default
+  (`--origin upper` for the 1.3.1 orientation); `setkey` refuses structural
+  keywords and refreshes existing checksums; `cutout --box` shifts CRPIX.
+- **`clear_cache(disk=True)`** removes the cache root and only torchfits'
+  own download files from a `TORCHFITS_REMOTE_CACHE` directory set outside it.
+
+### Security
+- The remote-URL guard covers every CFITSIO network driver and refuses
+  non-canonical numeric hosts (e.g. `0177.0.0.1`), non-global addresses
+  (including CGNAT) and `@` anywhere in the URL. Patched CFITSIO no longer
+  follows redirects to another host, honours `@` only in the authority, and
+  no longer reports uninitialised memory in HTTP errors.
+
 ### Added
 - io: Read and write uint64 with the FITS BZERO/TZERO = 2**63 convention
 - io: Accept an EXTNAME in write_checksums and verify_checksums
@@ -156,6 +220,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - io: Raise FileNotFoundError for a missing local file on every route
 - cli: Report an out-of-range -e with the library's HDU message
 - io: Raise HDUNotFoundError from table, HDU-edit and HDUList lookups
+- table: Compare where= literals beyond int64 exactly in the native scan
+- build: Stop the ELF link gate reading libc fflush/ffs* as CFITSIO
+- write: Keep the empty primary's header cards on a compressed MEF
+- io: Reject CFITSIO [..]/(..) sections on write paths
+- io: Flush a write handle on close() while a TableReader borrows it
+- table: Replace_column takes physical values on a scaled column
+- table: Accept a uint64 tnull at or above 2**63
+- table: Read 1.3.1 value-domain unsigned TNULL as a null
+- errors: Keep except RuntimeError catching missing HDUs and files
+- cache: Never delete user-configured cache override directories
+- build: Stop the ELF link gate reading mangled C++ names as CFITSIO
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
@@ -163,6 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - io: Read a missing EXTNAME without an exception or lookup re-check
 - io: Answer .fits.gz metadata from one decompression per file
 - table: Read dense rows= selections through merged block reads
+- io: Read EXTNAME/HDUNAME in one missing_ok call in the name scan
+- io: Cache explicit mode= reads under a mode-keyed entry
 ### Docs
 - Say the real-CFHT suites never run in CI and list both files
 - Correct AGENTS.md claims about test markers, changelog-check, stubs
@@ -1889,7 +1966,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.2rc1...HEAD
+[1.3.2rc1]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2rc1
 [1.3.1]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1
 [1.3.1rc3]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1rc3
 [1.3.1rc2]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1rc2
