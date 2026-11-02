@@ -54,7 +54,6 @@ from ._io_engine.image_meta import (
 _log = _stdlib_logging.getLogger(__name__)
 _DEBUG_SCALE = os.environ.get("TORCHFITS_DEBUG_SCALE") == "1"
 _COLD_NOMMAP = os.environ.get("TORCHFITS_COLD_NOMMAP") == "1"
-_COLD_NOCACHE = os.environ.get("TORCHFITS_COLD_NOCACHE") == "1"
 _READ_EXC_TYPES = (
     RuntimeError,
     OSError,
@@ -207,7 +206,6 @@ def read(
         read_check_cache=_read_check_cache,
         read_header=_read_header_fast_impl,
         debug_scale=_DEBUG_SCALE,
-        cold_nocache=_COLD_NOCACHE,
         read_exc_types=_READ_EXC_TYPES,
         logger=_log,
     )

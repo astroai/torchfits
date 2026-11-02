@@ -180,7 +180,6 @@ def _read_unified(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Any:
@@ -237,7 +236,6 @@ def _read_unified(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -295,7 +293,6 @@ def _read_unified(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -371,7 +368,6 @@ def _read_unified(
             scale_on_device=scale_on_device,
             force_image=force_image,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             resolve_image_mmap=resolve_image_mmap,
             read_exc_types=read_exc_types,
             logger=logger,
@@ -426,7 +422,6 @@ def _read_batch_paths(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> list[Any]:
@@ -521,7 +516,6 @@ def _read_batch_paths(
                 read_check_cache=read_check_cache,
                 read_header=read_header,
                 debug_scale=debug_scale,
-                cold_nocache=cold_nocache,
                 read_exc_types=read_exc_types,
                 logger=logger,
             )
@@ -553,7 +547,6 @@ def _read_batch_hdus(
     read_check_cache: Callable[..., tuple[bool, Any, Any]],
     read_header: Callable[[Any, int, bool], Any],
     debug_scale: bool,
-    cold_nocache: bool,
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Any:
@@ -620,7 +613,6 @@ def _read_batch_hdus(
             read_check_cache=read_check_cache,
             read_header=read_header,
             debug_scale=debug_scale,
-            cold_nocache=cold_nocache,
             read_exc_types=read_exc_types,
             logger=logger,
         )
@@ -700,13 +692,11 @@ def _read_generic_fast_path(
     scale_on_device: bool,
     force_image: bool,
     debug_scale: bool,
-    cold_nocache: bool,
     resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
     read_exc_types: tuple[type[BaseException], ...],
     logger: Any,
 ) -> Tensor | None:
     """Try the generic image fast path; return None when fallback is required."""
-    _ = cold_nocache
     _ = read_exc_types  # callers still pass; fallback catch is intentionally narrow
     try:
         effective_mmap = resolve_image_mmap(path, hdu, mmap, cache_capacity)

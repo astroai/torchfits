@@ -464,7 +464,6 @@ during benchmarking.
 |---|---|---|
 | `TORCHFITS_DEBUG_SCALE` | `0` | Log which BSCALE/BZERO branch an image read took, at `DEBUG` level on the `torchfits.io` logger |
 | `TORCHFITS_COLD_NOMMAP` | `0` | Force non-mmap image reads |
-| `TORCHFITS_COLD_NOCACHE` | `0` | Accepted but has no effect: since 1.3.0 every read opens a private handle, so there is no handle cache to disable |
 | `TORCHFITS_EXAMPLE_FAST` | unset | `examples/` runner + sample-data helper: skip network downloads and fail fast, and bound the `example_megacam_cr_denoise.py` training run. `examples/test_examples.py` sets it for every example under CI and unconditionally for the denoise example; that runner also refuses to start under `PYTHONOPTIMIZE` |
 
 ### Build / docs / bench-only
