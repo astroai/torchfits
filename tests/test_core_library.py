@@ -550,8 +550,11 @@ def test_thread_pool_is_bounded_and_pinned(sample) -> None:
         [sys.executable, "-c", "import torchfits._core as c; print(c.thread_count())"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         env=dict(os.environ, TORCHFITS_NUM_THREADS="3"),
+    )
+    assert probe.returncode == 0, (
+        f"child failed (rc={probe.returncode})\n{probe.stdout}\n{probe.stderr}"
     )
     assert probe.stdout.strip().splitlines()[-1] == "3"
 
@@ -587,8 +590,12 @@ def test_parallel_signbit_xor_matches_a_single_threaded_read(tmp_path) -> None:
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
             env=env,
+        )
+        assert proc.returncode == 0, (
+            f"child failed (rc={proc.returncode}, "
+            f"TORCHFITS_XOR_PARALLEL_MIN_BYTES={min_bytes})\n{proc.stderr}"
         )
         return json.loads(proc.stdout.strip().splitlines()[-1])
 
