@@ -34,13 +34,38 @@ from ._write_helpers import (
 )
 
 
+def _scaled_image_storage(path: str, idx: int, header: Any) -> Optional[Tensor]:
+    """Raw integer storage of an uncompressed scaled image HDU, else None.
+
+    Decoding BSCALE/BZERO/BLANK for a rewrite turned an untouched int16 HDU
+    into float32 (twice the bytes, scale cards dropped). Carrying the stored
+    codes with their own scale cards writes the HDU back as it was.
+    """
+    if header.get("ZIMAGE") or not any(
+        key in header for key in ("BSCALE", "BZERO", "BLANK")
+    ):
+        return None
+    try:
+        bitpix = int(header.get("BITPIX", 0))
+    except (TypeError, ValueError):
+        return None
+    if bitpix <= 0:
+        return None
+    from .. import read
+
+    raw = read(path, hdu=idx, raw_scale=True)
+    return raw if isinstance(raw, Tensor) else None
+
+
 def _detach_hdus_for_rewrite(path: str) -> List[Any]:
     """Materialize file-backed HDUs so rewrite paths never hold stale handles."""
     with open_hdulist(path) as hdul:
         detached: List[Any] = []
-        for hdu in list(hdul._hdus):
+        for idx, hdu in enumerate(list(hdul._hdus)):
             if isinstance(hdu, TensorHDU):
-                detached.append(TensorHDU(data=hdu.to_tensor("cpu"), header=hdu.header))
+                raw = _scaled_image_storage(path, idx, hdu.header)
+                data = hdu.to_tensor("cpu") if raw is None else raw
+                detached.append(TensorHDU(data=data, header=hdu.header))
             elif isinstance(hdu, TableHDU):
                 detached.append(
                     TableHDU(dict(getattr(hdu, "_raw_data", {})), header=hdu.header)
