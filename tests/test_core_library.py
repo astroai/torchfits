@@ -284,6 +284,11 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
     Rice-compressed MegaCam MEF with four threads it produced wrong answers,
     spurious ``Could not read image dimensions``, and a segfault. The fix holds
     the lock across the whole move-then-read.
+
+    A synthetic MEF is enough: the probe needs HDUs whose type and shape all
+    differ, so any cross-HDU answer is visible. Measured: with the accessor
+    lock removed from ``FitsReader::hdu_type``/``shape``, this file fails the
+    probe; with it in place, it passes.
     """
     repo_root = Path(__file__).resolve().parents[1]
     artifacts = _core_build_artifacts(repo_root)
@@ -291,16 +296,23 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
         pytest.skip("no build tree with libtorchfits_core; run `pixi run dev` first")
     library, cfitsio = artifacts
 
-    # A synthetic multi-extension file is not enough: the probe needs several
-    # HDUs whose type and shape differ, which the real corpus guarantees.
-    mef_candidates = sorted(
-        (repo_root / "benchmarks_data" / "cfht_megacam").glob("*.fits.fz")
-    )
-    mef = mef_candidates[0] if mef_candidates else None
-    if mef is None:
-        pytest.skip(
-            "no real MegaCam MEF; run scripts/fetch_cfht_megacam_sample.sh first"
-        )
+    mef = tmp_path / "mef.fits"
+    torchfits.HDUList(
+        [
+            torchfits.TensorHDU(torch.arange(64, dtype=torch.int16).reshape(8, 8)),
+            torchfits.TensorHDU(
+                torch.ones(16, 24), header=torchfits.Header({"EXTNAME": "SCI1"})
+            ),
+            torchfits.TensorHDU(
+                torch.zeros(3, 4, 5, dtype=torch.int32),
+                header=torchfits.Header({"EXTNAME": "CUBE"}),
+            ),
+            torchfits.TensorHDU(
+                torch.zeros(7, 2, dtype=torch.float64),
+                header=torchfits.Header({"EXTNAME": "SCI2"}),
+            ),
+        ]
+    ).write(str(mef), overwrite=True)
 
     compiler = shlex.split(os.environ.get("CXX", "c++"))
     source = repo_root / "tests" / "cpp" / "test_fitsreader_threads.cpp"
