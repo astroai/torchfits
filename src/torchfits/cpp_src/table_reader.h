@@ -2226,9 +2226,14 @@ public:
             case FITSColumnType::LOGICAL:
             case FITSColumnType::BIT:
                 return is(code::Bool, 8) || is(code::UInt, 8);
-            case FITSColumnType::SHORT: return is(code::Int, 16);
-            case FITSColumnType::INT: return is(code::Int, 32);
-            case FITSColumnType::LONG: return is(code::Int, 64);
+            // Unsigned-convention columns also take their physical unsigned
+            // dtype (the write loop flips the sign bit).
+            case FITSColumnType::SHORT:
+                return is(code::Int, 16) || (col.is_unsigned_int && is(code::UInt, 16));
+            case FITSColumnType::INT:
+                return is(code::Int, 32) || (col.is_unsigned_int && is(code::UInt, 32));
+            case FITSColumnType::LONG:
+                return is(code::Int, 64) || (col.is_unsigned_int && is(code::UInt, 64));
             case FITSColumnType::FLOAT: return is(code::Float, 32);
             case FITSColumnType::DOUBLE: return is(code::Float, 64);
             case FITSColumnType::STRING: return is(code::UInt, 8);
@@ -2493,35 +2498,55 @@ public:
                             break;
                         }
                         case FITSColumnType::SHORT: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16)) {
+                            // An unsigned column also takes its physical
+                            // uint16 values; storage is value XOR sign bit.
+                            const bool u16_payload =
+                                col->is_unsigned_int &&
+                                dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 16;
+                            if (!u16_payload &&
+                                !(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16)) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            int32_t phys = src_i16[idx];
-                            if (col->is_unsigned_int) {
-                                phys -= static_cast<int32_t>(col->unsigned_offset);
-                            }
-                            const int16_t stored = static_cast<int16_t>(phys);
                             uint16_t v;
-                            std::memcpy(&v, &stored, sizeof(uint16_t));
+                            if (u16_payload) {
+                                std::memcpy(&v, &src_i16[idx], sizeof(uint16_t));
+                                v ^= 0x8000u;
+                            } else {
+                                int32_t phys = src_i16[idx];
+                                if (col->is_unsigned_int) {
+                                    phys -= static_cast<int32_t>(col->unsigned_offset);
+                                }
+                                const int16_t stored = static_cast<int16_t>(phys);
+                                std::memcpy(&v, &stored, sizeof(uint16_t));
+                            }
                             v = bswap_16(v);
                             std::memcpy(dest, &v, sizeof(uint16_t));
                             break;
                         }
                         case FITSColumnType::INT: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32)) {
+                            const bool u32_payload =
+                                col->is_unsigned_int &&
+                                dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 32;
+                            if (!u32_payload &&
+                                !(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32)) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            int64_t phys = src_i32[idx];
-                            if (col->is_unsigned_int) {
-                                phys -= col->unsigned_offset;
-                            }
-                            const int32_t stored = static_cast<int32_t>(phys);
                             uint32_t v;
-                            std::memcpy(&v, &stored, sizeof(uint32_t));
+                            if (u32_payload) {
+                                std::memcpy(&v, &src_i32[idx], sizeof(uint32_t));
+                                v ^= 0x80000000u;
+                            } else {
+                                int64_t phys = src_i32[idx];
+                                if (col->is_unsigned_int) {
+                                    phys -= col->unsigned_offset;
+                                }
+                                const int32_t stored = static_cast<int32_t>(phys);
+                                std::memcpy(&v, &stored, sizeof(uint32_t));
+                            }
                             v = bswap_32(v);
                             std::memcpy(dest, &v, sizeof(uint32_t));
                             break;

@@ -540,6 +540,11 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
+        } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
+                   (dt.bits == 16 || dt.bits == 32 || dt.bits == 64)) {
+            // Physical unsigned values: CFITSIO applies the column's
+            // TZERO (2**15 / 2**31 / 2**63 unsigned convention) on write.
+            fits_type = dt.bits == 16 ? TUSHORT : dt.bits == 32 ? TUINT : TULONGLONG;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) {
             fits_type = TINT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) {
@@ -1095,6 +1100,11 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
+        } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
+                   (dt.bits == 16 || dt.bits == 32 || dt.bits == 64)) {
+            // Physical unsigned values: CFITSIO applies the column's
+            // TZERO (2**15 / 2**31 / 2**63 unsigned convention) on write.
+            fits_type = dt.bits == 16 ? TUSHORT : dt.bits == 32 ? TUINT : TULONGLONG;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 32) {
             fits_type = TINT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) {

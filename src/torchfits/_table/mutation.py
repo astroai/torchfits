@@ -306,7 +306,9 @@ def delete_rows(
     _mutation_cache_barrier(path)
 
 
-def _warn_numeric_coercion(col_name: str, arr: Any, tform: Any) -> None:
+def _warn_numeric_coercion(
+    col_name: str, arr: Any, tform: Any, unsigned_dtype: str | None = None
+) -> None:
     """Warn when writing *arr* into an integer-TFORM column loses information.
 
     CFITSIO truncates floats toward zero and wraps out-of-range integers;
@@ -345,9 +347,15 @@ def _warn_numeric_coercion(col_name: str, arr: Any, tform: Any) -> None:
         return
     if arr.dtype.kind in {"i", "u"}:
         bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
-        high = (1 << (bits - 1)) - 1
-        low = 0 if code == "B" else -(1 << (bits - 1))
-        out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
+        if code == "B" or unsigned_dtype is not None:
+            # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
+            low, high = 0, (1 << bits) - 1
+        else:
+            low, high = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+        if arr.dtype.kind == "u":
+            out_of_range = int(_np.count_nonzero(arr > high))
+        else:
+            out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
         if out_of_range:
             warnings.warn(
                 f"Column '{col_name}' has integer FITS format '{tform}': "
@@ -379,6 +387,9 @@ def update_rows(
     unknown = sorted({str(name) for name in rows} - set(columns))
     if unknown:
         raise KeyError(f"Unknown columns for table mutation: extra={unknown}")
+    from ..fits_schema import unsigned_column_dtype_names_from_header
+
+    unsigned_names = unsigned_column_dtype_names_from_header(header_map)
 
     string_widths: dict[str, int] = {}
     vla_codes: dict[str, str] = {}
@@ -473,7 +484,9 @@ def update_rows(
             )
             if expected_rows is None:
                 expected_rows = int(arr.shape[0])
-            _warn_numeric_coercion(col_name, arr, tform_map.get(col_name))
+            _warn_numeric_coercion(
+                col_name, arr, tform_map.get(col_name), unsigned_names.get(col_name)
+            )
             normalized[col_name] = arr
 
     if expected_rows is None:
