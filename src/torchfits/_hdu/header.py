@@ -144,7 +144,10 @@ class Header(dict[str, Any]):
             else:
                 card_value = value
                 comment = ""
-            self._set_card(str(key), card_value, str(comment), bump=False)
+            key_s = str(key)
+            if key_s in _COMMENTARY_KEYS:
+                self.remove(key_s, ignore_missing=True, remove_all=True)
+            self._set_card(key_s, card_value, str(comment), bump=False)
         if cardwise or plain:
             self._version += 1
 
@@ -162,7 +165,9 @@ class Header(dict[str, Any]):
             if key not in _COMMENTARY_KEYS:
                 if key in seen:
                     continue
-                seen.add(key)
+            elif key not in seen:
+                self.remove(key, ignore_missing=True, remove_all=True)
+            seen.add(key)
             self._set_card(key, card.value, card.comment, bump=False)
 
     def clear(self) -> None:
