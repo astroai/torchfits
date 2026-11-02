@@ -552,6 +552,18 @@ nb::dict table_result_to_python(
     return result_dict;
 }
 
+// Name stamped on the open_fits_mmap_reader capsule; any other capsule must be
+// refused before its pointer is cast to TableReader*.
+constexpr const char* kTableReaderCapsuleName = "torchfits.TableReader";
+
+torchfits::TableReader* table_reader_from_capsule(const nb::capsule& cap) {
+    if (!PyCapsule_IsValid(cap.ptr(), kTableReaderCapsuleName)) {
+        throw nb::type_error(
+            "reader must be a capsule returned by open_fits_mmap_reader");
+    }
+    return static_cast<torchfits::TableReader*>(cap.data());
+}
+
 } // anonymous namespace
 
 namespace torchfits {
@@ -867,7 +879,7 @@ void bind_table(nb::module_& m) {
         // header once; each read_rows call maps/unmaps per batch but never
         // re-opens the file.
         torchfits::TableReader* reader = new torchfits::TableReader(path, hdu_num);
-        return nb::capsule(reader, [](void* p) noexcept {
+        return nb::capsule(reader, kTableReaderCapsuleName, [](void* p) noexcept {
             delete static_cast<torchfits::TableReader*>(p);
         });
     }, nb::arg("path"), nb::arg("hdu_num") = 1);
@@ -875,10 +887,7 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_mmap_from_reader", [](nb::capsule reader_cap,
                                                       const std::vector<std::string>& column_names,
                                                       long start_row, long num_rows) -> nb::object {
-        auto* reader = static_cast<torchfits::TableReader*>(reader_cap.data());
-        if (reader == nullptr) {
-            throw std::runtime_error("Invalid mmap reader capsule");
-        }
+        auto* reader = table_reader_from_capsule(reader_cap);
         nb::gil_scoped_release release;
         // A persistent capsule reader can be shared across threads (e.g.
         // DataLoader workers); serialize access to its CFITSIO cursor.
@@ -892,10 +901,7 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_mmap_from_reader_raw", [](nb::capsule reader_cap,
                                                           const std::vector<std::string>& column_names,
                                                           long start_row, long num_rows) -> nb::dict {
-        auto* reader = static_cast<torchfits::TableReader*>(reader_cap.data());
-        if (reader == nullptr) {
-            throw std::runtime_error("Invalid mmap reader capsule");
-        }
+        auto* reader = table_reader_from_capsule(reader_cap);
         nb::gil_scoped_release release;
         std::lock_guard<std::mutex> io_lock(reader->io_mutex_);
         auto result = reader->read_columns_mmap(column_names, start_row, num_rows);

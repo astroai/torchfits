@@ -54,3 +54,34 @@ def test_zero_dim_bit_and_string_payloads_write_one_row(tmp_path):
         True,
     ]
     assert C.read_fits_table(str(text), 1)["S"].tolist() == [[65, 32], [99, 100]]
+
+
+def test_mmap_reader_calls_reject_a_foreign_capsule(tmp_path):
+    path = tmp_path / "cap.fits"
+    write_table(str(path), {"A": np.arange(3, dtype=np.int32)}, overwrite=True)
+    res = _run(
+        f"""
+        import ctypes
+        import torchfits._C as C
+        new = ctypes.pythonapi.PyCapsule_New
+        new.restype = ctypes.py_object
+        new.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+        buf = ctypes.create_string_buffer(4096)
+        bogus = new(ctypes.addressof(buf), b"some.other.capsule", None)
+        for fn in (
+            C.read_fits_table_rows_mmap_from_reader,
+            C.read_fits_table_rows_mmap_from_reader_raw,
+        ):
+            try:
+                fn(bogus, ["A"], 1, -1)
+            except TypeError:
+                pass
+            else:
+                raise SystemExit("foreign capsule accepted")
+        reader = C.open_fits_mmap_reader({str(path)!r}, 1)
+        out = C.read_fits_table_rows_mmap_from_reader(reader, ["A"], 1, -1)
+        assert out["A"].tolist() == [0, 1, 2], out
+        print("ok")
+        """
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
