@@ -168,8 +168,8 @@ cubes = FitsCubeDataset("cubes/*.fits", hdu=0, slice_index=None)
     `cutouts must be non-empty`. The reason is that an empty dataset does not
     fail on its own: `make_loader(..., shuffle=True)` raises from torch's
     `RandomSampler`, which validates `num_samples > 0`, but `shuffle=False` uses
-    `SequentialSampler`, which does not check — so before the guard the same
-    dataset under the same `make_loader` was either an error or a silent
+    `SequentialSampler`, which does not check — so without the check the same
+    dataset under the same `make_loader` would be either an error or a silent
     zero-work training loop depending on one flag.
 
     A **glob that matches nothing is not this case.** It keeps falling back to
@@ -223,8 +223,8 @@ selected band has one. A `*_DQ` companion is a bitfield, so `from_bands`
 decodes it into a boolean validity mask by default (`mask_is_dq=False` to
 override, `bad_bits=` to name the fatal bits); mixing `*_DQ` and `*_MASK`
 companions across bands is rejected as ambiguous. Zeropoints come from
-`PHOTZEROPOINT`, `ZP`,
-`MAGZERO`, `PHOTZP`, `MAGZP`, `ABMAGZERO` or `ZEROPOINT` (first present wins;
+`PHOTZEROPOINT`, `PHOTZP`,
+`ZP`, `MAGZERO`, `MAGZP`, `ABMAGZERO` or `ZEROPOINT` (first present wins;
 `ZP` and friends are read as HIERARCH where needed):
 
 ```python
@@ -333,11 +333,10 @@ ds = FitsTensorIterableDataset(
     * **The shard** is a function of `(rank, world_size, worker_id)` alone, so
       every rank and worker sees its own disjoint slice on every epoch.
     * **The order within the shard** changes every epoch when `shuffle=True` or
-      `shuffle_buffer_size=` is set. These were seeded from `seed` alone, which
-      made `shuffle=True` a no-op across epochs; they now mix a per-dataset
-      epoch counter with `torch.initial_seed()`.
+      `shuffle_buffer_size=` is set: the shuffle mixes a per-dataset epoch
+      counter with `torch.initial_seed()`.
 
-    `seed=` still makes a run reproducible: two datasets built with the same
+    `seed=` makes a run reproducible: two datasets built with the same
     `seed` in the same process replay the same sequence of epochs. If you need
     one *fixed* order — a fixture, a golden-output test — leave `shuffle=False`
     and set no `shuffle_buffer_size`.
@@ -399,7 +398,7 @@ ds = FitsTableDataset(
 
 ## `FitsTableIterableDataset`
 
-Streams table rows in constant memory. Each `__getitem__` yields one
+Streams table rows in constant memory. Each iteration yields one
 `dict[str, Tensor]` row.
 
 ```python
@@ -666,7 +665,7 @@ torchfits iterable datasets natively partition across both **multi-process DataL
 
 ### Automatic Coordinate Resolution
 When `rank` and `world_size` are omitted, torchfits automatically checks:
-1. Cluster environment variables: `RANK` & `WORLD_SIZE` (`torchrun`, DeepSpeed, FSDP) or `SLURM_PROCID` & `SLURM_NTASKS` (SLURM).
+1. Cluster environment variables, first present wins. Rank: `RANK` (`torchrun`, DeepSpeed, FSDP), `SLURM_PROCID` (SLURM), then `LOCAL_RANK`. World size: `WORLD_SIZE`, `SLURM_NTASKS`, then `SLURM_NPROCS`.
 2. `torch.distributed` process group (if initialized).
 3. Single-worker fallback (`rank=0, world_size=1`).
 
