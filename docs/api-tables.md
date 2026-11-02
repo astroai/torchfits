@@ -397,6 +397,11 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 `row_slice` is a `slice` or `(start, stop)` tuple (0-based Python style for
 update/delete). `insert_rows` requires keyword `row=` (0-based insert index).
 
+`update_rows` raises `ValueError`, before writing anything, when an integer
+value does not fit the column (for example `70000` into a `uint16` column);
+float values written into an integer column only warn that they are
+truncated toward zero.
+
 ---
 
 ## Interop

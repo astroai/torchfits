@@ -58,7 +58,7 @@ def test_uint64_update_rejects_negative_values(tmp_path):
     path = str(tmp_path / "u64neg.fits")
     torchfits.write(path, {"U": np.zeros(2, dtype=np.uint64)}, overwrite=True)
     before = open(path, "rb").read()
-    with pytest.raises(ValueError, match="negative"):
+    with pytest.raises(ValueError, match="outside"):
         update_rows(path, {"U": [-1, 2]}, slice(0, 2))
     assert open(path, "rb").read() == before
 
@@ -71,3 +71,22 @@ def test_native_mmap_update_int64_payload_on_uint64_column(tmp_path):
     cpp.update_fits_table_rows_mmap(path, 1, {"U": np.array([5, 6])}, 1, 2)
     torchfits.clear_all_caches()
     assert torchfits.read(path, hdu=1)["U"].tolist() == [5, 6]
+
+
+@pytest.mark.parametrize("mmap", ["auto", False])
+def test_out_of_range_update_raises_before_writing(tmp_path, mmap):
+    path = str(tmp_path / "range.fits")
+    torchfits.write(
+        path,
+        {"A": np.zeros(3, dtype=np.int32), "U": np.zeros(3, dtype=np.uint16)},
+        overwrite=True,
+    )
+    before = open(path, "rb").read()
+    with pytest.raises(ValueError, match="nothing was written"):
+        update_rows(
+            path,
+            {"A": np.array([7, 7], dtype=np.int32), "U": np.array([70000, 1])},
+            slice(0, 2),
+            mmap=mmap,
+        )
+    assert open(path, "rb").read() == before

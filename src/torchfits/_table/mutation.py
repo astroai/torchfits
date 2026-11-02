@@ -311,14 +311,20 @@ def delete_rows(
     _mutation_cache_barrier(path)
 
 
-def _warn_numeric_coercion(
-    col_name: str, arr: Any, tform: Any, unsigned_dtype: str | None = None
+def _check_numeric_coercion(
+    col_name: str,
+    arr: Any,
+    tform: Any,
+    unsigned_dtype: str | None = None,
+    scaled: bool = False,
 ) -> None:
-    """Warn when writing *arr* into an integer-TFORM column loses information.
+    """Check *arr* against an integer-TFORM column before anything is written.
 
-    CFITSIO truncates floats toward zero and wraps out-of-range integers;
-    surfacing this at the Python boundary keeps silent corruption out of
-    science pipelines.
+    CFITSIO truncates floats toward zero (warned here). An out-of-range
+    integer is refused with ValueError: CFITSIO writes the rows before it
+    reports the overflow, which used to leave the file modified behind the
+    error. Scaled (TSCAL/TZERO) columns take physical values and are not
+    range-checked against the stored type here.
     """
     if not tform:
         return
@@ -350,7 +356,7 @@ def _warn_numeric_coercion(
             stacklevel=3,
         )
         return
-    if arr.dtype.kind in {"i", "u"}:
+    if arr.dtype.kind in {"i", "u"} and not scaled:
         bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
         if unsigned_dtype == "int8":
             # Signed-byte convention: 'B' with TZERO = -128.
@@ -365,12 +371,10 @@ def _warn_numeric_coercion(
         else:
             out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
         if out_of_range:
-            warnings.warn(
+            raise ValueError(
                 f"Column '{col_name}' has integer FITS format '{tform}': "
-                f"{out_of_range} value(s) fall outside [{low}, {high}] and "
-                "will wrap on disk. Cast explicitly to silence this warning.",
-                RuntimeWarning,
-                stacklevel=3,
+                f"{out_of_range} value(s) fall outside [{low}, {high}]; "
+                "nothing was written"
             )
 
 
@@ -398,6 +402,14 @@ def update_rows(
     from ..fits_schema import unsigned_column_dtype_names_from_header
 
     unsigned_names = unsigned_column_dtype_names_from_header(header_map)
+    from ..fits_schema import iter_table_columns
+
+    scaled_names = {
+        col.name
+        for col in iter_table_columns(header_map)
+        if col.name not in unsigned_names
+        and ((col.tscal or 1.0) != 1.0 or (col.tzero or 0.0) != 0.0)
+    }
 
     string_widths: dict[str, int] = {}
     vla_codes: dict[str, str] = {}
@@ -492,17 +504,16 @@ def update_rows(
             )
             if expected_rows is None:
                 expected_rows = int(arr.shape[0])
-            _warn_numeric_coercion(
-                col_name, arr, tform_map.get(col_name), unsigned_names.get(col_name)
+            _check_numeric_coercion(
+                col_name,
+                arr,
+                tform_map.get(col_name),
+                unsigned_names.get(col_name),
+                scaled=col_name in scaled_names,
             )
             if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
-                # Physical uint64 values: send them as uint64 so every writer
-                # applies the TZERO = 2**63 offset the same way.
-                if arr.size and int(arr.min()) < 0:
-                    raise ValueError(
-                        f"Column '{col_name}' is uint64: negative values cannot "
-                        "be stored"
-                    )
+                # Physical uint64 values (negatives refused above): send them
+                # as uint64 so every writer applies the TZERO = 2**63 offset.
                 arr = arr.astype("uint64")
             normalized[col_name] = arr
 
