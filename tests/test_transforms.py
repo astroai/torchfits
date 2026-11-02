@@ -2099,6 +2099,28 @@ class TestThreadSafety:
             clone.inverse(torch.zeros(8, 8))
 
 
+class TestMeshFilterNaNTiles:
+    def test_masked_tile_does_not_wipe_its_neighbourhood(self) -> None:
+        # Linear sky gradient; one tile fully masked. The 3x3 mesh filter must
+        # ignore the empty tile instead of turning its neighbours NaN (which
+        # then fall back to the flat frame median).
+        sky = torch.zeros(64, 64) + torch.linspace(0, 100, 64)
+        mask = torch.ones(64, 64, dtype=torch.bool)
+        mask[24:32, 24:32] = False
+        clean = MeshBackgroundSubtract(mesh=(8, 8))(sky.clone())
+        out = MeshBackgroundSubtract(mesh=(8, 8))(sky.clone(), mask=mask)
+        assert torch.isfinite(out[mask]).all()
+        assert out[mask].abs().max() <= clean.abs().max() + 1e-4
+
+    def test_all_nan_neighbourhood_falls_back_to_frame(self) -> None:
+        img = torch.full((16, 16), 5.0)
+        mask = torch.zeros(16, 16, dtype=torch.bool)
+        mask[-1, -1] = True  # single valid pixel: every tile is too sparse
+        t = MeshBackgroundSubtract(mesh=(4, 4))
+        t(img, mask=mask)
+        assert torch.allclose(t._last_bg, torch.full_like(img, 5.0))
+
+
 class TestMeshTileFallback:
     @staticmethod
     def _sparse_tile_scene() -> tuple[torch.Tensor, torch.Tensor]:

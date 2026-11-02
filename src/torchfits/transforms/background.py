@@ -29,7 +29,9 @@ __all__ = ["MeshBackgroundSubtract"]
 def _median_filter_3x3(grid: torch.Tensor) -> torch.Tensor:
     """3×3 median filter over the last two dims (edge-padded).
 
-    Edge replication is done with explicit concatenation because
+    NaN tiles (empty or too sparse) are ignored so one bad tile does not wipe
+    its neighbourhood; an all-NaN neighbourhood stays NaN and falls back to
+    the frame level downstream. Edge replication is done with explicit concatenation because
     ``F.pad(mode="replicate")`` only accepts rank-3+ inputs.
     """
     padded = torch.cat([grid[..., :1, :], grid, grid[..., -1:, :]], dim=-2)
@@ -42,7 +44,7 @@ def _median_filter_3x3(grid: torch.Tensor) -> torch.Tensor:
         ],
         dim=0,
     )
-    return neighbours.median(dim=0).values
+    return torch.nanmedian(neighbours, dim=0).values
 
 
 class MeshBackgroundSubtract(FITSTransform):
