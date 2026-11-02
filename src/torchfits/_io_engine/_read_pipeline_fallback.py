@@ -52,20 +52,26 @@ def read_fallback(
     raw_scale: bool = False,
 ) -> Any:
     """Generic fallback read path for image/table HDUs."""
-    hit, cached_res, cache_key = read_check_cache(
-        path,
-        hdu,
-        device,
-        fp16,
-        bf16,
-        columns,
-        start_row,
-        num_rows,
-        return_header,
-        cache_capacity,
-        mmap,
-        raw_scale,
-    )
+    # The cache key has no mode: an explicit mode='image'/'table' must not be
+    # answered with an entry an auto-mode read stored (a table dict for
+    # mode='image'), so explicit modes bypass the cache.
+    if force_image or force_table:
+        hit, cached_res, cache_key = False, None, None
+    else:
+        hit, cached_res, cache_key = read_check_cache(
+            path,
+            hdu,
+            device,
+            fp16,
+            bf16,
+            columns,
+            start_row,
+            num_rows,
+            return_header,
+            cache_capacity,
+            mmap,
+            raw_scale,
+        )
     if hit:
         return cached_res
 
@@ -95,14 +101,27 @@ def read_fallback(
 
                 if hdu_num is None:
                     num_hdus = cpp_module.get_num_hdus(file_handle)
+                    wanted = hdu.strip().upper()
                     for i in range(num_hdus):
                         try:
-                            hdr = cpp_module.read_header(file_handle, i)
-                            if hdr.get("EXTNAME") == hdu:
-                                hdu_num = i
-                                break
+                            # read_header returns (key, value, comment) cards.
+                            cards = cpp_module.read_header(file_handle, i)
                         except (RuntimeError, TypeError, ValueError):
                             continue
+                        extname = next(
+                            (
+                                str(c[1])
+                                for c in cards
+                                if str(c[0]).upper() == "EXTNAME"
+                            ),
+                            None,
+                        )
+                        if (
+                            extname is not None
+                            and extname.strip(" '").upper() == wanted
+                        ):
+                            hdu_num = i
+                            break
 
                 if hdu_num is None:
                     raise ValueError(f"HDU '{hdu}' not found in file")

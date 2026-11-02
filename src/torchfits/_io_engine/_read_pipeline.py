@@ -234,8 +234,9 @@ def read_unified(
         hdu = autodetect_hdu(path)
 
     hdu_type_hint = get_cached_hdu_type(path, hdu) if isinstance(hdu, int) else None
+    # An explicit mode='image' wins over a cached table type.
     is_cached_table_hdu = force_table or (
-        hdu_type_hint in {"ASCII_TABLE", "BINARY_TABLE"}
+        not force_image and hdu_type_hint in {"ASCII_TABLE", "BINARY_TABLE"}
     )
     skip_generic_image_fast_path = is_cached_table_hdu
 
@@ -251,6 +252,7 @@ def read_unified(
             cpp_module=cpp_module,
             path=path,
             hdu=hdu,
+            mode=mode,
             device=device,
             mmap=mmap,
             fp16=fp16,
@@ -507,6 +509,7 @@ def _read_batch_hdus(
     cpp_module: Any,
     path: str,
     hdu: list[int] | tuple[int, ...],
+    mode: str,
     device: str,
     mmap: bool | str,
     fp16: bool,
@@ -530,15 +533,29 @@ def _read_batch_hdus(
     logger: Any,
 ) -> Any:
     """Dispatch multiple HDUs from one FITS path."""
-    if not (fp16 or bf16 or raw_scale):
+    # The native batch reads integer-indexed images only. EXTNAMEs, tables and
+    # mode='table' go through the per-HDU loop, which also honors mode.
+    native_ok = (
+        not (fp16 or bf16 or raw_scale)
+        and str(mode).strip().lower() != "table"
+        and all(isinstance(h, int) and not isinstance(h, bool) for h in hdu)
+    )
+    if native_ok:
         if mmap is False:
             use_mmap = False
         elif mmap is True:
             use_mmap = True
         else:
             use_mmap = None
+        data = None
         if use_mmap is not None:
-            data = cpp_module.read_hdus_batch(path, list(hdu), use_mmap)
+            try:
+                data = cpp_module.read_hdus_batch(path, list(hdu), use_mmap)
+            except read_exc_types as exc:
+                # e.g. a table among the HDUs: the per-HDU loop handles it
+                # (and raises per HDU for mode='image').
+                logger.debug("read_hdus_batch failed (%s); falling back per HDU", exc)
+        if data is not None:
             if len(data) != len(hdu):
                 # Never pair tensors with the wrong HDUs (r4a-01): fall
                 # through to the per-HDU loop, which attributes failures.
@@ -570,6 +587,7 @@ def _read_batch_hdus(
                 num_rows=num_rows,
                 cache_capacity=cache_capacity,
                 fast_header=fast_header,
+                mode=mode,
             ),
             autodetect_hdu=autodetect_hdu,
             batch_to_device=batch_to_device,
