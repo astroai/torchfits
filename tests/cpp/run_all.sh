@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # Build and run every standalone C++ self-check in tests/cpp.
 #
-# Why a script rather than copy-pasteable commands in each file: two of these
-# need CFITSIO's headers and library, and CFITSIO is not installed into the pixi
-# environment -- it exists only inside the per-build scratch directory
-# (.pixi/bld/torchfits/<hash>/bld), whose hash changes on every rebuild. A
-# command that hardcoded it would rot immediately, which is why three of the
-# five files used to say only "Run: /tmp/probe" and name no compile step at all.
+# Why a script rather than copy-pasteable commands in each file: three of these
+# link the torch-free core library and CFITSIO's static archive, which are not
+# installed into the pixi environment -- they exist only in the build tree
+# (build/<wheel-tag>/) that `pixi run dev` writes. The runner finds them there,
+# writes the FITS fixture with torchfits, and needs nothing else.
 #
-# Usage:  tests/cpp/run_all.sh          (from the repo root)
+# Usage:  tests/cpp/run_all.sh          (after `pixi run dev`)
 #         CXX=clang++ tests/cpp/run_all.sh   (override the compiler)
 # Exit:   0 if every self-check passed, 1 otherwise.
 #
@@ -35,42 +34,55 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/torchfits-cpp-tests.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # --- locate the built artifacts ------------------------------------------
-# CFITSIO lives in the build scratch dir; the torch-free core half is installed
-# next to the Python package. Both are discovered, never hardcoded.
-CFITSIO_DIR="$(dirname "$(find .pixi/bld -name fitsio.h -path '*/bld/include/*' 2>/dev/null | head -1)")"
-CFITSIO_LIB="$(dirname "$(find .pixi/bld -name 'libcfitsio.dylib' -o -name 'libcfitsio.so*' 2>/dev/null | head -1)")"
-CORE_LIB="$(find .pixi/envs -name 'libtorchfits_core.dylib' -o -name 'libtorchfits_core.so*' 2>/dev/null | head -1)"
+# `pixi run dev` builds into build/<wheel-tag>/: the torch-free core library
+# and CFITSIO's static archive (cfitsio_build/libcfitsio.a). CFITSIO's headers
+# are the vendored tree. Same discovery as
+# tests/test_core_library.py::_core_build_artifacts; nothing is hardcoded.
+# Each find result is checked before dirname, since dirname "" is "." and would
+# defeat the missing-build guard below.
+CFITSIO_DIR="extern/cfitsio"
+CORE_LIB="$(find build -maxdepth 2 \( -name 'libtorchfits_core.dylib' -o -name 'libtorchfits_core.so' \) 2>/dev/null | head -1)"
+CFITSIO_ARCHIVE=""
+[[ -n "$CORE_LIB" ]] && CFITSIO_ARCHIVE="$(find "$(dirname "$CORE_LIB")/cfitsio_build" -maxdepth 1 -name 'libcfitsio.a' 2>/dev/null | head -1)"
 
-if [[ -z "$CFITSIO_DIR" || -z "$CFITSIO_LIB" ]]; then
-  echo "error: could not find the built CFITSIO under .pixi/bld/" >&2
-  echo "       run 'pixi run build' (or whatever builds the extension) first." >&2
+if [[ ! -f "$CFITSIO_DIR/fitsio.h" || -z "$CORE_LIB" || -z "$CFITSIO_ARCHIVE" ]]; then
+  echo "error: could not find the built core library and CFITSIO under build/" >&2
+  echo "       run 'pixi run dev' first." >&2
   exit 1
 fi
 
+# CFITSIO's archive needs zlib, bzip2 and libcurl, which come from the pixi env.
+ENV_PREFIX="${CONDA_PREFIX:-$REPO/.pixi/envs/default}"
 INCLUDES=(-I "$CPP_SRC" -I "$CFITSIO_DIR")
-RPATHS=(-Wl,-rpath,"$REPO/$CFITSIO_LIB")
-[[ -n "$CORE_LIB" ]] && RPATHS+=(-Wl,-rpath,"$REPO/$(dirname "$CORE_LIB")")
+CFITSIO_LINK=("$CFITSIO_ARCHIVE" -L "$ENV_PREFIX/lib" -lbz2 -lz -lcurl)
+RPATHS=(-Wl,-rpath,"$REPO/$(dirname "$CORE_LIB")" -Wl,-rpath,"$ENV_PREFIX/lib")
 
-# --- fixture for the two that need a FITS file on disk ---------------------
+# --- fixture for the checks that need a FITS file on disk ------------------
 # test_fitsreader_threads requires >= 2 usable HDUs; test_open_for_write_conflict
-# requires any readable FITS file. One multi-extension MEF satisfies both.
+# and test_raw_fd_retry require any readable FITS file. One multi-extension MEF
+# satisfies all three, written with torchfits itself.
 FIXTURE="$WORK/mef.fits"
 if ! pixi run -q python - "$FIXTURE" <<'PY'
 import sys
+
 import numpy as np
-from astropy.io import fits
+import torch
+
+from torchfits import Header, HDUList, TableHDU, TensorHDU
 
 path = sys.argv[1]
-hdus = [
-    fits.PrimaryHDU(np.arange(64, dtype=np.int16).reshape(8, 8)),
-    fits.ImageHDU(np.ones((16, 16), dtype=np.float32), name="SCI1"),
-    fits.BinTableHDU.from_columns(
-        [fits.Column(name="A", format="J", array=np.arange(10, dtype=np.int32))],
-        name="TAB",
-    ),
-    fits.ImageHDU(np.zeros((4, 4), dtype=np.int32), name="SCI2"),
-]
-fits.HDUList(hdus).writeto(path, overwrite=True)
+HDUList(
+    [
+        TensorHDU(torch.arange(64, dtype=torch.int16).reshape(8, 8)),
+        TensorHDU(torch.ones(16, 16), header=Header({"EXTNAME": "SCI1"})),
+        TableHDU(
+            {"A": np.arange(10, dtype=np.int32)}, header=Header({"EXTNAME": "TAB"})
+        ),
+        TensorHDU(
+            torch.zeros(4, 4, dtype=torch.int32), header=Header({"EXTNAME": "SCI2"})
+        ),
+    ]
+).write(path, overwrite=True)
 print(f"  fixture: {path}")
 PY
 then
@@ -143,11 +155,12 @@ for entry in "${CASES[@]}"; do
   [[ -n "$extra" ]] && cmd+=($extra)
 
   if [[ "$needs_cf" == "yes" ]]; then
-    cmd+=(-L "$CFITSIO_LIB" -lcfitsio)
-    [[ -n "$CORE_LIB" ]] && cmd+=("$CORE_LIB")
+    cmd+=("tests/cpp/$name.cpp" "$CORE_LIB" "${CFITSIO_LINK[@]}" -lpthread)
     cmd+=("${RPATHS[@]}")
+  else
+    cmd+=("tests/cpp/$name.cpp")
   fi
-  cmd+=("tests/cpp/$name.cpp" -o "$bin")
+  cmd+=(-o "$bin")
 
   # run_args are RUN-time arguments; @FIXTURE is expanded to the temp path.
   run_args="${run_args//@FIXTURE/$FIXTURE}"
