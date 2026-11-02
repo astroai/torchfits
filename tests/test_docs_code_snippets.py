@@ -203,6 +203,21 @@ def test_all_cli_snippets_valid_commands() -> None:
     assert not errors, "CLI syntax errors in docs:\n" + "\n".join(errors)
 
 
+def _missing_optional_module(exc: BaseException) -> bool:
+    """True if ``exc`` (or its cause chain) is a non-torchfits missing module."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ModuleNotFoundError):
+            top = (cur.name or "").partition(".")[0]
+            return bool(top) and top != "torchfits"
+        if not isinstance(cur, ImportError):
+            return False
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def test_runnable_workflow_snippets_execute(
     mock_fits_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,10 +254,12 @@ def test_runnable_workflow_snippets_execute(
         try:
             exec(code, scope)
             executed += 1
-        except (ModuleNotFoundError, ImportError):
-            # Optional third-party package (e.g. polars, duckdb) not installed in this environment
-            continue
         except Exception as exc:
+            # Optional third-party package (e.g. polars, astropy) not installed in
+            # this environment, raised directly or wrapped by a torchfits
+            # converter. A missing torchfits module or name is a stale snippet.
+            if _missing_optional_module(exc):
+                continue
             rel = snippet.file_path.relative_to(ROOT)
             pytest.fail(
                 f"Doc snippet in {rel}:{snippet.line_number} raised {exc.__class__.__name__}: {exc}\nCode:\n{code}"
