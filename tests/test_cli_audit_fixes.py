@@ -144,6 +144,17 @@ def test_cutout_box_uses_compressed_image_geometry(tmp_path):
     assert not out2.exists()
 
 
+def test_info_compressed_shape_is_row_major_like_uncompressed(tmp_path, capsys):
+    import json
+
+    packed, data = _compressed_wide_image(tmp_path)
+    capsys.readouterr()
+    assert main(["info", str(tmp_path / "wide.fits"), str(packed), "-f", "json"]) == 0
+    records = json.loads(capsys.readouterr().out)
+    shapes = [r["shape"] for r in records if r.get("type") == "IMAGE"]
+    assert shapes == [str(tuple(data.shape))] * 2
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

@@ -165,6 +165,8 @@ def compressed_image_geometry(header: Any) -> tuple[tuple[int, ...], str] | None
     A tile-compressed HDU's ordinary ``NAXIS*`` / ``BITPIX`` describe the tile
     table, so an inventory that trusted them would report the tile geometry
     for a science image. The image geometry lives in ``ZNAXIS*`` / ``ZBITPIX``.
+    The shape is row-major (``ZNAXISn`` first, ``ZNAXIS1`` last), the same
+    order as ``read_tensor`` and uncompressed HDUs' shapes.
     Returns ``None`` for a header that is not a compressed image or whose Z
     cards are incomplete, so callers keep their existing fallback.
     """
@@ -176,7 +178,7 @@ def compressed_image_geometry(header: Any) -> tuple[tuple[int, ...], str] | None
         naxis = int(header.get("ZNAXIS", 0))
         if naxis < 1:
             return None
-        shape = tuple(int(header[f"ZNAXIS{axis}"]) for axis in range(1, naxis + 1))
+        shape = tuple(int(header[f"ZNAXIS{axis}"]) for axis in range(naxis, 0, -1))
         dtype = _BITPIX_TO_KIND.get(int(header.get("ZBITPIX")))
     except (KeyError, TypeError, ValueError):
         return None

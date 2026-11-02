@@ -78,13 +78,13 @@ def _plane_shape(header: object) -> tuple[int, int] | None:
     here on a shape this check cannot vouch for.
     """
     # A tile-compressed HDU's NAXIS1/NAXIS2 describe the tile table; the
-    # image geometry lives in ZNAXIS* (FITS axis order: width first).
+    # image geometry lives in ZNAXIS* (returned row-major: width last).
     geometry = compressed_image_geometry(header)
     if geometry is not None:
         shape = geometry[0]
-        if len(shape) < 2 or shape[0] <= 0 or shape[1] <= 0:
+        if len(shape) < 2 or shape[-1] <= 0 or shape[-2] <= 0:
             return None
-        return shape[1], shape[0]
+        return shape[-2], shape[-1]
     try:
         if int(header.get("NAXIS", 0)) < 2:  # type: ignore[attr-defined]
             return None
