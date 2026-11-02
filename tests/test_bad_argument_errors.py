@@ -33,7 +33,8 @@ def test_open_missing_file_raises_file_not_found(tmp_path):
 
 @pytest.mark.parametrize("hdu", [-1, -2])
 def test_table_read_negative_hdu_raises_value_error(table_path, hdu):
-    with pytest.raises(ValueError, match="non-negative"):
+    # HDUNotFoundError is a ValueError, so this contract still holds.
+    with pytest.raises(torchfits.HDUNotFoundError, match="non-negative"):
         torchfits.table.read(table_path, hdu=hdu)
     with pytest.raises(ValueError, match="non-negative"):
         torchfits.read(table_path, hdu=hdu)

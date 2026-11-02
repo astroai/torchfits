@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple, Union
 
+from .._errors import HDUNotFoundError
 from ..hdu import Header
 from ._file_ops import _resolve_compression_algorithm
 from ._hdu_splice import (
@@ -45,17 +46,17 @@ def _extname_matches(header: Any, name: str) -> bool:
     return extname is not None and str(extname).strip().upper() == name.strip().upper()
 
 
-def _resolve_target(headers: List[Header], hdu: Union[int, str]) -> int:
+def _resolve_target(path: str, headers: List[Header], hdu: Union[int, str]) -> int:
     if isinstance(hdu, bool) or not isinstance(hdu, (int, str)):
         raise TypeError("hdu must be an int index or EXTNAME string")
     if isinstance(hdu, int):
         if hdu < 0 or hdu >= len(headers):
-            raise IndexError(f"hdu index {hdu} out of range for {len(headers)} HDUs")
+            raise HDUNotFoundError.for_request(path, hdu, len(headers))
         return hdu
     for idx, header in enumerate(headers):
         if _extname_matches(header, hdu):
             return idx
-    raise KeyError(f"HDU '{hdu}' not found")
+    raise HDUNotFoundError.for_request(path, hdu, len(headers))
 
 
 def _has_checksums(hdus: List[Tuple[int, int, int, bytes]]) -> bool:
@@ -84,7 +85,7 @@ def delete_hdu(
             "every remaining HDU keeps its storage. Call it without compress=."
         )
     headers = _file_headers(path)
-    target = _resolve_target(headers, hdu)
+    target = _resolve_target(path, headers, hdu)
     if len(headers) == 1:
         # Refuse before touching anything, so the caller gets an actionable
         # message instead of a file that used to be readable and no longer is.

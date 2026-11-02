@@ -79,10 +79,13 @@ def _read_prelude(
     """
     import torchfits
 
-    # Same contract as read()/read_header(): a negative index is an argument
-    # error, not CFITSIO's "illegal HDU number" RuntimeError.
+    from .._errors import HDUNotFoundError
+    from .._io_engine._hdu_lookup import raise_hdu_index_error
+
+    # Same contract as read()/read_header(): a negative index is an
+    # HDUNotFoundError, not CFITSIO's "illegal HDU number" RuntimeError.
     if isinstance(hdu, int) and not isinstance(hdu, bool) and hdu < 0:
-        raise ValueError("hdu must be a non-negative integer")
+        raise_hdu_index_error(path, hdu)
     if not columns:
         columns = None
     else:
@@ -91,6 +94,8 @@ def _read_prelude(
         columns = list(dict.fromkeys(columns))
     try:
         header = torchfits.read_header(path, hdu)
+    except HDUNotFoundError:
+        raise
     except (ValueError, RuntimeError, TypeError):
         return None, columns
     columns = _validate_projection_columns(header, columns)

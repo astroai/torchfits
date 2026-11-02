@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 from torch import Tensor
 
+from .._errors import HDUNotFoundError
 from ..hdu import Header, TableHDU, TableHDURef, TensorHDU
 from ._hdu_edit import (
     _CHECKSUM_KEYS,
@@ -446,7 +447,9 @@ def insert_hdu(
     new_hdu = _new_hdu_from_args(data, header)
     hdus = _file_hdus(path, len(_file_headers(path)))
     if index < 0 or index > len(hdus):
-        raise IndexError(f"index {index} out of range for {len(hdus)} HDUs")
+        error = HDUNotFoundError.for_request(path, index, len(hdus))
+        error.add_note(f"insert_hdu positions are 0..{len(hdus)}")
+        raise error
     stamp = _has_checksums(hdus)
     end = None  # through EOF: keeps bytes after the last HDU
 
@@ -489,7 +492,7 @@ def replace_hdu(
     preserve_header = header is None and not isinstance(data, (TableHDU, TensorHDU))
     new_hdu = _new_hdu_from_args(data, header)
     headers = _file_headers(path)
-    target = _resolve_target(headers, hdu)
+    target = _resolve_target(path, headers, hdu)
 
     if preserve_header:
         # Keep the original header (e.g. EXTNAME/WCS) unless the caller

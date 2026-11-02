@@ -692,16 +692,19 @@ class TableHDU:
         if not file_path or not isinstance(file_path, str):
             raise ValueError("file_path must be a non-empty string")
 
-        if not isinstance(hdu_index, int) or hdu_index < 0:
+        if not isinstance(hdu_index, int):
             raise ValueError("hdu_index must be a non-negative integer")
 
         import os
 
+        from torchfits._io_engine._hdu_lookup import raise_hdu_index_error
         from torchfits._io_engine.paths import guard_fits_path, is_cfitsio_network_url
 
         guard_fits_path(file_path)
         if not is_cfitsio_network_url(file_path) and not os.path.exists(file_path):
             raise FileNotFoundError(f"FITS file not found: {file_path}")
+        if hdu_index < 0:
+            raise_hdu_index_error(file_path, hdu_index)
 
         try:
             from torchfits import table

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
+from .._errors import HDUNotFoundError
 from ._repr import render_html_table
 from .header import Header
 
@@ -95,6 +96,9 @@ class TableHDURef:
     def num_rows(self) -> int:
         try:
             total = int(self.header.get("NAXIS2", 0))
+        except HDUNotFoundError:
+            # The HDU is not in the file: a 0-row answer would hide that.
+            raise
         except Exception:
             total = 0
         if self._row_slice is None:
@@ -133,6 +137,8 @@ class TableHDURef:
         # on a replaced header's id (fresh Headers share _version == 0) (r6b).
         try:
             n = int(self.header.get("TFIELDS", 0))
+        except HDUNotFoundError:
+            raise
         except (TypeError, ValueError):
             n = 0
         out: list[str] = []

@@ -6,6 +6,8 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
+from ._hdu_lookup import raise_hdu_index_error
+from .paths import coerce_fits_path
 from .hdu_api import _resolve_hdu_index, autodetect_hdu
 from .device import to_device
 
@@ -203,7 +205,7 @@ def read_table(
         )
     if isinstance(hdu, int):
         if hdu < 0:
-            raise ValueError("hdu must be a non-negative integer")
+            raise_hdu_index_error(coerce_fits_path(path), hdu)
     elif isinstance(hdu, str):
         hdu = _resolve_hdu_index(path, hdu, autodetect_hdu=autodetect_hdu)
     else:

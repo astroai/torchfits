@@ -7,6 +7,7 @@ import os
 import tempfile
 from typing import Any
 
+from .._errors import HDUNotFoundError
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 
 # Internal write/mutation helpers re-exported on torchfits.io (not a public API).
@@ -469,14 +470,17 @@ def _resolve_table_hdu_index_and_columns(
                     target_idx = i
                     break
             if target_idx is None:
-                raise KeyError(f"Table HDU named '{hdu}' not found in '{path}'")
+                raise HDUNotFoundError(
+                    f"Table HDU {hdu!r} not found in {path} ({num_hdus} HDUs)",
+                    hdu=hdu,
+                    path=path,
+                    n_hdus=num_hdus,
+                )
         else:
             raise TypeError("hdu must be an int index or EXTNAME string")
 
         if target_idx is None or target_idx < 0 or target_idx >= num_hdus:
-            raise IndexError(
-                f"hdu index {hdu} out of range for '{path}' (num_hdus={num_hdus})"
-            )
+            raise HDUNotFoundError.for_request(path, hdu, num_hdus)
 
         hdu_type = str(cpp.get_hdu_type(handle, target_idx))
         if hdu_type not in {"BINARY_TABLE", "ASCII_TABLE"}:

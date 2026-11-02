@@ -15,6 +15,7 @@ from torchfits._io_engine.paths import (
     is_cfitsio_network_url,
 )
 
+from .._errors import HDUNotFoundError
 from ._repr import render_html_table
 from .card import _reassemble_longstr_cards
 from .header import Header
@@ -218,15 +219,24 @@ class HDUList:
         if isinstance(key, str):
             index = self._index_of_name(key)
             if index is None:
-                raise KeyError(f"HDU '{key}' not found")
+                raise self._not_found(key)
             return self._hdus[index]
 
         try:
-            return self._hdus[operator.index(key)]
+            position = operator.index(key)
         except TypeError:
             raise TypeError(
                 f"HDUList indices must be int or EXTNAME str; got {type(key).__name__}"
             ) from None
+        try:
+            # Negative indices count from the end, as for any Python sequence.
+            return self._hdus[position]
+        except IndexError:
+            raise self._not_found(position) from None
+
+    def _not_found(self, key: Union[int, str]) -> HDUNotFoundError:
+        where = self._source_path if self._source_path else "this HDUList"
+        return HDUNotFoundError.for_request(where, key, len(self._hdus))
 
     def __enter__(self) -> HDUList:
         return self
