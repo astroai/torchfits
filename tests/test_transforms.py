@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from transforms_reference import (
+    iraf_zscale_naive,
     sigma_clip_naive,
 )
 
@@ -295,6 +296,53 @@ class TestZScaleLimits:
         x = torch.ones(4, 64, 64) * 42.0
         z1, z2 = zscale_limits(x)
         assert torch.all(z1 < z2)  # fallback adds 1e-6
+
+
+def _iraf_cases() -> dict[str, tuple[torch.Tensor, torch.Tensor | None]]:
+    g = torch.Generator().manual_seed(0)
+    img = torch.randn(40, 40, generator=g, dtype=torch.float64) * 10 + 100
+    one_nan = img.clone()
+    one_nan[3, 7] = float("nan")
+    masked = torch.ones(40, 40, dtype=torch.bool)
+    masked[0, 0] = False
+    masked[10:14, 5:30] = False
+    half_nan = img.clone()
+    half_nan[:, :20] = float("nan")
+    # 3600 pixels, 1800 finite: the stride must come from the finite count.
+    big = torch.randn(60, 60, generator=g, dtype=torch.float64) * 3 + 50
+    big[:, ::2] = float("nan")
+    return {
+        "clean": (img, None),
+        "one_nan": (one_nan, None),
+        "masked": (img, masked),
+        "half_nan": (half_nan, None),
+        "strided_nan": (big, None),
+    }
+
+
+class TestZScaleIrafParity:
+    """``algorithm="iraf"`` matches astropy's ZScaleInterval with NaN/masks."""
+
+    @pytest.mark.parametrize("case", list(_iraf_cases()))
+    def test_matches_reference(self, case: str) -> None:
+        x, mask = _iraf_cases()[case]
+        ref_in = x.clone()
+        if mask is not None:
+            ref_in[~mask] = float("nan")
+        expected = iraf_zscale_naive(ref_in.numpy())
+        z1, z2 = zscale_limits(x, algorithm="iraf", mask=mask)
+        assert (float(z1), float(z2)) == pytest.approx(expected, rel=1e-9)
+
+    def test_batched_groups_with_different_valid_counts(self) -> None:
+        cases = _iraf_cases()
+        stack = torch.stack(
+            [cases["clean"][0], cases["one_nan"][0], cases["half_nan"][0]]
+        )
+        z1, z2 = zscale_limits(stack, algorithm="iraf")
+        for i in range(stack.shape[0]):
+            expected = iraf_zscale_naive(stack[i].numpy())
+            got = (float(z1[i]), float(z2[i]))
+            assert got == pytest.approx(expected, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------

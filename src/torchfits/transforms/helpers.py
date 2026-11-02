@@ -486,29 +486,23 @@ def estimate_background(
 # ---------------------------------------------------------------------------
 
 
-def _dilate_or(mask: torch.Tensor, width: int) -> torch.Tensor:
-    """Boolean dilation matching ``np.convolve(mask, ones(width), "same")``.
+def _dilate_or(mask: torch.Tensor, width: torch.Tensor) -> torch.Tensor:
+    """Row-wise boolean dilation matching ``np.convolve(mask, ones(w), "same")``.
 
-    numpy's ``same`` mode takes the central window, which is left-biased for
-    even widths; replicated here so the port matches astropy exactly.
+    *width* holds one kernel width per row (``(G,)``). numpy's ``same`` mode
+    takes the central window, which is left-biased for even widths;
+    replicated here so the port matches astropy exactly. Entries of *mask*
+    beyond a row's valid length must be ``False``.
     """
-    if width <= 1:
-        return mask
     n = mask.shape[-1]
-    out = torch.zeros_like(mask)
-    off0 = -width + 1 + (width - 1) // 2
-    for t in range(width):
-        shift = off0 + t
-        if shift == 0:
-            out |= mask
-        elif shift < 0:
-            # out[i] |= mask[i + shift] for every in-range i; shift < 0 means
-            # sampling from the right, so the *left* edge of the output is
-            # undefined and the tail of the input is unused.
-            out[..., -shift:] |= mask[..., : n + shift]
-        else:
-            out[..., : n - shift] |= mask[..., shift:]
-    return out
+    w = width.to(torch.long).clamp_min(1).unsqueeze(-1)
+    off0 = -w + 1 + torch.div(w - 1, 2, rounding_mode="floor")
+    idx = torch.arange(n, device=mask.device).unsqueeze(0)
+    start = (idx + off0).clamp(0, n)
+    stop = (idx + off0 + w).clamp(0, n)
+    cs = torch.cumsum(mask.to(torch.long), dim=-1)
+    cs = torch.cat([torch.zeros_like(cs[..., :1]), cs], dim=-1)
+    return (cs.gather(-1, stop) - cs.gather(-1, start)) > 0
 
 
 def _iraf_zscale_groups(
@@ -523,40 +517,48 @@ def _iraf_zscale_groups(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """IRAF zscale limits for a batch of pre-sorted sample rows.
 
-    ``samples`` is ``(G, npix)`` ascending with invalid entries (NaN) last;
-    ``counts`` is the number of valid entries per row.
+    ``samples`` is ``(G, width)`` ascending with invalid entries (NaN) last;
+    ``counts`` is the number of valid entries per row. Each row is fitted as
+    if it held only its ``counts`` valid samples (astropy drops non-finite
+    values before sampling), so ``npix``, the dilation width and the centre
+    pixel are all per row.
 
     The fit runs in float64 (astropy's dtype) and the limits are cast back to
     the input dtype, so results match ``ZScaleInterval`` to float32 rounding.
     """
     out_dtype = samples.dtype
     samples = samples.to(torch.float64)
-    groups, npix = samples.shape
+    groups, width = samples.shape
     dtype = samples.dtype
-    x = torch.arange(npix, dtype=dtype, device=samples.device).expand(groups, npix)
+    device = samples.device
+    x = torch.arange(width, dtype=dtype, device=device).expand(groups, width)
 
     valid = torch.isfinite(samples)
+    # Invalid slots must not reach any weighted sum: 0 * NaN is NaN.
+    samples_z = torch.where(valid, samples, torch.zeros_like(samples))
+    npix = counts.to(torch.long)
+    npix_f = npix.to(dtype)
     badpix = ~valid
     ngood = valid.sum(dim=-1)
     last_ngood = ngood + 1
     minpix = torch.maximum(
         torch.full_like(ngood, int(min_npixels)),
-        (counts.to(dtype) * float(max_reject)).floor().to(ngood.dtype),
+        (npix_f * float(max_reject)).floor().to(ngood.dtype),
     )
-    ngrow = max(1, int(npix * 0.01))
+    ngrow = (npix_f * 0.01).floor().to(torch.long).clamp_min(1)
 
-    slope_final = torch.zeros(groups, dtype=dtype, device=samples.device)
+    slope_final = torch.zeros(groups, dtype=dtype, device=device)
     for _ in range(int(max_iterations)):
         cont = (ngood < last_ngood) & (ngood >= minpix)
         if not bool(cont.any()):
             break
-        cf = cont.to(dtype).unsqueeze(-1)
-        w = (~badpix).to(dtype) * cf
+        good = (~badpix).to(dtype)
+        w = good * cont.to(dtype).unsqueeze(-1)
         sw = w.sum(dim=-1)
         swx = (w * x).sum(dim=-1)
-        swy = (w * samples).sum(dim=-1)
+        swy = (w * samples_z).sum(dim=-1)
         swxx = (w * x * x).sum(dim=-1)
-        swxy = (w * x * samples).sum(dim=-1)
+        swxy = (w * x * samples_z).sum(dim=-1)
         denom = sw * swxx - swx * swx
         slope = torch.where(
             denom != 0,
@@ -570,40 +572,39 @@ def _iraf_zscale_groups(
             torch.zeros_like(sw),
         )
         fitted = slope.unsqueeze(-1) * x + intercept.unsqueeze(-1)
-        flat = samples - fitted
+        flat = torch.where(valid, samples_z - fitted, torch.zeros_like(samples_z))
         # k-sigma threshold from the surviving residuals (population std).
-        good = (~badpix).to(dtype)
         sg = good.sum(dim=-1)
-        mean_g = (flat * good).sum(dim=-1) / torch.where(
-            sg == 0, torch.ones_like(sg), sg
-        )
-        var_g = (((flat - mean_g.unsqueeze(-1)) ** 2) * good).sum(dim=-1) / torch.where(
-            sg == 0, torch.ones_like(sg), sg
-        )
+        sg_safe = torch.where(sg == 0, torch.ones_like(sg), sg)
+        mean_g = (flat * good).sum(dim=-1) / sg_safe
+        var_g = (((flat - mean_g.unsqueeze(-1)) ** 2) * good).sum(dim=-1) / sg_safe
         threshold = float(krej) * torch.sqrt(torch.clamp_min(var_g, 0.0))
         newly_bad = (flat < -threshold.unsqueeze(-1)) | (flat > threshold.unsqueeze(-1))
-        badpix = torch.where(cont.unsqueeze(-1), badpix | newly_bad, badpix)
-        badpix = torch.where(cont.unsqueeze(-1), _dilate_or(badpix, ngrow), badpix)
+        rejected = (badpix | newly_bad) & valid
+        # Dilate only real rejections, within each row's valid length.
+        grown = _dilate_or(rejected, ngrow) | ~valid
+        badpix = torch.where(cont.unsqueeze(-1), grown, badpix)
         slope_final = torch.where(cont, slope, slope_final)
         last_ngood = torch.where(cont, ngood, last_ngood)
         ngood = torch.where(cont, (~badpix).sum(dim=-1), ngood)
 
     # Anchor limits: min/max of valid samples, tightened by the fitted slope.
-    first = samples.gather(
-        1, torch.zeros(groups, 1, dtype=torch.long, device=samples.device)
-    ).squeeze(1)
-    last_idx = (counts - 1).clamp_min(0).unsqueeze(1)
-    last = samples.gather(1, last_idx).squeeze(1)
-    vmin = first
-    vmax = last
+    lo_idx = torch.div(npix - 1, 2, rounding_mode="floor").clamp_min(0)
+    hi_idx = torch.div(npix, 2, rounding_mode="floor").clamp_max(width - 1)
+    last_idx = (npix - 1).clamp_min(0)
+    vmin = samples[:, 0]
+    vmax = samples.gather(1, last_idx.unsqueeze(1)).squeeze(1)
+    # Interpolated median (np.median) of each row's valid samples.
+    median = 0.5 * (
+        samples.gather(1, lo_idx.unsqueeze(1)).squeeze(1)
+        + samples.gather(1, hi_idx.unsqueeze(1)).squeeze(1)
+    )
 
     can_adjust = ngood >= minpix
     adjusted = slope_final / contrast if contrast > 0 else slope_final
-    center_pixel = (npix - 1) // 2
-    masked = torch.where(valid, samples, torch.full_like(samples, float("nan")))
-    median = torch.nanmedian(masked, dim=-1).values
+    center_pixel = lo_idx.to(dtype)
     lo = median - (center_pixel - 1) * adjusted
-    hi = median + (npix - center_pixel) * adjusted
+    hi = median + (npix_f - center_pixel) * adjusted
     vmin = torch.where(can_adjust, torch.maximum(vmin, lo), vmin)
     vmax = torch.where(can_adjust, torch.minimum(vmax, hi), vmax)
     return vmin.to(out_dtype), vmax.to(out_dtype)
@@ -696,13 +697,23 @@ def _zscale_iraf(
         if weighted and ivar is not None:
             w = _weight_flat(sample, dims=dims, ivar=ivar).reshape(groups, n)
             valid = valid & torch.isfinite(w) & (w > 0)
-        sample = torch.where(valid, sample, torch.full_like(sample, float("nan")))
-        # Stride the *original* order (as IRAF/astropy do) and only then sort;
-        # striding the sorted array would sample quantiles instead.
-        stride = int(max(1.0, n / float(n_samples)))
-        sample = sample[:, ::stride][:, : int(n_samples)]
+        # astropy drops non-finite values first, then strides the remaining
+        # values in their *original* order by ``n_finite / n_samples`` and
+        # only then sorts (striding the sorted array would sample quantiles).
+        # Do the same per group without compacting: rank each valid pixel
+        # among its group's valid pixels and keep every stride-th one.
+        n_valid = valid.sum(dim=-1, keepdim=True)
+        stride = torch.div(n_valid, int(n_samples), rounding_mode="floor").clamp_min(1)
+        rank = torch.cumsum(valid.to(torch.long), dim=-1) - 1
+        keep = (
+            valid
+            & (torch.remainder(rank, stride) == 0)
+            & (torch.div(rank, stride, rounding_mode="floor") < int(n_samples))
+        )
+        sample = torch.where(keep, sample, torch.full_like(sample, float("nan")))
         sample, _ = torch.sort(sample, dim=-1)  # NaNs to the end
-        counts = torch.isfinite(sample).sum(dim=-1)
+        counts = keep.sum(dim=-1)
+        sample = sample[:, : max(1, int(counts.max()) if counts.numel() else 1)]
 
         z1, z2 = _iraf_zscale_groups(
             sample,
