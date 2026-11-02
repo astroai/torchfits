@@ -1148,6 +1148,29 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         throw std::runtime_error("Failed to move to table HDU");
     }
 
+    // Resolve and validate the whole mapping before writing any keyword.
+    // CFITSIO caches column names, so a fits_get_colnum after a TTYPEn update
+    // still sees the old name: resolving rename-by-rename half-applied a valid
+    // rotation ({"B": "C", "A": "B"}) before failing, and let two sources take
+    // the same target.
+    int ncols = 0;
+    fits_get_num_cols(fptr, &ncols, &status);
+    if (status != 0) {
+        close_file_ignore_status(fptr);
+        throw std::runtime_error("Failed to read column count for rename_columns");
+    }
+    std::vector<std::string> final_names(static_cast<size_t>(ncols));
+    for (int c = 1; c <= ncols; ++c) {
+        char keyname[FLEN_KEYWORD];
+        char value[FLEN_VALUE] = {0};
+        int key_status = 0;
+        fits_make_keyn("TTYPE", c, keyname, &key_status);
+        fits_read_key(fptr, TSTRING, keyname, value, nullptr, &key_status);
+        final_names[c - 1] = key_status == 0 ? std::string(value) : std::string();
+    }
+
+    std::vector<std::pair<int, std::string>> renames;
+    std::vector<bool> renamed(static_cast<size_t>(ncols), false);
     for (auto item : mapping) {
         std::string old_name = nb::cast<std::string>(item.first);
         std::string new_name = nb::cast<std::string>(item.second);
@@ -1156,27 +1179,45 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         }
 
         int colnum = 0;
-        // CASEINSEN: see the name-resolution policy note above.
+        // CASEINSEN: see the name-resolution policy note above. Nothing has
+        // been written yet, so CFITSIO's cached names are the file's names.
         fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(old_name.c_str()), &colnum, &status);
-        if (status != 0) {
+        if (status != 0 || colnum < 1 || colnum > ncols) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for rename_columns: " + old_name);
         }
-
-        int check_status = 0;
-        int existing = 0;
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(new_name.c_str()), &existing, &check_status);
-        if (check_status == 0 && existing > 0) {
+        if (renamed[colnum - 1]) {
             close_file_ignore_status(fptr);
-            throw std::runtime_error("Target column already exists: " + new_name);
+            throw std::runtime_error("Column renamed more than once: " + old_name);
         }
+        renamed[colnum - 1] = true;
+        final_names[colnum - 1] = new_name;
+        renames.emplace_back(colnum, new_name);
+    }
 
+    auto fold = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+        return s;
+    };
+    for (const auto& [colnum, new_name] : renames) {
+        const std::string key = fold(new_name);
+        for (int c = 0; c < ncols; ++c) {
+            if (c != colnum - 1 && fold(final_names[c]) == key) {
+                close_file_ignore_status(fptr);
+                throw std::runtime_error("Target column already exists: " + new_name);
+            }
+        }
+    }
+
+    for (const auto& [colnum, new_name] : renames) {
         char keyname[FLEN_KEYWORD];
         fits_make_keyn("TTYPE", colnum, keyname, &status);
         fits_update_key(fptr, TSTRING, keyname, (void*)new_name.c_str(), nullptr, &status);
         if (status != 0) {
             close_file_ignore_status(fptr);
-            throw std::runtime_error("Failed to update column name for " + old_name);
+            throw std::runtime_error("Failed to update column name for column " +
+                                     std::to_string(colnum));
         }
     }
 
