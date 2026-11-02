@@ -159,6 +159,13 @@ void FITSFile::publish_compressed(int hdu_num, bool compressed) const {
 void FITSFile::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     close_raw_fd();
+    if (fptr_ && fptr_owner_ && fptr_owner_.use_count() > 1) {
+        // A borrower (share_fptr) defers fits_close_file, but close() must
+        // still put everything written so far on disk: another process
+        // reading the file after close() saw it truncated.
+        int flush_status = 0;
+        fits_flush_file(fptr_, &flush_status);
+    }
     fptr_ = nullptr;
     // Closes the file now, or when the last borrower (share_fptr) lets go.
     fptr_owner_.reset();

@@ -131,3 +131,30 @@ def test_table_read_through_write_handle_sees_unflushed_rows(tmp_path):
     assert C.read_fits_table_from_handle(f, 1)["A"].tolist() == [0, 1, 2, 3, 4]
     assert C.read_fits_table_rows_from_handle(f, 1, ["A"], 2, 2)["A"].tolist() == [1, 2]
     f.close()
+
+
+def test_close_flushes_write_handle_with_live_table_reader(tmp_path):
+    """close() deferred fits_close_file while a TableReader borrowed the handle,
+    and flushed nothing: another process saw the file truncated."""
+    path = str(tmp_path / "borrow.fits")
+
+    class _TableHDU:
+        _raw_data = {"A": torch.arange(5000, dtype=torch.int64)}
+        header = {}
+        _schema = None
+
+    f = C.open_fits_file(path, "w")
+    f.write_hdus([{"data": torch.arange(10, dtype=torch.int32)}, _TableHDU()], True)
+    reader = C.TableReader(f, 1)
+    f.write_hdus([_TableHDU()], False)
+    f.close()
+    res = _run(
+        f"""
+        import torchfits
+        print(torchfits.read({path!r}, hdu=2)["A"][-1].item())
+        """
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "4999"
+    assert reader.read_rows(["A"])["A"][-1].item() == 4999
+    del reader
