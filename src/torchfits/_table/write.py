@@ -8,6 +8,7 @@ import tempfile
 from typing import Any
 
 from .._errors import HDUNotFoundError
+from .._io_engine._hdu_lookup import call_with_lookup
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 
 # Internal write/mutation helpers re-exported on torchfits.io (not a public API).
@@ -447,7 +448,7 @@ def _resolve_table_hdu_index_and_columns(
     from .._io_engine.paths import guard_fits_path
 
     guard_fits_path(path)
-    handle = cpp.open_fits_file(path, "r")
+    handle = call_with_lookup(path, None, cpp.open_fits_file, path, "r")
     try:
         num_hdus = int(cpp.get_num_hdus(handle))
         if num_hdus <= 0:

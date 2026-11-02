@@ -1,10 +1,12 @@
-"""Typed HDU-lookup errors for every read/edit route.
+"""Typed HDU-lookup and missing-file errors for every read/edit route.
 
-CFITSIO reports an unknown EXTNAME and an HDU index past the end through status codes that reach Python as RuntimeError or OSError with
+CFITSIO reports a missing file, an unknown EXTNAME and an HDU index past the
+end through status codes that reach Python as RuntimeError or OSError with
 route-specific text. Rather than match that text, the routes call
 :func:`raise_lookup_failure` from their ``except`` block: it *re-checks* the
-request (the index is below the HDU count, the name resolves)
-and raises :class:`HDUNotFoundError` only when that check fails. The successful path pays nothing; an unrelated I/O error
+request (the file exists, the index is below the HDU count, the name resolves)
+and raises :class:`FileNotFoundError` or :class:`HDUNotFoundError` only when
+that check fails. The successful path pays nothing; an unrelated I/O error
 (corrupt data, permissions) re-raises unchanged because the probe passes.
 
 Torch-free: only the metadata core is touched, and only on a failure.
@@ -12,10 +14,11 @@ Torch-free: only the metadata core is touched, and only on a failure.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, NoReturn, TypeVar
 
 from .._errors import HDUNotFoundError
-from .paths import is_cfitsio_network_url
+from .paths import cfitsio_base_path, is_cfitsio_network_url
 
 _T = TypeVar("_T")
 
@@ -32,6 +35,22 @@ def is_local_fits_path(path: Any) -> bool:
     return not stripped.lower().startswith(("vos:", "vault:"))
 
 
+def missing_file_error(path: Any) -> FileNotFoundError | None:
+    """``FileNotFoundError`` for a local path that does not exist, else ``None``."""
+    if not is_local_fits_path(path):
+        return None
+    if os.path.exists(cfitsio_base_path(path)):
+        return None
+    return FileNotFoundError(f"FITS file not found: {path}")
+
+
+def require_existing_file(path: Any) -> None:
+    """Raise ``FileNotFoundError`` when a local ``path`` does not exist."""
+    error = missing_file_error(path)
+    if error is not None:
+        raise error
+
+
 def count_hdus(path: str) -> int | None:
     """HDU count of a local file, or ``None`` when it cannot be read."""
     if not is_local_fits_path(path):
@@ -45,18 +64,25 @@ def count_hdus(path: str) -> int | None:
 
 
 def raise_hdu_index_error(path: str, hdu: int) -> NoReturn:
-    """Raise the standard error for an integer ``hdu`` that is not in ``path``."""
+    """Raise the standard error for an integer ``hdu`` that is not in ``path``.
+
+    A negative index is wrong for every file, so it is reported without
+    first checking that ``path`` exists (an argument error comes first).
+    """
+    if hdu >= 0:
+        require_existing_file(path)
     raise HDUNotFoundError.for_request(path, hdu, count_hdus(path))
 
 
 def raise_lookup_failure(path: Any, hdu: Any, exc: BaseException) -> None:
     """From an ``except`` block: re-raise a lookup failure with its own type.
 
-    Raises :class:`HDUNotFoundError` when ``hdu`` (index or EXTNAME) is
-    verifiably absent. Returns normally otherwise, so the caller re-raises the
+    Raises ``FileNotFoundError`` when ``path`` is a missing local file, and
+    :class:`HDUNotFoundError` when ``hdu`` (index or EXTNAME) is verifiably
+    absent. Returns normally when neither holds, so the caller re-raises the
     original exception. Remote paths are never probed.
     """
-    if isinstance(exc, HDUNotFoundError):
+    if isinstance(exc, (HDUNotFoundError, FileNotFoundError)):
         return
     # Only the native layer's error types can hide a lookup failure; a
     # TypeError/ValueError is an argument error and keeps its type.
@@ -64,6 +90,9 @@ def raise_lookup_failure(path: Any, hdu: Any, exc: BaseException) -> None:
         return
     if not is_local_fits_path(path):
         return
+    error = missing_file_error(path)
+    if error is not None:
+        raise error from exc
     if isinstance(hdu, bool):
         return
     if isinstance(hdu, int):
@@ -92,7 +121,7 @@ def call_with_lookup(path: Any, hdu: Any, func: Callable[..., _T], *args: Any) -
 
 
 def resolve_hdu_name(path: str, name: str) -> int:
-    """Native EXTNAME/HDUNAME lookup raising HDUNotFoundError when absent."""
+    """Native EXTNAME/HDUNAME lookup with typed missing-file / missing-HDU errors."""
     import torchfits._C as cpp
 
     return int(call_with_lookup(path, name, cpp.resolve_hdu_name_cached, path, name))

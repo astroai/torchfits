@@ -96,8 +96,8 @@ class TableHDURef:
     def num_rows(self) -> int:
         try:
             total = int(self.header.get("NAXIS2", 0))
-        except HDUNotFoundError:
-            # The HDU is not in the file: a 0-row answer would hide that.
+        except (HDUNotFoundError, FileNotFoundError):
+            # The source itself is gone: a 0-row answer would hide that.
             raise
         except Exception:
             total = 0

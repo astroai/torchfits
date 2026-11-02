@@ -3,11 +3,13 @@
 Before, the same mistake raised a different type depending on the route: an
 unknown EXTNAME was RuntimeError from ``read``, ValueError from
 ``read_header`` and KeyError from ``open()[...]`` / ``table.read``; an index
-past the end was OSError, RuntimeError or IndexError.
+past the end was OSError, RuntimeError or IndexError; a missing file was
+RuntimeError from most readers and FileNotFoundError from ``open``.
 
 Now an absent HDU (unknown EXTNAME, index negative or past the end) raises
 ``torchfits.HDUNotFoundError`` -- a KeyError, IndexError and ValueError at
-once, so every earlier ``except`` keeps working.
+once, so every earlier ``except`` keeps working -- and a missing local file
+raises ``FileNotFoundError``.
 """
 
 from __future__ import annotations
@@ -134,6 +136,22 @@ def test_hdulist_negative_index_still_counts_from_the_end(mef):
         assert hdul[-1].header["EXTNAME"] == "SCI"
         with pytest.raises(HDUNotFoundError, match="HDU index -3 out of range"):
             hdul[-3]
+
+
+@pytest.mark.parametrize(
+    "route",
+    sorted({**ROUTES, **INDEX_ONLY_ROUTES, "read_num_hdus": None}),
+)
+def test_missing_file(tmp_path, route):
+    path = str(tmp_path / "missing.fits")
+    if route == "read_num_hdus":
+        call = lambda: torchfits.read_num_hdus(path)  # noqa: E731
+    else:
+        fn = {**ROUTES, **INDEX_ONLY_ROUTES}[route]
+        call = lambda: fn(path, 1)  # noqa: E731
+    with pytest.raises(FileNotFoundError, match="missing.fits"):
+        call()
+    assert not os.path.exists(path)
 
 
 @pytest.mark.parametrize("builtin", [KeyError, IndexError, ValueError, LookupError])

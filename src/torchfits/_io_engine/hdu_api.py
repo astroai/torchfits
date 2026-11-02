@@ -22,7 +22,11 @@ from .caches import (
     signature_cached_get,
 )
 from .._errors import HDUNotFoundError
-from ._hdu_lookup import call_with_lookup, raise_hdu_index_error
+from ._hdu_lookup import (
+    call_with_lookup,
+    raise_hdu_index_error,
+    require_existing_file,
+)
 from .paths import (
     cfitsio_base_path,
     coerce_fits_path,
@@ -305,6 +309,7 @@ def _resolve_hdu_index(
     # reported as "HDU not found" after probing phantom HDUs.
     from .. import _core_api
 
+    require_existing_file(path)
     n_hdus = _core_api.read_num_hdus(path)
     # Same rule as CFITSIO fits_movnam_hdu: EXTNAME, else HDUNAME, compared
     # trimmed and case-insensitively.
@@ -382,7 +387,7 @@ def read_num_hdus(path: str) -> int:
 
     path = coerce_fits_path(path)
     guard_fits_path(path)
-    return _core_api.read_num_hdus(path)
+    return call_with_lookup(path, None, _core_api.read_num_hdus, path)
 
 
 def read_colnames(path: str, hdu: Union[int, str, None] = 1) -> list[str]:

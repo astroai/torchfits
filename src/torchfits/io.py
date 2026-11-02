@@ -505,7 +505,8 @@ def read_batch(
 
     A path that cannot be read always raises: the result list is never
     silently short, so positions always map 1:1 onto ``file_paths``. A
-    missing HDU (``HDUNotFoundError``) keeps its type. With ``strict=False`` (the default) any other failure is
+    missing file (``FileNotFoundError``) or HDU (``HDUNotFoundError``) keeps
+    its type. With ``strict=False`` (the default) any other failure is
     re-raised as a ``RuntimeError`` naming the path and how many files
     preceded it; with ``strict=True`` the original exception propagates
     unchanged.
