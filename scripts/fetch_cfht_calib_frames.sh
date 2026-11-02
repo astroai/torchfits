@@ -59,15 +59,25 @@ fetch_one() {
   else
     rm -f "${out}.partial"
     echo "warn: failed ${name}" >&2
+    return 1
   fi
 }
 
 ok=0
+failed=0
 for kind in darks biases; do
   mkdir -p "${DEST}/${kind}"
   for name in $(if [[ "$kind" == darks ]]; then printf '%s\n' "${DARKS[@]}"; else printf '%s\n' "${BIASES[@]}"; fi); do
-    fetch_one "$name" "${DEST}/${kind}/${name}.fits.fz" && ok=$((ok + 1))
+    if fetch_one "$name" "${DEST}/${kind}/${name}.fits.fz"; then
+      ok=$((ok + 1))
+    else
+      failed=$((failed + 1))
+    fi
   done
 done
 
 echo "ready: ${ok} calibration frame(s) under ${DEST}"
+if (( failed > 0 )); then
+  echo "error: ${failed} frame(s) failed to download" >&2
+  exit 1
+fi
