@@ -1,16 +1,26 @@
-"""Unit tests for scripts/update_changelog.py (pure functions, no git)."""
+"""Unit tests for scripts/update_changelog.py and scripts/release_notes.py."""
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import update_changelog as changelog  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_config(monkeypatch) -> None:
+    """Keep temp repos independent of the user's git config (e.g. tag.gpgsign)."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def test_parse_subject_maps_conventional_types() -> None:
@@ -277,8 +287,6 @@ def test_release_notes_extracts_stamped_then_unreleased(tmp_path) -> None:
 
     label, body = rn.extract(text, "1.2.0")  # unstamped -> prerelease fallback
     assert label == "Unreleased" and body.startswith("Fresh work.")
-
-    import pytest  # noqa: PLC0415
 
     with pytest.raises(SystemExit):
         rn.extract("# Changelog\n", "9.9.9")
