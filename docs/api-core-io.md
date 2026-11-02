@@ -549,7 +549,7 @@ result = torchfits.verify_checksums(path, hdu=0)
 
 | Layer | Entry points | Role |
 |---|---|---|
-| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Remote and sample files under the configured cache root |
+| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Remote and sample files under the configured cache root, plus `TORCHFITS_REMOTE_CACHE` / `TORCHFITS_SAMPLE_CACHE` directories when set elsewhere |
 | Aggregate statistics | `torchfits.cache.get_cache_stats()` | In-process I/O cache counters |
 | I/O metadata | `get_cache_performance()`, `clear_file_cache(...)` | In-process header / meta / data caches |
 | Shared metadata (C++) | `clear_file_cache(..., cpp=True)` | Per-path metadata across private CFITSIO handles |

@@ -101,3 +101,21 @@ def test_cache_subsystem_still_works_after_clear() -> None:
     stats = torchfits.get_cache_performance()
     assert stats["total_requests"] == 0, stats
     assert stats["hit_rate"] == 0.0, stats
+
+
+def test_clear_cache_disk_removes_overridden_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Remote/sample roots overridden outside cache_root() are removed too."""
+    root = tmp_path / "root"
+    remote = tmp_path / "remote_elsewhere"
+    samples = tmp_path / "samples_elsewhere"
+    for d in (root, remote, samples):
+        d.mkdir()
+        (d / "f.fits").write_bytes(b"fake")
+    monkeypatch.setenv("TORCHFITS_CACHE_DIR", str(root))
+    monkeypatch.setenv("TORCHFITS_REMOTE_CACHE", str(remote))
+    monkeypatch.setenv("TORCHFITS_SAMPLE_CACHE", str(samples))
+    assert all((d / "f.fits").is_file() for d in (root, remote, samples))
+    torchfits.cache.clear_cache(disk=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []

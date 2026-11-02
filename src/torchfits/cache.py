@@ -80,7 +80,13 @@ def clear_cache(*, disk: bool = False) -> None:
             stacklevel=2,
         )
     if disk:
-        _remove_tree(cache_root())
+        root = cache_root()
+        _remove_tree(root)
+        # TORCHFITS_REMOTE_CACHE / TORCHFITS_SAMPLE_CACHE may point outside
+        # the root; they hold torchfits downloads too.
+        for extra in (remote_cache_root(), sample_cache_root()):
+            if not extra.resolve().is_relative_to(root.resolve()):
+                _remove_tree(extra)
 
 
 def clear_all_caches() -> None:
