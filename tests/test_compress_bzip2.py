@@ -12,6 +12,11 @@ import pytest
 import torch
 
 import torchfits
+from torchfits._io_engine.paths import has_bz2_support
+
+pytestmark = pytest.mark.skipif(
+    not has_bz2_support(), reason="this build has no BZIP2 support (HAVE_BZIP2)"
+)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

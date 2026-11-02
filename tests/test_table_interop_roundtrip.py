@@ -6,6 +6,7 @@ unsigned 16-bit columns; each exporter must keep values, nulls and dtypes.
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import warnings
 
@@ -110,11 +111,13 @@ def test_detached_input_rejects_io_kwargs(fits_table, tmp_path):
     arrow = table.read(fits_table)
     with pytest.raises(TypeError, match="require a file path"):
         table.write_parquet(str(tmp_path / "x.parquet"), arrow, hdu=1)
-    with pytest.raises(TypeError, match="require a file path"):
-        table.to_pandas(arrow, hdu=1)
+    if importlib.util.find_spec("pandas") is not None:
+        with pytest.raises(TypeError, match="require a file path"):
+            table.to_pandas(arrow, hdu=1)
 
 
 def test_to_pandas_keeps_values_and_dtypes(fits_table):
+    pytest.importorskip("pandas")
     df = table.to_pandas(fits_table)
     assert {k: str(v) for k, v in df.dtypes.items() if k != "S"} == {
         "I": "float64",  # pandas has no nullable int by default: NULL -> NaN

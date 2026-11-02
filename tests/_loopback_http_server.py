@@ -84,15 +84,23 @@ def start(tmp_path: Path) -> tuple[subprocess.Popen[bytes], int, Path]:
     port_file = tmp_path / "port.txt"
     log_path = tmp_path / "hits.log"
     log_path.write_text("")
-    proc = subprocess.Popen(
-        [sys.executable, __file__, str(port_file), str(log_path)],
-        env={**os.environ, "PYTHONNOUSERSITE": "1"},
-    )
-    deadline = time.monotonic() + 30
+    err_path = tmp_path / "server-stderr.txt"
+    with open(err_path, "wb") as err:
+        proc = subprocess.Popen(
+            [sys.executable, __file__, str(port_file), str(log_path)],
+            env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            stderr=err,
+        )
+    # CI macOS runners can take a while to start an interpreter under load.
+    deadline = time.monotonic() + 60
     while not (port_file.exists() and port_file.read_text().strip()):
         if proc.poll() is not None or time.monotonic() > deadline:
             proc.kill()
-            raise RuntimeError("loopback fixture server failed to start")
+            detail = err_path.read_text(errors="replace").strip()
+            raise RuntimeError(
+                "loopback fixture server failed to start "
+                f"(returncode={proc.poll()}): {detail or 'no stderr'}"
+            )
         time.sleep(0.05)
     return proc, int(port_file.read_text()), log_path
 
