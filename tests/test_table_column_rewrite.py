@@ -157,3 +157,40 @@ def test_ascii_table_column_rewrite(tmp_path):
     assert int(values["TBCOL1"]) == 1
     got = torchfits.table.read(path, hdu=1).to_pydict()
     assert got == {"z": [4, 5, 6], "a": [7, 8, 9], "s": ["ab", "cd", "ef"]}
+
+
+def test_tablehdu_to_fits_renumbers_column_cards(tmp_path):
+    from torchfits.hdu import TableHDU
+
+    src = str(tmp_path / "src.fits")
+    torchfits.table.write(
+        src,
+        {
+            "a": np.arange(3, dtype=np.float64),
+            "b": np.arange(3, dtype=np.int32),
+            "n": np.array([1, -99, 3], dtype=np.int32),
+        },
+        schema={"a": {"unit": "deg"}, "b": {"unit": "mag"}, "n": {"tnull": -99}},
+        overwrite=True,
+    )
+    table = TableHDU.from_fits(src, 1)
+
+    def written(hdu):
+        out = str(tmp_path / "out.fits")
+        hdu.to_fits(out, overwrite=True)
+        return out, _card_values(_hdu_cards(out, 1))
+
+    out, values = written(table.drop_columns(["a"]))
+    assert values["TUNIT1"].strip("'").strip() == "mag"
+    assert int(values["TNULL2"]) == -99
+    assert "TUNIT2" not in values and "TNULL3" not in values
+    assert torchfits.table.read(out, hdu=1).to_pydict()["n"] == [1, None, 3]
+
+    _out, values = written(table.select(["n", "a"]))  # keeps file order: a, n
+    assert values["TUNIT1"].strip("'").strip() == "deg"
+    assert int(values["TNULL2"]) == -99
+    assert "TUNIT2" not in values and "TNULL3" not in values
+
+    _out, values = written(table.rename_column("a", "alpha"))
+    assert values["TTYPE1"].strip("'").strip() == "alpha"
+    assert values["TUNIT1"].strip("'").strip() == "deg"
