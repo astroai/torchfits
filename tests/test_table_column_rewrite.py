@@ -238,3 +238,21 @@ def test_projected_ref_column_file_edits_use_file_positions(tmp_path):
     assert new.columns == ["c"]
     assert new.header.get("TUNIT4") == "km"
     assert new["c"].tolist() == [7, 8, 9]
+
+
+def test_column_rewrite_keeps_q_descriptor_vla(tmp_path):
+    path = str(tmp_path / "vla.fits")
+    torchfits.table.write(
+        path,
+        {
+            "a": np.arange(3, dtype=np.int32),
+            "w": [np.arange(i, dtype=np.int16) for i in range(3)],
+        },
+        schema={"a": {}, "w": {"format": "QI"}},
+        overwrite=True,
+    )
+    torchfits.table.replace_column(path, "a", np.arange(3, dtype=np.int32) * 10)
+    values = _card_values(_hdu_cards(path, 1))
+    assert values["TFORM2"].strip("'").strip().startswith("QI")
+    got = torchfits.table.read_torch(path, hdu=1)
+    assert [t.tolist() for t in got["w"]] == [[], [0], [0, 1]]
