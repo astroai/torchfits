@@ -1184,15 +1184,19 @@ def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) ->
     return value - int(bzero)
 
 
-def _empty_string_column_width(value: Any) -> Optional[int]:
-    """Character width of a 0-row numpy 'S'/'U' column, else None."""
+def _string_column_width(value: Any) -> Optional[int]:
+    """Character width of a 1-D numpy 'S'/'U' column's dtype, else None.
+
+    The dtype is the declared width: ``np.array(['ab', 'c'], dtype='S3')``
+    is a 3-character column even though no cell uses all 3 characters, and
+    a 0-row column has no cell to infer from at all.
+    """
     import numpy as np
 
     if not (
         isinstance(value, np.ndarray)
         and value.dtype.kind in {"U", "S"}
         and value.ndim == 1
-        and value.size == 0
     ):
         return None
     chars = int(value.dtype.itemsize) // (4 if value.dtype.kind == "U" else 1)
@@ -1217,10 +1221,11 @@ def _prepare_unsigned_table_data_for_write(
 
     for name, value in table_dict.items():
         col_name = str(name)
-        width = _empty_string_column_width(value)
+        width = _string_column_width(value)
         if width is not None:
-            # No cell to infer the string type from: the dtype width is the
-            # only TFORM evidence (the writer raised std::bad_cast).
+            # The dtype width is the column's TFORM (inferring from the cells
+            # shrank 'S3' holding ['ab', 'c'] to 2A, and a 0-row column has no
+            # cell at all: the writer raised std::bad_cast).
             out[col_name] = value
             meta = prepared_schema.setdefault(col_name, {})
             if "format" not in meta and "tform" not in meta:

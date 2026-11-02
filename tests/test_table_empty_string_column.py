@@ -36,3 +36,19 @@ def test_root_write_empty_string_column(tmp_path):
     path = str(tmp_path / "w.fits")
     torchfits.write(path, {"s": np.array([], dtype="S3")})
     assert torchfits.read_header(path, 1)["TFORM1"] == "3A"
+
+
+@pytest.mark.parametrize(
+    ("dtype", "table_type", "tform"),
+    [("S3", "binary", "3A"), ("U4", "binary", "4A"), ("S3", "ascii", "A3")],
+)
+def test_string_column_width_comes_from_dtype(tmp_path, dtype, table_type, tform):
+    path = str(tmp_path / "w.fits")
+    torchfits.table.write(
+        path,
+        {"s": np.array(["ab", "c"], dtype=dtype)},
+        overwrite=True,
+        table_type=table_type,
+    )
+    assert torchfits.read_header(path, 1)["TFORM1"] == tform
+    assert torchfits.table.read(path, hdu=1).column("s").to_pylist() == ["ab", "c"]
