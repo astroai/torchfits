@@ -20,6 +20,24 @@ inline bool has_cfitsio_extended_filename_syntax(const std::string& filename) {
     return filename.find('[', search_start) != std::string::npos;
 }
 
+// The local file whose stat identity stands for `filename`, or "" when there
+// is none. A URL (any "scheme://") is fetched by a CFITSIO driver and has no
+// local identity. An extended-syntax name -- "f.fits[1]", or with an output
+// name, "f.fits(out.fits)[1]" -- reads the base file before the first bracket
+// section that has_cfitsio_extended_filename_syntax() detects.
+inline std::string cfitsio_stat_path(const std::string& filename) {
+    if (filename.find("://") != std::string::npos) return std::string();
+    if (!has_cfitsio_extended_filename_syntax(filename)) return filename;
+    const size_t last_slash = filename.find_last_of('/');
+    const size_t search_start = (last_slash == std::string::npos) ? 0 : last_slash + 1;
+    std::string root = filename.substr(0, filename.find('[', search_start));
+    if (!root.empty() && root.back() == ')') {
+        const size_t open = root.rfind('(');
+        if (open != std::string::npos && open >= search_start) root.resize(open);
+    }
+    return root;
+}
+
 inline void check_fits_filename_security(const std::string& filename) {
     if (!filename.empty()) {
         // Strip all standard whitespace characters since cfitsio ignores them,

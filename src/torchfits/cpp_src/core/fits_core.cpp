@@ -220,7 +220,18 @@ void reset_cached_metadata(const std::shared_ptr<SharedReadMeta>& meta) {
 }  // namespace
 
 std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& filename) {
-    bool can_stat = kValidateSharedMeta && !has_cfitsio_extended_filename_syntax(filename);
+    // Validation stats the file the name reads from: the base file of an
+    // extended-syntax name, so "f.fits[1]" notices a rewrite of f.fits like
+    // "f.fits" does. A URL has nothing to stat, so nothing about it can ever be
+    // re-validated: hand out a private, unregistered entry instead of caching
+    // path-level answers that would go stale for the life of the process.
+    const std::string stat_path = cfitsio_stat_path(filename);
+    if (stat_path.empty()) {
+        auto meta = std::make_shared<SharedReadMeta>();
+        meta->uid.store(g_shared_meta_uid.fetch_add(1, std::memory_order_relaxed),
+                        std::memory_order_relaxed);
+        return meta;
+    }
     std::shared_ptr<SharedReadMeta> meta;
     {
         std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
@@ -234,7 +245,7 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
             meta = it->second;
         }
     }
-    if (!can_stat) return meta;
+    if (!kValidateSharedMeta) return meta;
     const int64_t now_ns = torchfits::internal::monotonic_now_ns();
     std::unique_lock<std::shared_mutex> meta_lock(meta->mutex);
     if (kSharedMetaValidateIntervalNs > 0 && meta->last_stat_check_ns != 0 &&
@@ -243,7 +254,7 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
     }
     meta->last_stat_check_ns = now_ns;
     struct stat st {};
-    if (stat(filename.c_str(), &st) != 0) {
+    if (stat(stat_path.c_str(), &st) != 0) {
         // A stat that fails for a path which previously had one means the file
         // is gone -- unlinked, renamed away, or unreachable through its parent
         // directory. This branch is what that looks like: has_stat was false
@@ -254,10 +265,9 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
         // unlinked path instead of the error their payload-reading siblings
         // (read, read_header) correctly raised.
         //
-        // Exempt the never-had-one case, which is not "gone": an extended-
-        // syntax path such as "mef.fits[1]" is never stat-able by construction
-        // (see has_cfitsio_extended_filename_syntax), so it reaches here with
-        // has_stat false forever and must keep its caches.
+        // Exempt the never-had-one case, which is not "gone": a path that has
+        // never been stat-able has nothing cached that a later stat could
+        // contradict.
         if (meta->has_stat) {
             reset_cached_metadata(meta);
             meta->has_stat = false;
