@@ -1306,6 +1306,16 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             if (schema_info.code == 'X') {
                 col.datatype = TBIT;
                 if (schema_info.repeat > 0) {
+                    // A 2-D payload carries its own bits-per-row; a different
+                    // schema repeat would pack rows at the wrong stride (and
+                    // used to overrun the copy buffer for strided input).
+                    if (ndim == 2 && schema_info.repeat != static_cast<long>(tensor.shape(1))) {
+                        throw std::runtime_error(
+                            "Column '" + col.name + "': schema format '" + schema_tform +
+                            "' has " + std::to_string(schema_info.repeat) +
+                            " bits per row but the data has " +
+                            std::to_string(static_cast<long>(tensor.shape(1))));
+                    }
                     col.repeat = schema_info.repeat;
                 }
             }

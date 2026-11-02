@@ -99,9 +99,12 @@ inline void* ensure_c_contiguous_ndarray(
             static_cast<std::ptrdiff_t>(t.stride(0)) * static_cast<std::ptrdiff_t>(item);
         const std::ptrdiff_t s1 =
             static_cast<std::ptrdiff_t>(t.stride(1)) * static_cast<std::ptrdiff_t>(item);
+        // buf holds nelements items; never copy more than that even if the
+        // caller asked for fewer elements than the array holds.
+        const size_t limit = static_cast<size_t>(nelements);
         size_t out = 0;
-        for (size_t i0 = 0; i0 < n0; ++i0) {
-            for (size_t i1 = 0; i1 < n1; ++i1) {
+        for (size_t i0 = 0; i0 < n0 && out < limit; ++i0) {
+            for (size_t i1 = 0; i1 < n1 && out < limit; ++i1) {
                 std::memcpy(dst + out * item,
                             base + static_cast<std::ptrdiff_t>(i0) * s0
                                  + static_cast<std::ptrdiff_t>(i1) * s1, item);
