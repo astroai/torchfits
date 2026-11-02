@@ -26,9 +26,9 @@ when to introduce a Dataset / `make_loader`.
 All transforms implement the `FITSTransform` callable protocol
 (`forward` / `inverse` / `__call__`). They are **not**
 `torch.nn.Module` subclasses — wrap with :func:`as_module` (or
-:class:`AsModule`) for `nn.Sequential`. Inverse state is
-**instance-local** (`_last_*` fields); construct one pipeline per worker
-when `num_workers > 0`.
+:class:`AsModule`) for `nn.Sequential`. Inverse state (the statistics a forward pass keeps for `inverse()`) is
+**instance-local**; construct one pipeline per worker when
+`num_workers > 0`.
 
 ```python
 from torchfits.transforms import (
@@ -69,8 +69,7 @@ Left at the default (`False`), a companion `ivar` is passed through unchanged
 and a warning fires **once per instance**, because it no longer strictly
 describes the transformed flux. The clipping transforms (`SigmaClip`,
 `AsymmetricSigmaClip`, `PercentileClipNormalize`) are projections rather than
-invertible maps, so they always pass `ivar` through and warn; the pixels they
-altered are reported in their `_last_mask`.
+invertible maps, so they always pass `ivar` through and warn.
 
 **Data states.** `DataState` names the processing stage of a payload so a
 transform can refuse data it would silently corrupt:
@@ -340,10 +339,10 @@ $$\text{output} = x - \text{median}(x)$$
     before stretching or normalization. If the sky is not flat across the
     frame, use `MeshBackgroundSubtract` instead.
 
-### `MeshBackgroundSubtract(mesh=(8, 8), n_sigma=3.0, filter_mesh=True, min_tile_pixels=4, weighted=False)`
+### `MeshBackgroundSubtract(mesh=(8, 8), *, n_sigma=3.0, max_iter=5, filter_mesh=True, min_tile_pixels=4, weighted=False)`
 
 SExtractor-style tile-mesh background: estimate the sky independently in each
-of `mesh` tiles (sigma-clipped median + MAD), optionally median-filter the tile
+of `mesh` tiles (median + MAD), optionally median-filter the tile
 grid, then interpolate it back to full resolution and subtract.
 
 $$\text{output} = x - \text{interp}\big(\text{med}_{\text{tile}}(x)\big)$$
@@ -359,7 +358,8 @@ cached from `forward`).
 | Param | Default | Description |
 |---|---|---|
 | `mesh` | `(8, 8)` | Number of tiles along `(H, W)` |
-| `n_sigma` | `3.0` | Clipping threshold for the per-tile statistics |
+| `n_sigma` | `3.0` | Accepted for API symmetry with `SigmaClip`; tile statistics are a single-pass median/MAD, so it currently has no effect |
+| `max_iter` | `5` | Same as `n_sigma`: accepted, currently no effect |
 | `filter_mesh` | `True` | 3×3 median filter the tile grid (stops bright sources imprinting on the sky map) |
 | `min_tile_pixels` | `4` | Below this, a tile falls back to the frame background |
 | `weighted` | `False` | Inverse-variance weighted tile statistics when `ivar` is present |
@@ -369,7 +369,7 @@ cached from `forward`).
     the difference between a science-ready frame and one with a bright
     gradient baked in. It only *subtracts*, so `ivar` is unchanged.
 
-### `PercentileClipNormalize(lower_pct=1, upper_pct=99, dim=(-2, -1))`
+### `PercentileClipNormalize(lower_pct=1, upper_pct=99, dim=(-2, -1), *, weighted=False)`
 
 Clip to percentile range, scale to [0, 1]. `inverse()` is **approximate** —
 values clipped by the clamp cannot be recovered exactly.
@@ -385,6 +385,7 @@ $$\text{output} = \frac{\text{clamp}(x,\ \text{lower},\ \text{upper}) - \text{lo
 | `lower_pct` | `1.0` | Lower percentile. Must satisfy `0.0 <= lower_pct <= upper_pct <= 100.0` |
 | `upper_pct` | `99.0` | Upper percentile (same constraint; equal to `lower_pct` gives a constant frame) |
 | `dim` | `(-2, -1)` | Dimensions for quantile computation |
+| `weighted` | `False` | Inverse-variance weighted percentiles when the payload carries `ivar` |
 
 !!! info "When to use"
     More aggressive than zscale — hard-clips outliers. Good for display when
@@ -406,7 +407,7 @@ $$\text{output} = \frac{x - \min(x)}{\max(x) - \min(x)}$$
     Simple normalization when you know the data has no outliers. Avoid for
     astronomical images — a single bright star dominates the range.
 
-### `GlobalScalarNorm(stat="median", dim=None)`
+### `GlobalScalarNorm(stat="median", dim=None, *, weighted=False)`
 
 Divide by a single scalar statistic. Minimal linear prep.
 
@@ -421,6 +422,7 @@ $\sqrt{\text{mean}(x^2)}$ (RMS).
 |---|---|---|
 | `stat` | `"median"` | `"median"`, `"max"`, `"mean"`, or `"rms"` |
 | `dim` | `None` | Dimensions (None = all) |
+| `weighted` | `False` | Inverse-variance weighted statistic when the payload carries `ivar` |
 
 !!! info "When to use"
     When you want the simplest possible normalization — just scale by the
@@ -515,13 +517,13 @@ Iterative sigma-clipping with mean or median fill.
     `fill="median"` for more robust replacement in the presence of many
     outliers.
 
-### `AsymmetricSigmaClip(n_low=3.0, n_high=3.0, dim=(-2,-1))`
+### `AsymmetricSigmaClip(n_low=3.0, n_high=3.0, dim=(-2,-1), fill="median", *, weighted=False)`
 
 One-pass asymmetric sigma-clip via `estimate_background` (median + MAD).
 
 $$\text{lower} = \text{med} - n_{\text{low}} \cdot \text{std}, \qquad \text{upper} = \text{med} + n_{\text{high}} \cdot \text{std}$$
 
-Outliers replaced with median.
+Outliers replaced with the median (`fill="median"`) or NaN (`fill="nan"`).
 
 **Inverse:** None (lossy).
 
@@ -530,6 +532,8 @@ Outliers replaced with median.
 | `n_low` | `3.0` | Std below median to clip |
 | `n_high` | `3.0` | Std above median to clip |
 | `dim` | `(-2, -1)` | Dimensions for statistics |
+| `fill` | `"median"` | `"median"` or `"nan"` (keeps the rejection visible) |
+| `weighted` | `False` | Inverse-variance weighted median/MAD when `ivar` is present |
 
 !!! info "When to use"
     Faster than iterative sigma-clip. Use different `n_low`/`n_high` when
@@ -551,7 +555,7 @@ Outliers replaced with median.
 | Function | Role |
 |---|---|
 | `mask_from_dq(dq, bad_bits=None, good_bits=None, require_good=False)` | `DQ` bitfield → validity mask. Bits are 0-based positions, so `bad_bits=[0, 11]` rejects DQ values `1` and `2048`; the default `bad_bits=None` treats any non-zero value as invalid |
-| `mask_from_ivar(ivar, min_ivar=0.0)` | `ivar > min_ivar` and finite |
+| `mask_from_ivar(ivar, min_ivar=0.0, require_finite=True)` | `ivar > min_ivar` and finite; `require_finite=False` keeps `+inf` (zero variance) valid. NaN is always invalid |
 | `mask_from_nan(x)` | Finite values are valid |
 | `combine_masks(*masks)` | Logical AND, skipping `None`; returns `None` when all are `None` |
 | `apply_mask(x, mask, fill=nan)` | Replace invalid pixels with `fill` (promotes integers for a NaN fill) |
@@ -567,11 +571,14 @@ flux = apply_mask(payload["flux"], valid)
 
 Transform statistics are mask-aware and inverse-variance aware. Pass
 `mask=` explicitly, or let a dict payload's `mask` field be picked up
-automatically (an explicit `mask=` argument wins). `weighted=True` on the
-normalizers, the clippers and `estimate_background` switches the underlying
-median / mean / RMS to inverse-variance weights, so low-weight pixels stop
-dragging the estimate, while the default (`weighted=False`) stays byte-identical
-to previous releases.
+automatically (an explicit `mask=` argument wins). `weighted=True` switches
+the underlying median / mean / quantiles / RMS to inverse-variance weights, so
+low-weight pixels stop dragging the estimate. It is accepted by
+`BackgroundSubtract`, `MeshBackgroundSubtract`, `ZScaleNormalize`,
+`RobustNormalize`, `SigmaNormalize`, `PercentileClipNormalize`,
+`GlobalScalarNorm`, `InterquantileScale`, `InterquantileNormalize`,
+`AsymmetricSigmaClip` and `estimate_background`; `SigmaClip` and
+`MinMaxNormalize` have no weighted mode.
 
 `weighted=True` is an **exact no-op when no `ivar` is supplied** (there is
 nothing to weight by), so it can be switched on unconditionally. Note the
@@ -592,7 +599,6 @@ clean = SigmaNormalize(weighted=True)({"flux": flux, "ivar": ivar, "mask": valid
 | `safe_arcsinh`, `safe_log` | Numerically stable stretch primitives |
 | `estimate_background(x, dim, mask=None, ivar=None, weighted=False)` | Shared robust median/MAD estimator for normalizers and clippers |
 | `zscale_limits(x, contrast=0.25, algorithm="proxy")` | IRAF-style zscale limit finder used by `ZScaleNormalize` |
-| `_weighted_quantile` | Inverse-variance weighted quantiles behind `weighted=True` |
 
 ---
 
@@ -697,11 +703,13 @@ model = nn.Sequential(as_module(ArcsinhStretch(a=0.1)), nn.Linear(64, 10))
 Only the forward pass is exposed; call `transform.inverse` on the wrapped
 instance for undo.
 
-### `rgb(*bands, *, brightness=0.15, saturation=2.0, scene="auto", weights=None, calibrated=False, zeropoints=None)`
+### `rgb(*bands, *, brightness=0.15, saturation=2.0, scene="auto", weights=None, calibrated=False, zeropoints=None, dtype=None)`
 
 Auto RGB from 1–7 aligned images (or one `(C, H, W)` cube). Band order is
 **shortest wavelength first**: `rgb(g, r, i)` or `rgb(u, g, r, i, z)`.
-Returns a `[H, W, 3]` float tensor in `[0, 1]` after sRGB encoding.
+Returns a `[H, W, 3]` `float32` tensor in `[0, 1]` after sRGB encoding;
+`dtype=` casts the result to another floating dtype (integer dtypes raise
+`TypeError`).
 
 Uncalibrated (default) subtracts each band's sky median and divides by MAD
 so ADU scale and sky pedestals do not paint the colour. `calibrated=True`
@@ -711,11 +719,13 @@ magnitude of 1 count per band, converted to nanomaggies as
 
 See `examples/example_rgb_sky.py`.
 
-### `lupton_rgb(r, g, b, *, Q=8.0, stretch=0.5, minimum=0.0)`
+### `lupton_rgb(r, g, b, *, Q=8.0, stretch=0.5, minimum=0.0, dtype=None)`
 
 Lupton asinh RGB from three single-band tensors (same shape). Returns a
-`[H, W, 3]` **float64** tensor in `[0, 1]` (channel last; accepts any
-tensor-convertible inputs). Matches Astropy's
+`[H, W, 3]` tensor in `[0, 1]` (channel last; accepts any tensor-convertible
+inputs). `float32` and `float64` inputs keep their dtype (mixed bands promote);
+integer, `float16` and list inputs return `float64`. `dtype=` casts the result
+to another floating dtype (integer dtypes raise `TypeError`). Matches Astropy's
 `make_lupton_rgb` / `LuptonAsinhStretch` mapping. See
 `examples/example_lupton_rgb_sdss.py`.
 
