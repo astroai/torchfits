@@ -17,20 +17,22 @@ from ._hdu_rewrite import (
     _write_hdus_uncompressed,
     _write_hdus_with_optional_compression,
 )
+from ._file_ops import (
+    _atomic_create_target,
+    _atomic_replace_target,
+    _invalidate_path_caches,
+    _invalidate_written_target,
+)
 from ._write_helpers import (
     QuantizeError,
     _TableHDUWriteProxy,
     _apply_image_quantize,
-    _atomic_create_target,
-    _atomic_replace_target,
     _can_use_cpp_table_writer,
     _coerce_compressed_hdu_item,
     _cpp_header_mapping,
     _drop_stale_integer_scale_cards,
     _hdu_with_header,
     _image_hdu_dict_for_fits_write,
-    _invalidate_path_caches,
-    _invalidate_written_target,
     _merge_fits_write_header,
     _merged_write_header,
     _ndarray_to_tensor,
@@ -45,8 +47,8 @@ from ._write_helpers import (
     _write_header_cards_if_supported,
 )
 
+from ._hdu_edit import delete_hdu
 from ._hdu_rewrite import (
-    delete_hdu,
     insert_hdu,
     replace_hdu,
 )

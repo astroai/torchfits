@@ -14,7 +14,10 @@ import gzip
 import os
 from typing import IO, Iterable, List, Optional, Sequence, Tuple, Union
 
-from ._write_helpers import _atomic_replace_target, _invalidate_written_target
+from ._file_ops import (
+    _atomic_replace_target,
+    _invalidate_written_target,
+)
 
 FITS_BLOCK = 2880
 _CARD = 80

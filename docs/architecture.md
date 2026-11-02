@@ -48,7 +48,8 @@ retaining an explicit ABI check before every tensor wrap.
 | `read_header`, `read_keys`, `read_colnames`, `read_extname`, `read_nrows`, `read_num_hdus`, `read_shape`, `read_hdu_type`, `read_table_info` | no | structural metadata |
 | `Header`, `Card`, `HDUList` metadata (`open`, `hdul[i].header`) | no | header cards are plain Python |
 | `verify_checksums`, `write_checksums` | no | byte arithmetic |
-| `insert_hdu` / `replace_hdu` / `delete_hdu`, header writes | no | file structure |
+| `insert_hdu` / `replace_hdu` | yes | the new HDU goes through the tensor/table writers |
+| `delete_hdu`, header writes (CLI `setkey`) | no | file structure |
 | `table.read` → Arrow, `table.schema`, `table.scan` | no | Arrow destination, no Python tensor needed |
 
 The Arrow path crosses the extension without creating a Python tensor at all:

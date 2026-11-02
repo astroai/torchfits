@@ -396,7 +396,8 @@ def delete_hdu(
     compress: bool | str = False,
 ) -> None:
     """Delete an HDU from a FITS file by index or name."""
-    from ._io_engine.write_api import delete_hdu as _delete_hdu_impl
+    # Torch-free: the write_api module imports torch for the tensor writers.
+    from ._io_engine._hdu_edit import delete_hdu as _delete_hdu_impl
 
     return _delete_hdu_impl(path, hdu, compress=compress)
 
