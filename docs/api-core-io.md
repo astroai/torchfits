@@ -55,7 +55,8 @@ columns are tensors; VLA columns may use list/tuple values), or a tuple if
 `return_header=True`. Multiple paths or HDUs return results in input order.
 
 The options after `return_header` are keyword-only. Unknown keywords raise
-`TypeError`; `use_cache` must be a boolean or `None`.
+`TypeError`; a `use_cache` that is not a boolean or `None` raises
+`ValueError`.
 
 !!! tip "When to mmap"
     Mmap can help eligible large local integer IMAGE HDUs and repeated
@@ -265,14 +266,15 @@ tensors = torchfits.read_batch(["img1.fits", "img2.fits"], hdu=0)
 
 ## `read_batch_info()`
 
-Inspect shape and dtype consistency across files before batch reading.
+Count how many of the given paths exist before a batch read. It does not
+open the files or compare shapes and dtypes.
 
 ```python
 torchfits.read_batch_info(file_paths)
 ```
 
-**Returns:** `dict` with `num_files` (paths supplied) and `existing_files`
-(paths present on disk).
+**Returns:** `dict` with two integers: `num_files` (paths supplied) and
+`existing_files` (how many of them exist on disk).
 
 ---
 
@@ -287,7 +289,7 @@ torchfits.open(path, mode="r")
 **Returns:** `HDUList` context manager.
 
 Header and HDU inspection (`hdul[i].header`, `hdul.info()`, `TableHDURef`
-metadata) goes through `torchfits._core` and does not import PyTorch. Reading
+metadata) uses a metadata-only reader that does not import PyTorch. Reading
 pixels or tensors (`.data`, `.to_tensor()`) opens the tensor-backed reader on
 first use.
 
@@ -447,7 +449,7 @@ torchfits.write(
 | `data` | `Tensor`, numpy array, `dict`, or `HDUList` | *(required)* | Data to write. Numpy arrays and tensors write an image HDU; `dict` writes a table. |
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
-| `compress` | `bool` or `str` | `False` | `True`, `"gzip"`, `"rice"`, etc. GZIP_1 and integer RICE_1 writes are lossless; float RICE_1 / HCOMPRESS_1 use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
+| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
 
 !!! tip "Skewed float → int16"
@@ -483,8 +485,7 @@ torchfits.write(
 !!! note "Header text must be printable ASCII"
     FITS restricts header values, comments and keywords to codes 32–126.
     Non-ASCII text is rejected with a `ValueError` naming the offending byte
-    rather than silently stripped: `header={"UNI": "λ-cold"}` used to store
-    `'-cold'`, a different string with no error. The same applies to table
+    rather than silently stripped. The same applies to table
     column names and string column values. Reading stays forgiving — stray
     bytes already on disk are dropped so the file still opens.
 
