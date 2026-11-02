@@ -5,6 +5,43 @@ multi-extension files, checksums, and caching.
 
 ---
 
+## Missing files and HDUs
+
+Every route that takes a path and an `hdu` (the readers on this page,
+`open()[...]`, the skinny metadata calls, checksums, HDU mutation, the
+[table](api-tables.md) readers and mutators, and the
+[datasets](api-data.md)) fails the same way:
+
+| Failure | Exception |
+|---|---|
+| Local path does not exist | `FileNotFoundError` (an `OSError`) |
+| EXTNAME / HDUNAME that no HDU carries | `torchfits.HDUNotFoundError` |
+| Integer `hdu` that is negative or past the last HDU | `torchfits.HDUNotFoundError` |
+
+`HDUNotFoundError` subclasses `KeyError`, `IndexError` and `ValueError`, so
+code that caught any of those keeps working. Its message names the request
+and the file, and the attributes `hdu`, `path` and `n_hdus` carry the same
+values (`n_hdus` is `None` when the count is unknown):
+
+```python
+import torchfits
+
+try:
+    sci = torchfits.read("mef.fits", hdu="SCI")
+except torchfits.HDUNotFoundError as exc:
+    print(exc)  # HDU 'SCI' not found in mef.fits (3 HDUs)
+except FileNotFoundError as exc:
+    print(exc)  # FITS file not found: mef.fits
+```
+
+An `hdu` of the wrong type (a float, or `None` where autodetection is not
+offered) is still a `TypeError` or `ValueError`. `HDUList` indexing keeps
+Python sequence rules: `hdul[-1]` is the last HDU, and only an index outside
+`-len(hdul)..len(hdul)-1` raises `HDUNotFoundError`. Remote URLs keep the
+errors of their transport.
+
+---
+
 ## `read()`
 
 Unified FITS reader. Auto-detects image or table HDUs.
@@ -260,8 +297,10 @@ torchfits.read_batch(file_paths, hdu=0, device="cpu", *, strict=False)
 
 **Returns:** `list[torch.Tensor]` — one tensor per input file (not a stacked
 batch), in input order. A path that cannot be read always raises, so the result
-list is never silently short: with the default ``strict=False`` the failure
-surfaces as a `RuntimeError` naming the path and how many files read before it;
+list is never silently short. A missing file (`FileNotFoundError`) or HDU
+(`HDUNotFoundError`) keeps its type, with a note giving how many files read
+before it. With the default ``strict=False`` any other failure surfaces as a
+`RuntimeError` naming the path and how many files read before it;
 ``strict=True`` lets the original exception propagate unchanged.
 
 ```python
@@ -567,7 +606,9 @@ torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
 `hdu` is an index or an EXTNAME (matched case-insensitively, as in `read()`).
-Every other HDU keeps its index.
+Every other HDU keeps its index. An `hdu` (or insert `index`) that is not in
+the file raises `HDUNotFoundError` and leaves the file unchanged; `insert_hdu`
+accepts positions `0..len(file)`, the last one appending.
 
 Only the inserted or replacing HDU is written, from the call's arguments.
 Every other HDU is copied byte for byte, so it keeps the structure it had
