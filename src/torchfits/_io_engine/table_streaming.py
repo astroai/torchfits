@@ -109,6 +109,7 @@ def stream_table(
                     abs(tzero - 32768.0) < 1e-5
                     or abs(tzero + 32768.0) < 1e-5
                     or abs(tzero - 2147483648.0) < 1e-5
+                    or tzero == 9223372036854775808.0
                 )
                 if (tscal != 1.0 or tzero != 0.0) and not is_unsigned:
                     scaled_columns = True

@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -38,6 +40,29 @@
 namespace torchfits {
 namespace detail {
 
+// FITS 4.0 (§5.3) unsigned 64-bit convention: 64-bit integer storage with
+// BZERO/TZERO = 2^63 and scale 1. 2^63 is exact in a double, so compare
+// exactly; the next representable doubles are 1024/2048 away.
+inline bool is_unsigned_longlong_offset(double offset) {
+    return offset == 9223372036854775808.0;
+}
+
+// fits_update_key(TDOUBLE) prints 15 significant digits, which does not
+// round-trip every double: BZERO = 2^63 became 9.22337203685478E+18, so the
+// uint64 convention was lost on disk. Keep the familiar 15-digit spelling
+// when it reads back exactly, otherwise write 17 digits (always exact).
+inline void update_key_double(fitsfile* fptr, const char* key, double value,
+                              const char* comment, int* status) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.15G", value);
+    const int decimals = (std::strtod(buf, nullptr) == value) ? -15 : -17;
+    fits_update_key_dbl(fptr, key, value, decimals, comment, status);
+}
+
+// Adding 2^63 modulo 2^64 is flipping the sign bit.
+inline void flip_sign_bit_u64(uint64_t* data, size_t n) {
+    for (size_t i = 0; i < n; ++i) data[i] ^= 0x8000000000000000ULL;
+}
 
 // Checked NAXISn product — unsigned multiply with overflow detection so a
 // pathological header cannot wrap LONGLONG and under-allocate a read buffer.
@@ -107,7 +132,8 @@ inline size_t datatype_elem_size(int datatype) {
         case TUSHORT:   return sizeof(uint16_t);
         case TINT:
         case TUINT:     return sizeof(uint32_t);
-        case TLONGLONG: return sizeof(uint64_t);
+        case TLONGLONG:
+        case TULONGLONG: return sizeof(uint64_t);
         case TFLOAT:    return sizeof(float);
         case TDOUBLE:   return sizeof(double);
         default:        return 0;
@@ -179,6 +205,8 @@ inline torch::Tensor read_tensor_canonical(
     // Unsigned conventions
     const bool unsigned_short = scaled && bitpix == SHORT_IMG && bscale == 1.0 && is_unsigned_short_offset(bzero);
     const bool unsigned_long  = scaled && bitpix == LONG_IMG  && bscale == 1.0 && is_unsigned_long_offset(bzero);
+    const bool unsigned_longlong =
+        scaled && bitpix == LONGLONG_IMG && bscale == 1.0 && is_unsigned_longlong_offset(bzero);
 
     torch::ScalarType dtype;
     int datatype;
@@ -189,6 +217,8 @@ inline torch::Tensor read_tensor_canonical(
             dtype = torch::kUInt16; datatype = TUSHORT;
         } else if (unsigned_long) {
             dtype = torch::kUInt32; datatype = TUINT;
+        } else if (unsigned_longlong) {
+            dtype = torch::kUInt64; datatype = TULONGLONG;
         } else if (bitpix == BYTE_IMG || bitpix == SHORT_IMG) {
             // int8/int16 codes are exact in float32. int32/int64 are not.
             dtype = torch::kFloat32; datatype = TFLOAT;
@@ -229,7 +259,8 @@ inline torch::Tensor read_tensor_canonical(
 
     // Multi-byte mmap fast path — SIMD endian convert while copying (all sizes).
     const bool multi_byte_mmap_ok =
-        use_mmap && !compressed && (!scaled || unsigned_short || unsigned_long) &&
+        use_mmap && !compressed &&
+        (!scaled || unsigned_short || unsigned_long || unsigned_longlong) &&
         !has_cfitsio_extended_filename_syntax(path);
     if (multi_byte_mmap_ok) {
         size_t elem_size = 0;
@@ -302,6 +333,10 @@ inline torch::Tensor read_tensor_canonical(
                             }
                         } else {
                             std::memcpy(tensor.data_ptr(), static_cast<const uint8_t*>(map_ptr) + src_offset, nbytes);
+                        }
+                        if (unsigned_longlong) {
+                            flip_sign_bit_u64(static_cast<uint64_t*>(tensor.data_ptr()),
+                                              static_cast<size_t>(nelements));
                         }
                         munmap(map_ptr, map_len);
                         return tensor;

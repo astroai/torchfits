@@ -391,6 +391,8 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
         new_elem = pa.uint16()
     elif info.code == "J" and abs(tzero - 2147483648.0) < 1e-5:
         new_elem = pa.uint32()
+    elif info.code == "K" and tzero == 9223372036854775808.0:
+        new_elem = pa.uint64()
     elif tzero != 0.0:
         new_elem = pa.float64()
     else:

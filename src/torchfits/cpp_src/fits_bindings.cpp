@@ -1533,7 +1533,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             fits_update_key(fptr, TLONGLONG, key.c_str(), &val, nullptr, &status);
         } else if (card_type == TDOUBLE) {
             double val = nb::cast<double>(item.second);
-            fits_update_key(fptr, TDOUBLE, key.c_str(), &val, nullptr, &status);
+            d::update_key_double(fptr, key.c_str(), val, nullptr, &status);
         } else {
             // Unreachable: the pre-pass above rejected every value that lands
             // here. Kept as the backstop the loop had before it.
@@ -1552,7 +1552,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         }
         if (col.has_bscale) {
             double bscale = col.bscale;
-            fits_update_key(fptr, TDOUBLE, ("TSCAL" + std::to_string(i + 1)).c_str(), &bscale, nullptr, &status);
+            d::update_key_double(fptr, ("TSCAL" + std::to_string(i + 1)).c_str(), bscale, nullptr, &status);
         }
         if (col.has_bzero) {
             double bzero = col.bzero;
@@ -1563,7 +1563,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 long long bzero_int = static_cast<long long>(rounded);
                 fits_update_key(fptr, TLONGLONG, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero_int, nullptr, &status);
             } else {
-                fits_update_key(fptr, TDOUBLE, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero, nullptr, &status);
+                d::update_key_double(fptr, ("TZERO" + std::to_string(i + 1)).c_str(), bzero, nullptr, &status);
             }
         }
         if (!col.tdim.empty()) {
@@ -1958,7 +1958,7 @@ void bind_fits(nb::module_& m) {
                 fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment_ptr, &key_status);
             } else if (nb::isinstance<float>(value) || nb::isinstance<double>(value)) {
                 double val = nb::cast<double>(value);
-                fits_update_key(fptr, TDOUBLE, key.c_str(), &val, comment_ptr, &key_status);
+                d::update_key_double(fptr, key.c_str(), val, comment_ptr, &key_status);
             } else {
                 throw std::runtime_error(
                     "Unsupported FITS header value type for key '" + key +

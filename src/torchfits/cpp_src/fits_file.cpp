@@ -586,6 +586,10 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
     if (signed_byte_scaled) { dtype = torch::kInt8;  datatype = TSBYTE; }
     else if (unsigned_short) { dtype = torch::kUInt16; datatype = TUSHORT; }
     else if (unsigned_long) { dtype = torch::kUInt32; datatype = TUINT; }
+    else if (scaled && bitpix == LONGLONG_IMG && scale_info.bscale == 1.0 &&
+             detail::is_unsigned_longlong_offset(scale_info.bzero)) {
+        dtype = torch::kUInt64; datatype = TULONGLONG;
+    }
     else if (scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
         dtype = torch::kFloat32; datatype = TFLOAT;
     } else if (scaled) { dtype = torch::kFloat64; datatype = TDOUBLE; }
@@ -748,7 +752,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                     matched = true;
                 } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
                     double val = nb::cast<double>(item.second);
-                    fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
+                    detail::update_key_double(fptr_, key.c_str(), val, nullptr, &key_status);
                     matched = true;
                 } else {
                     throw std::runtime_error(
@@ -828,7 +832,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
                     fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
             } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
                     double val = nb::cast<double>(item.second);
-                    fits_update_key(fptr_, TDOUBLE, key.c_str(), &val, nullptr, &key_status);
+                    detail::update_key_double(fptr_, key.c_str(), val, nullptr, &key_status);
             } else {
                 throw std::runtime_error(
                     "Unsupported FITS header value type for key '" + key +
@@ -1034,6 +1038,10 @@ void SubsetReader::init_from_hdu() {
                detail::is_unsigned_long_offset(scale.bzero)) {
         dtype_ = torch::kUInt32; datatype_ = TUINT; elem_bytes_ = 4;
         mmap_conv_ = MmapConv::UInt32;
+    } else if (scale.scaled && bitpix == LONGLONG_IMG && scale.bscale == 1.0 &&
+               detail::is_unsigned_longlong_offset(scale.bzero)) {
+        // uint64 convention: CFITSIO converts (TULONGLONG); no mmap path.
+        dtype_ = torch::kUInt64; datatype_ = TULONGLONG; return;
     } else if (scale.scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
         dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
     } else if (scale.scaled) {

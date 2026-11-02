@@ -479,13 +479,19 @@ torchfits.write(
     column names and string column values. Reading stays forgiving — stray
     bytes already on disk are dropped so the file still opens.
 
-!!! note "uint64 payloads are rejected"
-    FITS has no native uint64 storage (`BITPIX=-64` is not standard, and a
-    `BZERO=2**64` pseudo-unsigned convention is not interoperable).
-    `write()` raises `ValueError` for uint64 image tensors and uint64 table
-    columns with guidance: convert to `int64` (values `< 2**63`) or `float64`
-    before writing. Unsigned `uint16`/`uint32` are supported natively via the
-    standard signed storage + `BSCALE`/`BZERO` convention.
+!!! note "Unsigned integers"
+    `uint16`, `uint32` and `uint64` images and table columns are written with
+    the FITS standard convention: signed storage plus `BZERO`/`TZERO` of
+    `2**15`, `2**31` or `2**63`. Reading such a file returns the unsigned
+    dtype with exact values, the same as astropy and fitsio.
+
+    ```python
+    import torch, torchfits
+
+    x = torch.tensor([0, 2**63, 2**64 - 1], dtype=torch.uint64)
+    torchfits.write("u64.fits", x, overwrite=True)
+    assert torch.equal(torchfits.read("u64.fits"), x)
+    ```
 
 ### `write_tensor()`
 

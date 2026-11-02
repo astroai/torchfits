@@ -52,6 +52,8 @@ def _tnull_in_tensor(tensor: Any, sentinel: Any) -> Any:
         return sentinel + 32768
     if tensor.dtype == torch.uint32:
         return sentinel + 2147483648
+    if tensor.dtype == torch.uint64:
+        return sentinel + 2**63
     if tensor.dtype == torch.uint8:
         return sentinel + 128
     return sentinel
@@ -105,8 +107,65 @@ def _compile_where_to_simple_predicates(
     return tuple(predicates)
 
 
+def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
+    """Compare a uint64 column exactly.
+
+    torch has no CPU compare kernels for uint64, and widening to int64 would
+    wrap values >= 2**63. Flipping the sign bit maps [0, 2**64) onto int64
+    in order, so compare there against the literal mapped the same way.
+    """
+    import math
+
+    import torch
+
+    if op not in {"==", "!=", ">", ">=", "<", "<="}:
+        raise ValueError(f"Unsupported where operator '{op}'")
+
+    def constant(value: bool) -> torch.Tensor:
+        return torch.full(tensor.shape, value, dtype=torch.bool)
+
+    if isinstance(literal, float):
+        if math.isnan(literal):
+            return constant(op == "!=")
+        if math.isinf(literal):
+            above = literal > 0  # every value is below +inf, above -inf
+            return constant(op in ({"<", "<=", "!="} if above else {">", ">=", "!="}))
+        low = math.floor(literal)
+        if low != literal:
+            # Exact integer bound for a non-integral literal.
+            if op in {">", ">="}:
+                op, literal = ">", low
+            elif op in {"<", "<="}:
+                op, literal = "<", low + 1
+            else:
+                return constant(op == "!=")
+        else:
+            literal = int(literal)
+    if isinstance(literal, bool) or not isinstance(literal, int):
+        raise TypeError(f"Unsupported literal for uint64 column: {literal!r}")
+    if literal < 0:
+        return constant(op in {">", ">=", "!="})
+    if literal >= 2**64:
+        return constant(op in {"<", "<=", "!="})
+
+    keys = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
+    target = literal - 2**63
+    fn = {
+        "==": torch.eq,
+        "!=": torch.ne,
+        ">": torch.gt,
+        ">=": torch.ge,
+        "<": torch.lt,
+        "<=": torch.le,
+    }[op]
+    return fn(keys, target)
+
+
 def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
     import torch
+
+    if tensor.dtype == torch.uint64:
+        return _uint64_cmp_mask(tensor, op, literal)
 
     # PyTorch wraps an out-of-range Python int scalar to the tensor's dtype
     # (e.g. comparing an int16 column against 40000 becomes `> -25536`), which

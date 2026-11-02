@@ -315,6 +315,8 @@ def unsigned_column_dtype_names_from_header(
             out[col.name] = "uint16"
         elif code == "J" and abs(tzero - 2147483648.0) < 1e-5:
             out[col.name] = "uint32"
+        elif code == "K" and tzero == 9223372036854775808.0:
+            out[col.name] = "uint64"
     return out
 
 

@@ -86,11 +86,12 @@ class DataView:
                 and abs(bzero - 2147483648.0) < tol
             ):
                 return _dtype("uint32")
+            # FITS 4.0 unsigned 64-bit convention; 2**63 is exact in float64.
+            if bitpix == 64 and bscale == 1.0 and bzero == 9223372036854775808.0:
+                return _dtype("uint64")
             # Anything else with a scale or BLANK is the scaled-float read.
             # BITPIX=8/16 stay float32 (those codes are exact). BITPIX=32/64
-            # are float64 so values above 2^24 do not round. BITPIX=64 +
-            # BZERO=2**63 is that path too: the storage keyword is int64, and
-            # reporting int64 here disagreed with read().
+            # are float64 so values above 2^24 do not round.
             scaled = abs(bscale - 1.0) >= tol or abs(bzero) >= tol
             if scaled or "BLANK" in self._header:
                 return _dtype("float32" if bitpix in (8, 16) else "float64")

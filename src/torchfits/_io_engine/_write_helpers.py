@@ -24,7 +24,8 @@ from .quantize import (
 
 
 class UInt64WriteError(ValueError):
-    """FITS has no native uint64 storage (BITPIX=-64 is non-standard)."""
+    """Kept for compatibility; uint64 is now written with the FITS 4.0
+    BZERO/TZERO = 2**63 convention and this is no longer raised."""
 
 
 class QuantizeError(ValueError):
@@ -375,12 +376,10 @@ def _unsigned_image_storage_for_fits_write(
     """
     tensor = _host_tensor_for_fits_write(tensor)
     if tensor.dtype == torch.uint64:
-        raise UInt64WriteError(
-            "torchfits does not support writing uint64 image tensors: FITS has "
-            "no native uint64 storage (BITPIX=-64 is not standard), and a "
-            "BZERO=2**64 pseudo-unsigned convention is not interoperable. "
-            "Convert to int64 (requires values < 2**63) or float64 before writing."
-        )
+        # FITS 4.0 unsigned 64-bit convention: int64 storage, BZERO = 2**63.
+        # Subtracting 2**63 modulo 2**64 is flipping the sign bit.
+        raw = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
+        return raw, {"BSCALE": 1.0, "BZERO": 9223372036854775808.0}
     if tensor.dtype == torch.uint16:
         raw: Tensor = (tensor.to(torch.int32) - 32768).to(torch.int16)
         return raw, {"BSCALE": 1.0, "BZERO": 32768.0}
@@ -842,6 +841,12 @@ def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float]
         if value.dtype == torch.uint32:
             raw = (value.detach().to(torch.int64) - 2147483648).to(torch.int32)
             return raw, "J", 2147483648.0
+        if value.dtype == torch.uint64:
+            raw = (
+                value.detach().contiguous().view(torch.int64)
+                ^ torch.iinfo(torch.int64).min
+            )
+            return raw, "K", 9223372036854775808.0
         return None
 
     if isinstance(value, np.ndarray):
@@ -851,6 +856,9 @@ def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float]
         if value.dtype == np.uint32:
             raw = (value.astype(np.int64, copy=False) - 2147483648).astype(np.int32)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "J", 2147483648.0
+        if value.dtype == np.uint64:
+            raw = np.ascontiguousarray(value).view(np.int64) ^ np.iinfo(np.int64).min
+            return np.ascontiguousarray(raw), "K", 9223372036854775808.0
         return None
 
     return None
@@ -890,19 +898,6 @@ def _prepare_unsigned_table_data_for_write(
 
     for name, value in table_dict.items():
         col_name = str(name)
-        import numpy as np
-
-        is_uint64 = (
-            isinstance(value, torch.Tensor) and value.dtype == torch.uint64
-        ) or (isinstance(value, np.ndarray) and value.dtype == np.uint64)
-        if is_uint64:
-            raise UInt64WriteError(
-                f"torchfits does not support writing uint64 table column "
-                f"{col_name!r}: FITS has no native uint64 storage (BITPIX=-64 "
-                f"is not standard), and a BZERO=2**64 pseudo-unsigned "
-                f"convention is not interoperable. Convert to int64 (requires "
-                f"values < 2**63) or float64 before writing."
-            )
         converted = _unsigned_table_storage_for_fits_write(value)
         if converted is None:
             out[col_name] = value
@@ -917,7 +912,8 @@ def _prepare_unsigned_table_data_for_write(
         if "format" not in meta and "tform" not in meta:
             meta["format"] = _unsigned_table_tform(value, code)
         meta.setdefault("bscale", 1.0)
-        meta.setdefault("bzero", int(bzero))
+        # 2**63 does not fit the native int64 card path; it is exact as a float.
+        meta.setdefault("bzero", int(bzero) if bzero < 2**63 else bzero)
         changed = True
 
     if schema is None and not changed:

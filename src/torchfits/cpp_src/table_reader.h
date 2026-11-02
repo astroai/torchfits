@@ -550,6 +550,14 @@ public:
                 col.unsigned_offset = 2147483648;
                 col.unsigned_target_type = torch::kUInt32;
                 col.scaled = false;
+            } else if (typecode == TLONGLONG && detail::is_unsigned_longlong_offset(col.tzero)) {
+                // uint64 convention (TZERO = 2^63). The offset does not fit
+                // int64, so unsigned_offset stays 0 and every consumer keys
+                // on unsigned_target_type == kUInt64 (sign-bit flip).
+                col.is_unsigned_int = true;
+                col.unsigned_offset = 0;
+                col.unsigned_target_type = torch::kUInt64;
+                col.scaled = false;
             }
         }
         // Quantize writes TSCAL/TZERO even when they are identity; TNULL on
@@ -646,6 +654,10 @@ public:
         if (target == torch::kUInt32) {
             raw.bitwise_xor_(std::numeric_limits<int32_t>::min());
             return raw.view(torch::kUInt32);
+        }
+        if (target == torch::kUInt64) {
+            raw.bitwise_xor_(std::numeric_limits<int64_t>::min());
+            return raw.view(torch::kUInt64);
         }
         // Defensive fallback for any future target width.
         torch::Tensor converted = raw.to(torch::kInt64);
@@ -1644,7 +1656,21 @@ public:
                                 break;
                         }
                     }
-                    if (c.is_unsigned_int && !constant_predicate) {
+                    if (c.is_unsigned_int && c.unsigned_target_type == torch::kUInt64 &&
+                        !constant_predicate) {
+                        // Raw int64 = physical XOR 2^63, which preserves order.
+                        // Physical values are >= 0, so a negative literal makes
+                        // the predicate constant; otherwise map it the same way.
+                        if (ctx.target_i < 0) {
+                            const bool always = ctx.op == FilterOp::GT ||
+                                                ctx.op == FilterOp::GE ||
+                                                ctx.op == FilterOp::NE;
+                            ctx.op = always ? FilterOp::GE : FilterOp::LT;
+                            ctx.target_i = std::numeric_limits<int64_t>::min();
+                        } else {
+                            ctx.target_i += std::numeric_limits<int64_t>::min();
+                        }
+                    } else if (c.is_unsigned_int && !constant_predicate) {
                         ctx.target_i -= c.unsigned_offset;
                     }
                     if (ctx.is_short) {
@@ -2501,13 +2527,22 @@ public:
                             break;
                         }
                         case FITSColumnType::LONG: {
-                            if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 64)) {
+                            const bool u64_col = col->is_unsigned_int &&
+                                                 col->unsigned_target_type == torch::kUInt64;
+                            const bool dtype_ok =
+                                dt.bits == 64 &&
+                                (dt.code == (uint8_t)nb::dlpack::dtype_code::Int ||
+                                 (u64_col && dt.code == (uint8_t)nb::dlpack::dtype_code::UInt));
+                            if (!dtype_ok) {
                                 munmap(map_ptr, sb.st_size);
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
                             uint64_t v;
                             std::memcpy(&v, &src_i64[idx], sizeof(uint64_t));
+                            if (u64_col && dt.code == (uint8_t)nb::dlpack::dtype_code::UInt) {
+                                v ^= 0x8000000000000000ULL;  // physical uint64 -> stored int64
+                            }
                             v = bswap_64(v);
                             std::memcpy(dest, &v, sizeof(uint64_t));
                             break;
