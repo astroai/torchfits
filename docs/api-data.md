@@ -52,7 +52,9 @@ should branch on dict vs tensor if they need mask-aware wiring — see
     `cache_dir=` on a remote-capable dataset (image / tensor / cube /
     spectrum). HTTP auth: `TORCHFITS_HTTP_AUTHORIZATION` or
     `TORCHFITS_HTTP_TOKEN`. Uncompressed 2D HTTP cutouts use Range GETs when
-    possible; compressed and vos paths cache the full file first.
+    possible; compressed and vos paths cache the full file first. An HTTP
+    body that does not start like a FITS file (or a gzip/bzip2/compress/zip
+    wrapper) raises `OSError` naming the URL and is never cached.
 
 ---
 

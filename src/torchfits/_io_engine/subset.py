@@ -38,6 +38,7 @@ def read_subset(
     path = coerce_fits_path(path)
     guard_fits_path(path)
     is_http_url, is_vos_path, resolve_local_path = _remote_helpers()
+    source = path
     if is_http_url(path):
         try:
             return read_subset_http(path, hdu, x1, y1, x2, y2)
@@ -45,6 +46,8 @@ def read_subset(
             path = resolve_local_path(path)
     elif is_vos_path(path):
         path = resolve_local_path(path)
+    # Name the URL, not only the cache file, when a downloaded copy fails.
+    label = path if source == path else f"{source} (cached at {path})"
 
     if isinstance(hdu, str):
         hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
@@ -59,12 +62,31 @@ def read_subset(
                 except (OSError, ValueError, RuntimeError):
                     # Cleanup only: never mask the in-flight error.
                     pass
-    except OSError:
+    except OSError as exc:
         # IO errors surface typed; wrapping them in RuntimeError would hide
         # FileNotFoundError/PermissionError from callers (r4a-05).
+        if source != path:
+            exc.add_note(f"while reading the cached copy of {source}")
         raise
     except Exception as exc:
-        raise RuntimeError(f"Failed to read subset from '{path}': {exc}") from exc
+        raise RuntimeError(f"Failed to read subset from '{label}': {exc}") from exc
+
+
+def _open_cached_copy(url: str, path: str, hdu: int | str) -> Any:
+    """``cpp.SubsetReader`` on a downloaded copy; failures name the URL."""
+    import torchfits._C as cpp
+
+    try:
+        if isinstance(hdu, str):
+            hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
+        return cpp.SubsetReader(path, int(hdu))
+    except OSError as exc:
+        exc.add_note(f"while reading the cached copy of {url} at {path}")
+        raise
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{exc} (reading the cached copy of {url} at {path})"
+        ) from exc
 
 
 class SubsetReader:
@@ -102,9 +124,11 @@ class SubsetReader:
                 self._shape = (int(meta["naxis2"]), int(meta["naxis1"]))
                 return
             except (HttpRangeUnsupported, HttpRangeNotSatisfied):
-                path = resolve_local_path(path)
+                self._reader = _open_cached_copy(path, resolve_local_path(path), hdu)
+                return
         elif is_vos_path(path):
-            path = resolve_local_path(path)
+            self._reader = _open_cached_copy(path, resolve_local_path(path), hdu)
+            return
 
         if isinstance(hdu, str):
             hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
@@ -136,20 +160,15 @@ class SubsetReader:
                     _meta=self._http_meta,
                 )
             except (HttpRangeUnsupported, HttpRangeNotSatisfied):
-                import torchfits._C as cpp
-
                 _, _, resolve_local_path = _remote_helpers()
                 path = resolve_local_path(self._http_url)
-                hdu = self._http_hdu
-                if isinstance(hdu, str):
-                    hdu = int(cpp.resolve_hdu_name_cached(path, hdu))
                 # Build the replacement *before* clearing any state: this open
                 # is the one step that can fail, and committing early used to
                 # leave the reader with _reader=None and no remote URL, so
                 # every later call raised "AttributeError: 'NoneType' object
                 # has no attribute 'read'" instead of the real error and the
                 # HTTP route it could still retry was gone for good (r2-027).
-                reader = cpp.SubsetReader(path, int(hdu))
+                reader = _open_cached_copy(self._http_url, path, self._http_hdu)
                 self._http_url = None
                 self._http_meta = None
                 self._reader = reader
