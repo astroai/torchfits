@@ -229,3 +229,50 @@ def test_cli_out_of_range_message(mef, tmp_path, capsys, argv, code):
     err = capsys.readouterr().err
     index = args[args.index("-e") + 1]
     assert f"HDU index {index} out of range for {mef} (2 HDUs)" in err
+
+
+def test_extname_scan_fallback_reads_names_without_raising(tmp_path, monkeypatch):
+    """The fallback scan probed EXTNAME then HDUNAME per HDU and the native
+    read raised for every absent keyword; it now reads both, missing_ok."""
+    import torchfits._C as C
+    from torchfits import _core_api
+    from torchfits._io_engine import hdu_api
+
+    def _resolve_hdu_index(p, h):
+        return hdu_api._resolve_hdu_index(p, h, autodetect_hdu=hdu_api.autodetect_hdu)
+
+    path = str(tmp_path / "names.fits")
+    torchfits.write(
+        path,
+        [
+            torch.zeros(2),
+            {"data": torch.ones(2), "header": {}},
+            {"data": torch.ones(2), "header": {"HDUNAME": "ALT"}},
+            {"data": torch.ones(2), "header": {"EXTNAME": "SCI"}},
+        ],
+    )
+
+    def no_cache(*_a, **_k):
+        raise RuntimeError("forced fallback")
+
+    calls, raised = [], []
+    real = _core_api.read_keys
+
+    def counting(*args, **kwargs):
+        calls.append((args, kwargs))
+        try:
+            return real(*args, **kwargs)
+        except Exception as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(C, "resolve_hdu_name_cached", no_cache)
+    monkeypatch.setattr(_core_api, "read_keys", counting)
+    assert _resolve_hdu_index(path, "sci") == 3
+    assert len(calls) == 4 and not raised
+    calls.clear()
+    assert _resolve_hdu_index(path, "ALT") == 2
+    assert not raised
+    with pytest.raises(HDUNotFoundError):
+        _resolve_hdu_index(path, "NOPE")
+    assert not raised

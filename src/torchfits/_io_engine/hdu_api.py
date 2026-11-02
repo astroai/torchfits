@@ -315,11 +315,16 @@ def _resolve_hdu_index(
     # trimmed and case-insensitively.
     wanted = hdu.strip().upper()
     for i in range(max(0, n_hdus)):
+        # One keyword read per HDU; an absent EXTNAME/HDUNAME is left out
+        # rather than raised (a native exception per HDU on every scan).
+        try:
+            names = _core_api.read_keys(
+                path, i, ["EXTNAME", "HDUNAME"], missing_ok=True
+            )
+        except Exception:
+            continue
         for keyword in ("EXTNAME", "HDUNAME"):
-            try:
-                value = _core_api.read_keys(path, i, [keyword]).get(keyword)
-            except Exception:
-                continue
+            value = names.get(keyword)
             if isinstance(value, str) and value.strip().upper() == wanted:
                 return i
     raise HDUNotFoundError.for_request(path, hdu, n_hdus)
