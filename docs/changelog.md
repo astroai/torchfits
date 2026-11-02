@@ -127,6 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cli: Cutout checks compressed image size and refuses -e with a section
 - cli: Stats over finite pixels in float64 with midpoint median
 - cli: Diff compares pixels and table rows exactly
+- transforms: Compose accepts plain callables
+- hdu: TableHDURef reads its header lazily and validates every window
+- table: Keep where= reads torch-free unless torch is already imported
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
@@ -136,6 +139,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Correct AGENTS.md claims about test markers, changelog-check, stubs
 - examples: Say the cutout command now shifts CRPIX
 - cli: Document convert --origin; align docs contract with CRPIX shift
+- contributing: Make the torch-boundary audit recipe run
+- architecture: Correct dtype map, image mmap ownership and env var list
+- index: Say device= copies a host-decoded tensor, not native GPU decode
+- examples-ml: Correct dataset output table, bash continuations and numbering
+- api-transforms: Match signatures, rgb dtypes and weighted support to code
+- api-data: Match zeropoint and rank lookup order to the code
+- api-tables: To_duckdb returns a relation, not a connection
+- install: Mark the bzip2/libcurl build flags as a diagnostic
+- api-core-io: Correct read_batch_info, compression losslessness and errors
+- api: Name Header.cards instead of a nonexistent read_header_cards
 
 ## [1.3.1] — 2026-10-26
 
