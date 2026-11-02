@@ -55,6 +55,9 @@ def test_convert_png_origin_upper_keeps_row0_on_top(tmp_path):
 
     src = _bright_bottom_row_fits(tmp_path)
     out = tmp_path / "out.png"
-    assert main(["convert", str(src), "-o", str(out), "--to", "png", "--origin", "upper"]) == 0
+    assert (
+        main(["convert", str(src), "-o", str(out), "--to", "png", "--origin", "upper"])
+        == 0
+    )
     rows = _png_rows(out)
     assert sum(rows[0]) > sum(rows[-1])

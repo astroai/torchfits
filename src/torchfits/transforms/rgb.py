@@ -458,9 +458,7 @@ def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
     png = (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(
-            b"IDAT", zlib.compress(_tensor_bytes(scanlines), level=6)
-        )
+        + _png_chunk(b"IDAT", zlib.compress(_tensor_bytes(scanlines), level=6))
         + _png_chunk(b"IEND", b"")
     )
     with open(path, "wb") as handle:
