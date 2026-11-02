@@ -861,11 +861,13 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             lossless_capable =
                 dt.code != (uint8_t)nb::dlpack::dtype_code::Float;
         }
-        if (lossless_capable) {
-            status = 0;
-            fits_set_quantize_level(fptr_, 0.0f, &status);
-            if (status != 0) throw std::runtime_error("Failed to set compression quantization");
-        }
+        // The request is per file, not per HDU: set it on every HDU so a
+        // lossless integer HDU does not leave a later float HDU at qlevel=0,
+        // which float RICE rejects (status 413). 4.0 is CFITSIO's own default
+        // for the default SUBTRACTIVE_DITHER_1 method (imcompress.c).
+        status = 0;
+        fits_set_quantize_level(fptr_, lossless_capable ? 0.0f : 4.0f, &status);
+        if (status != 0) throw std::runtime_error("Failed to set compression quantization");
         if (compression_type == PLIO_1) {
             nb::dlpack::dtype dt_plio = tensor.dtype();
             if (dt_plio.code == (uint8_t)nb::dlpack::dtype_code::Float) {
