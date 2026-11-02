@@ -355,7 +355,11 @@ Root `torchfits.read()` has no `where=` parameter.
 
     `TNULLn` is the stored value, compared before `TSCALn`/`TZEROn` as in
     the FITS standard: on a `uint16` column (`TZERO = 32768`) `TNULL = 0`
-    marks cells that read as `32768`.
+    marks cells that read as `32768`. Files written by torchfits 1.3.1 stored
+    an unsigned-column `TNULL` as the value instead (`TNULL = 65535` on that
+    `uint16` column). A `TNULL` that cannot be a stored value (outside the
+    stored integer range) but is a valid value of the column dtype is read
+    that way, so those nulls still read as nulls.
 
 ### `backend=` on `table.read` / `table.scan`
 

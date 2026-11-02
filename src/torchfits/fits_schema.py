@@ -349,6 +349,13 @@ def column_tnull_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
 
 
 _UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2147483648, "K": 2**63}
+# Range of the integer actually stored for each TFORM code (B is unsigned).
+_STORED_INT_RANGE = {
+    "B": (0, 255),
+    "I": (-(2**15), 2**15 - 1),
+    "J": (-(2**31), 2**31 - 1),
+    "K": (-(2**63), 2**63 - 1),
+}
 
 # Keywords indexed by table column (FITS 4.0 sec. 7.2-7.3, WCS paper III),
 # optionally followed by a WCS alternate-version letter.
@@ -400,6 +407,12 @@ def decoded_tnull(tnull: Any, tform: Any, tscal: Any, tzero: Any) -> Any:
     value; unsigned-convention columns decode to ``raw + TZERO``; other scaled
     columns decode a TNULL cell to NaN, so the sentinel is NaN. A non-integer
     TNULL (ASCII-table null strings) is returned unchanged.
+
+    torchfits 1.3.1 wrote an unsigned-convention TNULL as the decoded value
+    (``TNULL1 = 65535`` on ``I`` / ``TZERO = 32768``). Such a TNULL lies
+    outside the stored integer range, so as a raw value it could never match a
+    cell; when it lies inside the decoded range it is read as that legacy
+    decoded value instead.
     """
     if tnull is None:
         return None
@@ -411,9 +424,12 @@ def decoded_tnull(tnull: Any, tform: Any, tscal: Any, tzero: Any) -> Any:
     zero = float(tzero) if tzero not in (None, "") else 0.0
     if scal == 1.0 and zero == 0.0:
         return raw
-    code = parse_tform(str(tform or "")).code
-    offset = _UNSIGNED_TZERO.get(code or "")
+    code = parse_tform(str(tform or "")).code or ""
+    offset = _UNSIGNED_TZERO.get(code)
     if scal == 1.0 and offset is not None and zero == float(offset):
+        lo, hi = _STORED_INT_RANGE[code]
+        if not lo <= raw <= hi and lo <= raw - offset <= hi:
+            return raw  # legacy (1.3.1) TNULL written in the decoded domain
         return raw + offset
     return float("nan")
 
