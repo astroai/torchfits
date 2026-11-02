@@ -470,7 +470,9 @@ def _unsigned_image_storage_for_fits_write(
         # FITS 4.0 unsigned 64-bit convention: int64 storage, BZERO = 2**63.
         # Subtracting 2**63 modulo 2**64 is flipping the sign bit.
         raw64 = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
-        return raw64, {"BSCALE": 1.0, "BZERO": 9223372036854775808.0}
+        # The exact integer card (not a float spelling) is what FITS 4.0
+        # §5.3 and other readers write; the native card writer takes big ints.
+        return raw64, {"BSCALE": 1.0, "BZERO": 2**63}
     if tensor.dtype == torch.uint16:
         raw: Tensor = (tensor.to(torch.int32) - 32768).to(torch.int16)
         return raw, {"BSCALE": 1.0, "BZERO": 32768.0}
@@ -1139,11 +1141,11 @@ def _table_schema_scale_header_cards(
             out[f"TSCAL{idx}"] = float(meta["bscale"])
         if "bzero" in meta:
             bzero = meta["bzero"]
-            # The native card writer only takes ints in long long range; the
-            # uint64 offset 2**63 must stay a float (written exactly).
+            # Integral offsets (including the uint64 offset 2**63, beyond long
+            # long) are written as exact integer cards by the native writer.
             out[f"TZERO{idx}"] = (
                 int(bzero)
-                if float(bzero).is_integer() and abs(float(bzero)) < 2**63
+                if float(bzero).is_integer() and abs(float(bzero)) <= 2**63
                 else float(bzero)
             )
         if "null" in meta:

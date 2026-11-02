@@ -59,6 +59,17 @@ inline void update_key_double(fitsfile* fptr, const char* key, double value,
     fits_update_key_dbl(fptr, key, value, decimals, comment, status);
 }
 
+// BZERO/TZERO for the uint64 convention: the exact integer 2^63 (FITS 4.0
+// §5.3), which does not fit a long long card and would otherwise be spelled
+// as a float (9.2233720368547758E+18).
+inline void update_key_uint64_offset(fitsfile* fptr, const char* key,
+                                     const char* comment, int* status) {
+    char literal[] = "9223372036854775808";
+    char card[FLEN_CARD];
+    fits_make_key(key, literal, comment, card, status);
+    fits_update_card(fptr, key, card, status);
+}
+
 // Adding 2^63 modulo 2^64 is flipping the sign bit.
 inline void flip_sign_bit_u64(uint64_t* data, size_t n) {
     for (size_t i = 0; i < n; ++i) data[i] ^= 0x8000000000000000ULL;

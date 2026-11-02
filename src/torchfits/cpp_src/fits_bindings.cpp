@@ -1614,6 +1614,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 rounded < static_cast<double>(std::numeric_limits<long long>::max())) {
                 long long bzero_int = static_cast<long long>(rounded);
                 fits_update_key(fptr, TLONGLONG, ("TZERO" + std::to_string(i + 1)).c_str(), &bzero_int, nullptr, &status);
+            } else if (d::is_unsigned_longlong_offset(bzero)) {
+                d::update_key_uint64_offset(fptr, ("TZERO" + std::to_string(i + 1)).c_str(), nullptr, &status);
             } else {
                 d::update_key_double(fptr, ("TZERO" + std::to_string(i + 1)).c_str(), bzero, nullptr, &status);
             }
