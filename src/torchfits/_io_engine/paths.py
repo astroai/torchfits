@@ -94,15 +94,20 @@ def coerce_fits_path(path: Any) -> Any:
     return path
 
 
-def guard_fits_path(path: str) -> str:
+def guard_fits_path(path: str, *, cfitsio_opens: bool = True) -> str:
     """SSRF-check CFITSIO network URLs; return *path* unchanged for CFITSIO.
+
+    ``cfitsio_opens=False`` is for callers that fetch ``http(s)`` URLs in
+    Python (range cutouts, cached downloads): they need the SSRF check but not
+    CFITSIO's libcurl driver.
 
     Guard-time validation only: CFITSIO-driver connections re-resolve the
     hostname after this check (residual TOCTOU / DNS rebinding); Python-side
     fetches pin instead — see ``http_util.guard_cfitsio_remote_path``.
     """
     guard_cfitsio_remote_path(path)
-    require_curl_support(path)
+    if cfitsio_opens:
+        require_curl_support(path)
     return path
 
 

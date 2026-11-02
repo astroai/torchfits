@@ -342,3 +342,33 @@ def test_cached_copy_read_failure_names_the_url(tmp_path, monkeypatch):
         torchfits.read_subset(url, 0, 0, 0, 2, 2)
     text = str(excinfo.value) + " ".join(getattr(excinfo.value, "__notes__", []))
     assert url in text
+
+
+def test_python_fetched_https_works_without_libcurl(tmp_path, monkeypatch):
+    """read_subset fetches http(s) in Python, so a build without libcurl must
+    still serve it; only CFITSIO-opened routes need the curl driver."""
+    import torch
+
+    import torchfits
+    from torchfits._io_engine import paths, subset
+
+    cached = tmp_path / "cached.fits"
+    torchfits.write(str(cached), torch.arange(16.0).reshape(4, 4), overwrite=True)
+    url = "https://example.test/image.fits"
+
+    def no_range(*args, **kwargs):
+        raise subset.HttpRangeNotSatisfied("no ranges")
+
+    monkeypatch.setattr(paths, "has_curl_support", lambda: False)
+    monkeypatch.setattr(subset, "read_subset_http", no_range)
+    monkeypatch.setattr(
+        "torchfits._io_engine.http_subset.locate_uncompressed_2d", no_range
+    )
+    monkeypatch.setattr(remote, "resolve_local_path", lambda p, **kw: str(cached))
+    monkeypatch.setattr(
+        torchfits.http_util, "_resolve_public_addrs", lambda u: ("8.8.8.8",)
+    )
+    cut = torchfits.read_subset(url, 0, 0, 0, 2, 2)
+    assert cut.tolist() == [[0.0, 1.0], [4.0, 5.0]]
+    with pytest.raises(ValueError, match="libcurl"):
+        torchfits.read(url)
