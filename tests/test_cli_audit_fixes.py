@@ -72,3 +72,45 @@ def test_diff_identical_tables_with_nan_are_equal(tmp_path):
     _write_cat(a, [1.0, 2.0, float("nan")])
     _write_cat(b, [1.0, 2.0, float("nan")])
     assert main(["diff", str(a), str(b)]) == 0
+
+
+# --- stats: float64, finite pixels only, midpoint median --------------------
+
+
+def _stats_json(capsys, path):
+    import json
+
+    capsys.readouterr()
+    assert main(["stats", str(path), "-e", "0", "-f", "json"]) == 0
+    (record,) = json.loads(capsys.readouterr().out)
+    return record
+
+
+def test_stats_excludes_nan_and_counts_it(tmp_path, capsys):
+    path = tmp_path / "nan.fits"
+    torchfits.write(str(path), torch.tensor([[1.0, float("nan")], [3.0, 4.0]]))
+    record = _stats_json(capsys, path)
+    assert record["nbad"] == 1
+    assert record["min"] == 1.0
+    assert record["max"] == 4.0
+    assert record["mean"] == np.mean([1.0, 3.0, 4.0])
+    assert record["median"] == 3.0
+
+
+def test_stats_median_is_midpoint_and_float64(tmp_path, capsys):
+    path = tmp_path / "big.fits"
+    data = torch.tensor([[16777217, 16777216, 1, 2]], dtype=torch.int32)
+    torchfits.write(str(path), data)
+    record = _stats_json(capsys, path)
+    assert record["nbad"] == 0
+    assert record["max"] == 16777217
+    assert record["median"] == np.median(data.numpy().astype(np.float64))
+    assert record["mean"] == np.mean(data.numpy().astype(np.float64))
+
+
+def test_stats_int64_extrema_are_exact(tmp_path, capsys):
+    path = tmp_path / "i64.fits"
+    torchfits.write(str(path), torch.tensor([[2**53 + 1, 2**53]], dtype=torch.int64))
+    record = _stats_json(capsys, path)
+    assert record["max"] == 2**53 + 1
+    assert record["min"] == 2**53

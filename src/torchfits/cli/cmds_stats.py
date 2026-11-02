@@ -30,9 +30,11 @@ from .common import (
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser(
         "stats",
-        help="image min/max/mean/std/median via read_tensor",
+        help="image min/max/mean/std/median of finite pixels",
         description=(
-            "Image min/max/mean/std/median. "
+            "Image min/max/mean/std/median over finite pixels, in float64; "
+            "NaN/inf/BLANK pixels are excluded and counted in nbad. "
+            "The median is the midpoint median (numpy/IRAF). "
             "-j = PyTorch intra-op threads; -J = parallel file workers."
         ),
     )
@@ -45,6 +47,57 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     add_jobs_arg(parser)
     add_file_jobs_arg(parser)
     parser.set_defaults(func=run)
+
+
+def _pixel_stats(tensor: Any) -> dict[str, Any]:
+    """min/max/mean/std/median over the finite pixels, in float64.
+
+    Non-finite pixels (NaN, +-inf, and integer ``BLANK`` pixels, which the
+    reader returns as NaN) are excluded and counted in ``nbad``; one NaN
+    would otherwise poison every statistic. Float64 keeps integers above
+    2**24 exact (float32 does not) and avoids float32 accumulation error;
+    integer images report exact integer ``min`` / ``max``.
+    The median is the conventional midpoint median (numpy / IRAF): the mean
+    of the two middle values for an even count, not the lower one.
+    """
+    import numpy as np
+    import torch
+
+    # torch has no reductions for uint16/32/64, and float64 is the decided
+    # statistics precision for every dtype anyway.
+    flat = tensor.reshape(-1).to(torch.float64)
+    finite = torch.isfinite(flat)
+    nbad = int(flat.numel() - int(finite.sum()))
+    valid = flat if nbad == 0 else flat[finite]
+    nan = float("nan")
+    # An empty region (or one with no finite pixel) has no defined
+    # statistics: every stat is NaN, which -f json/jsonl serializes as null.
+    if valid.numel() == 0:
+        return {
+            "nbad": nbad,
+            "min": nan,
+            "max": nan,
+            "mean": nan,
+            "std": nan,
+            "median": nan,
+        }
+    # Integer images report exact integer extrema: float64 cannot represent
+    # every int64/uint64 value (e.g. 2**53 + 1). numpy covers the unsigned
+    # dtypes torch has no reductions for.
+    if tensor.dtype.is_floating_point:
+        vmin: Any = float(valid.min())
+        vmax: Any = float(valid.max())
+    else:
+        native = tensor.reshape(-1).numpy()
+        vmin, vmax = int(native.min()), int(native.max())
+    return {
+        "nbad": nbad,
+        "min": vmin,
+        "max": vmax,
+        "mean": float(valid.mean()),
+        "std": float(valid.std(unbiased=False)),
+        "median": float(np.median(valid.numpy())),
+    }
 
 
 def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
@@ -74,17 +127,6 @@ def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
         if not isinstance(tensor, torch.Tensor):
             raise IoError(f"{path}:{index} read_tensor did not return a tensor")
         header = headers[index]
-        # min/max must run on an upcast copy: torch ships no reduction kernels
-        # for uint16/uint32/uint64 (the reader's unsigned conventions), so the
-        # raw tensor would raise RuntimeError on exactly those inputs. One
-        # upcast copy serves both the reductions and the flat mean/std.
-        stats_t = tensor if tensor.dtype.is_floating_point else tensor.float()
-        flat = stats_t.reshape(-1)
-        # An empty region has no defined statistics: every stat is NaN, which
-        # -f json/jsonl serializes as null (JSON has no NaN literal). torch's
-        # reductions raise on numel() == 0.
-        empty = flat.numel() == 0
-        nan = float("nan")
         records.append(
             {
                 "file": path,
@@ -92,11 +134,7 @@ def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
                 "name": header_extname(header, index),
                 "shape": list(tensor.shape),
                 "dtype": str(tensor.dtype).replace("torch.", ""),
-                "min": nan if empty else float(stats_t.min()),
-                "max": nan if empty else float(stats_t.max()),
-                "mean": nan if empty else float(flat.mean()),
-                "std": nan if empty else float(flat.std(unbiased=False)),
-                "median": nan if empty else float(flat.median()),
+                **_pixel_stats(tensor),
             }
         )
     return records

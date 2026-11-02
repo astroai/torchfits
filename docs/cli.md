@@ -202,6 +202,10 @@ torchfits diff image_v1.fits image_v2.fits
 
 Computes pixel statistics for image HDUs: minimum, maximum, mean, standard deviation, and median.
 
+- Only finite pixels count: `NaN`, `±Infinity`, and integer `BLANK` pixels are excluded, and their number is reported as `nbad`.
+- Statistics are computed in float64; integer images report exact integer `min` / `max`.
+- `std` is the population standard deviation, and `median` is the conventional midpoint median (as in numpy and IRAF `imstat`): the mean of the two middle values for an even pixel count.
+
 ```bash
 # Compute statistics for primary HDU
 torchfits stats science.fits -e 0
@@ -213,7 +217,7 @@ torchfits stats science.fits -e 0 -f json
 torchfits stats *.fits -e 0 -J 0 -f jsonl
 ```
 
-Non-finite values in JSON output: `stats` and `table` serialize `NaN`/`±Infinity` floats as `null` in `-f json` / `-f jsonl` (`--json` / `--jsonl`) — JSON has no NaN or Infinity literals. An empty image region therefore reports `null` for `min`, `max`, `mean`, `std`, and `median`.
+Non-finite values in JSON output: `stats` and `table` serialize `NaN`/`±Infinity` floats as `null` in `-f json` / `-f jsonl` (`--json` / `--jsonl`) — JSON has no NaN or Infinity literals. An empty image region, or one with no finite pixel, therefore reports `null` for `min`, `max`, `mean`, `std`, and `median`.
 
 ---
 
