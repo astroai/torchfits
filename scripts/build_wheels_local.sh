@@ -44,6 +44,8 @@ if [[ -z "$LANES" ]]; then
   LANES="$(pixi run python -c 'import json; print(",".join(json.load(open("scripts/torch_lanes.json"))))')"
 fi
 mkdir -p "$OUT_DIR"
+# Absolute, so an absolute OUT_DIR is not glued onto $ROOT below.
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 if [[ ! -d extern/cfitsio ]]; then
   echo "== vendoring cfitsio (needed by every build) =="
@@ -60,38 +62,45 @@ next_minor() {
   pixi run python -c "major, minor = map(int, '$1'.split('.')); print(f'<{major}.{minor + 1}')"
 }
 
-build_cell() {
+# Runs in its own `bash -eo pipefail` process (see build_cell): errexit is
+# ignored for anything inside an `if` condition, so a failing step in an
+# `if { ...; }` body was still reported as OK.
+build_cell_steps() {
   local lane="$1" py="$2"
   local copy="$WORK/$lane-py$py"
-  local log="$WORK/logs/$lane-py$py.log"
   mkdir -p "$copy"
-  if {
-    echo "== $lane / py$py: copying tree and rendering lane pins =="
-    tar -C "$ROOT" -cf - \
-      --exclude=.git --exclude=.pixi --exclude=dist-local --exclude=dist \
-      --exclude=build --exclude='*.egg-info' --exclude=__pycache__ \
-      --exclude='.venv' --exclude='venv*' --exclude=docs \
-      . | tar -C "$copy" -xf -
-    "$PIXI_PY" "$copy/scripts/release_lane.py" --lane "$lane" \
-      $(if [[ -n "$PRERELEASE" ]]; then printf '%s' "--prerelease $PRERELEASE"; fi) \
-      --apply
-    "$PIXI_PY" "$copy/scripts/release_lane.py" --check
-    echo "== $lane / py$py: creating venv (uv pulls CPython $py) =="
-    uv venv --python "$py" --no-project "$copy/.venv" --quiet
-    uv pip install --python "$copy/.venv/bin/python" --quiet pip
-    echo "== $lane / py$py: installing torch $lane + build deps =="
-    uv pip install --python "$copy/.venv/bin/python" --quiet \
-      "torch>=$lane,$(next_minor "$lane")" \
-      --extra-index-url https://download.pytorch.org/whl/cpu
-    uv pip install --python "$copy/.venv/bin/python" --quiet \
-      "numpy" "nanobind" "scikit-build-core" "cmake" "ninja"
-    echo "== $lane / py$py: building wheel =="
-    (cd "$copy" && unset PREFIX CONDA_PREFIX && \
-      CMAKE_PREFIX_PATH="${PIXI_PREFIX}${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}" \
-      MACOSX_DEPLOYMENT_TARGET=11.0 \
-      ./.venv/bin/python -m pip wheel . \
-      --no-deps --no-build-isolation -w "$ROOT/$OUT_DIR")
-  } >"$log" 2>&1; then
+  echo "== $lane / py$py: copying tree and rendering lane pins =="
+  tar -C "$ROOT" -cf - \
+    --exclude=.git --exclude=.pixi --exclude=dist-local --exclude=dist \
+    --exclude=build --exclude='*.egg-info' --exclude=__pycache__ \
+    --exclude='.venv' --exclude='venv*' --exclude=docs \
+    . | tar -C "$copy" -xf -
+  "$PIXI_PY" "$copy/scripts/release_lane.py" --lane "$lane" \
+    $(if [[ -n "$PRERELEASE" ]]; then printf '%s' "--prerelease $PRERELEASE"; fi) \
+    --apply
+  "$PIXI_PY" "$copy/scripts/release_lane.py" --check
+  echo "== $lane / py$py: creating venv (uv pulls CPython $py) =="
+  uv venv --python "$py" --no-project "$copy/.venv" --quiet
+  uv pip install --python "$copy/.venv/bin/python" --quiet pip
+  echo "== $lane / py$py: installing torch $lane + build deps =="
+  uv pip install --python "$copy/.venv/bin/python" --quiet \
+    "torch>=$lane,$(next_minor "$lane")" \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+  uv pip install --python "$copy/.venv/bin/python" --quiet \
+    "numpy" "nanobind" "scikit-build-core" "cmake" "ninja"
+  echo "== $lane / py$py: building wheel =="
+  (cd "$copy" && unset PREFIX CONDA_PREFIX && \
+    CMAKE_PREFIX_PATH="${PIXI_PREFIX}${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}" \
+    MACOSX_DEPLOYMENT_TARGET=11.0 \
+    ./.venv/bin/python -m pip wheel . \
+    --no-deps --no-build-isolation -w "$OUT_DIR")
+}
+
+build_cell() {
+  local lane="$1" py="$2"
+  local log="$WORK/logs/$lane-py$py.log"
+  if bash -eo pipefail -c 'build_cell_steps "$1" "$2"' _ "$lane" "$py" \
+    >"$log" 2>&1; then
     echo "[ OK ] $lane / py$py"
   else
     echo "[FAIL] $lane / py$py (see $log)"
@@ -100,7 +109,7 @@ build_cell() {
   fi
 }
 
-export -f build_cell next_minor
+export -f build_cell build_cell_steps next_minor
 export ROOT OUT_DIR WORK PIXI_PY PIXI_PREFIX PRERELEASE
 
 cells=()
