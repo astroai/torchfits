@@ -36,9 +36,9 @@ def write(
     a ``QuantizeError`` is raised rather than silently writing unpacked.
     """
     from .._io_engine._write_helpers import _normalize_table_input
-    from .._io_engine.paths import guard_fits_path
+    from .._io_engine.paths import guard_write_path
 
-    guard_fits_path(path)
+    guard_write_path(path)
     if str(path).lower().endswith(".bz2"):
         # CFITSIO would create a plain, uncompressed FITS under this name.
         raise ValueError(

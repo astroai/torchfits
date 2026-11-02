@@ -444,7 +444,7 @@ torchfits.write(
 | `path` | `str` or `PathLike` | *(required)* | Output path |
 | `data` | `Tensor`, numpy array, `dict`, or `HDUList` | *(required)* | Data to write. Numpy arrays and tensors write an image HDU; `dict` writes a table. |
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
-| `overwrite` | `bool` | `False` | Overwrite existing file |
+| `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
 | `compress` | `bool` or `str` | `False` | `True`, `"gzip"`, `"rice"`, etc. GZIP_1 and integer RICE_1 writes are lossless; float RICE_1 / HCOMPRESS_1 use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
 

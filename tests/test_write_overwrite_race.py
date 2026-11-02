@@ -78,3 +78,16 @@ def test_new_file_written_and_failed_write_leaves_nothing(tmp_path):
     with pytest.raises(Exception):
         torchfits.write(bad, {"bad": object()})
     assert sorted(p.name for p in tmp_path.iterdir()) == ["new.fits"]
+
+
+@pytest.mark.parametrize("prefix", ["!", " !"])
+def test_clobber_prefix_is_rejected(tmp_path, monkeypatch, prefix):
+    # CFITSIO's '!' prefix deletes the target, bypassing overwrite=False.
+    monkeypatch.chdir(tmp_path)
+    torchfits.write("x.fits", torch.ones(2, 2))
+    with pytest.raises(ValueError, match="clobber"):
+        torchfits.write(prefix + "x.fits", torch.zeros(2, 2), overwrite=False)
+    with pytest.raises(ValueError, match="clobber"):
+        table.write(prefix + "x.fits", {"a": torch.arange(3)})
+    assert torchfits.read("x.fits").tolist() == [[1.0, 1.0], [1.0, 1.0]]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["x.fits"]

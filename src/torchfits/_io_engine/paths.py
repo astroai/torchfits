@@ -11,6 +11,7 @@ __all__ = [
     "cfitsio_base_path",
     "coerce_fits_path",
     "guard_fits_path",
+    "guard_write_path",
     "has_bz2_support",
     "has_cfitsio_filter",
     "is_cfitsio_network_url",
@@ -71,6 +72,20 @@ def guard_fits_path(path: str) -> str:
     """
     guard_cfitsio_remote_path(path)
     return path
+
+
+def guard_write_path(path: str) -> str:
+    """``guard_fits_path`` plus a refusal of CFITSIO's ``!`` clobber prefix.
+
+    CFITSIO deletes an existing file named after a leading ``!``, which would
+    bypass ``overwrite=False``; the prefix is not part of the torchfits API.
+    """
+    if str(path).lstrip(" ").startswith("!"):
+        raise ValueError(
+            f"Write path {path!r} starts with '!': CFITSIO clobber syntax is not "
+            "supported; pass overwrite=True instead."
+        )
+    return guard_fits_path(path)
 
 
 def cfitsio_base_path(path: str) -> str:

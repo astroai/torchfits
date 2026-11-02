@@ -12,7 +12,7 @@ import torch
 from torch import Tensor
 
 from ..hdu import HDUList, Header, TensorHDU
-from .paths import guard_fits_path
+from .paths import guard_write_path
 from .checksum_api import write_checksums as _write_checksums_impl
 from ._hdu_rewrite import (
     _write_hdus_uncompressed,
@@ -122,7 +122,7 @@ def write(
     the CFITSIO writer runs (in-memory input tensors are not modified).
     """
     path = os.fspath(path)
-    guard_fits_path(path)
+    guard_write_path(path)
     if str(path).lower().endswith(".bz2"):
         # CFITSIO would create a plain, uncompressed FITS under this name.
         raise ValueError(
