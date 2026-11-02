@@ -801,20 +801,26 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
     """True for a leading empty primary HDU the compressed writer re-creates itself.
 
     The compressed writer always emits its own empty primary at HDU 0, so a
-    leading ``NAXIS=0`` primary in the input must be skipped both when writing and
-    when replaying per-HDU header cards; otherwise the output HDU indices shift by
-    one and header-card replay runs off the end ("Could not move to HDU").
+    leading empty primary in the input -- a ``NAXIS=0`` header card, or
+    in-memory data with no elements such as ``TensorHDU(torch.empty(0))`` --
+    must be skipped both when writing and when replaying per-HDU header cards;
+    otherwise the output HDU indices shift by one and header-card replay runs
+    off the end ("Could not move to HDU").
     """
     if idx != 0:
         return False
     hdr = getattr(hdu, "header", {}) or {}
+    if str(hdr.get("XTENSION", "")).strip().upper():
+        return False
     try:
         naxis = int(hdr.get("NAXIS", -1))
     except Exception:
         naxis = -1
-    if naxis != 0:
-        return False
-    return not str(hdr.get("XTENSION", "")).strip().upper()
+    if naxis == 0:
+        return True
+    data = getattr(hdu, "_data", None)
+    numel = getattr(data, "numel", None)
+    return callable(numel) and numel() == 0
 
 
 def _write_header_cards_if_supported(
