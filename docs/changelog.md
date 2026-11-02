@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- io: Read and write uint64 with the FITS BZERO/TZERO = 2**63 convention
+### Fixed
+- table: Allow update_rows/append_rows on unsigned columns
+- table: Gather complex columns at full width in filtered mmap reads
+- table: Convert VLA row payloads to the column type on append/update
+- io: Validate every HDU header before the native writers create a file
+- table: Skip caller cards that would rewrite a written table's layout
+- table: Read an ASCII schema 'Aw' width after the code letter
+- io: Refuse non-CPU arrays in native image and table writes
+- table: Refuse a foreign capsule as an mmap TableReader
+- table: Stop reading stride(0) of a 0-d BIT or byte-string payload
+- table: Flush a borrowed handle before reading a table through it
+- io: Stop handles opened before a file replace using the new file's metadata
+- table: Read 'PA' VLA columns as bytes and reject 'PC'/'PM'/'PX'
+- table: Write rAw sub-string columns one row per value
+- table: Validate the whole rename_columns mapping before writing TTYPEn
+- io: Keep FITSFile handles safe across get_num_hdus, table reads and close
+- io: Reset the compression quantize level for every HDU
+- table: Stop truncating float literals in integer-column pushdown filters
+- table: Read BIT columns row by row when the repeat is not byte-aligned
+- stats: Promote float32 to float64 for quantiles over > 2**24 elements
+### Performance
+- png: Export PNG scanlines in one copy instead of per-element Python loop
+- rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
+
 ## [1.3.1] — 2026-10-26
 
 ### Changed
