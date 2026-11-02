@@ -2155,6 +2155,9 @@ void bind_fits(nb::module_& m) {
                     case core::KeyValue::Kind::Int:   out[key] = kv.int_value; break;
                     case core::KeyValue::Kind::Double: out[key] = kv.double_value; break;
                     case core::KeyValue::Kind::Str:   out[key] = kv.str_value; break;
+                    case core::KeyValue::Kind::BigInt:
+                        out[key] = nb::steal(PyLong_FromString(kv.str_value.c_str(), nullptr, 10));
+                        break;
                 }
             }
             return out;

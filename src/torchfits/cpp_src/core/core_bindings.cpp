@@ -61,6 +61,9 @@ nb::dict key_values_to_dict(const std::vector<c::KeyValue>& values) {
             case c::KeyValue::Kind::Str:
                 out[key] = kv.str_value;
                 break;
+            case c::KeyValue::Kind::BigInt:
+                out[key] = nb::steal(PyLong_FromString(kv.str_value.c_str(), nullptr, 10));
+                break;
         }
     }
     return out;

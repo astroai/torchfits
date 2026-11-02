@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -94,6 +96,69 @@ inline int start_hdu(fitsfile* fptr) {
 // same path described PRIMARY, because they moved to absolute hdu + 1 and
 // discarded the position CFITSIO had already given them.
 inline int absolute_hdu(fitsfile* fptr, int hdu) { return hdu + start_hdu(fptr); }
+
+// Type an unquoted card value exactly as header_parser._parse_fits_number
+// does, so read_keys() and read_header() agree: a Fortran D exponent is a
+// float, an integer past int64 stays an (arbitrary-precision) int, and an
+// overflowing or subnormal float is still a float. std::stoll/std::stod threw
+// out_of_range on the last two and left them as strings.
+bool parse_fits_number(const std::string& text, KeyValue& kv) {
+    const size_t first = text.find_first_not_of(' ');
+    if (first == std::string::npos) return false;
+    std::string t = text.substr(first, text.find_last_not_of(' ') - first + 1);
+    // FITS numeric characters only: keeps strtod from accepting spellings the
+    // Python parser rejects (inf, nan, hex floats).
+    if (t.find_first_not_of("0123456789+-.EeDd") != std::string::npos) return false;
+    if (t.find_first_of(".eE") == std::string::npos) {
+        const size_t digits = (t[0] == '+' || t[0] == '-') ? 1 : 0;
+        if (digits < t.size() &&
+            t.find_first_not_of("0123456789", digits) == std::string::npos) {
+            errno = 0;
+            const long long iv = std::strtoll(t.c_str(), nullptr, 10);
+            if (errno == ERANGE) {
+                kv.kind = KeyValue::Kind::BigInt;
+                kv.str_value = t;
+            } else {
+                kv.kind = KeyValue::Kind::Int;
+                kv.int_value = iv;
+            }
+            return true;
+        }
+    }
+    for (char& c : t) {
+        if (c == 'D') c = 'E';
+        if (c == 'd') c = 'e';
+    }
+    char* end = nullptr;
+    // Overflow gives +-inf and underflow 0 or a subnormal, as float() does.
+    const double dv = std::strtod(t.c_str(), &end);
+    if (end == t.c_str() || *end != '\0') return false;
+    kv.kind = KeyValue::Kind::Double;
+    kv.double_value = dv;
+    return true;
+}
+
+// A quoted value, followed through CONTINUE cards (the long-string
+// convention) so a value split as 'abc&' + CONTINUE 'def' reads as "abcdef"
+// like read_header(), not "abc&".
+std::string read_string_value(fitsfile* fptr, const std::string& key, const std::string& raw) {
+    char* longstr = nullptr;
+    char comment[FLEN_COMMENT] = {0};
+    int status = 0;
+    fits_read_key_longstr(fptr, key.c_str(), &longstr, comment, &status);
+    std::string out;
+    if (status == 0 && longstr != nullptr) {
+        out = d::sanitize_fits_string(std::string(longstr));
+    } else {
+        out = raw;
+        unquote_fits_string(out);
+    }
+    if (longstr != nullptr) {
+        int free_status = 0;
+        fits_free_memory(longstr, &free_status);
+    }
+    return out;
+}
 
 }  // namespace
 
@@ -238,6 +303,12 @@ std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::strin
     std::vector<KeyValue> out;
     out.reserve(keys.size());
     for (const auto& key : keys) {
+        // CFITSIO matches keyword names as templates ('*', '?', '#'), so
+        // "NAXIS*" silently returned NAXIS's value under the requested name.
+        if (key.find_first_of("*?#") != std::string::npos) {
+            throw std::invalid_argument(
+                "read_keys: keyword names cannot contain '*', '?' or '#': " + key);
+        }
         char value[FLEN_VALUE] = {0};
         char comment[FLEN_COMMENT] = {0};
         int status = 0;
@@ -260,43 +331,11 @@ std::vector<KeyValue> read_keywords(fitsfile* fptr, const std::vector<std::strin
             kv.kind = KeyValue::Kind::Bool;
             kv.bool_value = (val == "T");
         } else if (val.front() == '\'') {
-            std::string s = val;
-            unquote_fits_string(s);
             kv.kind = KeyValue::Kind::Str;
-            kv.str_value = s;
-        } else {
-            bool typed = false;
-            try {
-                // Full-consumption check: a partially numeric string
-                // ("1999-01-01") must stay a string, not truncate to its
-                // leading number.
-                size_t pos = 0;
-                if (val.find_first_of(".eE") != std::string::npos) {
-                    const double dv = std::stod(val, &pos);
-                    while (pos < val.size() &&
-                           std::isspace(static_cast<unsigned char>(val[pos]))) ++pos;
-                    if (pos == val.size()) {
-                        kv.kind = KeyValue::Kind::Double;
-                        kv.double_value = dv;
-                        typed = true;
-                    }
-                } else {
-                    const long long iv = std::stoll(val, &pos);
-                    while (pos < val.size() &&
-                           std::isspace(static_cast<unsigned char>(val[pos]))) ++pos;
-                    if (pos == val.size()) {
-                        kv.kind = KeyValue::Kind::Int;
-                        kv.int_value = iv;
-                        typed = true;
-                    }
-                }
-            } catch (const std::exception&) {
-                typed = false;
-            }
-            if (!typed) {
-                kv.kind = KeyValue::Kind::Str;
-                kv.str_value = val;
-            }
+            kv.str_value = read_string_value(fptr, key, val);
+        } else if (!parse_fits_number(val, kv)) {
+            kv.kind = KeyValue::Kind::Str;
+            kv.str_value = val;
         }
         out.push_back(std::move(kv));
     }

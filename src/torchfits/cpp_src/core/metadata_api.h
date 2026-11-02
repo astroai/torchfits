@@ -57,7 +57,10 @@ TORCHFITS_CORE_API TableInfo table_info(fitsfile* fptr);
 // (not in the bindings) so _C and _core cannot disagree about whether "17" is
 // an int and "T" is a bool.
 struct KeyValue {
-    enum class Kind { None, Bool, Int, Double, Str };
+    // BigInt: an integer literal outside int64. str_value holds its decimal
+    // text and the bindings build an arbitrary-precision Python int from it,
+    // which is what read_header() returns for the same card.
+    enum class Kind { None, Bool, Int, Double, Str, BigInt };
     std::string key;
     std::string raw;
     Kind kind = Kind::Str;
