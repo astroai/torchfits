@@ -59,7 +59,11 @@ jobs:
       - name: Native-heavy smoke under sanitizers
         env:
           # LeakSanitizer reports CPython's intentional interpreter leaks.
-          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          # strip_env=0: on macOS the ASan runtime removes itself from
+          # DYLD_INSERT_LIBRARIES at startup, so `python -c` children the tests
+          # spawn load the instrumented extension without it and abort with
+          # "Interceptors are not working". No-op on Linux (LD_PRELOAD stays).
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strip_env=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TORCHFITS_TABLE_BUFFERED: "1"
         run: |
