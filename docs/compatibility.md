@@ -13,7 +13,7 @@ For supported FITS formats, HDU types, tile compression, and catalog features, s
 | **Python** | **3.11, 3.12, 3.13, 3.14**; **3.15** (Linux only) | **3.11+** |
 | **PyTorch** | **2.14.x** (ABI-matched wheels) | **2.14.x** (`pip install --no-deps --no-build-isolation .`) |
 | **Hardware & CUDA** | **CPU**, **CUDA 12.6, 13.0**, **Apple Silicon MPS** | All PyTorch-supported compute devices |
-| **Operating Systems** | **Linux** (`x86_64`, `aarch64`, glibc 2.28+)<br>**macOS 14+** (`arm64` Apple Silicon) | Linux with glibc 2.28+, macOS 14+ |
+| **Operating Systems** | **Linux** (`x86_64` with SSSE3, `aarch64`, glibc 2.28+)<br>**macOS 14+** (`arm64` Apple Silicon) | Linux with glibc 2.28+, macOS 14+; `x86_64` builds require an SSSE3 CPU |
 | **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 25.0.0** | Same |
 
 ---

@@ -110,8 +110,9 @@ endif()
 # Enable SIMD optimizations globally (propagates to cfitsio)
 # Note: For wheels, avoid -march=native. Using reasonable baselines.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    # Enable SSSE3 for Rice compression optimization (reasonable baseline for modern PyTorch)
-    add_compile_definitions(CFITSIO_HAVE_SSSE3)
+    # SSSE3 (pshufb) backs the SIMD byte-swap of big-endian image and table
+    # data (internal_utils.h). Every x86_64 build therefore requires an SSSE3
+    # CPU, which is also what modern PyTorch wheels assume.
     add_compile_options(-mssse3)
     message(STATUS "Enabled x86_64 optimizations (SSSE3)")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
