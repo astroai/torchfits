@@ -134,7 +134,10 @@ build_tree() {
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+# Stable root = newest reachable *final* release; rc/a/b tags stay off it.
+LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v*' \
+  --exclude '*rc*' --exclude '*[0-9]a[0-9]*' --exclude '*[0-9]b[0-9]*' \
+  2>/dev/null || true)"
 USE_HEAD_FOR_ROOT=$ROOT_FROM_HEAD
 if [[ -z "$LATEST_TAG" ]]; then
   USE_HEAD_FOR_ROOT=1
