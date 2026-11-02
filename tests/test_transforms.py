@@ -2186,6 +2186,45 @@ class TestMeshTileFallback:
         assert abs(out[0, 0, 0].item()) < 1e3
 
 
+class TestMeshTileSigmaClip:
+    @staticmethod
+    def _scene() -> torch.Tensor:
+        # Two bands of sky 100 +- 1; band 0 carries a +50 source over a
+        # quarter of the frame, which drags an unclipped median to ~100.43.
+        gen = torch.Generator().manual_seed(0)
+        img = 100.0 + torch.randn(2, 64, 64, generator=gen)
+        img[0, :32, :32] += 50.0
+        return img
+
+    @staticmethod
+    def _tile_bg(**kwargs: float) -> torch.Tensor:
+        t = MeshBackgroundSubtract(mesh=(1, 1), **kwargs)
+        t(TestMeshTileSigmaClip._scene())
+        return t._last_bg[:, 0, 0]
+
+    def test_clipping_rejects_source_pixels(self) -> None:
+        bg = self._tile_bg()
+        assert abs(bg[0].item() - 100.0) < 0.1
+        assert abs(bg[1].item() - 100.0) < 0.1
+
+    def test_no_clipping_is_biased_by_source(self) -> None:
+        for kwargs in ({"n_sigma": 1e6}, {"max_iter": 0}):
+            bg = self._tile_bg(**kwargs)
+            assert bg[0].item() > 100.3, kwargs
+
+    def test_n_sigma_and_max_iter_change_the_output(self) -> None:
+        base = self._tile_bg()
+        assert not torch.equal(base, self._tile_bg(n_sigma=1e6))
+        assert not torch.equal(base, self._tile_bg(n_sigma=2.0))
+        assert not torch.equal(base, self._tile_bg(max_iter=0))
+
+    def test_rejects_bad_clip_parameters(self) -> None:
+        with pytest.raises(ValueError, match="n_sigma"):
+            MeshBackgroundSubtract(n_sigma=0.0)
+        with pytest.raises(ValueError, match="max_iter"):
+            MeshBackgroundSubtract(max_iter=-1)
+
+
 def test_compose_accepts_plain_callables() -> None:
     """Users chain lambdas and small classes; Compose calls them with ``x`` only."""
     from torchfits.transforms import ArcsinhStretch, Compose

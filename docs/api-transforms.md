@@ -342,7 +342,7 @@ $$\text{output} = x - \text{median}(x)$$
 ### `MeshBackgroundSubtract(mesh=(8, 8), *, n_sigma=3.0, max_iter=5, filter_mesh=True, min_tile_pixels=4, weighted=False)`
 
 SExtractor-style tile-mesh background: estimate the sky independently in each
-of `mesh` tiles (median + MAD), optionally median-filter the tile
+of `mesh` tiles (sigma-clipped median), optionally median-filter the tile
 grid, then interpolate it back to full resolution and subtract.
 
 $$\text{output} = x - \text{interp}\big(\text{med}_{\text{tile}}(x)\big)$$
@@ -358,8 +358,8 @@ cached from `forward`).
 | Param | Default | Description |
 |---|---|---|
 | `mesh` | `(8, 8)` | Number of tiles along `(H, W)` |
-| `n_sigma` | `3.0` | Accepted for API symmetry with `SigmaClip`; tile statistics are a single-pass median/MAD, so it currently has no effect |
-| `max_iter` | `5` | Same as `n_sigma`: accepted, currently no effect |
+| `n_sigma` | `3.0` | Per-tile clip threshold: pixels more than `n_sigma` × robust sigma (1.4826 × MAD; weighted RMS with `weighted=True`) from the tile median are rejected before the tile median is taken. Must be > 0 |
+| `max_iter` | `5` | Maximum clipping passes per tile (stops early once nothing new is rejected); `0` disables clipping |
 | `filter_mesh` | `True` | 3×3 median filter the tile grid (stops bright sources imprinting on the sky map) |
 | `min_tile_pixels` | `4` | Below this, a tile falls back to the frame background |
 | `weighted` | `False` | Inverse-variance weighted tile statistics when `ivar` is present |
