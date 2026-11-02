@@ -283,6 +283,10 @@ torchfits convert catalog.fits -o catalog.csv -e 1 -c RA,DEC,MAG_G
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "MAG_G < 19.5 AND DEC > 0" -c RA,DEC,MAG_G
 ```
 
+An unknown `--columns` name or an invalid `--where` predicate (unknown column,
+syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
+HDU stays an I/O error (exit `3`).
+
 #### RGB PNG Rendering
 ```bash
 # Auto RGB (default): files in blue → red order

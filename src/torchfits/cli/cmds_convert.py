@@ -271,7 +271,23 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     where = args.where
     if where or columns or fmt == "fits":
         # Filter / column-select / FITS out: materialize via table.read.
-        arrow = tf_table.read(path, hdu=hdu, columns=columns, where=where)
+        if columns or where:
+            # A bad --columns / --where is a usage error (exit 2). Reading the
+            # schema first keeps an unreadable file or HDU an I/O error (3).
+            tf_table.schema(path, hdu=hdu)
+        try:
+            arrow = tf_table.read(path, hdu=hdu, columns=columns, where=where)
+        except KeyError as exc:
+            if not columns:
+                raise
+            # The schema read fine: an unknown projected column name.
+            raise UsageError(f"--columns: {exc.args[0] if exc.args else exc}") from exc
+        except ValueError as exc:
+            if not where:
+                raise
+            # The schema read fine, so a ValueError here is the predicate's:
+            # unknown column, syntax error, or a type mismatch.
+            raise UsageError(f"--where: {exc}") from exc
         if fmt == "parquet":
             tf_table.write_parquet(args.output, arrow)
         elif fmt == "csv":

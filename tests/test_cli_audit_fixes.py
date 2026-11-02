@@ -259,6 +259,18 @@ def test_cutout_box_shifts_crpix_like_a_section(tmp_path):
     )
 
 
+def test_convert_bad_columns_or_where_is_usage_error(tmp_path):
+    cat = tmp_path / "cat.fits"
+    _write_cat(cat, [1.0, 2.0, 3.0])
+    out = tmp_path / "out.csv"
+    for argv in (["-c", "NOPE"], ["-w", "NOPE > 1"], ["-w", "RA >"]):
+        assert main(["convert", str(cat), str(out), "-e", "1", *argv]) == 2, argv
+        assert not out.exists()
+    # An unreadable HDU stays an I/O error even with a predicate.
+    assert main(["convert", str(cat), str(out), "-e", "7", "-w", "RA > 1"]) == 3
+    assert main(["convert", str(cat), str(out), "-e", "1", "-w", "RA > 1"]) == 0
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])
