@@ -97,20 +97,24 @@ def test_public_docs_do_not_claim_torchfits_owns_sky_domain_features() -> None:
 
 
 def test_public_docs_do_not_claim_native_gpu_decode() -> None:
-    docs = [
-        ROOT / "README.md",
-        ROOT / "docs" / "index.md",
-        ROOT / "docs" / "install.md",
+    """FITS is decoded on the host; ``device=`` copies the result afterwards."""
+    docs = [ROOT / "README.md"] + [
+        path
+        for path in sorted((ROOT / "docs").glob("*.md"))
+        if path.name != "changelog.md"
     ]
     forbidden_claims = [
-        "automatically enable GPU acceleration",
-        "unlocks GPU acceleration automatically",
-        "directly onto CUDA GPUs",
-        "Native GPU decode",
+        "automatically enable gpu acceleration",
+        "unlocks gpu acceleration automatically",
+        "directly onto cuda gpus",
+        "native gpu decode",
+        "decode to target device",
+        "native `device=",
+        '`"mps"` decode',
     ]
     offenders: list[str] = []
     for path in docs:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8").lower()
         for claim in forbidden_claims:
             if claim in text:
                 offenders.append(f"{path.relative_to(ROOT)} contains {claim!r}")

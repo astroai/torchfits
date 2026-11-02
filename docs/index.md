@@ -109,7 +109,7 @@ title: FITS I/O for PyTorch Tensors and Tables
 
 | Capability | Astropy (`io.fits`) / `fitsio` | `torchfits` |
 |---|---|---|
-| **GPU Tensor Placement** | Manual host read $\rightarrow$ `.to(device)` copy | Native `device="cuda"` / `"mps"` decode |
+| **GPU Tensor Placement** | Manual host read $\rightarrow$ `.to(device)` copy | Host decode, then `device="cuda"` / `"mps"` places the tensor |
 | **Catalog Query & Slicing** | Load full table to Python $\rightarrow$ boolean mask | C++ in-engine `where=` pushdown to PyArrow |
 | **Mosaic Cutouts** | Section indexing or full-frame slicing | Zero-overhead `read_subset` & `open_subset_reader` |
 | **Machine Learning Pipelines** | Custom boilerplate wrapper classes | Native `FitsImageDataset` + multi-worker `make_loader` |
