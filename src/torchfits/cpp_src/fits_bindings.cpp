@@ -745,6 +745,58 @@ using torchfits::internal::ndarray_is_c_contiguous;
 using torchfits::internal::ensure_c_contiguous_ndarray;
 using torchfits::internal::require_cpu_ndarray;
 
+// Keywords CFITSIO derives from the HDU layout. A caller-supplied copy would
+// relabel the data (NAXIS2 shorter than the rows written, a different
+// TFIELDS, ...), so header writers skip them.
+bool is_structural_header_key(const std::string& key_upper) {
+    return key_upper == "END" ||
+           key_upper == "SIMPLE" ||
+           key_upper == "XTENSION" ||
+           key_upper == "BITPIX" ||
+           key_upper == "NAXIS" ||
+           key_upper == "EXTEND" ||
+           key_upper == "PCOUNT" ||
+           key_upper == "GCOUNT" ||
+           key_upper == "TFIELDS" ||
+           key_upper == "THEAP" ||
+           key_upper == "DATASUM" ||
+           key_upper == "CHECKSUM" ||
+           key_upper.rfind("NAXIS", 0) == 0;
+}
+
+// 1-based column index of an indexed table keyword such as TFORM12, or 0.
+long table_key_index(const std::string& key_upper, const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    if (key_upper.size() <= n || key_upper.compare(0, n, prefix) != 0) {
+        return 0;
+    }
+    long idx = 0;
+    for (size_t i = n; i < key_upper.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(key_upper[i])) || idx > 9999) {
+            return 0;
+        }
+        idx = idx * 10 + (key_upper[i] - '0');
+    }
+    return idx;
+}
+
+// True when two TFORM spellings describe the same cell layout (e.g. 'J' and
+// '1J'), so a caller spelling can replace the derived one without moving data.
+bool same_tform_layout(std::string a, std::string b, bool is_ascii) {
+    int st_a = 0, st_b = 0, code_a = 0, code_b = 0;
+    long rep_a = 0, rep_b = 0, width_a = 0, width_b = 0;
+    if (is_ascii) {
+        int dec_a = 0, dec_b = 0;
+        fits_ascii_tform(a.data(), &code_a, &width_a, &dec_a, &st_a);
+        fits_ascii_tform(b.data(), &code_b, &width_b, &dec_b, &st_b);
+    } else {
+        fits_binary_tform(a.data(), &code_a, &rep_a, &width_a, &st_a);
+        fits_binary_tform(b.data(), &code_b, &rep_b, &width_b, &st_b);
+    }
+    return st_a == 0 && st_b == 0 && code_a == code_b && rep_a == rep_b &&
+           width_a == width_b;
+}
+
 }  // namespace
 
 // Schema metadata values may arrive as ints/floats (user-supplied) or as
@@ -1417,6 +1469,24 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     for (auto item : header) {
         std::string key = nb::cast<std::string>(item.first);
         key = d::sanitize_fits_key(key);
+        std::string key_upper = key;
+        std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        // The table layout is already on disk: skip cards that would relabel
+        // it. A TFORMn is kept only when it spells the same layout as the
+        // derived one (callers preserve a source spelling such as 'J').
+        if (is_structural_header_key(key_upper) ||
+            table_key_index(key_upper, "TTYPE") > 0 ||
+            table_key_index(key_upper, "TBCOL") > 0) {
+            continue;
+        }
+        if (const long n = table_key_index(key_upper, "TFORM"); n > 0) {
+            if (n > num_cols || !nb::isinstance<nb::str>(item.second) ||
+                !same_tform_layout(nb::cast<std::string>(item.second),
+                                   tform_store[static_cast<size_t>(n - 1)], is_ascii)) {
+                continue;
+            }
+        }
         const int card_type = fits_header_value_type(item.second);
         if (card_type == TLOGICAL) {
             int val = nb::cast<bool>(item.second) ? 1 : 0;
@@ -1792,22 +1862,6 @@ void bind_fits(nb::module_& m) {
         };
         move_to_hdu(fptr, hdu_num);
 
-        auto skip_structural = [](const std::string& key_upper) {
-            return key_upper == "END" ||
-                   key_upper == "SIMPLE" ||
-                   key_upper == "XTENSION" ||
-                   key_upper == "BITPIX" ||
-                   key_upper == "NAXIS" ||
-                   key_upper == "EXTEND" ||
-                   key_upper == "PCOUNT" ||
-                   key_upper == "GCOUNT" ||
-                   key_upper == "TFIELDS" ||
-                   key_upper == "THEAP" ||
-                   key_upper == "DATASUM" ||
-                   key_upper == "CHECKSUM" ||
-                   key_upper.rfind("NAXIS", 0) == 0;
-        };
-
         for (nb::handle card_h : cards) {
             nb::object card = nb::borrow<nb::object>(card_h);
             std::string key;
@@ -1837,7 +1891,7 @@ void bind_fits(nb::module_& m) {
             std::string key_upper = key;
             std::transform(key_upper.begin(), key_upper.end(), key_upper.begin(),
                            [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            if (skip_structural(key_upper)) {
+            if (is_structural_header_key(key_upper)) {
                 continue;
             }
 

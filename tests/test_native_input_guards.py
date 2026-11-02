@@ -123,3 +123,38 @@ def test_ascii_schema_width_follows_the_code_letter(tmp_path):
     )
     rows = C.read_fits_table(path, 1)["s"]
     assert [bytes(r).rstrip().decode() for r in rows.tolist()] == ["hello", "worlds"]
+
+
+class _TableHDU:  # shape understood by the native write_hdus
+    def __init__(self, header):
+        self._raw_data = {"a": torch.arange(5, dtype=torch.int32)}
+        self.header = header
+
+
+def test_table_header_cannot_rewrite_the_table_layout(tmp_path):
+    path = str(tmp_path / "tab_hdr.fits")
+    for header in (
+        {"NAXIS2": 2},
+        {"NAXIS1": 8},
+        {"TFIELDS": 3},
+        {"TFORM1": "1E"},
+        {"TTYPE1": "b"},
+        {"PCOUNT": 100},
+    ):
+        C.write_fits_file(path, [{"data": torch.zeros(0)}, _TableHDU(header)], True)
+        cards = {k: v for k, v, _ in C.read_header_dict(path, 1)}
+        assert cards["NAXIS1"] == "4", header
+        assert cards["NAXIS2"] == "5", header
+        assert cards["TFORM1"].strip("' ") == "1J", header
+        assert C.read_fits_table(path, 1)["a"].tolist() == list(range(5)), header
+
+    # A spelling of the same layout is kept, and ordinary cards still land.
+    C.write_fits_file(
+        path,
+        [{"data": torch.zeros(0)}, _TableHDU({"TFORM1": "J", "OBSERVER": "me"})],
+        True,
+    )
+    cards = {k: v for k, v, _ in C.read_header_dict(path, 1)}
+    assert cards["TFORM1"].strip("' ") == "J"
+    assert cards["OBSERVER"].strip("' ") == "me"
+
