@@ -455,9 +455,11 @@ leaves no output file behind.
 # Set or update keyword
 torchfits setkey science.fits -k OBJECT --value "NGC 1234"
 
-# Values are coerced: true/false become booleans, numeric strings become int or float
+# Values are coerced: true/false become booleans, plain numeric literals
+# (12, -3, 300.0, 1.5e3) become int or float; anything else stays a string
 torchfits setkey science.fits -k OKFLAG --value true
 torchfits setkey science.fits -k EXPTIME --value 300.0
+torchfits setkey science.fits -k OBSID --value 007   # stays the string '007'
 
 # Set HIERARCH / long keyword (--delete and --rename accept the same spelling)
 torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42"

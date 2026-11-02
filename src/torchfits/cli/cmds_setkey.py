@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -54,7 +55,14 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--key",
         help="header keyword to set (supports long / HIERARCH names)",
     )
-    parser.add_argument("--value", help="new value when setting --key")
+    parser.add_argument(
+        "--value",
+        help=(
+            "new value when setting --key: true/false -> bool, plain numeric "
+            "literals (12, -3, 1.5e3) -> int/float, anything else (e.g. '007', "
+            "'1_000') -> string; a non-finite number is a usage error"
+        ),
+    )
     parser.add_argument(
         "--rename",
         metavar="OLD=NEW",
@@ -85,16 +93,27 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.set_defaults(func=run)
 
 
+# Plain FITS-style numeric literals only: Python's int()/float() also accept
+# '1_000', '007', ' 5 ', 'inf' and 'nan', which would silently turn a string
+# value (an ID with leading zeros, say) into a number.
+_INT_LITERAL = re.compile(r"[+-]?(?:0|[1-9][0-9]*)")
+_FLOAT_LITERAL = re.compile(
+    r"[+-]?(?:(?:0|[1-9][0-9]*)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+)
+
+
 def _parse_value(raw: str) -> Any:
     lowered = raw.lower()
     if lowered in {"true", "false"}:
         return lowered == "true"
-    try:
-        if any(ch in raw for ch in ".eE"):
-            return float(raw)
+    if _INT_LITERAL.fullmatch(raw):
         return int(raw)
-    except ValueError:
-        return raw
+    if _FLOAT_LITERAL.fullmatch(raw):
+        value = float(raw)
+        if not math.isfinite(value):
+            raise UsageError(f"--value {raw!r} overflows a FITS floating-point value")
+        return value
+    return raw
 
 
 def _normalize_keyword(raw: str) -> str:

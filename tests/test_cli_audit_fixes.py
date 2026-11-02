@@ -271,6 +271,23 @@ def test_convert_bad_columns_or_where_is_usage_error(tmp_path):
     assert main(["convert", str(cat), str(out), "-e", "1", "-w", "RA > 1"]) == 0
 
 
+def test_setkey_value_coercion_accepts_only_plain_numeric_literals(tmp_path):
+    path = tmp_path / "img.fits"
+    torchfits.write(str(path), torch.zeros(2, 2))
+    for key, raw, expected in (
+        ("SEP", "1_000", "1_000"),
+        ("OBSID", "007", "007"),
+        ("COUNT", "-12", -12),
+        ("EXPTIME", "1.5e3", 1500.0),
+    ):
+        assert main(["setkey", str(path), "-k", key, "--value", raw]) == 0
+        value = torchfits.read_header(str(path), 0)[key]
+        assert value == expected and type(value) is type(expected), (key, value)
+    before = path.read_bytes()
+    assert main(["setkey", str(path), "-k", "HUGE", "--value", "1e400"]) == 2
+    assert path.read_bytes() == before
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])
