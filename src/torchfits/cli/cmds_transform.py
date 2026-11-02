@@ -7,6 +7,7 @@ import inspect
 from typing import Any
 
 import torchfits
+from torchfits._errors import HDUNotFoundError
 from torchfits.hdu import Header
 
 from .common import (
@@ -180,6 +181,9 @@ def _transform_one(
         raise
     except IoError:
         raise
+    except HDUNotFoundError as exc:
+        # The message already names the file and the HDU.
+        raise IoError(str(exc)) from exc
     except Exception as exc:
         raise IoError(f"{input_path}: {exc}") from exc
 

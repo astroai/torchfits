@@ -105,7 +105,7 @@ def _stats_one(path: str, hdu: str | None) -> list[dict[str, Any]]:
 
     try:
         with torchfits.open(path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=path)
             headers = {index: hdul[index].header for index in indices}
             types = {
                 index: hdu_type_name(headers[index], hdul[index]) for index in indices

@@ -21,6 +21,7 @@ import torch
 import torchfits
 import torchfits.table as tft
 from torchfits import HDUNotFoundError
+from torchfits.cli.main import main as cli_main
 from torchfits.data import FitsImageDataset
 from torchfits.hdu import TableHDURef
 
@@ -169,3 +170,23 @@ def test_import_does_not_load_torch():
         "assert 'torch' not in sys.modules; assert 'torchfits._C' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize(
+    ("argv", "code"),
+    [
+        (["info", "{p}", "-e", "7"], 2),
+        (["header", "{p}", "-e", "7"], 2),
+        (["stats", "{p}", "-e", "-1"], 2),
+        (["verify", "{p}", "-e", "7"], 2),
+        (["setkey", "{p}", "-k", "FOO", "--value", "1", "-e", "7"], 2),
+        (["cutout", "{p}", "--box", "0,0,2,2", "-o", "{o}", "-e", "7"], 3),
+    ],
+)
+def test_cli_out_of_range_message(mef, tmp_path, capsys, argv, code):
+    out = str(tmp_path / "out.fits")
+    args = [a.format(p=mef, o=out) for a in argv]
+    assert cli_main(args) == code
+    err = capsys.readouterr().err
+    index = args[args.index("-e") + 1]
+    assert f"HDU index {index} out of range for {mef} (2 HDUs)" in err

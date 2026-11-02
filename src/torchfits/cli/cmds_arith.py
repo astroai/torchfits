@@ -250,7 +250,7 @@ def _resolve_operands(
 def _image_indices(path: str, hdu: str | None) -> list[int]:
     try:
         with torchfits.open(path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=path)
             return [
                 index
                 for index in indices

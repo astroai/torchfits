@@ -233,7 +233,7 @@ def _rewrite_one_input_split_hdu(
 
     try:
         with torchfits.open(input_path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=input_path)
             image_indices = [
                 index
                 for index in indices
@@ -312,7 +312,7 @@ def _validate_compression_inputs(
     for path in inputs:
         try:
             with torchfits.open(path) as hdul:
-                for index in selected_hdu_indices(len(hdul), hdu):
+                for index in selected_hdu_indices(len(hdul), hdu, path=path):
                     if hdu_type_name(hdul[index].header, hdul[index]) != "IMAGE":
                         continue
                     bitpix = int(

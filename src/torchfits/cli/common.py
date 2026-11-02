@@ -114,7 +114,17 @@ def parse_hdu_list(hdu: str | None) -> list[int] | None:
     return out
 
 
-def selected_hdu_indices(num_hdus: int, hdu: str | None) -> list[int]:
+def hdu_out_of_range(path: str | None, idx: int, num_hdus: int) -> UsageError:
+    """Usage error for ``-e idx``; the text matches the library's HDUNotFoundError."""
+    from torchfits._errors import HDUNotFoundError
+
+    where = path if path else "the input"
+    return UsageError(str(HDUNotFoundError.for_request(where, idx, num_hdus)))
+
+
+def selected_hdu_indices(
+    num_hdus: int, hdu: str | None, *, path: str | None = None
+) -> list[int]:
     if num_hdus <= 0:
         return []
     wanted = parse_hdu_list(hdu)
@@ -122,7 +132,7 @@ def selected_hdu_indices(num_hdus: int, hdu: str | None) -> list[int]:
         return list(range(num_hdus))
     for idx in wanted:
         if idx < 0 or idx >= num_hdus:
-            raise UsageError(f"HDU {idx} out of range (0..{num_hdus - 1})")
+            raise hdu_out_of_range(path, idx, num_hdus)
     return wanted
 
 
@@ -585,7 +595,7 @@ def iter_file_hdu_pairs(
             raise IoError(f"remote paths are not supported: {path}")
         try:
             with torchfits.open(path) as hdul:
-                for index in selected_hdu_indices(len(hdul), hdu):
+                for index in selected_hdu_indices(len(hdul), hdu, path=path):
                     yield path, index, hdul[index]
         except CliError:
             raise

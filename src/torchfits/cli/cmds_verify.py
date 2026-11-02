@@ -52,7 +52,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
 def _verify_one(path: str, hdu: str | None) -> tuple[list[dict[str, Any]], bool]:
     try:
         with torchfits.open(path) as hdul:
-            indices = selected_hdu_indices(len(hdul), hdu)
+            indices = selected_hdu_indices(len(hdul), hdu, path=path)
             # Reuse the headers already read by torchfits.open instead of
             # re-opening the file via read_header for every HDU (1 + 2N opens
             # per call down to 1 + N).

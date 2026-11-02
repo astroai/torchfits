@@ -22,6 +22,7 @@ from .common import (
     add_hdu_arg,
     ensure_unique_basenames,
     expand_at_list_paths,
+    hdu_out_of_range,
     is_compressed_image_header,
     resolve_file_jobs,
     resolve_paths,
@@ -170,7 +171,7 @@ def _header_key(header: Any, key: str) -> str | None:
     return None
 
 
-def _parse_hdus(spec: str, n_hdus: int) -> list[int]:
+def _parse_hdus(spec: str, n_hdus: int, path: str | None = None) -> list[int]:
     text = spec.strip().lower()
     if text in {"all", "*"}:
         return list(range(n_hdus))
@@ -185,7 +186,7 @@ def _parse_hdus(spec: str, n_hdus: int) -> list[int]:
         except ValueError as exc:
             raise UsageError(f"invalid HDU index: {part!r}") from exc
         if idx < 0 or idx >= n_hdus:
-            raise UsageError(f"HDU index out of range: {idx} (file has {n_hdus})")
+            raise hdu_out_of_range(path, idx, n_hdus)
         # Same rule as common.parse_hdu_list: a repeated index would plan the
         # same card edits twice. The edits are idempotent today, but the plan
         # length is what other commands turn into an output HDU count.
@@ -244,7 +245,7 @@ def _plan_edits(
     """Validate the edit against ``path``'s headers; read-only."""
     with torchfits.open(path) as hdul:
         n_hdus = len(hdul)
-    hdus = _parse_hdus(hdu_spec, n_hdus)
+    hdus = _parse_hdus(hdu_spec, n_hdus, path)
 
     # Phase 1: validate every requested edit against the file's current
     # headers and resolve the exact card updates. Nothing is written until the

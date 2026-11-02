@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import torchfits
+from torchfits._errors import HDUNotFoundError
 from torchfits._io_engine.paths import has_cfitsio_filter
 
 from .common import (
@@ -185,6 +186,9 @@ def _cutout_one(
         torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
     except UsageError:
         raise
+    except HDUNotFoundError as exc:
+        # The message already names the file and the HDU.
+        raise IoError(str(exc)) from exc
     except Exception as exc:
         raise IoError(f"{input_path}: {exc}") from exc
 
