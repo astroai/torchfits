@@ -465,7 +465,11 @@ def _coerce_table_string_values(
 
     out: list[str] = []
     for item in values:
-        if isinstance(item, bytes):
+        if item is None:
+            # A missing string is blank in a fixed-width FITS column, not the
+            # text "None".
+            out.append("")
+        elif isinstance(item, bytes):
             out.append(item.decode("ascii", errors="ignore"))
         elif isinstance(item, np.bytes_):
             out.append(bytes(item).decode("ascii", errors="ignore"))

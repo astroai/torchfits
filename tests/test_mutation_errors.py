@@ -163,3 +163,17 @@ def test_delete_rows_rejects_none_row_slice(tmp_path):
     assert torchfits.table.read_torch(path, hdu=1)["A"].tolist() == [0, 1, 2]
     torchfits.table.delete_rows(path, slice(0, None))
     assert torchfits.table.read(path, hdu=1).num_rows == 0
+
+
+def test_none_in_string_columns_is_blank(tmp_path):
+    path = str(tmp_path / "none_str.fits")
+    torchfits.table.write(
+        path, {"k": np.arange(2, dtype=np.int32), "s": ["abcdef", "b"]}, overwrite=True
+    )
+    torchfits.table.append_rows(path, {"k": [2], "s": [None]})
+    torchfits.table.insert_rows(path, {"k": [3], "s": [None]}, row=0)
+    torchfits.table.update_rows(path, {"s": [None]}, slice(1, 2))
+    torchfits.table.insert_column(path, "z", ["xy", None, "q", None])
+    got = torchfits.table.read(path, hdu=1).to_pydict()
+    assert got["s"] == ["", "", "b", ""]
+    assert got["z"] == ["xy", "", "q", ""]
