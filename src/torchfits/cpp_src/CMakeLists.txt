@@ -517,6 +517,10 @@ else()
                     set(USE_BZIP2 OFF CACHE BOOL "Enable bzip2 support" FORCE)
                 endif()
             endif()
+        else()
+            # Reconfiguring with the option turned off must also clear a
+            # USE_BZIP2=ON left in the cache by an earlier configure.
+            set(USE_BZIP2 OFF CACHE BOOL "Enable bzip2 support" FORCE)
         endif()
 
         # Force position-independent code for static library to be linked into shared library
