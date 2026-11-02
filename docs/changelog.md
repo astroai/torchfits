@@ -80,6 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - where: Compare integer columns exactly against float and wide literals
 - where: Keep NULL OR TRUE rows with Kleene and/or
 - table: Write signed payloads into uint64 columns as physical values
+- table: Infer ASCII TFORMs for column edits on ASCII tables
+- table: Write 0-row numpy string columns with their dtype width
+- hdu: Give refreshed TableHDURef views typed header cards
+- where: Read quoted literals literally in the public parse helpers
+- hdu: Keep untouched HDUs byte-identical across insert/replace/delete
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
