@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from typing import Any, Optional
 
+from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
 from ..fits_schema import unsigned_column_dtype_names_from_header
 from .._table.utils import (
@@ -56,6 +57,7 @@ def insert_column(
     path = coerce_fits_path(path)
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
+    _validate_schema_numerics(name, {"tnull": tnull, "tscal": tscal, "tzero": tzero})
 
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
@@ -140,6 +142,7 @@ def replace_column(
     path = coerce_fits_path(path)
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
+    _validate_schema_numerics(name, {"tnull": tnull, "tscal": tscal, "tzero": tzero})
 
     target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -1028,6 +1029,58 @@ def _unsigned_table_tform(value: Any, code: str) -> str:
     return code if repeat == 1 else f"{repeat}{code}"
 
 
+_SCHEMA_NUMERIC_FIELDS = {
+    "null": "TNULL",
+    "tnull": "TNULL",
+    "bscale": "TSCAL",
+    "tscal": "TSCAL",
+    "bzero": "TZERO",
+    "tzero": "TZERO",
+}
+
+
+def _validate_schema_numerics(name: str, meta: Dict[str, Any]) -> None:
+    """Reject a non-numeric TNULL/TSCAL/TZERO before the native writer sees it.
+
+    ``null``/``tnull`` must be an integer (or an integer string, as header
+    cards give it) within int64; ``bscale``/``bzero`` must be a number or a
+    numeric string. The native writer only raised an unnamed RuntimeError.
+    """
+    import numbers
+
+    for field, card in _SCHEMA_NUMERIC_FIELDS.items():
+        if field not in meta or meta[field] is None:
+            continue
+        value = meta[field]
+        what = f"{field}={value!r} ({card}) for column {name!r}"
+        if isinstance(value, bool):
+            raise ValueError(f"{what} must be a number, not a bool")
+        if card == "TNULL":
+            parsed: Any = None
+            if isinstance(value, numbers.Integral):
+                parsed = int(value)
+            elif isinstance(value, numbers.Real) and float(value).is_integer():
+                parsed = int(float(value))
+            elif isinstance(value, str):
+                try:
+                    parsed = int(value.strip())
+                except ValueError:
+                    parsed = None
+            if parsed is None:
+                raise ValueError(f"{what} must be an integer")
+            if not -(2**63) <= parsed < 2**63:
+                raise ValueError(f"{what} is outside the 64-bit integer range")
+        else:
+            try:
+                ok = isinstance(value, (numbers.Real, str)) and math.isfinite(
+                    float(value)
+                )
+            except ValueError:
+                ok = False
+            if not ok:
+                raise ValueError(f"{what} must be a finite number")
+
+
 def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) -> int:
     """Stored TNULL for a column written from unsigned (or int8) values.
 
@@ -1079,6 +1132,8 @@ def _prepare_unsigned_table_data_for_write(
     prepared_schema: Dict[str, Dict[str, Any]] = {
         str(name): dict(meta or {}) for name, meta in (schema or {}).items()
     }
+    for col_name, meta in prepared_schema.items():
+        _validate_schema_numerics(col_name, meta)
     changed = False
 
     for name, value in table_dict.items():

@@ -270,6 +270,10 @@ torchfits.table.write(path, data, *, schema=None, header=None,
   standard `TZERO` offset, so give `tnull` as a value of that dtype (for
   example `65535` for `uint16`) and it is written as `65535 - 32768`.
   A `tnull` outside the dtype's range raises `ValueError`.
+- A `tnull` that is not an integer (or an integer string), and a `bscale` /
+  `bzero` that is not a finite number, raise `ValueError` naming the field;
+  so do the `tnull=` / `tscal=` / `tzero=` arguments of `insert_column` and
+  `replace_column`.
 
 `quantize` applies to binary tables only (`ValueError` when `table_type="ascii"`).
 If it is set and no floating-point column qualifies, `QuantizeError` is raised
