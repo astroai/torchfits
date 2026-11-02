@@ -373,12 +373,14 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             const bool* src_bool_b = static_cast<const bool*>(t.data());
             const uint8_t* src_u8_b = static_cast<const uint8_t*>(t.data());
 
+            // A 0-d payload is one element and has no stride(0) to read.
+            const long row_stride_t = ndim_t == 0 ? 0 : static_cast<long>(t.stride(0));
             for (long i = 0; i < num_rows; ++i) {
                 for (long j = 0; j < user_repeat; ++j) {
                     bool val = false;
                     long byte_off = (ndim_t == 2)
-                        ? i * t.stride(0) + j * t.stride(1)
-                        : i * t.stride(0) + j;
+                        ? i * row_stride_t + j * t.stride(1)
+                        : i * row_stride_t + j;
                     if (
                         dt_b.code == (uint8_t)nb::dlpack::dtype_code::Bool &&
                         dt_b.bits == 8
@@ -828,12 +830,15 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 const uint8_t* src_str = static_cast<const uint8_t*>(t_str.data());
                 std::vector<std::string> padded_str;
                 padded_str.reserve(static_cast<size_t>(num_rows));
+                // A 0-d payload is one element and has no stride(0) to read.
+                const long row_stride_str =
+                    ndim_str == 0 ? 0 : static_cast<long>(t_str.stride(0));
                 for (long i = 0; i < num_rows; ++i) {
                     std::string row(static_cast<size_t>(width_chars_str), ' ');
                     for (long j = 0; j < user_repeat_str; ++j) {
                         long byte_off_str = (ndim_str == 2)
-                            ? i * t_str.stride(0) + j * t_str.stride(1)
-                            : i * t_str.stride(0) + j;
+                            ? i * row_stride_str + j * t_str.stride(1)
+                            : i * row_stride_str + j;
                         row[static_cast<size_t>(j)] =
                             static_cast<char>(src_str[byte_off_str]);
                     }
@@ -929,11 +934,13 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             std::vector<unsigned char> logical(
                 static_cast<size_t>(nelements_bits), 0
             );
+            // A 0-d payload is one element and has no stride(0) to read.
+            const long row_stride_t = ndim_t == 0 ? 0 : static_cast<long>(t.stride(0));
             for (long i = 0; i < num_rows; ++i) {
                 for (long j = 0; j < repeat; ++j) {
                     long byte_off = (ndim_t == 2)
-                        ? i * t.stride(0) + j * t.stride(1)
-                        : i * t.stride(0) + j;
+                        ? i * row_stride_t + j * t.stride(1)
+                        : i * row_stride_t + j;
                     unsigned char val;
                     if (is_bool) {
                         val = src_bool_b[byte_off] ? 1 : 0;
