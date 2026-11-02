@@ -325,3 +325,15 @@ def test_changelog_only_commit_is_not_collected(tmp_path, monkeypatch) -> None:
     assert changelog.collect_bullets("v1.0.0", include_all=False) == [
         ("Fixed", "- Real change")
     ]
+
+
+def test_check_without_tags_fails_only_in_ci(tmp_path, monkeypatch, capsys) -> None:
+    changelog_md = tmp_path / "changelog.md"
+    changelog_md.write_text("# Changelog\n\n## Unreleased\n", encoding="utf-8")
+    monkeypatch.setattr(changelog, "CHANGELOG", changelog_md)
+    monkeypatch.setattr(changelog, "_list_vtags", lambda: [])
+    monkeypatch.delenv("CI", raising=False)
+    assert changelog.main(["--check"]) == 0
+    monkeypatch.setenv("CI", "true")
+    assert changelog.main(["--check"]) == 1
+    assert "no git tags found" in capsys.readouterr().out

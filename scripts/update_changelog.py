@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
 import subprocess
 import sys
@@ -338,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         since = args.since or latest_tag()
         if since is None:
+            if args.check and os.environ.get("CI"):
+                # A shallow CI checkout has no tags; passing would be vacuous.
+                print("no git tags found; fetch tags (fetch-depth: 0) in CI")
+                return 1
             print("no git tags found; nothing to generate")
             return 0
         try:
