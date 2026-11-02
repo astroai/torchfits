@@ -178,6 +178,11 @@ def locate_uncompressed_2d(url: str, hdu: int | str) -> dict[str, Any]:
     for index in range(_MAX_HDU_WALK):
         cards, data_start = _parse_header_at(url, offset)
         if _match_hdu(cards, hdu, index):
+            # A BINTABLE/TABLE can look like an 8-bit 2-D image (NAXIS=2,
+            # BITPIX=8); cutting it would return raw row bytes as pixels.
+            xtension = str(cards.get("XTENSION", "") or "").strip(" '").upper()
+            if index != 0 and xtension != "IMAGE":
+                raise ValueError(f"HDU {hdu!r} is not an image (XTENSION={xtension!r})")
             if _is_compressed(cards):
                 raise HttpRangeUnsupported("compressed image HDU")
             if _is_scaled(cards):
