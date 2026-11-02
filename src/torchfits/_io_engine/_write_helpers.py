@@ -1043,7 +1043,9 @@ def _validate_schema_numerics(name: str, meta: Dict[str, Any]) -> None:
     """Reject a non-numeric TNULL/TSCAL/TZERO before the native writer sees it.
 
     ``null``/``tnull`` must be an integer (or an integer string, as header
-    cards give it) within int64; ``bscale``/``bzero`` must be a number or a
+    cards give it) within int64, or within uint64 when it is a value of an
+    unsigned column (:func:`_check_stored_tnull` checks the stored card once
+    the column's layout is known); ``bscale``/``bzero`` must be a number or a
     numeric string. The native writer only raised an unnamed RuntimeError.
     """
     import numbers
@@ -1068,7 +1070,7 @@ def _validate_schema_numerics(name: str, meta: Dict[str, Any]) -> None:
                     parsed = None
             if parsed is None:
                 raise ValueError(f"{what} must be an integer")
-            if not -(2**63) <= parsed < 2**63:
+            if not -(2**63) <= parsed < 2**64:
                 raise ValueError(f"{what} is outside the 64-bit integer range")
         else:
             try:
@@ -1079,6 +1081,24 @@ def _validate_schema_numerics(name: str, meta: Dict[str, Any]) -> None:
                 ok = False
             if not ok:
                 raise ValueError(f"{what} must be a finite number")
+
+
+def _check_stored_tnull(name: str, meta: Dict[str, Any]) -> None:
+    """Reject a TNULL card value outside int64 (the native card type).
+
+    Runs after unsigned-convention columns moved their TNULL to the stored
+    domain, so only a value no column dtype can hold is left to fail here.
+    """
+    for key in ("null", "tnull"):
+        value = meta.get(key)
+        if value is None:
+            continue
+        stored = int(str(value).strip()) if isinstance(value, str) else int(value)
+        if not -(2**63) <= stored < 2**63:
+            raise ValueError(
+                f"{key}={value!r} (TNULL) for column {name!r} is outside the "
+                "64-bit integer range"
+            )
 
 
 def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) -> int:
@@ -1169,6 +1189,9 @@ def _prepare_unsigned_table_data_for_write(
             if meta.get(key) is not None:
                 meta[key] = _unsigned_tnull_to_stored(col_name, meta[key], code, bzero)
         changed = True
+
+    for col_name, meta in prepared_schema.items():
+        _check_stored_tnull(col_name, meta)
 
     if schema is None and not changed:
         return out, None, False
