@@ -108,7 +108,10 @@ class TableHDURef:
     def columns(self) -> list[str]:
         if self._columns is not None:
             return list(self._columns)
+        return self._file_columns()
 
+    def _file_columns(self) -> list[str]:
+        """Every column of the HDU in file order, ignoring the projection."""
         # Deliberately uncached: this is a metadata walk, and the old
         # id()-keyed cache aliased stale names whenever a fresh Header landed
         # on a replaced header's id (fresh Headers share _version == 0) (r6b).
@@ -386,7 +389,7 @@ class TableHDURef:
             **kwargs,
         )
 
-    def _refresh_file_view(self) -> "TableHDURef":
+    def _refresh_file_view(self, columns: Optional[List[str]] = None) -> "TableHDURef":
         import torchfits._C as cpp
         from .._io_engine.caches import invalidate_path_caches
         from .._io_engine.paths import guard_fits_path
@@ -407,7 +410,9 @@ class TableHDURef:
                 handle.close()
             except Exception:
                 pass
-        return TableHDURef(header=header, source_path=path, source_hdu=hdu)
+        return TableHDURef(
+            header=header, source_path=path, source_hdu=hdu, columns=columns
+        )
 
     def append_rows_file(self, rows: Dict[str, Any]) -> "TableHDURef":
         import torchfits
@@ -432,15 +437,27 @@ class TableHDURef:
         import torchfits
 
         path, hdu = self._require_source()
-        old_columns = self.columns
-        insert_at = index if index is not None else len(old_columns)
+        view = self.columns
+        if index is not None and (
+            not isinstance(index, int) or index < 0 or index > len(view)
+        ):
+            raise ValueError(f"index must be in [0, {len(view)}]")
+        # ``index`` is a position in this view; the file may hold more
+        # columns than a select()ed view, so resolve it to a file position.
+        file_columns = self._file_columns()
+        if index is None:
+            file_index = len(file_columns)
+        elif index < len(view):
+            file_index = file_columns.index(view[index])
+        else:
+            file_index = file_columns.index(view[-1]) + 1 if view else 0
 
         torchfits.table.insert_column(
             path,
             name,
             values,
             hdu=hdu,
-            index=insert_at,
+            index=file_index,
             format=format,
             unit=unit,
             dim=dim,
@@ -448,39 +465,9 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        # Build the updated header from memory instead of reading back from
-        # the file (which may return a stale cached handle when the file was
-        # atomically replaced underneath an open torchfits.open context).
-        new_header = Header(self.header)
-        new_columns = list(old_columns)
-        new_columns.insert(insert_at, name)
-        # Shift existing column metadata to make room for the inserted column
-        _COL_PREFIXES = ("TTYPE", "TFORM", "TUNIT", "TDIM", "TNULL", "TSCAL", "TZERO")
-        for i in range(len(old_columns), insert_at, -1):
-            for prefix in _COL_PREFIXES:
-                old_key = f"{prefix}{i}"
-                new_key = f"{prefix}{i + 1}"
-                if old_key in new_header:
-                    new_header[new_key] = new_header.pop(old_key)
-        # Set metadata for the newly inserted column
-        one_based = insert_at + 1
-        new_header[f"TTYPE{one_based}"] = name
-        if format is not None:
-            new_header[f"TFORM{one_based}"] = format
-        if unit is not None:
-            new_header[f"TUNIT{one_based}"] = unit
-        if dim is not None:
-            new_header[f"TDIM{one_based}"] = dim
-        if tnull is not None:
-            new_header[f"TNULL{one_based}"] = tnull
-        if tscal is not None:
-            new_header[f"TSCAL{one_based}"] = tscal
-        if tzero is not None:
-            new_header[f"TZERO{one_based}"] = tzero
-        new_header["TFIELDS"] = len(new_columns)
-        return TableHDURef(
-            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
-        )
+        new_view = list(view)
+        new_view.insert(len(view) if index is None else index, name)
+        return self._refresh_file_view(new_view if self._columns is not None else None)
 
     def replace_column_file(
         self,
@@ -509,27 +496,8 @@ class TableHDURef:
             tscal=tscal,
             tzero=tzero,
         )
-        # Build the updated header from memory (see insert_column_file for
-        # rationale — C++ file cache may return a stale handle after os.replace).
-        new_header = Header(self.header)
-        new_columns = list(self.columns)
-        one_based = new_columns.index(name) + 1
-        # The engine applies format/unit/dim/tnull/tscal/tzero to the file's
-        # rewritten header; mirror them here so ref.schema() matches the file.
-        if format is not None:
-            new_header[f"TFORM{one_based}"] = format
-        if unit is not None:
-            new_header[f"TUNIT{one_based}"] = unit
-        if dim is not None:
-            new_header[f"TDIM{one_based}"] = dim
-        if tnull is not None:
-            new_header[f"TNULL{one_based}"] = tnull
-        if tscal is not None:
-            new_header[f"TSCAL{one_based}"] = tscal
-        if tzero is not None:
-            new_header[f"TZERO{one_based}"] = tzero
-        return TableHDURef(
-            header=new_header, source_path=path, source_hdu=hdu, columns=new_columns
+        return self._refresh_file_view(
+            list(self._columns) if self._columns is not None else None
         )
 
     def insert_rows_file(self, rows: Dict[str, Any], *, row: int) -> "TableHDURef":

@@ -194,3 +194,47 @@ def test_tablehdu_to_fits_renumbers_column_cards(tmp_path):
     _out, values = written(table.rename_column("a", "alpha"))
     assert values["TTYPE1"].strip("'").strip() == "alpha"
     assert values["TUNIT1"].strip("'").strip() == "deg"
+
+
+def test_projected_ref_column_file_edits_use_file_positions(tmp_path):
+    path = str(tmp_path / "ref.fits")
+    torchfits.table.write(
+        path,
+        {
+            "a": np.arange(3, dtype=np.float64),
+            "b": np.arange(3, dtype=np.int32),
+            "c": np.arange(3, dtype=np.int16),
+        },
+        overwrite=True,
+    )
+    with torchfits.open(path) as hdul:
+        view = hdul[1].select(["c"])
+        new = view.insert_column_file("z", np.array([1.0, 2.0, 3.0]))
+    assert torchfits.table.read(path, hdu=1).column_names == ["a", "b", "c", "z"]
+    assert new.columns == ["c", "z"]
+    assert new["z"].tolist() == [1.0, 2.0, 3.0]
+    assert new.header["TTYPE4"] == "z"
+
+    with torchfits.open(path) as hdul:
+        view = hdul[1].select(["b", "c"])
+        new = view.insert_column_file("y", np.zeros(3, dtype=np.int16), index=1)
+    assert torchfits.table.read(path, hdu=1).column_names == [
+        "a",
+        "b",
+        "y",
+        "c",
+        "z",
+    ]
+    assert new.columns == ["b", "y", "c"]
+
+    with torchfits.open(path) as hdul:
+        view = hdul[1].select(["c"])
+        new = view.replace_column_file(
+            "c", np.array([7, 8, 9], dtype=np.int16), unit="km"
+        )
+    values = _card_values(_hdu_cards(path, 1))
+    assert values["TUNIT4"].strip("'").strip() == "km"
+    assert "TUNIT1" not in values
+    assert new.columns == ["c"]
+    assert new.header.get("TUNIT4") == "km"
+    assert new["c"].tolist() == [7, 8, 9]
