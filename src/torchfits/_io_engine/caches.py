@@ -127,6 +127,10 @@ def _stat_target(path: str) -> str | None:
     return cfitsio_base_path(target)
 
 
+# Sentinel: "no signature captured, take one now" (None is a real signature).
+UNSET_SIGNATURE: Any = object()
+
+
 def path_signature(path: str) -> Any:
     """Return a compact file identity for stale-cache detection.
 
@@ -165,11 +169,13 @@ def get_cached_hdu_type(path: str, hdu: int) -> str | None:
     return None if value is None else str(value)
 
 
-def set_cached_hdu_type(path: str, hdu: int, hdu_type: str | None) -> None:
+def set_cached_hdu_type(
+    path: str, hdu: int, hdu_type: str | None, signature: Any = UNSET_SIGNATURE
+) -> None:
     """Record an HDU payload type for path/HDU dispatch."""
     if not hdu_type:
         return
-    signature_cached_set(hdu_type_cache, (path, hdu), hdu_type, 512)
+    signature_cached_set(hdu_type_cache, (path, hdu), hdu_type, 512, signature)
 
 
 def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
@@ -216,11 +222,22 @@ def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
 
 
 def signature_cached_set(
-    cache: Any, key: tuple[str, Any], value: Any, max_size: int
+    cache: Any,
+    key: tuple[str, Any],
+    value: Any,
+    max_size: int,
+    signature: Any = UNSET_SIGNATURE,
 ) -> None:
-    """Store ``(signature, value)`` for :func:`signature_cached_get`."""
+    """Store ``(signature, value)`` for :func:`signature_cached_get`.
+
+    Pass the ``signature`` taken *before* reading ``value``: taken after, a
+    rewrite that lands mid-read pins the old value under the new file's
+    signature, and it is then served as current.
+    """
+    if signature is UNSET_SIGNATURE:
+        signature = path_signature(key[0])
     with cache_lock:
-        cache[key] = (path_signature(key[0]), value)
+        cache[key] = (signature, value)
         cache.move_to_end(key)
         while len(cache) > max_size:
             cache.popitem(last=False)

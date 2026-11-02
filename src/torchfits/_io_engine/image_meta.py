@@ -12,6 +12,8 @@ from .caches import (
     image_meta_cache,
     signature_cached_get,
     signature_cached_set,
+    path_signature,
+    UNSET_SIGNATURE,
 )
 from .paths import cfitsio_base_path
 from ..hdu import Header
@@ -25,8 +27,14 @@ def _sig_get(cache: Any, key: tuple[str, int]) -> Any:
     return signature_cached_get(cache, key)
 
 
-def _sig_set(cache: Any, key: tuple[str, int], value: Any, max_size: int) -> None:
-    signature_cached_set(cache, key, value, max_size)
+def _sig_set(
+    cache: Any,
+    key: tuple[str, int],
+    value: Any,
+    max_size: int,
+    signature: Any = UNSET_SIGNATURE,
+) -> None:
+    signature_cached_set(cache, key, value, max_size, signature)
 
 
 def _parse_image_meta(header_data: Mapping[str, Any]) -> ImageMeta:
@@ -112,6 +120,7 @@ def get_image_meta(
     if cached is not None:
         return cast(ImageMeta, cached)
 
+    before = path_signature(path)
     meta = _skinny_image_meta(path, hdu, cpp_module)
     if meta is None:
         try:
@@ -119,7 +128,7 @@ def get_image_meta(
         except (RuntimeError, TypeError, ValueError):
             meta = None
 
-    _sig_set(image_meta_cache, sig, meta, 256)
+    _sig_set(image_meta_cache, sig, meta, 256, before)
     return meta
 
 
@@ -136,12 +145,13 @@ def get_image_meta_from_handle(
     if cached is not None:
         return cast(ImageMeta, cached)
 
+    before = path_signature(path)
     try:
         meta = _parse_image_meta(read_header(file_handle, hdu, True))
     except (RuntimeError, TypeError, ValueError):
         meta = None
 
-    _sig_set(image_meta_cache, sig, meta, 256)
+    _sig_set(image_meta_cache, sig, meta, 256, before)
     return meta
 
 

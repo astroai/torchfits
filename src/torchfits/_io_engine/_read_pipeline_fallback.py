@@ -20,6 +20,7 @@ from ._read_pipeline import (
 )
 from .caches import (
     get_cached_handle,
+    UNSET_SIGNATURE,
     path_signature,
     set_cached_hdu_type,
     store_cached_read,
@@ -83,6 +84,9 @@ def read_fallback(
         raise ValueError("num_rows must be > 0 or -1 for all rows")
     validate_device(device)
 
+    # File identity *before* reading: everything cached below is keyed on
+    # it, so a rewrite landing mid-read invalidates rather than gets pinned.
+    signature = path_signature(path)
     try:
         file_handle, cached_handle = get_cached_handle(path)
         try:
@@ -134,7 +138,7 @@ def read_fallback(
             if isinstance(hdu_num, int) and hdu_type is None:
                 try:
                     hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                    set_cached_hdu_type(path, hdu_num, hdu_type)
+                    set_cached_hdu_type(path, hdu_num, hdu_type, signature)
                 except (RuntimeError, TypeError, ValueError):
                     hdu_type = None
 
@@ -161,6 +165,7 @@ def read_fallback(
                         resolve_image_mmap=resolve_image_mmap,
                         read_header=read_header,
                         raw_scale=raw_scale,
+                        signature=signature,
                     )
                 except (RuntimeError, TypeError):
                     if force_image:
@@ -168,7 +173,7 @@ def read_fallback(
                     if isinstance(hdu_num, int):
                         try:
                             hdu_type = cpp_module.get_hdu_type(file_handle, hdu_num)
-                            set_cached_hdu_type(path, hdu_num, hdu_type)
+                            set_cached_hdu_type(path, hdu_num, hdu_type, signature)
                         except (RuntimeError, TypeError, ValueError):
                             hdu_type = None
                     is_table_hdu = force_table or (
@@ -196,6 +201,7 @@ def read_fallback(
                     header_data=header_data,
                     header=header,
                     read_header=read_header,
+                    signature=signature,
                 )
             except (RuntimeError, TypeError, ValueError) as exc:
                 raise RuntimeError(f"Failed to read table extension: {exc}") from exc
@@ -234,8 +240,11 @@ def read_fallback_image(
     resolve_image_mmap: Callable[[str, int, bool | str, int], bool],
     read_header: Callable[[Any, int, bool], Any],
     raw_scale: bool = False,
+    signature: Any = UNSET_SIGNATURE,
 ) -> Any:
     """Read an image HDU in the generic fallback path."""
+    if signature is UNSET_SIGNATURE:
+        signature = path_signature(path)
     effective_mmap = resolve_image_mmap(path, hdu_num, mmap, cache_capacity)
     header = None
     header_data = None
@@ -275,13 +284,13 @@ def read_fallback_image(
             (
                 data.cpu() if device != "cpu" else data,
                 header,
-                path_signature(path),
+                signature,
             ),
             cache_capacity,
         )
 
     if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "IMAGE")
+        set_cached_hdu_type(path, hdu_num, "IMAGE", signature)
     return (data, header) if return_header else data
 
 
@@ -304,8 +313,11 @@ def read_fallback_table(
     header_data: Any,
     header: Any,
     read_header: Callable[[Any, int, bool], Any],
+    signature: Any = UNSET_SIGNATURE,
 ) -> Any:
     """Read a table HDU in the generic fallback path."""
+    if signature is UNSET_SIGNATURE:
+        signature = path_signature(path)
     if (return_header or isinstance(hdu_num, str)) and header_data is None:
         header_data = read_header(file_handle, hdu_num, fast_header)
         header = Header(header_data)
@@ -409,7 +421,7 @@ def read_fallback_table(
     if use_cache and cache_key is not None:
         store_cached_read(
             cache_key,
-            (table_data, header, path_signature(path)),
+            (table_data, header, signature),
             cache_capacity,
         )
 
@@ -431,5 +443,5 @@ def read_fallback_table(
         table_data = new_data
 
     if isinstance(hdu_num, int):
-        set_cached_hdu_type(path, hdu_num, "BINARY_TABLE")
+        set_cached_hdu_type(path, hdu_num, "BINARY_TABLE", signature)
     return (table_data, header) if return_header else table_data
