@@ -421,6 +421,11 @@ value does not fit the column (for example `70000` into a `uint16` column);
 float values written into an integer column only warn that they are
 truncated toward zero.
 
+String (`A`) columns take ASCII text in every row and column mutation:
+non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
+`None` is written as a blank value, and a value longer than the column width
+is clipped with a `RuntimeWarning`.
+
 ---
 
 ## Interop

@@ -24,6 +24,7 @@ from .._table.write import (
 
 from ._mutation_coerce import (
     _COMPLEX_TFORM_CODES,
+    _clip_strings_to_width,
     _coerce_rows_from_arrow,
     _coerce_table_column_array,
     _coerce_table_complex_values,
@@ -449,50 +450,24 @@ def update_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(  # type: ignore[assignment]
-                col_name, value, expected_rows=expected_rows
+            width = string_widths[col_name]
+            texts = _clip_strings_to_width(
+                col_name,
+                _coerce_table_string_values(
+                    col_name, value, expected_rows=expected_rows
+                ),
+                width,
             )
             if expected_rows is None:
-                expected_rows = len(values)
+                expected_rows = len(texts)
             import numpy as _np
 
-            width = string_widths[col_name]
             arr = _np.full((expected_rows, width), 0x20, dtype=_np.uint8)
-            dropped_chars = 0
-            truncated_rows = 0
-            for i, s in enumerate(values):
-                if isinstance(s, (bytes, bytearray)):
-                    encoded = bytes(s)
-                elif isinstance(s, str):
-                    encoded = s.encode("ascii", "ignore")
-                    if len(encoded) != len(s):
-                        dropped_chars += len(s) - len(encoded)
-                else:
-                    text = str(s)
-                    encoded = text.encode("ascii", "ignore")
-                    if len(encoded) != len(text):
-                        dropped_chars += len(text) - len(encoded)
-                length = min(len(encoded), width)
-                if len(encoded) > width:
-                    truncated_rows += 1
-                if length > 0:
-                    arr[i, :length] = _np.frombuffer(encoded[:length], dtype=_np.uint8)
-            if dropped_chars:
-                warnings.warn(
-                    f"Column '{col_name}' is a FITS string column: "
-                    f"{dropped_chars} non-ASCII character(s) were removed. "
-                    "FITS string columns store bytes; encode explicitly to silence.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
-            if truncated_rows:
-                warnings.warn(
-                    f"Column '{col_name}' has width {width}: "
-                    f"{truncated_rows} value(s) were silently clipped to fit. "
-                    "Shorten values or widen the column to silence.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
+            for i, text in enumerate(texts):
+                if text:
+                    arr[i, : len(text)] = _np.frombuffer(
+                        text.encode("ascii"), dtype=_np.uint8
+                    )
             normalized[col_name] = arr
         elif col_name in complex_codes:
             arr = _coerce_table_complex_values(

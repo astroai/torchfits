@@ -255,8 +255,12 @@ def _normalize_mutation_rows(
                 expected_rows = len(values)
             normalized[col_name] = values
         elif col_name in string_widths:
-            values = _coerce_table_string_values(  # type: ignore[assignment]
-                col_name, value, expected_rows=expected_rows
+            values = _clip_strings_to_width(  # type: ignore[assignment]
+                col_name,
+                _coerce_table_string_values(
+                    col_name, value, expected_rows=expected_rows
+                ),
+                string_widths[col_name],
             )
             if expected_rows is None:
                 expected_rows = len(values)
@@ -465,22 +469,49 @@ def _coerce_table_string_values(
 
     out: list[str] = []
     for item in values:
+        text: str | None
         if item is None:
             # A missing string is blank in a fixed-width FITS column, not the
             # text "None".
-            out.append("")
-        elif isinstance(item, bytes):
-            out.append(item.decode("ascii", errors="ignore"))
-        elif isinstance(item, np.bytes_):
-            out.append(bytes(item).decode("ascii", errors="ignore"))
+            text = ""
+        elif isinstance(item, (bytes, bytearray, np.bytes_)):
+            try:
+                text = bytes(item).decode("ascii")
+            except UnicodeDecodeError:
+                text = None
         else:
-            out.append(str(item))
+            text = str(item)
+        if text is None or not text.isascii():
+            # Same rule as table.write: FITS 'A' columns hold ASCII. Writing
+            # the UTF-8 bytes (or silently dropping characters) corrupts it.
+            raise ValueError(
+                f"Column '{name}' is a FITS string column and takes ASCII text "
+                f"only; got {item!r}"
+            )
+        out.append(text)
 
     if expected_rows is not None and len(out) != expected_rows:
         raise ValueError(
             f"Column '{name}' has {len(out)} rows, expected {expected_rows}"
         )
     return out
+
+
+def _clip_strings_to_width(name: str, values: list[str], width: int) -> list[str]:
+    """Clip ASCII values to a fixed-width 'A' column, warning when any is cut."""
+    import warnings
+
+    clipped = sum(1 for text in values if len(text) > width)
+    if clipped:
+        warnings.warn(
+            f"Column '{name}' has width {width}: "
+            f"{clipped} value(s) were silently clipped to fit. "
+            "Shorten values or widen the column to silence.",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return [text[:width] for text in values]
+    return values
 
 
 def _coerce_table_vla_values(

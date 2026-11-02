@@ -177,3 +177,29 @@ def test_none_in_string_columns_is_blank(tmp_path):
     got = torchfits.table.read(path, hdu=1).to_pydict()
     assert got["s"] == ["", "", "b", ""]
     assert got["z"] == ["xy", "", "q", ""]
+
+
+@pytest.mark.parametrize("op", ["append", "insert", "update"])
+def test_string_row_mutations_share_ascii_and_width_checks(tmp_path, op):
+    path = str(tmp_path / f"str_{op}.fits")
+    torchfits.table.write(
+        path, {"k": np.arange(2, dtype=np.int32), "s": ["abc", "b"]}, overwrite=True
+    )
+
+    def mutate(value):
+        if op == "append":
+            torchfits.table.append_rows(path, {"s": [value]})
+        elif op == "insert":
+            torchfits.table.insert_rows(path, {"s": [value]}, row=0)
+        else:
+            torchfits.table.update_rows(path, {"s": [value]}, slice(0, 1))
+
+    before = open(path, "rb").read()
+    for bad in ("héllo", b"\xffab"):
+        with pytest.raises(ValueError, match="ASCII"):
+            mutate(bad)
+        assert open(path, "rb").read() == before
+
+    with pytest.warns(RuntimeWarning, match="clipped"):
+        mutate("toolong")
+    assert "too" in torchfits.table.read(path, hdu=1).to_pydict()["s"]
