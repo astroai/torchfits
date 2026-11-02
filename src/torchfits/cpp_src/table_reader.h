@@ -724,24 +724,31 @@ public:
             }
         }
 
-        // Handle empty table
-        if (nrows_ == 0) {
-            return {};
-        }
-        if (num_rows <= 0) {
+        // An empty window (0-row table, or num_rows == 0) still returns every
+        // requested column, as an empty tensor of the dtype a non-empty read
+        // gives, so the result's keys and dtypes do not depend on row count.
+        if (num_rows < 0) {
             throw std::runtime_error("Invalid table row count: " + std::to_string(num_rows));
         }
-
-        // Validate rows
-        if (start_row < 1 || start_row > nrows_) {
+        if (nrows_ == 0) {
+            num_rows = 0;
+        }
+        if (num_rows > 0) {
+            // Validate rows
+            if (start_row < 1 || start_row > nrows_) {
+                throw std::runtime_error(
+                    "Invalid start row: " + std::to_string(start_row) +
+                    ", nrows: " + std::to_string(nrows_));
+            }
+            // Reordered comparison: start_row + num_rows - 1 can overflow long for
+            // adversarial inputs; nrows_ - start_row + 1 cannot (start_row in range).
+            if (num_rows > nrows_ - start_row + 1) {
+                num_rows = nrows_ - start_row + 1;
+            }
+        } else if (start_row < 1 || start_row > nrows_ + 1) {
             throw std::runtime_error(
                 "Invalid start row: " + std::to_string(start_row) +
                 ", nrows: " + std::to_string(nrows_));
-        }
-        // Reordered comparison: start_row + num_rows - 1 can overflow long for
-        // adversarial inputs; nrows_ - start_row + 1 cannot (start_row in range).
-        if (num_rows > nrows_ - start_row + 1) {
-            num_rows = nrows_ - start_row + 1;
         }
         for (int col_idx : col_indices) {
             ensure_column_scale(col_idx);
@@ -775,11 +782,6 @@ public:
             }
         };
 
-
-        // Check if we have any data
-        if (nrows_ == 0 || ncols_ == 0) {
-             return {};
-        }
 
         // Allocate tensors for all requested columns (except VLA)
         for (int col_idx : col_indices) {
@@ -997,7 +999,23 @@ public:
             }
         };
 
-        if (use_buffered) {
+        if (num_rows == 0) {
+            // Nothing to read: the fixed-width tensors above are already
+            // (0, ...) and go through the same dtype post-processing below.
+            for (int col_idx : col_indices) {
+                const auto& col = columns_[col_idx];
+                if (col.type != FITSColumnType::VARIABLE) continue;
+                if (vla_flat) {
+                    torch::Tensor values = torch::empty(
+                        {0}, torch::TensorOptions().dtype(col.torch_type));
+                    torch::Tensor offsets = torch::zeros(
+                        {1}, torch::TensorOptions().dtype(torch::kInt64));
+                    result[col_idx] = ColumnData(values, offsets, true);
+                } else {
+                    result[col_idx] = ColumnData(std::vector<torch::Tensor>{});
+                }
+            }
+        } else if (use_buffered) {
             try {
                 read_columns_buffered(col_indices, start_row, num_rows, result);
             } catch (const std::exception&) {
@@ -1226,8 +1244,22 @@ public:
             }
         }
 
-        if (nrows_ == 0) {
-            return {};
+        if (nrows_ == 0 || num_rows == 0) {
+            // Typed empty columns come from the CFITSIO reader (same dtype
+            // post-processing as a non-empty read; no bytes to map).
+            auto rows = read_columns(column_names, start_row, 0, false);
+            std::vector<std::pair<std::string, torch::Tensor>> out;
+            out.reserve(rows.size());
+            for (auto& kv : rows) {
+                if (kv.second.is_vla) {
+                    throw std::runtime_error("VLA columns not supported for mmap");
+                }
+                out.emplace_back(kv.first, std::move(kv.second.fixed_data));
+            }
+            return out;
+        }
+        if (num_rows < 0) {
+            throw std::runtime_error("Invalid table row count: " + std::to_string(num_rows));
         }
 
         // Validate rows

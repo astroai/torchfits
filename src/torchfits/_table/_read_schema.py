@@ -47,6 +47,18 @@ def _empty_table_with_schema(
     header_schema = _schema_from_header(
         path, hdu, columns, decode_bytes, include_fits_metadata
     )
+    if header_schema is None:
+        # VLA columns are not typed from the header alone; take the schema
+        # from a one-row scan so an empty window keeps every column typed.
+        scanned = schema(
+            path,
+            hdu,
+            columns,
+            decode_bytes=decode_bytes,
+            include_fits_metadata=include_fits_metadata,
+        )
+        if scanned.names:
+            header_schema = scanned
     if header_schema is not None:
         # Reorder fields to match the requested column order when specified.
         if columns is not None:
@@ -543,6 +555,27 @@ def schema(
         backend=scan_backend,
     )
     first = next(iterator, None)
+    if first is None and where is None:
+        # A table with no rows: the C++ chunk reader still returns typed
+        # (empty) columns, including VLA lists the header cannot type.
+        from ._read_scan import _read_cpp_table_chunk
+
+        chunk = _read_cpp_table_chunk(
+            path=path,
+            hdu=hdu,
+            columns=columns,
+            row_slice=None,
+            rows=None,
+            where=None,
+            mmap=False,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+        )
+        if chunk is not None:
+            return chunk.schema
     if first is None:
         return pa.schema([])
     return first.schema

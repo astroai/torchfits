@@ -80,8 +80,8 @@ def read_fallback(
         raise ValueError("HDU index must be non-negative")
     if start_row < 1:
         raise ValueError("start_row must be >= 1 (FITS uses 1-based indexing)")
-    if num_rows < -1 or num_rows == 0:
-        raise ValueError("num_rows must be > 0 or -1 for all rows")
+    if num_rows < -1:
+        raise ValueError("num_rows must be >= 0, or -1 for all rows")
     validate_device(device)
 
     # File identity *before* reading: everything cached below is keyed on

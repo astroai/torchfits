@@ -102,7 +102,7 @@ torchfits.table.read_torch(
 | `hdu` | `int` or `str` | `1` | Table HDU index or EXTNAME |
 | `columns` | `list[str]` or `None` | `None` | Columns to return (`None` = all) |
 | `start_row` | `int` | `1` | 1-based first row |
-| `num_rows` | `int` | `-1` | Row count (`-1` = through end) |
+| `num_rows` | `int` | `-1` | Row count (`-1` = through end; `0` returns every column empty, with its usual dtype, as a 0-row table does) |
 | `device` | `str` | `"cpu"` | `"cpu"`, `"cuda"`, `"mps"` |
 | `mmap` | `bool` or `str` | `"auto"` | `True` / `False` / `"auto"` (`"auto"` → mmap on) |
 | `return_header` | `bool` | `False` | Also return the HDU `Header` |

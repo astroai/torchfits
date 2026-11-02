@@ -217,7 +217,7 @@ def read_table(
     if int(start_row) < 1:
         raise ValueError("start_row must be >= 1 (FITS uses 1-based indexing)")
     if int(num_rows) < -1:
-        raise ValueError("num_rows must be > 0 or -1 for all rows")
+        raise ValueError("num_rows must be >= 0, or -1 for all rows")
     _resolve_mmap(mmap)  # raises on an unknown mmap mode; the value is unused
 
     if where is not None and str(where).strip():

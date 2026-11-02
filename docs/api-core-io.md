@@ -46,7 +46,7 @@ torchfits.read(
 | `use_cache` | `bool` or `None` | `None` | `False` disables the read cache; `True` enables it (using capacity 10 when `cache_capacity <= 0`); `None` follows `cache_capacity` |
 | `columns` | `list[str]` or `None` | `None` | Table columns to return; invalid with `mode="image"` |
 | `start_row` | `int` | `1` | 1-based first table row; invalid with `mode="image"` |
-| `num_rows` | `int` | `-1` | Number of table rows (`-1` reads through the end); invalid with `mode="image"` |
+| `num_rows` | `int` | `-1` | Number of table rows (`-1` reads through the end; `0` returns every column empty, with its usual dtype); invalid with `mode="image"` |
 | `cache_capacity` | `int` | `10` | Read-cache capacity; `0` disables cached reads |
 | `fast_header` | `bool` | `True` | Use the fast header path in the unified-reader fallback |
 
