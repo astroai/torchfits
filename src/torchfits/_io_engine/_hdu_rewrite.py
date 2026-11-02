@@ -396,6 +396,12 @@ def _atomic_rewrite_hdus(
         _write_all_checksums(path)
 
 
+def _extname_matches(hdu: Any, name: str) -> bool:
+    """EXTNAME lookup as read() does it: trimmed and case-insensitive."""
+    extname = hdu.header.get("EXTNAME")
+    return extname is not None and str(extname).strip().upper() == name.strip().upper()
+
+
 def insert_hdu(
     path: str,
     data: Any,
@@ -456,7 +462,7 @@ def replace_hdu(
     elif isinstance(hdu, str):
         target = -1
         for idx, item in enumerate(hdus):
-            if item.header.get("EXTNAME") == hdu:
+            if _extname_matches(item, hdu):
                 target = idx
                 break
         if target < 0:
@@ -510,7 +516,7 @@ def delete_hdu(
     elif isinstance(hdu, str):
         target = -1
         for idx, item in enumerate(hdus):
-            if item.header.get("EXTNAME") == hdu:
+            if _extname_matches(item, hdu):
                 target = idx
                 break
         if target < 0:
