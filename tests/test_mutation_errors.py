@@ -203,3 +203,29 @@ def test_string_row_mutations_share_ascii_and_width_checks(tmp_path, op):
     with pytest.warns(RuntimeWarning, match="clipped"):
         mutate("toolong")
     assert "too" in torchfits.table.read(path, hdu=1).to_pydict()["s"]
+
+
+@pytest.mark.parametrize("spelling", ["relative", "dot", "double_slash", "symlink"])
+def test_mutation_after_read_through_another_path_spelling(
+    tmp_path, monkeypatch, spelling
+):
+    path = tmp_path / "alias.fits"
+    torchfits.table.write(
+        str(path), {"a": np.arange(4, dtype=np.int32)}, overwrite=True
+    )
+    monkeypatch.chdir(tmp_path)
+    if spelling == "symlink":
+        (tmp_path / "link.fits").symlink_to(path)
+    alias = {
+        "relative": "alias.fits",
+        "dot": "./alias.fits",
+        "double_slash": str(tmp_path) + "//alias.fits",
+        "symlink": str(tmp_path / "link.fits"),
+    }[spelling]
+    # Caches a native reader (a READONLY CFITSIO handle) under the alias.
+    assert torchfits.table.read_torch(alias, hdu=1)["a"].tolist() == [0, 1, 2, 3]
+    torchfits.table.append_rows(str(path), {"a": np.array([5], dtype=np.int32)})
+    torchfits.table.update_rows(
+        str(path), {"a": np.array([9], dtype=np.int32)}, slice(0, 1), mmap=False
+    )
+    assert torchfits.table.read_torch(alias, hdu=1)["a"].tolist() == [9, 1, 2, 3, 5]

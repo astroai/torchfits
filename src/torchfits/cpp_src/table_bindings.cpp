@@ -4,6 +4,7 @@
 
 #include <string>
 #include <cmath>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -32,6 +33,21 @@
 namespace nb = nanobind;
 
 namespace {
+
+// One spelling per file for the reader cache: './x.fits', 'x.fits', a
+// symlink and the absolute path name the same file, and a writer evicts by
+// whichever spelling it was given. Readers also open the resolved path:
+// CFITSIO resolves a handle's relative name against the *current* directory
+// when it checks for an already-open file, so a reader cached as 'x.fits'
+// blocked writes to another directory's x.fits after a chdir. Names
+// realpath() cannot resolve (extended syntax, URLs) are kept as given.
+std::string canonical_reader_path(const std::string& filename) {
+    char buf[PATH_MAX];
+    if (::realpath(filename.c_str(), buf) != nullptr) {
+        return std::string(buf);
+    }
+    return filename;
+}
 
 struct ReaderCacheKey {
     std::string filename;
@@ -153,10 +169,10 @@ struct ThreadLocalReaderCache {
     // Drop any cached reader for `filename` from this cache. A reader is only
     // destroyed here while idle (not acquired), so a concurrent read on the
     // owning thread never touches an evicted reader.
-    void evict(const std::string& filename) {
+    void evict(const std::string& filename, const std::string& canonical) {
         std::lock_guard<std::mutex> l(mu_);
         for (auto it = map_.begin(); it != map_.end();) {
-            if (it->first.filename == filename) {
+            if (it->first.filename == filename || it->first.filename == canonical) {
                 lru_.erase(it->second.lru_it);
                 it = map_.erase(it);
             } else {
@@ -166,9 +182,10 @@ struct ThreadLocalReaderCache {
     }
 
     static void evict_everywhere(const std::string& filename) {
+        const std::string canonical = canonical_reader_path(filename);
         std::lock_guard<std::mutex> g(g_registry_mu);
         for (ThreadLocalReaderCache* cache : g_registry) {
-            cache->evict(filename);
+            cache->evict(filename, canonical);
         }
     }
 
@@ -731,10 +748,10 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table_raw", [](const std::string& filename, int hdu_num, const std::vector<std::string>& column_names, bool mmap) -> nb::dict {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names);
@@ -752,10 +769,10 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table", [](const std::string& filename, int hdu_num, const std::vector<std::string>& column_names, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names);
@@ -775,10 +792,10 @@ void bind_table(nb::module_& m) {
                                      const std::vector<std::string>& column_names,
                                      long start_row, long num_rows, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -800,10 +817,10 @@ void bind_table(nb::module_& m) {
                                          const std::vector<std::string>& column_names,
                                          long start_row, long num_rows, bool mmap) -> nb::dict {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
@@ -838,10 +855,10 @@ void bind_table(nb::module_& m) {
                                            const std::vector<std::string>& column_names,
                                            long start_row, long num_rows, bool mmap) -> nb::object {
         nb::gil_scoped_release release;
-        ReaderCacheKey key{filename, hdu_num};
+        ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
         AcquiredReader handle = g_reader_cache.acquire(key);
         if (!handle.reader) {
-            handle.reader = std::make_unique<torchfits::TableReader>(filename, hdu_num);
+            handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
         }
         if (mmap) {
             auto result_map = handle.reader->read_columns_mmap(column_names, start_row, num_rows);
