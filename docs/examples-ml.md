@@ -132,8 +132,8 @@ Train a compact U-Net on real CFHT MegaCam darks, test it on a separate dark exp
 ```bash
 bash scripts/fetch_cfht_megacam_sample.sh
 bash scripts/fetch_cfht_calib_frames.sh
-python examples/example_megacam_cr_denoise.py \\
-  --mode dark \\
+python examples/example_megacam_cr_denoise.py \
+  --mode dark \
   --compare-astroscrappy
 ```
 
@@ -189,16 +189,16 @@ The `torchfits.data` module provides specialized PyTorch `Dataset` implementatio
 | Dataset Class | Input Source | Primary Use Case | Output Item Shape |
 |---|---|---|---|
 | `FitsImageDataset` | File paths or glob pattern (`"*.fits"`) | 2D/3D images, multi-band stacks, supervised vision models | `(tensor, label)` |
-| `FitsCutoutDataset` | Mosaic path + list of coordinate bounding boxes | On-the-fly stamp extraction from large survey images | `(cutout_tensor, label)` |
+| `FitsCutoutDataset` | Mosaic path + list of coordinate bounding boxes | On-the-fly stamp extraction from large survey images | `cutout_tensor` |
 | `FitsCubeDataset` | 3D datacubes (radio/IFU/spectral) | Spectral line classification, velocity channel modeling | `(slice_tensor, label)` |
-| `FitsSpectrumDataset` | 1D FITS tables or spectral arrays | Stellar/galactic spectral classification (e.g. DESI/SDSS) | `(flux_tensor, label)` |
+| `FitsSpectrumDataset` | 1D FITS tables or spectral arrays | Stellar/galactic spectral classification (e.g. DESI/SDSS) | `{"flux", …}` dict; `(dict, label)` with `labels=` or `label_key=` |
 | `FitsTableDataset` | FITS binary/ASCII table | Tabular catalog features in RAM for ML models | `(row_dict, label)` |
 | `FitsTableIterableDataset` | Massive multi-million row table | Out-of-core streaming iteration without loading to RAM | `row_dict` |
-| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `(tensor, label)` |
+| `FitsImageIterableDataset` | Sharded list of 100k+ files | Distributed training across cluster filesystems | `tensor` |
 
 ---
 
-## Case Study 2: One Pipeline, Every Product {#ml-full-pipeline}
+## Case Study 4: One Pipeline, Every Product {#ml-full-pipeline}
 
 [`example_ml_training_loop.py`](published-examples/example_ml_training_loop.py) builds a small survey on disk — multi-band cutouts, 1D spectra, an IFU cube, a catalog — and trains a CNN on it. It is the shortest complete path from FITS files to a training step, and it exercises the mask, IVAR and data-state machinery end to end.
 
