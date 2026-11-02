@@ -434,7 +434,9 @@ float values written into an integer column only warn that they are
 truncated toward zero.
 
 Without `format=`, `insert_column` / `replace_column` infer the TFORM from
-the values. On an ASCII table (`XTENSION = 'TABLE'`) the inferred format is an
+the values. As in `table.write`, `uint16` / `uint32` / `uint64` values become
+`I` / `J` / `K` with `TZERO` = `2**15` / `2**31` / `2**63`, and `int8` becomes
+`B` with `TZERO = -128`. On an ASCII table (`XTENSION = 'TABLE'`) the inferred format is an
 ASCII one (`I6`, `I11`, `E25.15`, `A8`, ...); values an ASCII table cannot
 hold (booleans, vectors, complex) raise `ValueError` asking for `format=`.
 

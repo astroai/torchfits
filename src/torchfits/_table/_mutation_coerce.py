@@ -21,6 +21,9 @@ _VLA_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_TFORM_CODES: frozenset[str] = frozenset({"C", "M"})
 _UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2**31, "K": 2**63}
+# Fixed-width dtypes FITS stores through the TZERO convention (numpy dtype
+# str without byte order -> stored TFORM code).
+_OFFSET_CONVENTION_CODE = {"i1": "B", "u2": "I", "u4": "J", "u8": "K"}
 
 
 def _ensure_dtype_maps() -> None:
@@ -109,7 +112,11 @@ def _infer_fits_format(arr: "np.ndarray") -> str:
     if arr.dtype == np.object_:
         raise TypeError("Object/VLA columns require explicit schema['format']")
 
-    base = _infer_fits_scalar_code(arr)
+    # uint16/32/64 and int8 take the FITS offset convention (I/J/K/B plus
+    # TZERO), as table.write does; the rewrite applies the offset.
+    base = _OFFSET_CONVENTION_CODE.get(arr.dtype.str[1:]) or _infer_fits_scalar_code(
+        arr
+    )
     if arr.ndim == 1:
         return f"1{base}"
     repeat = int(np.prod(arr.shape[1:]))
@@ -628,6 +635,17 @@ def _infer_column_format_for_insert(
     fmt = _infer_binary_column_format(name, values)
     if not ascii_table:
         return fmt
+    dtype = getattr(values, "dtype", None)
+    if isinstance(dtype, torch.dtype):
+        dtype = torch.empty(0, dtype=dtype).numpy().dtype
+    if dtype is not None and getattr(dtype, "str", "")[1:] in _OFFSET_CONVENTION_CODE:
+        # The TZERO convention is a binary-table one; table.write cannot
+        # write these dtypes to an ASCII table either.
+        raise ValueError(
+            f"Column '{name}' has dtype {dtype}, which an ASCII table cannot hold "
+            "without a TZERO offset. Pass format= with an ASCII TFORM (e.g. "
+            "'I11') and values of a signed dtype."
+        )
     # An ASCII table holds scalar I/F/E/D/A fields only; a binary TFORM such
     # as '1D' made the rewrite fail with "Failed to create table".
     repeat, code = fmt[:-1], fmt[-1]
