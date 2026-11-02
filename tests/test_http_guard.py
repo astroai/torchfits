@@ -245,3 +245,52 @@ def test_cfitsio_driver_variants_are_guarded(monkeypatch, scheme):
     with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
         torchfits.read(url)
     assert dialed == []
+
+
+class _ProxyHandler(http.server.BaseHTTPRequestHandler):
+    seen: list[str] = []
+
+    def do_GET(self):
+        type(self).seen.append(self.requestline)
+        body = b"via-proxy"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_http_open_goes_through_configured_proxy(monkeypatch):
+    """With ``http_proxy`` set the socket must reach the proxy, not the
+    target's pinned address at the proxy's port."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ProxyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _ProxyHandler.seen = []
+    for name in ("no_proxy", "NO_PROXY", "HTTP_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{server.server_address[1]}")
+    resolved = []
+
+    def fake_resolve(url):
+        resolved.append(url)
+        return (GLOBAL_A,)
+
+    monkeypatch.setattr(http_util, "_resolve_public_addrs", fake_resolve)
+    try:
+        with http_util.http_open("http://files.example/data.fits", timeout=5) as r:
+            body = r.read()
+    finally:
+        server.shutdown()
+        thread.join()
+    assert body == b"via-proxy"
+    assert _ProxyHandler.seen == ["GET http://files.example/data.fits HTTP/1.1"]
+    assert resolved == ["http://files.example/data.fits"]  # target still guarded
+
+
+def test_proxy_does_not_bypass_guard(monkeypatch):
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.http_open("http://10.0.0.5/x.fits")

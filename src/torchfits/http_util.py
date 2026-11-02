@@ -221,8 +221,15 @@ def is_internal_url(url: str) -> bool:
     return False
 
 
-def _pin_addrs_for(request: urllib.request.Request) -> tuple[str, ...]:
-    """Guard-time addresses for *request* (as pinned by the guard hop)."""
+def _pin_addrs_for(request: urllib.request.Request) -> tuple[str, ...] | None:
+    """Guard-time addresses for *request* (as pinned by the guard hop).
+
+    ``None`` when urllib routes the request through a proxy (``http_proxy`` /
+    ``https_proxy``): the socket must then reach the proxy itself, which
+    resolves the already-guarded target host on its side.
+    """
+    if request.has_proxy() or getattr(request, "_tunnel_host", None):
+        return None
     pinned = getattr(request, "_torchfits_pin", None)
     if pinned:
         return tuple(pinned)
@@ -299,7 +306,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 
 def _conn_factory(
-    base: Any, pinned_addrs: tuple[str, ...]
+    base: Any, pinned_addrs: tuple[str, ...] | None
 ) -> Callable[..., http.client.HTTPConnection]:
     def factory(host: str, **kwargs: Any) -> Any:
         return base(host, pinned_addrs, **kwargs)
