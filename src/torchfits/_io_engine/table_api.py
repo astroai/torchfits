@@ -354,7 +354,13 @@ def read_table(
                 raise ValueError(
                     f"where does not support fixed-size vector column '{col}'"
                 )
-            part = _torch_cmp_mask(values, op, lit)
+            try:
+                part = _torch_cmp_mask(values, op, lit)
+            except TypeError as exc:
+                raise ValueError(
+                    f"where cannot compare column '{col}' ({values.dtype}) with "
+                    f"{lit!r} using '{op}': {exc}"
+                ) from exc
             sentinel = tnull_map.get(col)
             if sentinel is not None:
                 part = part & _not_null(values, sentinel)

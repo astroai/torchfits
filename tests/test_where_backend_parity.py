@@ -356,3 +356,83 @@ def test_vector_column_predicate_is_refused_on_every_backend(tmp_path):
                     )
         with pytest.raises(ValueError, match="vector column 'V'"):
             torchfits.table.read_torch(path, where="V > 4", columns=columns)
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("S == 'a\\nb'", ("cmp", "S", "==", "a\\nb")),
+        ("S == 'a\\db'", ("cmp", "S", "==", "a\\db")),
+        ("S == 'a\\'", ("cmp", "S", "==", "a\\")),
+        ("S == 'O''NEIL'", ("cmp", "S", "==", "O'NEIL")),
+        ('S == "say ""hi"""', ("cmp", "S", "==", 'say "hi"')),
+        ("X BETWEEN .5 AND 2", ("between", "X", 0.5, 2, False)),
+        ("X NOT BETWEEN -.5 AND +.5", ("between", "X", -0.5, 0.5, True)),
+        ("S BETWEEN 'a' AND 'c'", ("between", "S", "a", "c", False)),
+        ("S == 'x BETWEEN 1 AND 2'", ("cmp", "S", "==", "x BETWEEN 1 AND 2")),
+    ],
+)
+def test_where_literals_are_taken_literally(expr, expected):
+    import warnings
+
+    from torchfits._where import _parse_where_expression
+
+    _parse_where_expression.cache_clear()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no SyntaxWarning for '\d'
+        assert parse_where_expression(expr) == expected
+
+
+def test_string_between_and_backslash_literal_select_rows(tmp_path):
+    path = str(tmp_path / "s.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(4, dtype=np.int32),
+            "S": np.array([b"a", b"b\\n", b"c", b"d"], dtype="S3"),
+        },
+        overwrite=True,
+    )
+    for backend in ("auto", "cpp", "torch"):
+        got = torchfits.table.read(path, where="S BETWEEN 'b' AND 'c'", backend=backend)
+        assert got["ID"].to_pylist() == [1, 2]
+        got = torchfits.table.read(path, where="S == 'b\\n'", backend=backend)
+        assert got["ID"].to_pylist() == [1]
+
+
+def test_read_torch_coerces_logical_and_numeric_words(tmp_path):
+    path = str(tmp_path / "lw.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            "L": np.array([True, False, True]),
+            "E": np.array([1.0, np.inf, 2.0], dtype=np.float32),
+            "D": np.array([1.0, np.inf, 2.0]),
+        },
+        overwrite=True,
+    )
+    for expr, expected in [
+        ("L == T", [0, 2]),
+        ("L == FALSE", [1]),
+        ("E < inf", [0, 2]),
+        ("D < inf", [0, 2]),
+    ]:
+        assert torchfits.table.read_torch(path, where=expr)["ID"].tolist() == expected
+        assert torchfits.table.read(path, where=expr)["ID"].to_pylist() == expected
+    with pytest.raises(ValueError):
+        torchfits.table.read_torch(path, where="ID > abc")
+    with pytest.raises(ValueError):
+        torchfits.table.read_torch(path, where="E > abc")
+
+
+def test_repeated_projection_column_is_returned_once(tmp_path):
+    path = str(tmp_path / "dup.fits")
+    torchfits.table.write(path, {"ID": np.arange(4, dtype=np.int32)}, overwrite=True)
+    for where in (None, "ID > 1", "ID > 50"):
+        for backend in ("auto", "cpp", "torch"):
+            for mmap in (True, False):
+                got = torchfits.table.read(
+                    path, columns=["ID", "ID"], where=where, backend=backend, mmap=mmap
+                )
+                assert got.column_names == ["ID"], (where, backend, mmap)

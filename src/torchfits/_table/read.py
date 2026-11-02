@@ -81,6 +81,10 @@ def _read_prelude(
 
     if not columns:
         columns = None
+    else:
+        # A repeated name selects the column once, on every read path (the
+        # unfiltered read already did; filtered reads returned it twice).
+        columns = list(dict.fromkeys(columns))
     try:
         header = torchfits.read_header(path, hdu)
     except (ValueError, RuntimeError, TypeError):

@@ -151,8 +151,8 @@ def test_normalize_where_syntax_quote_aware():
     assert _normalize_where_syntax("A == 'A&&B' && B == 'C|D'") == (
         "A == 'A&&B'  AND  B == 'C|D'"
     )
-    # FITS doubled-quote escapes become Python escapes.
-    assert _normalize_where_syntax("NAME == 'O''NEIL'") == "NAME == 'O\\'NEIL'"
+    # FITS doubled-quote escapes become a Python literal of the same value.
+    assert _normalize_where_syntax("NAME == 'O''NEIL'") == 'NAME == "O\'NEIL"'
     # Unterminated quotes raise instead of silently mangling.
     with pytest.raises(ValueError, match="Unterminated"):
         _normalize_where_syntax("NAME == 'unterminated")

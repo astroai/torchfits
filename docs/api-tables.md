@@ -315,6 +315,12 @@ Root `torchfits.read()` has no `where=` parameter.
     The WHERE dialect is Python-expression based — single `=` is not an
     operator; write `==` (also accepts `&&` / `||` / `~` C-style forms).
 
+!!! note "String literals are literal"
+    Quote strings with `'...'` or `"..."`. A doubled quote is one quote
+    character (`'O''NEIL'`); a backslash is an ordinary character, so
+    `'a\nb'` is four characters, not a newline. `BETWEEN` takes string
+    bounds (`NAME BETWEEN 'a' AND 'm'`) as well as numbers such as `.5`.
+
 !!! note "How null rows are filtered"
     With `apply_fits_nulls=True` (the default) a `TNULL` sentinel is a null
     and the dialect follows **SQL three-valued logic**: a null carries an

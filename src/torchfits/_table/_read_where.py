@@ -172,6 +172,22 @@ def _uint64_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tenso
 def _torch_cmp_mask(tensor: torch.Tensor, op: str, literal: Any) -> torch.Tensor:
     import torch
 
+    # Same literal coercions as the Arrow filter (_aligned_scalar): T/F/TRUE
+    # for logical columns, a numeric word such as inf for float columns.
+    if tensor.dtype == torch.bool:
+        literal = _boolean_literal(literal, "")
+    elif tensor.dtype.is_floating_point and isinstance(literal, str):
+        try:
+            literal = float(literal)
+        except ValueError:
+            raise ValueError(
+                f"where compares a float column with {literal!r}, which is not a number"
+            ) from None
+    elif isinstance(literal, str):
+        raise ValueError(
+            f"where compares a numeric column with {literal!r}, which is not a number"
+        )
+
     if tensor.dtype == torch.uint64:
         return _uint64_cmp_mask(tensor, op, literal)
 
@@ -484,7 +500,8 @@ def _aligned_scalar(
     """
     if pa.types.is_boolean(column.type):
         return op, pa.scalar(_boolean_literal(value, column_name), type=column.type)
-    if pa.types.is_float32(column.type):
+    if pa.types.is_floating(column.type):
+        # float() also reads numeric words (inf, nan) like the torch mask.
         return op, pa.scalar(float(value), type=column.type)
     if pa.types.is_integer(column.type) and isinstance(value, (int, float)):
         op, value = _integer_literal(op, value)
