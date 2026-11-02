@@ -160,6 +160,21 @@ std::string read_string_value(fitsfile* fptr, const std::string& key, const std:
     return out;
 }
 
+// The path-level probes below answer from SharedReadMeta, then open the file
+// and publish what they found. An out-of-band replace can land while the file
+// is open: the validator clears the caches and rotates meta->uid, and a store
+// after that would pin the old file's answer under the new generation for good.
+// Read the generation before opening and publish only if it is still current
+// (the same rule FITSFile::owns_current_generation_locked applies).
+template <typename F>
+void publish_if_current(const std::shared_ptr<d::SharedReadMeta>& meta, uint64_t generation,
+                        F&& store) {
+    if (!meta) return;
+    std::unique_lock<std::shared_mutex> lock(meta->mutex);
+    if (meta->uid.load(std::memory_order_relaxed) != generation) return;
+    store(*meta);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -436,9 +451,11 @@ std::string header_text_path(const std::string& path, int hdu) {
 int num_hdus_path(const std::string& path) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         if (meta->num_hdus >= 0) return meta->num_hdus;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const int num_hdus = with_open(path, [](fitsfile* fptr) {
         // checked_num_hdus() seeks to `start_hdu + num_hdus - 1` to find the
@@ -448,20 +465,19 @@ int num_hdus_path(const std::string& path) {
         // the last HDU and silently skip the truncation check.
         return checked_num_hdus(fptr, 1);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->num_hdus = num_hdus;
-    }
+    publish_if_current(meta, generation, [&](d::SharedReadMeta& m) { m.num_hdus = num_hdus; });
     return num_hdus;
 }
 
 std::string hdu_type_path(const std::string& path, int hdu) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->hdu_type_cache.find(hdu);
         if (it != meta->hdu_type_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const std::string hdu_type = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -469,10 +485,8 @@ std::string hdu_type_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_hdu_type: could not move to HDU");
         return hdu_type_name(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->hdu_type_cache[hdu] = hdu_type;
-    }
+    publish_if_current(meta, generation,
+                       [&](d::SharedReadMeta& m) { m.hdu_type_cache[hdu] = hdu_type; });
     return hdu_type;
 }
 
@@ -481,10 +495,12 @@ long long nrows_path(const std::string& path, int hdu) {
     // global-map entry.
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->nrows_cache.find(hdu);
         if (it != meta->nrows_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const long nrows = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -492,20 +508,21 @@ long long nrows_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_nrows: could not move to HDU");
         return table_nrows(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->nrows_cache[hdu] = static_cast<long long>(nrows);
-    }
+    publish_if_current(meta, generation, [&](d::SharedReadMeta& m) {
+        m.nrows_cache[hdu] = static_cast<long long>(nrows);
+    });
     return static_cast<long long>(nrows);
 }
 
 std::vector<std::string> colnames_path(const std::string& path, int hdu) {
     check_fits_filename_security(path);
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->colnames_cache.find(hdu);
         if (it != meta->colnames_cache.end()) return it->second;
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
     const std::vector<std::string> names = with_open(path, [hdu](fitsfile* fptr) {
         int status = 0;
@@ -513,10 +530,8 @@ std::vector<std::string> colnames_path(const std::string& path, int hdu) {
         if (status != 0) throw std::runtime_error("read_colnames: could not move to HDU");
         return table_colnames(fptr);
     });
-    if (meta) {
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->colnames_cache[hdu] = names;
-    }
+    publish_if_current(meta, generation,
+                       [&](d::SharedReadMeta& m) { m.colnames_cache[hdu] = names; });
     return names;
 }
 
@@ -544,6 +559,7 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
     // Warm SharedReadMeta: skip the CFITSIO open when image params were
     // already populated by a prior read / SubsetReader.
     auto meta = d::get_shared_meta_for_path(path);
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->image_info_cache.find(hdu);
@@ -560,8 +576,9 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
             }
             return {bitpix, std::move(shape)};
         }
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
-    return with_open(path, [hdu, &path](fitsfile* fptr) {
+    return with_open(path, [hdu, &meta, generation](fitsfile* fptr) {
         int status = 0;
         fits_movabs_hdu(fptr, absolute_hdu(fptr, hdu), nullptr, &status);
         if (status != 0) throw std::runtime_error("read_shape: could not move to HDU");
@@ -571,11 +588,9 @@ std::pair<int, std::vector<long>> image_shape_path(const std::string& path, int 
         naxes_ll.fill(0);
         d::read_image_params_9d(fptr, &bitpix, &naxis, naxes_ll, &status);
         if (status != 0) throw std::runtime_error("Could not read image parameters");
-        auto cache = d::get_shared_meta_for_path(path);
-        if (cache) {
-            std::unique_lock<std::shared_mutex> lock(cache->mutex);
-            cache->image_info_cache[hdu] = std::make_tuple(bitpix, naxis, naxes_ll);
-        }
+        publish_if_current(meta, generation, [&](d::SharedReadMeta& m) {
+            m.image_info_cache[hdu] = std::make_tuple(bitpix, naxis, naxes_ll);
+        });
         std::vector<long> shape;
         shape.reserve(static_cast<size_t>(naxis));
         for (int i = naxis - 1; i >= 0; --i) {
