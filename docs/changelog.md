@@ -143,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - hdu: Route HDUList.write through torchfits.write's path contract
 - io: Raise a readable open error when CFITSIO's error stack holds raw bytes
 - http: Refuse '@' in CFITSIO URLs and parse userinfo only in the authority
+- io: Let write() raise argument TypeErrors unchanged
+- table: Infer the TZERO convention for unsigned and int8 in insert_column
+- table: Raise ValueError naming TNULL/TSCAL/TZERO for bad schema numerics
+- table: Return typed empty columns for 0-row tables and num_rows=0
+- io: Write the uint64 BZERO/TZERO offset as the exact integer 2**63
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
@@ -162,6 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - install: Mark the bzip2/libcurl build flags as a diagnostic
 - api-core-io: Correct read_batch_info, compression losslessness and errors
 - api: Name Header.cards instead of a nonexistent read_header_cards
+- io: Note that PLIO_1 uint16 images read 32768 off in astropy
 
 ## [1.3.1] — 2026-10-26
 
