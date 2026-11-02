@@ -252,6 +252,13 @@ public:
                     case TLONGLONG: col.torch_type = torch::kInt64; break;
                     case TFLOAT: col.torch_type = torch::kFloat32; break;
                     case TDOUBLE: col.torch_type = torch::kFloat64; break;
+                    // 'PA': raw bytes, like fixed-width string columns.
+                    case TSTRING: col.torch_type = torch::kUInt8; break;
+                    // 'PC'/'PM'/'PX' are rejected when read (see
+                    // read_vla_column_flat); record the true element type
+                    // instead of the old silent float32 fallback.
+                    case TCOMPLEX: col.torch_type = torch::kComplexFloat; break;
+                    case TDBLCOMPLEX: col.torch_type = torch::kComplexDouble; break;
                     default: col.torch_type = torch::kFloat32;
                 }
                 col.width = 8;
@@ -2650,6 +2657,17 @@ public:
     std::pair<torch::Tensor, torch::Tensor> read_vla_column_flat(
         int col_idx, long start_row, long num_rows, const ColumnInfo& col
     ) {
+        {
+            // Complex and bit heap elements need a decode this reader does not
+            // have (two swapped halves; packed bits counted in bits). Reading
+            // them as float32 returned truncated, mistyped data.
+            const int vla_type = -col.fits_typecode;
+            if (vla_type == TCOMPLEX || vla_type == TDBLCOMPLEX || vla_type == TBIT) {
+                throw std::runtime_error(
+                    "Variable-length complex or bit columns ('PC', 'PM', 'PX') are not "
+                    "supported: " + col.name);
+            }
+        }
         const size_t descriptor_count = internal::checked_nonnegative_cast<size_t>(
             num_rows, "Invalid VLA geometry for column " + col.name + " row count");
         std::vector<LONGLONG> repeats(descriptor_count, 0);
