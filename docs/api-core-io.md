@@ -458,6 +458,21 @@ torchfits.write(
 | `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
 
+!!! note "`uint16` images and `PLIO_1`"
+    CFITSIO stores a `uint16` image compressed with `PLIO_1` as unsigned
+    tile values without the `BZERO = 32768` offset applied. torchfits,
+    fitsio and other CFITSIO readers read it back exactly; astropy reads
+    every value 32768 off. For files astropy users will open, compress
+    `uint16` images with `RICE_1` or `GZIP_1` instead:
+
+    ```python
+    import torch, torchfits
+
+    x = torch.tensor([[0, 1, 40000, 65535]], dtype=torch.uint16)
+    torchfits.write("u16.fits", x, compress="RICE_1", overwrite=True)
+    assert torch.equal(torchfits.read("u16.fits", hdu=1), x)
+    ```
+
 !!! tip "Skewed float → int16"
     Linear min→max packing onto int16 wastes codes on rare extremes. Prefer
     native float (`quantize=None`). When size forces int16, use
