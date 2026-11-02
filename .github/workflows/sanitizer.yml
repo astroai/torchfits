@@ -69,7 +69,12 @@ jobs:
         run: |
           # python is not instrumented, so the ASan runtime must be loaded
           # before anything else in the process.
+          # The C++ probes in tests/ link the instrumented libtorchfits_core
+          # (and its static CFITSIO), so they need the same sanitizer flags or
+          # the link fails on undefined __asan_*/__ubsan_* symbols.
+          export CXX="clang++ -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer"
           if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            CXX="${CXX} -shared-libasan"
             rt="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
             [[ -f "${rt}" ]] || rt="$(clang -print-file-name=libclang_rt.asan.so)"
             preload=LD_PRELOAD

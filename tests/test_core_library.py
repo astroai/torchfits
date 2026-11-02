@@ -274,6 +274,23 @@ def _core_build_artifacts(repo_root: Path) -> tuple[Path, Path] | None:
     return libs[0], archives[0]
 
 
+def _compile_probe(args: list[str]) -> None:
+    """Compile a C++ probe with ``$CXX``, showing the compiler's output on failure.
+
+    A probe that links the built core must use the same instrumentation as the
+    core: under the sanitizer job the core references the ASan/UBSan runtime,
+    so that job sets ``CXX`` to the instrumented compiler line.
+    """
+    compiler = shlex.split(os.environ.get("CXX", "c++"))
+    result = subprocess.run(
+        [*compiler, *args], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, (
+        f"compiling the probe failed (rc={result.returncode}): "
+        f"{shlex.join([*compiler, *args])}\n{result.stdout}\n{result.stderr}"
+    )
+
+
 def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
     """One ``Metadata`` handle, many threads: every answer must match its HDU.
 
@@ -314,12 +331,10 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
         ]
     ).write(str(mef), overwrite=True)
 
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     source = repo_root / "tests" / "cpp" / "test_fitsreader_threads.cpp"
     executable = tmp_path / "test_fitsreader_threads"
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-O2",
             "-I",
@@ -332,10 +347,7 @@ def test_fitsreader_is_safe_to_share_across_threads(tmp_path: Path) -> None:
             "-lpthread",
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     env = dict(os.environ)
     env["DYLD_LIBRARY_PATH"] = f"{library.parent}:{env.get('DYLD_LIBRARY_PATH', '')}"
@@ -391,7 +403,6 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
         str(path), torch.arange(16, dtype=torch.int16).reshape(4, 4), overwrite=True
     )
 
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     source = repo_root / "tests" / "cpp" / "test_open_for_write_conflict.cpp"
     executable = tmp_path / "test_open_for_write_conflict"
     # Link the shared core rather than the static CFITSIO archive: the core
@@ -399,9 +410,8 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
     # CFITSIO"), so every fits_* symbol resolves and zlib/bzip2/curl come along
     # transitively. Naming those libraries here instead would hard-code a
     # platform-specific link line.
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-O2",
             "-I",
@@ -410,10 +420,7 @@ def test_cfitsio_readonly_handle_blocks_readwrite_open(tmp_path: Path) -> None:
             str(library),
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     env = dict(os.environ)
     env["DYLD_LIBRARY_PATH"] = f"{library.parent}:{env.get('DYLD_LIBRARY_PATH', '')}"
@@ -505,14 +512,12 @@ def test_thread_pool_survives_worker_side_nesting(tmp_path: Path) -> None:
     The C++ probe is compiled and run at several pool sizes with a wall-clock
     timeout, so a regression fails the test rather than hanging the suite.
     """
-    compiler = shlex.split(os.environ.get("CXX", "c++"))
     repo_root = Path(__file__).resolve().parents[1]
     source = repo_root / "tests" / "cpp" / "test_parallel_for_nesting.cpp"
     parallel_cpp = repo_root / "src" / "torchfits" / "cpp_src" / "core" / "parallel.cpp"
     executable = tmp_path / "test_parallel_for_nesting"
-    subprocess.run(
+    _compile_probe(
         [
-            *compiler,
             "-std=c++17",
             "-I",
             str(repo_root / "src" / "torchfits" / "cpp_src"),
@@ -521,10 +526,7 @@ def test_thread_pool_survives_worker_side_nesting(tmp_path: Path) -> None:
             "-lpthread",
             "-o",
             str(executable),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     for threads in ("1", "2", "4", "8"):
         result = subprocess.run(
