@@ -43,6 +43,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Reject a schema bit repeat that disagrees with the payload width
 - build: Size BZIP2 float tiles correctly and reject short bzip2 tiles
 - build: Keep the vendored CFITSIO tree when vendor.sh fails
+- io: Compress uint16 images with PLIO_1
+- io: Refuse HDU edits that would renumber the other HDUs
+- io: Keep untouched scaled images' stored codes across HDU edits
+- cache: Clear overridden remote and sample roots with clear_cache(disk=True)
+- io: Take the read-cache file signature before reading
+- io: Invalidate path caches after write_checksums
+- io: Write numpy images with negative strides
+- io: Match EXTNAME case-insensitively in replace_hdu and delete_hdu
+- io: Stop rewrites from stacking CFITSIO's standard COMMENT block
+- io: Keep x.fits.gz gzip-compressed on overwrite and HDU edits
+- io: Drop BSCALE/BZERO copied onto an integer tensor of another BITPIX
+- io: Let write() raise the documented ValueError for invalid input
+- io: Reject CFITSIO's '!' clobber prefix in write paths
+- io: Never clobber or delete a file that appears during overwrite=False
+- io: Keep a source TFORM on rewrite only for the same column layout
+- table: Write and read int8 columns with the signed-byte convention
+- table: Write uint64 TZERO = 2**63 exactly on every path
+- io: Honor mode= and EXTNAMEs on every read route
+- io: Refuse HTTP range cutouts of table HDUs
+- io: Validate cached reads of file.fits[N] and file:// paths against the file
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
