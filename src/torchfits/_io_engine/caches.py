@@ -112,10 +112,32 @@ def clear_cache_subsystem(
     clear_file_cache(**policy, cpp_module=cpp_module)
 
 
-def path_signature(path: str) -> tuple[int, int, int] | None:
-    """Return a compact file identity for stale-cache detection."""
+def _stat_target(path: str) -> str | None:
+    """The on-disk file behind *path*, or None for a network URL.
+
+    ``mef.fits[1]`` and ``file:///abs/mef.fits`` name a real file that can be
+    stat'ed; treating them as unstattable kept their cache entries alive
+    across rewrites. Network URLs have no local identity at all.
+    """
+    from .paths import cfitsio_base_path
+
+    target = path[len("file://") :] if path.startswith("file://") else path
+    if "://" in target:
+        return None
+    return cfitsio_base_path(target)
+
+
+def path_signature(path: str) -> Any:
+    """Return a compact file identity for stale-cache detection.
+
+    A network URL gets a fresh object on every call, which never compares
+    equal, so its entries are never served.
+    """
+    target = _stat_target(path)
+    if target is None:
+        return object()
     try:
-        st = os.stat(path)
+        st = os.stat(target)
     except Exception:
         return None
     mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
@@ -484,30 +506,46 @@ def invalidate_path_caches(path: str) -> None:
 def _invalidate_path_caches_locked(path: str) -> None:
     """Remove all Python cache entries for *path*; caller holds cache_lock."""
 
+    # Entries keyed by an extended-syntax or file:// spelling of the same
+    # file (mef.fits[1]) describe it too.
+    target = _stat_target(path)
+
+    def _same_file(key_path: Any) -> bool:
+        if key_path == path:
+            return True
+        return (
+            target is not None
+            and isinstance(key_path, str)
+            and _stat_target(key_path) == target
+        )
+
     stale_data_keys = [
         key
         for key in list(file_cache.keys())
-        if isinstance(key, tuple) and key and key[0] == path
+        if isinstance(key, tuple) and key and _same_file(key[0])
     ]
     for key in stale_data_keys:
         file_cache.pop(key, None)
 
-    for key in [key for key in image_meta_cache.keys() if key[0] == path]:
+    for key in [key for key in image_meta_cache.keys() if _same_file(key[0])]:
         image_meta_cache.pop(key, None)
-    for key in [key for key in header_cards_cache.keys() if key[0] == path]:
+    for key in [key for key in header_cards_cache.keys() if _same_file(key[0])]:
         header_cards_cache.pop(key, None)
-    for key in [key for key in hdu_type_cache.keys() if key[0] == path]:
+    for key in [key for key in hdu_type_cache.keys() if _same_file(key[0])]:
         hdu_type_cache.pop(key, None)
-    for key in [key for key in cold_nommap_cache.keys() if key[0] == path]:
+    for key in [key for key in cold_nommap_cache.keys() if _same_file(key[0])]:
         cold_nommap_cache.pop(key, None)
-    for key in [key for key in auto_mmap_cache.keys() if key[0] == path]:
+    for key in [key for key in auto_mmap_cache.keys() if _same_file(key[0])]:
         auto_mmap_cache.pop(key, None)
 
-    auto_hdu_cache.pop(path, None)
+    for key in [
+        k for k in auto_hdu_cache.keys() if not isinstance(k, tuple) and _same_file(k)
+    ]:
+        auto_hdu_cache.pop(key, None)
     for key in [
         key
         for key in auto_hdu_cache.keys()
-        if isinstance(key, tuple) and key and key[0] == path
+        if isinstance(key, tuple) and key and _same_file(key[0])
     ]:
         auto_hdu_cache.pop(key, None)
 
