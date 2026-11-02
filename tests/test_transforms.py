@@ -2184,3 +2184,17 @@ class TestMeshTileFallback:
         # With min_tile_pixels=1 the single pixel defines the tile background,
         # so the pixel is subtracted back to ~0.
         assert abs(out[0, 0, 0].item()) < 1e3
+
+
+def test_compose_accepts_plain_callables() -> None:
+    """Users chain lambdas and small classes; Compose calls them with ``x`` only."""
+    from torchfits.transforms import ArcsinhStretch, Compose
+
+    img = torch.tensor([[1.0, float("nan")], [3.0, 4.0]])
+    pipeline = Compose([lambda x: torch.nan_to_num(x, nan=0.0), ArcsinhStretch()])
+    out = pipeline(img)
+    assert torch.isfinite(out).all()
+    expected = ArcsinhStretch()(torch.nan_to_num(img, nan=0.0))
+    torch.testing.assert_close(out, expected)
+    with pytest.raises(TypeError, match="no inverse"):
+        pipeline.inverse(out)

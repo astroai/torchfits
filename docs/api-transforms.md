@@ -663,7 +663,9 @@ Auto-normalize from BITPIX/BSCALE/BZERO. Integer types mapped to [0, 1].
 
 ### `Compose(transforms)`
 
-Chain transforms; `inverse()` unwinds in reverse order.
+Chain transforms; `inverse()` unwinds in reverse order. A child that is not a
+`FITSTransform` (a lambda, a class with `__call__`) is called as `t(x)` — it
+gets no `mask=` and has no inverse, so `inverse()` raises `TypeError` on it.
 
 ```python
 pipeline = Compose(

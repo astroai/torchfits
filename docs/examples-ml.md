@@ -46,18 +46,17 @@ from torchfits.transforms import (
 )
 
 
-# NanToZero is example-local: torchfits ships no such transform.
-class NanToZero:
-    def __call__(self, x):
-        import torch
-
-        return torch.nan_to_num(x, nan=0.0)
+# Compose also accepts plain callables: they are called as t(x), without
+# mask= and without an inverse. Use a top-level def rather than a lambda so
+# DataLoader workers can pickle the pipeline.
+def nan_to_zero(x):
+    return torch.nan_to_num(x, nan=0.0)
 
 
 # 1. Define astronomical preprocessing pipeline
 transform = Compose(
     [
-        NanToZero(),  # Replace off-footprint survey boundary NaNs
+        nan_to_zero,  # Replace off-footprint survey boundary NaNs
         BackgroundSubtract(),  # Estimate and subtract local sky background
         ArcsinhStretch(a=0.1),  # Reveal faint spiral arm features
         ZScaleNormalize(),  # Map pixel dynamic range to standard normal scale

@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import torch
 
@@ -356,11 +356,20 @@ class FITSTransform:
 
 
 class Compose(FITSTransform):
-    """Chain transforms; ``.inverse()`` unwinds them in reverse order."""
+    """Chain transforms; ``.inverse()`` unwinds them in reverse order.
 
-    def __init__(self, transforms: Sequence[FITSTransform]) -> None:
+    A child that is not a :class:`FITSTransform` (a lambda, a small class with
+    ``__call__``) is called as ``t(x)``: it receives no ``mask`` and has no
+    inverse, so ``inverse()`` raises ``TypeError`` when it reaches one.
+    """
+
+    def __init__(
+        self, transforms: Sequence[FITSTransform | Callable[[Any], Any]]
+    ) -> None:
         self.transforms = list(transforms)
-        self.expects = self.transforms[0].expects if self.transforms else None
+        self.expects = (
+            getattr(self.transforms[0], "expects", None) if self.transforms else None
+        )
         self.propagates_ivar = all(
             getattr(t, "propagates_ivar", False) for t in self.transforms
         )
@@ -368,19 +377,24 @@ class Compose(FITSTransform):
     def __len__(self) -> int:
         return len(self.transforms)
 
-    def __getitem__(self, idx: int) -> FITSTransform:
+    def __getitem__(self, idx: int) -> FITSTransform | Callable[[Any], Any]:
         return self.transforms[idx]
 
-    def __iter__(self) -> Iterator[FITSTransform]:
+    def __iter__(self) -> Iterator[FITSTransform | Callable[[Any], Any]]:
         return iter(self.transforms)
 
     def forward(self, x: Any, mask: torch.Tensor | None = None) -> Any:
         for t in self.transforms:
-            x = t(x, mask=mask)
+            x = t(x, mask=mask) if isinstance(t, FITSTransform) else t(x)
         return x
 
     def inverse(self, x: Any, mask: torch.Tensor | None = None) -> Any:
         for t in reversed(self.transforms):
+            if not isinstance(t, FITSTransform):
+                raise TypeError(
+                    f"Compose.inverse(): {t!r} is a plain callable and has no "
+                    "inverse; subclass FITSTransform to make it invertible"
+                )
             x = t.inverse(x, mask=mask)
         return x
 
