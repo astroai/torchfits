@@ -220,6 +220,10 @@ every read and write works there; a section on such a path
 (`/data/[run1]/img.fits[1:10,1:10]`) is not supported, because CFITSIO would
 read the directory's `[` as the start of the filter.
 
+Write paths take no section: `write("c.fits[compress]", x)` (or a trailing
+`(template.fits)`) raises `ValueError`. Use `write("c.fits", x,
+compress="RICE")` for tile compression.
+
 ---
 
 ## `open_subset_reader()`

@@ -107,16 +107,28 @@ def guard_fits_path(path: str) -> str:
 
 
 def guard_write_path(path: str) -> str:
-    """``guard_fits_path`` plus a refusal of CFITSIO's ``!`` clobber prefix.
+    """``guard_fits_path`` plus a refusal of CFITSIO write-path syntax.
 
     CFITSIO deletes an existing file named after a leading ``!``, which would
     bypass ``overwrite=False``; the prefix is not part of the torchfits API.
+    A trailing ``[compress]`` / ``(template)`` section is refused too: the
+    atomic writer takes the name literally, so ``c.fits[compress]`` became a
+    file of that name rather than a compressed ``c.fits``.
     """
     if str(path).lstrip(" ").startswith("!"):
         raise ValueError(
             f"Write path {path!r} starts with '!': CFITSIO clobber syntax is not "
             "supported; pass overwrite=True instead."
         )
+    name = os.path.basename(str(path).rstrip(" "))
+    for open_, close in (("[", "]"), ("(", ")")):
+        if name.endswith(close) and open_ in name:
+            raise ValueError(
+                f"Write path {path!r} ends with a CFITSIO extended-syntax "
+                f"'{open_}...{close}' section, which writes do not support; "
+                "pass compress= (e.g. compress='RICE') for tile compression "
+                "and name the file plainly. A '[' in a directory name is fine."
+            )
     return guard_fits_path(path)
 
 

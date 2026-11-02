@@ -63,3 +63,22 @@ def test_filter_on_file_in_plain_directory_still_works(tmp_path):
     path = str(tmp_path / "f.fits")
     torchfits.write(path, torch.arange(10.0))
     assert torchfits.read_header(path + "[0]")["NAXIS1"] == 10
+
+
+@pytest.mark.parametrize("suffix", ["[compress]", "[compress R 100,100]", "(tpl.fits)"])
+def test_write_rejects_extended_syntax_suffix(tmp_path, suffix):
+    """``c.fits[compress]`` used to create a file literally named so."""
+    path = str(tmp_path / "c.fits") + suffix
+    with pytest.raises(ValueError, match="compress="):
+        torchfits.write(path, torch.ones(4, 4))
+    with pytest.raises(ValueError, match="compress="):
+        torchfits.table.write(path, {"A": [1, 2]})
+    assert os.listdir(tmp_path) == []
+
+
+def test_write_in_bracket_and_paren_directory_still_works(tmp_path):
+    d = tmp_path / "[run]" / "(v2)"
+    d.mkdir(parents=True)
+    path = str(d / "ok.fits")
+    torchfits.write(path, torch.ones(2), compress=False)
+    assert os.listdir(d) == ["ok.fits"]
