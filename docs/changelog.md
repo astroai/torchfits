@@ -78,6 +78,7 @@ upgrading.
 - data: Accept labels= and label_key= on the image and cube iterable datasets
 - io: Add HDUNotFoundError for unknown or out-of-range HDUs
 ### Fixed
+- io: Serve Python-fetched https cutouts on builds without libcurl
 - table: Allow update_rows/append_rows on unsigned columns
 - table: Gather complex columns at full width in filtered mmap reads
 - table: Convert VLA row payloads to the column type on append/update
