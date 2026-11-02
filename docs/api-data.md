@@ -64,7 +64,7 @@ should branch on dict vs tensor if they need mask-aware wiring — see
 |---|---|---|
 | Disk | Remote downloads, example samples | `TORCHFITS_*_CACHE` env / `cache_dir=` |
 | I/O metadata | In-process LRUs | `cache.clear_cache()`, `clear_file_cache(...)` |
-| Everything (incl. disk) | Same + configured download/sample roots | `clear_all_caches()` / `cache.clear_cache(disk=True)` |
+| Everything (incl. disk) | Same + the configured cache root (only torchfits download files in a remote override elsewhere) | `clear_all_caches()` / `cache.clear_cache(disk=True)` |
 
 A single-file `read_tensor` does not need warm-up.
 

@@ -230,8 +230,8 @@ the torch-linked reader is opened lazily when an HDU first touches its data.
 `clear_file_cache(...)` clears the in-process I/O caches: cached read results,
 header/meta and HDU-type caches, counters, and the native shared metadata.
 There is no shared pool of open FITS handles for either call to drain.
-`clear_all_caches()` (or `clear_cache(disk=True)`) also removes on-disk
-roots under `cache_root()`. See
+`clear_all_caches()` (or `clear_cache(disk=True)`) also removes
+`cache_root()`; override directories outside it are never removed wholesale. See
 [Cache Utilities](api-core-io.md#cache-utilities).
 
 Native in-process tiers:

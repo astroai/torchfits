@@ -689,7 +689,7 @@ result = torchfits.verify_checksums(path, hdu=0)
 
 | Layer | Entry points | Role |
 |---|---|---|
-| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Remote and sample files under the configured cache root, plus `TORCHFITS_REMOTE_CACHE` / `TORCHFITS_SAMPLE_CACHE` directories when set elsewhere |
+| Disk downloads | `torchfits.cache.clear_cache(disk=True)` / `clear_all_caches()` | Everything under the configured cache root; in a `TORCHFITS_REMOTE_CACHE` directory set elsewhere, only the download files torchfits named there |
 | Aggregate statistics | `torchfits.cache.get_cache_stats()` | In-process I/O cache counters |
 | I/O metadata | `get_cache_performance()`, `clear_file_cache(...)` | In-process header / meta / data caches |
 | Shared metadata (C++) | `clear_file_cache(..., cpp=True)` | Per-path metadata across private CFITSIO handles |
@@ -705,7 +705,12 @@ torchfits.clear_all_caches()  # in-process + configured disk cache
 
 `clear_cache()` clears in-process data and metadata caches. Pass
 `disk=True` (or call root `clear_all_caches()`) to also remove downloaded
-files under the configured disk cache root.
+files under the configured disk cache root (`TORCHFITS_CACHE_DIR`, the whole
+directory). A `TORCHFITS_REMOTE_CACHE` or `TORCHFITS_SAMPLE_CACHE` directory
+outside that root is never deleted: from the remote one only torchfits'
+own download files (`<hash>.<ext>` and their `.partial` / `.lock`
+siblings) are removed, and the sample one is left untouched, so pointing
+either at a shared directory such as `$HOME` cannot lose your files.
 
 `clear_file_cache` keyword-only flags (all default `True`): `data`, `meta`,
 `hdu_types`, `stats`, `cpp`. Optional `cpp_module=` overrides the extension
