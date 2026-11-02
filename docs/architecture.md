@@ -294,7 +294,9 @@ access; `FitsCutoutDataset` prefers HTTP Range cutouts instead. Short forms
 the header plus a contiguous row-band (no full download). Rice / compressed /
 scaled remotes still materialize the full file, then use CFITSIO. Remote table
 reads use the same full-file cache path (no Range row slices yet). Auth:
-`TORCHFITS_HTTP_AUTHORIZATION` or `TORCHFITS_HTTP_TOKEN`.
+`TORCHFITS_HTTP_AUTHORIZATION` or `TORCHFITS_HTTP_TOKEN`. Credentials in the
+URL (`user:pass@host`) are not supported: a remote URL opened through CFITSIO
+that contains `@` anywhere after the scheme raises `HttpBlockedError`.
 
 ### Batch image reads
 

@@ -12,7 +12,9 @@ CFITSIO-driver URLs (``http``/``https``/``ftp``) — CFITSIO resolves internally
 and its connections re-resolve after the check (residual TOCTOU). Public
 http(s)/ftp still go to CFITSIO; private/loopback stays blocked at the guard.
 The vendored CFITSIO http driver refuses redirects that leave the original
-host (``extern/patches/cfitsio-4.7.0-http-redirect-host.patch``); libcurl
+host (``extern/patches/cfitsio-4.7.0-http-redirect-host.patch``) and only
+treats an ``@`` inside the authority as a credentials separator
+(``cfitsio-4.7.0-http-userinfo-authority.patch``); libcurl
 (https/ftps) is not configured to follow redirects at all.
 """
 
@@ -476,6 +478,15 @@ def guard_cfitsio_remote_path(path: str) -> None:
     lowered = candidate.lower()
     if not any(lowered.startswith(scheme) for scheme in _CFITSIO_NETWORK_SCHEMES):
         return
+    # CFITSIO splits user:password@host on its own and has historically taken
+    # the host after an '@' in the path or query, so the host validated below
+    # need not be the one it dials. URL credentials are not supported here
+    # (use the auth environment variables), so any '@' is refused.
+    if "@" in candidate.split("://", 1)[1]:
+        raise HttpBlockedError(
+            f"{path}: '@' is not allowed in remote FITS URLs (credentials in the "
+            "URL are unsupported); blocked for security reasons"
+        )
     # Hostname checks ignore a trailing CFITSIO ``[...]`` section.
     _resolve_public_addrs(candidate)
 
