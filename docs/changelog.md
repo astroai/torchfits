@@ -78,6 +78,7 @@ upgrading.
 - data: Accept labels= and label_key= on the image and cube iterable datasets
 - io: Add HDUNotFoundError for unknown or out-of-range HDUs
 ### Fixed
+- http: Block IANA special-purpose ranges on every Python version
 - io: Serve Python-fetched https cutouts on builds without libcurl
 - table: Allow update_rows/append_rows on unsigned columns
 - table: Gather complex columns at full width in filtered mmap reads
