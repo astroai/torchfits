@@ -85,6 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - hdu: Give refreshed TableHDURef views typed header cards
 - where: Read quoted literals literally in the public parse helpers
 - hdu: Keep untouched HDUs byte-identical across insert/replace/delete
+- table: Size numpy string columns from their dtype width
+- table: Read scaled cells of gzip tables from the decompressed stream
+- io: Write None, complex and big-int header values read_header returns
+- header: Keep orphan CONTINUE cards off earlier string values
+- hdu: Report the DataView dtype with the native reader's exact rule
+- hdu: Look up HDUList names like CFITSIO and support "in"
+- hdu: Keep Header.copy, | and |= on the card list
+- hdu: Rebuild Header from its cards under pickle and copy
+- http: Connect to the configured proxy instead of the pinned target
+- data: Never cache a non-FITS HTTP body as a download
+- http: Guard every CFITSIO network driver scheme
+- io: Report missing libcurl and CFITSIO's reason on open failures
+- http: Stop CFITSIO following redirects to unguarded hosts
+- http: Refuse non-canonical numeric hosts and non-global addresses
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
