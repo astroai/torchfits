@@ -545,7 +545,8 @@ Every other HDU is copied byte for byte, so it keeps the structure it had
 before the edit: tile compression, storage `BITPIX`, `BSCALE`/`BZERO`/`BLANK`,
 scaled table columns with `TSCAL`/`TZERO`, and all other cards. `compress=`
 applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
-HDU is stamped too.
+HDU is stamped too. Bytes after the last HDU that do not start an extension
+(junk, zero or blank padding, which readers ignore) stay at the end of the file.
 
 ```python
 # Add a RICE-compressed extension; HDUs 0 and 1 are left exactly as they were.

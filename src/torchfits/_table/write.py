@@ -419,11 +419,11 @@ def _rewrite_table_hdu_with_schema(
         pieces: list[Piece] = [
             (path, 0, old_start),
             (tmp_path, new_start, new_end),
-            (path, old_end, spans[-1][2]),
+            (path, old_end, None),
         ]
         publish_spliced(
             path,
-            [p for p in pieces if isinstance(p, bytes) or p[2] > p[1]],
+            [p for p in pieces if isinstance(p, bytes) or p[2] is None or p[2] > p[1]],
             restamp=[target_hdu] if restamp_checksums else [],
         )
     finally:

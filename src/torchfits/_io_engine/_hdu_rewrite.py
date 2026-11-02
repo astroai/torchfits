@@ -465,7 +465,7 @@ def _has_checksums(hdus: List[Tuple[int, int, int, bytes]]) -> bool:
 
 
 def _nonempty(pieces: List[Piece]) -> List[Piece]:
-    return [p for p in pieces if isinstance(p, bytes) or p[2] > p[1]]
+    return [p for p in pieces if isinstance(p, bytes) or p[2] is None or p[2] > p[1]]
 
 
 def insert_hdu(
@@ -488,7 +488,7 @@ def insert_hdu(
     if index < 0 or index > len(hdus):
         raise IndexError(f"index {index} out of range for {len(hdus)} HDUs")
     stamp = _has_checksums(hdus)
-    end = hdus[-1][2]
+    end = None  # through EOF: keeps bytes after the last HDU
 
     if index == 0:
         _require_primary_capable(new_hdu, compress)
@@ -564,7 +564,7 @@ def replace_hdu(
     with _scratch_hdu(new_hdu, primary=primary, compress=compress) as new_piece:
         publish_spliced(
             path,
-            _nonempty([(path, 0, start), new_piece, (path, stop, hdus[-1][2])]),
+            _nonempty([(path, 0, start), new_piece, (path, stop, None)]),
             restamp=[target] if stamp else [],
         )
 
@@ -596,7 +596,7 @@ def delete_hdu(
             "one HDU. Write an empty primary instead if that is what you want."
         )
     hdus = _file_hdus(path, len(headers))
-    end = hdus[-1][2]
+    end = None  # through EOF: keeps bytes after the last HDU
 
     if target == 0:
         _start, next_data, _end, next_raw = hdus[1]

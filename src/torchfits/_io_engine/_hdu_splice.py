@@ -1,7 +1,8 @@
 """Byte-level HDU splicing for in-place FITS edits.
 
 HDU edits copy every HDU they do not insert or replace byte-for-byte and write
-only the new HDU. Decoding an untouched HDU and writing it back changed its
+only the new HDU. Bytes after the last HDU that do not start an extension (which
+CFITSIO ignores) are carried over verbatim at the end of the file. Decoding an untouched HDU and writing it back changed its
 structure: tile-compressed images came back decompressed, scaled storage was
 re-derived. The helpers here locate HDUs by their raw 2880-byte header blocks,
 assemble the output from byte ranges, and publish it atomically.
@@ -10,7 +11,7 @@ assemble the output from byte ranges, and publish it atomically.
 from __future__ import annotations
 
 import gzip
-from typing import IO, Iterable, List, Sequence, Tuple, Union
+from typing import IO, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ._write_helpers import _atomic_replace_target, _invalidate_written_target
 
@@ -18,8 +19,9 @@ FITS_BLOCK = 2880
 _CARD = 80
 _COPY_CHUNK = 1 << 20
 
-# A piece of the assembled file: literal bytes, or ``(path, start, end)``.
-Piece = Union[bytes, Tuple[str, int, int]]
+# A piece of the assembled file: literal bytes, or ``(path, start, end)``;
+# ``end=None`` copies to the end of the stream (trailing bytes included).
+Piece = Union[bytes, Tuple[str, int, Optional[int]]]
 
 
 def open_fits_bytes(path: str) -> IO[bytes]:
@@ -102,12 +104,18 @@ def scan_hdus(path: str) -> List[Tuple[int, int, int, bytes]]:
 
     Offsets are into the FITS byte stream (after gunzip for a gzip file);
     ``end`` is the record-aligned start of the next HDU. One forward pass.
+    Like CFITSIO, the scan stops at bytes after an HDU that do not begin with
+    an ``XTENSION`` card (trailing junk, zero or blank padding).
     """
     hdus: List[Tuple[int, int, int, bytes]] = []
     with open_fits_bytes(path) as fh:
         pos = 0
         while True:
             if fh.tell() != pos:
+                fh.seek(pos)
+            if hdus:
+                if not fh.read(9).startswith(b"XTENSION="):
+                    break
                 fh.seek(pos)
             raw = _read_header(fh, pos)
             if not raw:
@@ -125,8 +133,12 @@ def hdu_byte_spans(path: str) -> List[Tuple[int, int, int]]:
     return [(start, data, end) for start, data, end, _raw in scan_hdus(path)]
 
 
-def _copy_range(src: IO[bytes], dst: IO[bytes], start: int, end: int) -> None:
+def _copy_range(src: IO[bytes], dst: IO[bytes], start: int, end: Optional[int]) -> None:
     src.seek(start)
+    if end is None:
+        while chunk := src.read(_COPY_CHUNK):
+            dst.write(chunk)
+        return
     remaining = end - start
     while remaining > 0:
         chunk = src.read(min(_COPY_CHUNK, remaining))
