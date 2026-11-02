@@ -339,11 +339,11 @@ def read_table(
         import numpy as np
 
         import torchfits
-        from torchfits._table._read_where import _tnull_in_tensor, _torch_cmp_mask
-        from torchfits.fits_schema import column_tnull_map
+        from torchfits._table._read_where import _not_null, _torch_cmp_mask
+        from torchfits.fits_schema import column_null_sentinel_map
 
         header = torchfits.read_header(path, hdu=hdu)
-        tnull_map = column_tnull_map(header)
+        tnull_map = column_null_sentinel_map(header)
 
         mask: torch.Tensor | None = None
         for col, op, lit in predicates:
@@ -353,8 +353,7 @@ def read_table(
             part = _torch_cmp_mask(values, op, lit)
             sentinel = tnull_map.get(col)
             if sentinel is not None:
-                sentinel = _tnull_in_tensor(values, sentinel)
-                part = part & torch.ne(values, sentinel)
+                part = part & _not_null(values, sentinel)
             mask = part if mask is None else (mask & part)
         assert mask is not None
         keep_cols = list(columns) if columns is not None else list(data.keys())

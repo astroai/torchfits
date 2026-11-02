@@ -1166,6 +1166,24 @@ def _unsigned_table_tform(value: Any, code: str) -> str:
     return code if repeat == 1 else f"{repeat}{code}"
 
 
+def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) -> int:
+    """Stored TNULL for a column written from unsigned (or int8) values.
+
+    ``TNULLn`` is compared with the raw stored integer, before ``TZEROn``
+    (FITS standard). The schema gives it in the column's own value domain, as
+    the data is, so it moves by the same offset (``TNULL = value - TZERO``).
+    """
+    bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
+    low, high = (-128, 127) if code == "B" else (0, (1 << bits) - 1)
+    value = int(tnull)
+    if not low <= value <= high:
+        raise ValueError(
+            f"TNULL {tnull!r} for column '{name}' is outside the column's "
+            f"value range [{low}, {high}]"
+        )
+    return value - int(bzero)
+
+
 def _prepare_unsigned_table_data_for_write(
     table_dict: Dict[str, Any],
     schema: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1195,6 +1213,9 @@ def _prepare_unsigned_table_data_for_write(
         meta.setdefault("bscale", 1.0)
         # 2**63 does not fit the native int64 card path; it is exact as a float.
         meta.setdefault("bzero", int(bzero) if bzero < 2**63 else bzero)
+        for key in ("null", "tnull"):
+            if meta.get(key) is not None:
+                meta[key] = _unsigned_tnull_to_stored(col_name, meta[key], code, bzero)
         changed = True
 
     if schema is None and not changed:

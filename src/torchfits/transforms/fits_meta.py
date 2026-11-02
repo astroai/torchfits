@@ -386,9 +386,11 @@ class TNullToNan(FITSTransform):
         cls, header: dict[str, object], *, state: DataState | str | None = None
     ) -> TNullToNan:
         """Construct from a FITS table header dict-like object."""
-        from ..fits_schema import column_tnull_map  # noqa: PLC0415
+        from ..fits_schema import column_null_sentinel_map  # noqa: PLC0415
 
-        nulls = column_tnull_map(header)
+        # Decoded-domain sentinels: TNULL is the raw stored value, and the
+        # tensors this transform sees are decoded (TZERO applied).
+        nulls = column_null_sentinel_map(header)
         return cls(nulls, state=state)
 
     def forward(

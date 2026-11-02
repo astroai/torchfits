@@ -37,26 +37,22 @@ from ._read_schema import (
 logger = logging.getLogger(__name__)
 
 
-def _tnull_in_tensor(tensor: Any, sentinel: Any) -> Any:
-    """TNULL as stored in ``tensor``.
+def _not_null(tensor: Any, sentinel: Any) -> Any:
+    """Rows of ``tensor`` that do not hold the decoded TNULL ``sentinel``.
 
-    Unsigned columns hold the physical value. A negative raw TNULL does not
-    fit; comparing against it wraps (uint16 ``-32768`` becomes ``32768``) and
-    drops the real row instead of the null.
+    ``sentinel`` comes from :func:`fits_schema.column_null_sentinel_map`: the
+    raw TNULL for unscaled columns, ``raw + TZERO`` for unsigned ones, and NaN
+    for scaled columns (whose TNULL cells decode to NaN).
     """
+    import math
+
     import torch
 
-    if not isinstance(sentinel, int) or sentinel >= 0 or tensor.dtype.is_floating_point:
-        return sentinel
-    if tensor.dtype == torch.uint16:
-        return sentinel + 32768
-    if tensor.dtype == torch.uint32:
-        return sentinel + 2147483648
-    if tensor.dtype == torch.uint64:
-        return sentinel + 2**63
-    if tensor.dtype == torch.uint8:
-        return sentinel + 128
-    return sentinel
+    if isinstance(sentinel, float) and math.isnan(sentinel):
+        if tensor.dtype.is_floating_point:
+            return ~torch.isnan(tensor)
+        return torch.ones(tensor.shape, dtype=torch.bool)
+    return torch.ne(tensor, sentinel)
 
 
 # NOTE: ceiling — full-table torch WHERE materializes all selected columns before
@@ -347,7 +343,7 @@ def _try_torch_tensor_where_filter(
     # torch engine agrees with the Arrow engine (comparisons against NULL
     # never match) regardless of which strategy runs.
     tnull_map = (
-        fits_schema.column_tnull_map(header)
+        fits_schema.column_null_sentinel_map(header)
         if apply_fits_nulls and header is not None
         else {}
     )
@@ -361,7 +357,7 @@ def _try_torch_tensor_where_filter(
             part = _torch_cmp_mask(tensor, op, literal)
             sentinel = tnull_map.get(pred_col)
             if sentinel is not None:
-                part = part & torch.ne(tensor, _tnull_in_tensor(tensor, sentinel))
+                part = part & _not_null(tensor, sentinel)
             mask = part if mask is None else (mask & part)
     except (RuntimeError, TypeError, ValueError) as exc:
         logger.debug("torch WHERE mask build failed; falling back: %s", exc)
@@ -574,6 +570,18 @@ def _where_mask_for_table(
         column = _get_predicate_column(column_name)
 
         if literal is None:
+            if (
+                pa.types.is_integer(column.type)
+                or pa.types.is_floating(column.type)
+                or pa.types.is_boolean(column.type)
+            ):
+                # Documented dialect and reference evaluator: numeric FITS
+                # nulls are TNULLn / NaN, tested with IS NULL, not == / !=.
+                raise ValueError(
+                    f"where cannot compare numeric column '{column_name}' with "
+                    f"NULL using '{op}'; use '{column_name} IS NULL' or "
+                    f"'{column_name} IS NOT NULL'"
+                )
             if op == "==":
                 return pc.is_null(column)
             if op == "!=":
@@ -634,7 +642,8 @@ def _where_mask_for_table(
 
     def _isnull_mask(column_name: str, negate: bool) -> Any:
         column = _get_predicate_column(column_name)
-        mask = pc.is_null(column)
+        # A float NaN counts as NULL, as in the reference evaluator.
+        mask = pc.is_null(column, nan_is_null=True)
         mask = pc.fill_null(mask, False)
         if negate:
             return pc.invert(mask)
@@ -773,7 +782,7 @@ def _try_cpp_where_pushdown(
         # the Arrow engine treats them as NULL and excludes them. Drop rows
         # whose match came only from a sentinel so both engines agree.
         full_tnull_map = (
-            fits_schema.column_tnull_map(header)
+            fits_schema.column_null_sentinel_map(header)
             if apply_fits_nulls and header is not None
             else {}
         )
@@ -787,7 +796,7 @@ def _try_cpp_where_pushdown(
                 # Predicate column not in the projection: cannot verify
                 # sentinel matches here — defer to the Arrow engine.
                 return None
-            valid = torch.ne(col_tensor, _tnull_in_tensor(col_tensor, sentinel))
+            valid = _not_null(col_tensor, sentinel)
             keep = valid if keep is None else (keep & valid)
         if keep is not None:
             if bool(keep.any()):

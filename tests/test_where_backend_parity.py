@@ -169,3 +169,121 @@ def test_where_type_mismatch_raises_value_error(u64_table):
     for kwargs in ({}, {"backend": "cpp"}, {"backend": "torch"}):
         with pytest.raises(ValueError):
             torchfits.table.read(u64_table, where="S > 3", **kwargs)
+
+
+def _card(path: str, hdu: int, key: str) -> str:
+    raw = open(path, "rb").read()
+    pos, current = 0, 0
+    while True:
+        cards = []
+        while not cards or not cards[-1].startswith("END     "):
+            cards.append(raw[pos : pos + 80].decode("ascii"))
+            pos += 80
+        pos = -(-pos // 2880) * 2880
+        values = {c[:8].strip(): c[10:].split("/")[0].strip() for c in cards}
+        if current == hdu:
+            return values[key]
+        size = abs(int(values["BITPIX"])) // 8 if int(values["NAXIS"]) else 0
+        for a in range(1, int(values["NAXIS"]) + 1):
+            size *= int(values[f"NAXIS{a}"])
+        pos += -(-(size + int(values.get("PCOUNT", 0))) // 2880) * 2880
+        current += 1
+
+
+@pytest.fixture
+def tnull_offset_table(tmp_path):
+    """TNULL is the raw stored value, compared before TSCAL/TZERO."""
+    path = str(tmp_path / "tnull_offset.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            # Stored [7, 2, 0] with TZERO=5, TNULL=7 -> [NULL, 7.0, 5.0].
+            "SC": np.array([7, 2, 0], dtype=np.int16),
+            # uint16 values; TNULL given in the value domain like the data.
+            "U16": np.array([65535, 0, 32769], dtype=np.uint16),
+            "I8": np.array([-128, 0, 127], dtype=np.int8),
+        },
+        schema={
+            "SC": {"format": "I", "bzero": 5.0, "tnull": 7},
+            "U16": {"tnull": 65535},
+            "I8": {"tnull": -128},
+        },
+        overwrite=True,
+    )
+    return path
+
+
+def test_unsigned_tnull_is_written_as_the_stored_value(tnull_offset_table):
+    assert int(_card(tnull_offset_table, 1, "TNULL2")) == 7
+    assert int(_card(tnull_offset_table, 1, "TNULL3")) == 65535 - 32768
+    assert int(_card(tnull_offset_table, 1, "TNULL4")) == 0
+
+
+def test_tnull_is_compared_before_scaling(tnull_offset_table):
+    for kwargs in (
+        {},
+        {"mmap": False},
+        {"backend": "cpp"},
+        {"backend": "torch"},
+    ):
+        tab = torchfits.table.read(tnull_offset_table, **kwargs)
+        assert tab["SC"].to_pylist() == [None, 7.0, 5.0], kwargs
+        assert tab["U16"].to_pylist() == [None, 0, 32769], kwargs
+        assert tab["I8"].to_pylist() == [None, 0, 127], kwargs
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("SC == 7", [1]),
+        ("SC > 6", [1]),
+        ("SC IS NULL", [0]),
+        ("SC IS NOT NULL", [1, 2]),
+        ("U16 == 0", [1]),
+        ("U16 > 1", [2]),
+        ("U16 IS NULL", [0]),
+        ("I8 >= 0", [1, 2]),
+        ("I8 IS NULL", [0]),
+    ],
+)
+def test_tnull_where_parity(tnull_offset_table, expr, expected):
+    _assert_parity(tnull_offset_table, expr, expected)
+
+
+def test_tnull_to_nan_from_header_uses_decoded_values(tnull_offset_table):
+    from torchfits.transforms import TNullToNan
+
+    header = torchfits.read_header(tnull_offset_table, hdu=1)
+    data = torchfits.table.read_torch(tnull_offset_table, hdu=1)
+    out = TNullToNan.from_header(header)(
+        {"U16": data["U16"].to(torch.float64), "I8": data["I8"].to(torch.float64)}
+    )
+    assert torch.isnan(out["U16"]).tolist() == [True, False, False]
+    assert torch.isnan(out["I8"]).tolist() == [True, False, False]
+
+
+def test_append_rows_fills_unsigned_tnull(tnull_offset_table):
+    torchfits.table.append_rows(
+        tnull_offset_table, {"ID": np.array([3], dtype=np.int32)}
+    )
+    tab = torchfits.table.read(tnull_offset_table)
+    assert tab["U16"].to_pylist()[-1] is None
+    assert tab["I8"].to_pylist()[-1] is None
+
+
+def test_nan_is_null_and_numeric_null_compare_is_rejected(tmp_path):
+    path = str(tmp_path / "nan.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int32),
+            "F": np.array([1.0, np.nan, 3.0]),
+        },
+        overwrite=True,
+    )
+    _assert_parity(path, "F IS NULL", [1])
+    _assert_parity(path, "F IS NOT NULL", [0, 2])
+    for expr in ("F == NULL", "F != NULL"):
+        with pytest.raises(ValueError, match="IS NULL"):
+            torchfits.table.read(path, where=expr)

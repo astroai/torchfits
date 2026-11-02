@@ -174,11 +174,17 @@ def _column_name_index_map(header_map: dict[str, Any]) -> dict[int, str]:
     return out
 
 
+_UNSIGNED_OFFSETS = {"int8": -128, "uint16": 32768, "uint32": 2**31, "uint64": 2**63}
+
+
 def _extract_table_schema_from_header(
     header_map: dict[str, Any], columns: list[str]
 ) -> dict[str, dict[str, Any]]:
+    from ..fits_schema import unsigned_column_dtype_names_from_header
+
     name_by_idx = _column_name_index_map(header_map)
     index_by_name = {name: idx for idx, name in name_by_idx.items()}
+    unsigned = unsigned_column_dtype_names_from_header(header_map)
     schema: dict[str, dict[str, Any]] = {}
     for name in columns:
         idx = index_by_name.get(name)
@@ -196,7 +202,11 @@ def _extract_table_schema_from_header(
             meta["dim"] = str(tdim)
         tnull = header_map.get(f"TNULL{idx}")
         if tnull is not None:
-            meta["tnull"] = tnull
+            # Unsigned columns are read back as values (raw + TZERO); the
+            # writer moves their TNULL by the same offset, so hand it over in
+            # that domain too.
+            offset = _UNSIGNED_OFFSETS.get(unsigned.get(name, ""), 0)
+            meta["tnull"] = int(tnull) + offset if offset else tnull
         tscal = header_map.get(f"TSCAL{idx}")
         if tscal is not None:
             meta["bscale"] = tscal

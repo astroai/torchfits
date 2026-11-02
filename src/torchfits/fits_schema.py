@@ -348,6 +348,47 @@ def column_tnull_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+_UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2147483648, "K": 2**63}
+
+
+def decoded_tnull(tnull: Any, tform: Any, tscal: Any, tzero: Any) -> Any:
+    """TNULL in the domain of the decoded column values.
+
+    ``TNULLn`` is the raw stored integer, compared before ``TSCALn`` /
+    ``TZEROn`` (FITS standard, CFITSIO). Unscaled columns decode to the stored
+    value; unsigned-convention columns decode to ``raw + TZERO``; other scaled
+    columns decode a TNULL cell to NaN, so the sentinel is NaN. A non-integer
+    TNULL (ASCII-table null strings) is returned unchanged.
+    """
+    if tnull is None:
+        return None
+    try:
+        raw = int(str(tnull).strip())
+    except (TypeError, ValueError):
+        return tnull
+    scal = float(tscal) if tscal not in (None, "") else 1.0
+    zero = float(tzero) if tzero not in (None, "") else 0.0
+    if scal == 1.0 and zero == 0.0:
+        return raw
+    code = parse_tform(str(tform or "")).code
+    offset = _UNSIGNED_TZERO.get(code or "")
+    if scal == 1.0 and offset is not None and zero == float(offset):
+        return raw + offset
+    return float("nan")
+
+
+def column_null_sentinel_map(header_map: Mapping[str, Any]) -> dict[str, Any]:
+    """Map column name -> TNULL as it appears in decoded values.
+
+    See :func:`decoded_tnull`; :func:`column_tnull_map` keeps the raw cards.
+    """
+    out: dict[str, Any] = {}
+    for col in iter_table_columns(header_map):
+        if col.tnull is not None:
+            out[col.name] = decoded_tnull(col.tnull, col.tform, col.tscal, col.tzero)
+    return out
+
+
 def complex_column_names(header: Mapping[str, Any]) -> set[str]:
     """Names of columns with FITS complex TFORM codes (``C`` / ``M``).
 

@@ -20,6 +20,7 @@ from .._table.utils import (
 _VLA_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_DTYPE_MAP: dict[str, Any] = {}
 _COMPLEX_TFORM_CODES: frozenset[str] = frozenset({"C", "M"})
+_UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2**31, "K": 2**63}
 
 
 def _ensure_dtype_maps() -> None:
@@ -142,6 +143,7 @@ def _default_table_column_values(
     tform: str,
     num_rows: int,
     tnull: Any = None,
+    unsigned_dtype: str | None = None,
 ) -> Any:
     import numpy as np
 
@@ -174,6 +176,14 @@ def _default_table_column_values(
         "D": np.float64,
     }
     dtype = dtype_map.get(code, np.float32)
+    if unsigned_dtype is not None:
+        # Unsigned-convention columns take their values (raw + TZERO), so the
+        # default and its TNULL must be in that domain too.
+        dtype = np.dtype(unsigned_dtype)
+        if tnull is not None:
+            from ..fits_schema import decoded_tnull
+
+            tnull = decoded_tnull(tnull, tform, 1.0, _UNSIGNED_TZERO[code])
     shape = (num_rows,) if repeat == 1 else (num_rows, repeat)
 
     if tnull is not None and code not in {"A", "C", "M"}:
@@ -194,6 +204,7 @@ def _normalize_mutation_rows(
     tnull_map: dict[str, Any],
     *,
     allow_partial: bool,
+    unsigned_dtypes: Optional[dict[str, str]] = None,
 ) -> tuple[dict[str, Any], int]:
     rows_by_name = {str(k): v for k, v in rows.items()}
     input_columns = set(rows_by_name)
@@ -281,6 +292,7 @@ def _normalize_mutation_rows(
             tform,
             expected_rows,
             tnull=tnull_map.get(col_name),
+            unsigned_dtype=(unsigned_dtypes or {}).get(col_name),
         )
         normalized[col_name] = _normalize_column_values_for_format(
             col_name,

@@ -258,6 +258,19 @@ torchfits.table.write(path, data, *, schema=None, header=None,
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. |
 
+`schema` scaling and nulls describe **stored** values:
+
+- With `bscale`/`bzero`, the column data you pass is written as the stored
+  integers and the file's readers apply `value = stored * TSCAL + TZERO`.
+  `{"F": {"format": "I", "bscale": 0.5, "bzero": 10.0}}` with data `[100, 200]`
+  reads back as `[60.0, 110.0]`.
+- `null`/`tnull` is written verbatim as `TNULLn`, which FITS compares with
+  the stored value before `TSCAL`/`TZERO`. The exception is a column written
+  from `uint16`/`uint32`/`uint64`/`int8` data: torchfits stores it with the
+  standard `TZERO` offset, so give `tnull` as a value of that dtype (for
+  example `65535` for `uint16`) and it is written as `65535 - 32768`.
+  A `tnull` outside the dtype's range raises `ValueError`.
+
 `quantize` applies to binary tables only (`ValueError` when `table_type="ascii"`).
 If it is set and no floating-point column qualifies, `QuantizeError` is raised
 instead of writing those columns unpacked.
@@ -318,10 +331,16 @@ Root `torchfits.read()` has no `where=` parameter.
     `where="NOT (A == 1)"` and `where="A != 1"` return the same rows, and so
     do `NOT (A > 1)` / `A <= 1` and `NOT (A IN (...))` / `A NOT IN (...)`.
     On float columns a NaN pixel is treated the same way: IEEE makes
-    `NaN != v` true, but the comparison is unknown, so the row is excluded.
+    `NaN != v` true, but the comparison is unknown, so the row is excluded,
+    and `IS NULL` selects it. A scaled column's `TNULL` cells read as NaN.
     This holds identically on all three read backends (`auto`, `cpp`, `torch`)
     and matches the `torchfits.where` reference evaluator. Use `IS NULL` /
-    `IS NOT NULL` to test for absence. `== NULL` is rejected.
+    `IS NOT NULL` to test for absence. `== NULL` / `!= NULL` on a numeric or
+    logical column raise `ValueError`.
+
+    `TNULLn` is the stored value, compared before `TSCALn`/`TZEROn` as in
+    the FITS standard: on a `uint16` column (`TZERO = 32768`) `TNULL = 0`
+    marks cells that read as `32768`.
 
 ### `backend=` on `table.read` / `table.scan`
 

@@ -6,6 +6,7 @@ import warnings
 from typing import Any, Optional
 
 from .._io_engine.paths import coerce_fits_path
+from ..fits_schema import unsigned_column_dtype_names_from_header
 from .._table.utils import (
     _column_tnull_map,
     _naxis2_row_count,
@@ -220,6 +221,7 @@ def append_rows(
         tform_map,
         tnull_map,
         allow_partial=True,
+        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
     )
     if expected_rows <= 0:
         return
@@ -261,6 +263,7 @@ def insert_rows(
         tform_map,
         tnull_map,
         allow_partial=True,
+        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
     )
     if expected_rows <= 0:
         return
