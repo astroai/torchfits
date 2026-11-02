@@ -12,6 +12,7 @@ from .common import (
     IoError,
     UsageError,
     add_file_jobs_arg,
+    compressed_image_geometry,
     add_hdu_arg,
     resolve_batch_io_pairs,
     resolve_file_jobs,
@@ -76,6 +77,14 @@ def _plane_shape(header: object) -> tuple[int, int] | None:
     return ``None`` and are left to the reader, rather than being refused
     here on a shape this check cannot vouch for.
     """
+    # A tile-compressed HDU's NAXIS1/NAXIS2 describe the tile table; the
+    # image geometry lives in ZNAXIS* (FITS axis order: width first).
+    geometry = compressed_image_geometry(header)
+    if geometry is not None:
+        shape = geometry[0]
+        if len(shape) < 2 or shape[0] <= 0 or shape[1] <= 0:
+            return None
+        return shape[1], shape[0]
     try:
         if int(header.get("NAXIS", 0)) < 2:  # type: ignore[attr-defined]
             return None
@@ -124,6 +133,13 @@ def _cutout_one(
     if sectioned and box is not None:
         raise UsageError(
             "pass either a CFITSIO image section in the path or --box, not both"
+        )
+    if sectioned and hdu != 0:
+        # CFITSIO applies a bare section to the primary HDU; -e N would be
+        # silently ignored (or fail on a dataless primary).
+        raise UsageError(
+            f"-e {hdu} cannot be combined with an image section; put the "
+            "extension in the path instead, e.g. 'image.fits[1][101:256,101:256]'"
         )
     if not sectioned and box is None:
         raise UsageError(

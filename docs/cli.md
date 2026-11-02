@@ -249,13 +249,16 @@ Supports two coordinate formats:
 1. **CFITSIO Section Syntax (1-based inclusive):**
    ```bash
    torchfits cutout 'science.fits[101:256,101:256]' cutout.fits
+   # A section of extension 1: put the extension in the path
+   torchfits cutout 'science.fits[1][101:256,101:256]' cutout.fits
    ```
+   A bare section always applies to the primary HDU, so combining it with `-e N` (N ≠ 0) is a usage error (exit 2).
 2. **Bounding Box Syntax (0-based half-open `x1,y1,x2,y2`):**
    ```bash
    torchfits cutout science.fits -o cutout.fits -e 0 --box 100,100,256,256
    ```
 
-`--box` values must be integers with non-negative `x1,y1` and `x1 < x2`, `y1 < y2` (0-based, half-open); an empty, inverted, or negative-origin box is a usage error (exit 2). A box that extends past the image edge is clamped to the image, so the output region is the box intersected with the image. A box that misses the image entirely — `x1 >= NAXIS1` or `y1 >= NAXIS2` — selects no pixels and is also a usage error (exit 2) rather than a silently written 0x0 image. On 3D+ cubes the box addresses the trailing `(y, x)` axes, so it is checked against `NAXIS2 x NAXIS1`.
+`--box` values must be integers with non-negative `x1,y1` and `x1 < x2`, `y1 < y2` (0-based, half-open); an empty, inverted, or negative-origin box is a usage error (exit 2). A box that extends past the image edge is clamped to the image, so the output region is the box intersected with the image. A box that misses the image entirely — `x1 >= NAXIS1` or `y1 >= NAXIS2` — selects no pixels and is also a usage error (exit 2) rather than a silently written 0x0 image. On 3D+ cubes the box addresses the trailing `(y, x)` axes, so it is checked against `NAXIS2 x NAXIS1`. For a tile-compressed image HDU the check uses the image size (`ZNAXIS2 x ZNAXIS1`), not the tile table's `NAXIS*`.
 
 ```bash
 # Batch extract cutouts across multiple files

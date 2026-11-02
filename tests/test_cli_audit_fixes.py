@@ -114,3 +114,42 @@ def test_stats_int64_extrema_are_exact(tmp_path, capsys):
     record = _stats_json(capsys, path)
     assert record["max"] == 2**53 + 1
     assert record["min"] == 2**53
+
+
+# --- cutout ------------------------------------------------------------------
+
+
+def _compressed_wide_image(tmp_path):
+    """20 rows x 30 columns, tile-compressed into HDU 1 (tile table is 8x20)."""
+    src = tmp_path / "wide.fits"
+    data = torch.arange(20 * 30, dtype=torch.float32).reshape(20, 30)
+    torchfits.write(str(src), data, header={"CRPIX1": 10.0, "CRPIX2": 20.0})
+    packed = tmp_path / "wide_c.fits"
+    assert main(["compress", str(src), str(packed)]) == 0
+    return packed, data
+
+
+def test_cutout_box_uses_compressed_image_geometry(tmp_path):
+    packed, data = _compressed_wide_image(tmp_path)
+    out = tmp_path / "stamp.fits"
+    # x in [20, 25) is inside the 30-pixel-wide image but beyond the tile
+    # table's NAXIS1 (8 bytes): it must not be refused.
+    argv = ["cutout", str(packed), "-e", "1", "--box", "20,0,25,5", "-o", str(out)]
+    assert main(argv) == 0
+    assert torch.equal(torchfits.read_tensor(str(out), hdu=0), data[0:5, 20:25])
+    # y in [25, 30) lies beyond the 20 image rows: no pixels, usage error.
+    out2 = tmp_path / "miss.fits"
+    argv = ["cutout", str(packed), "-e", "1", "--box", "0,25,5,30", "-o", str(out2)]
+    assert main(argv) == 2
+    assert not out2.exists()
+
+
+def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
+    src = tmp_path / "mef.fits"
+    torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])
+    out = tmp_path / "o.fits"
+    assert main(["cutout", f"{src}[1:2,1:2]", "-e", "1", "-o", str(out)]) == 2
+    assert not out.exists()
+    # The supported spelling puts the extension in the path.
+    assert main(["cutout", f"{src}[1][1:2,1:2]", "-o", str(out)]) == 0
+    assert torch.equal(torchfits.read_tensor(str(out), hdu=0), torch.zeros(2, 2))
