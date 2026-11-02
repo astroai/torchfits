@@ -206,3 +206,15 @@ def test_vla_rows_are_converted_to_the_column_type(tmp_path):
 
     with pytest.raises(RuntimeError, match="dtype"):
         C.update_fits_table_rows(path, 1, {"V": [np.array([1.0], np.float16)]}, 1, 1)
+
+
+def test_filtered_read_gathers_complex_columns(tmp_path):
+    path = str(tmp_path / "cplx.fits")
+    z = np.array([1.5 - 2.5j, 2.5 - 3.5j, 3.5 - 4.5j], dtype=np.complex64)
+    w = np.array([[1 + 2j, 3 + 4j]] * 3, dtype=np.complex128)
+    write_table(
+        path, {"K": np.arange(3, dtype=np.int32), "Z": z, "W": w}, overwrite=True
+    )
+    out = C.read_fits_table_filtered(path, 1, [], [("K", ">=", 1)])
+    assert out["Z"].tolist() == z[1:].tolist()
+    assert out["W"].tolist() == w[1:].tolist()

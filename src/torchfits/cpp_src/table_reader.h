@@ -2046,10 +2046,15 @@ public:
                 continue;
             }
 
+            // item_size is the byte-swap unit; a complex cell is two of them
+            // (real, imaginary), each swapped on its own.
             int item_size = 0;
+            int items_per_value = 1;
             if (col.type == FITSColumnType::DOUBLE || col.type == FITSColumnType::LONG) item_size = 8;
             else if (col.type == FITSColumnType::FLOAT || col.type == FITSColumnType::INT) item_size = 4;
             else if (col.type == FITSColumnType::SHORT) item_size = 2;
+            else if (col.type == FITSColumnType::COMPLEX_FLOAT) { item_size = 4; items_per_value = 2; }
+            else if (col.type == FITSColumnType::COMPLEX_DOUBLE) { item_size = 8; items_per_value = 2; }
             else item_size = 1;
 
             // Cell size in storage bytes. BIT columns are bit-packed, so the
@@ -2061,7 +2066,8 @@ public:
             } else if (col.type == FITSColumnType::BIT) {
                 cell_size = (static_cast<size_t>(col.repeat) + 7) / 8;
             } else {
-                cell_size = static_cast<size_t>(item_size) * static_cast<size_t>(std::max(1, col.repeat));
+                cell_size = static_cast<size_t>(item_size) * static_cast<size_t>(items_per_value) *
+                            static_cast<size_t>(std::max(1, col.repeat));
             }
             uint8_t* out_ptr = (uint8_t*)out_tensor.data_ptr();
 
