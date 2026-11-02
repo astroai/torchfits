@@ -12,9 +12,10 @@ def _parse_where_literal(raw: str) -> Any:
         raise ValueError("where literal cannot be empty")
 
     if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        # Taken literally, as the engine reads quoted literals: a doubled
+        # quote is one quote character, a backslash is an ordinary character.
         quote = token[0]
-        inner = token[1:-1]
-        return inner.replace(f"\\{quote}", quote)
+        return token[1:-1].replace(quote * 2, quote)
 
     token_lower = token.lower()
     if token_lower == "true":
@@ -79,8 +80,10 @@ def _tokenize_where_expression(where: str) -> List[Tuple[str, str]]:
             buf: List[str] = []
             while i < n:
                 cur = where[i]
-                if cur == "\\" and i + 1 < n:
-                    buf.append(where[i + 1])
+                if cur == quote and i + 1 < n and where[i + 1] == quote:
+                    # Doubled quote: one quote character (backslashes are
+                    # ordinary characters, as in _normalize_where_syntax).
+                    buf.append(quote)
                     i += 2
                     continue
                 if cur == quote:

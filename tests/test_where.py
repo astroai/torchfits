@@ -53,8 +53,12 @@ def test_parse_where_literal():
     # Quoted strings
     assert _parse_where_literal("'hello'") == "hello"
     assert _parse_where_literal('"world"') == "world"
-    assert _parse_where_literal("'won\\'t'") == "won't"
-    assert _parse_where_literal('"say \\"hi\\""') == 'say "hi"'
+    # Literal like the engine: a doubled quote is one quote, a backslash is
+    # an ordinary character.
+    assert _parse_where_literal("'won''t'") == "won't"
+    assert _parse_where_literal('"say ""hi"""') == 'say "hi"'
+    assert _parse_where_literal("'a\\nb'") == "a\\nb"
+    assert _parse_where_literal("'C:\\dir'") == "C:\\dir"
 
     # Bare words
     assert _parse_where_literal("STAR_A") == "STAR_A"
@@ -92,12 +96,22 @@ def test_tokenize_where_expression():
         ("RPAREN", ")"),
     ]
 
-    # Escape quotes
-    tokens = _tokenize_where_expression("TEXT == 'It\\'s fine'")
+    # Escape quotes: doubled, as the engine reads them; backslashes literal
+    tokens = _tokenize_where_expression("TEXT == 'It''s fine'")
     assert tokens == [
         ("WORD", "TEXT"),
         ("OP", "=="),
         ("LITERAL", "It's fine"),
+    ]
+    tokens = _tokenize_where_expression("P == 'C:\\dir\\' OR Q == 'x'")
+    assert tokens == [
+        ("WORD", "P"),
+        ("OP", "=="),
+        ("LITERAL", "C:\\dir\\"),
+        ("WORD", "OR"),
+        ("WORD", "Q"),
+        ("OP", "=="),
+        ("LITERAL", "x"),
     ]
 
     # Unterminated quotes

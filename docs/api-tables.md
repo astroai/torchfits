@@ -376,7 +376,9 @@ mask = evaluate_where(ast, {"MAG_G": magnitudes, "DEC": declinations})
 ```
 
 Additional public names: `parse_where_literal`, `tokenize_where_expression`,
-`normalize_where_syntax`, `where_columns_from_ast`.
+`normalize_where_syntax`, `where_columns_from_ast`. They read quoted literals
+as `where=` does: `parse_where_literal("'O''NEIL'")` is `O'NEIL`, and a
+backslash is an ordinary character.
 
 ---
 
