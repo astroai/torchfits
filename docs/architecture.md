@@ -192,7 +192,9 @@ Activated when `mmap=True` and the table layout permits it.
 - **`table.read` / `table.scan` (`where=`):** full dialect. C++ mmap-filtered
   scans when `choose_where_read_plan` selects pushdown (readable header, no
   VLA in the projection, and `backend="cpp"` or `backend="auto"` with
-  `mmap=True`); otherwise Arrow filtering after a wider read.
+  `mmap=True`); otherwise Arrow filtering after a wider read. Under
+  `backend="auto"` the torch-tensor pushdown and mask paths run only when
+  torch is already imported, so an Arrow-only `where=` read stays torch-free.
 
 `read_columns_mmap_filtered` (C++ Arrow/mmap path) implements row filtering
 in-process:

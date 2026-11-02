@@ -293,7 +293,7 @@ Pass `where=` to keep matching rows.
 
 | Call | Dialect | How it filters |
 |---|---|---|
-| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection); otherwise read then Arrow filter |
+| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection) and PyTorch is already imported; otherwise read then Arrow filter. `where=` never imports PyTorch itself |
 | `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns, then torch mask. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
 
 Root `torchfits.read()` has no `where=` parameter.
@@ -352,7 +352,7 @@ Root `torchfits.read()` has no `where=` parameter.
 
 | Value | Behavior |
 |---|---|
-| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable and the projection has no VLA columns; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
+| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable, the projection has no VLA columns, and PyTorch is already imported; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
 | `"cpp"` | Prefer C++ column / pushdown paths when safe |
 | `"torch"` | Chunked path via `table.scan_torch` |
 

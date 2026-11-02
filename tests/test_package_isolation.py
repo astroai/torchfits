@@ -563,3 +563,32 @@ def test_removed_native_cache_environment_is_ignored() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("mmap", [True, False])
+def test_table_read_where_does_not_import_torch(tmp_path, mmap: bool) -> None:
+    """An Arrow ``table.read(where=...)`` must not pull torch into the process."""
+    import numpy as np
+
+    import torchfits
+
+    path = tmp_path / "where.fits"
+    torchfits.table.write(
+        str(path),
+        {"ID": np.arange(10, dtype=np.int32), "MAG": np.linspace(18.0, 20.0, 10)},
+        overwrite=True,
+    )
+    script = f"""
+import sys
+import torchfits
+table = torchfits.table.read(sys.argv[1], where="MAG > 19", mmap={mmap})
+assert table.num_rows == 5, table.num_rows
+assert "torch" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

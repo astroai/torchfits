@@ -281,13 +281,12 @@ def _try_torch_tensor_where_filter(
         return None
 
     # This is an optimisation: the caller falls through to the Arrow-side
-    # filter when we return None. In a torch-free environment the Arrow filter
-    # is the only one that can run, so an ImportError here would turn a
-    # supported `where=` read into a hard failure instead of a slower success.
-    try:
-        import torch
-    except ImportError:
+    # filter when we return None. Like the native pushdown, it only runs when
+    # torch is already loaded: an Arrow-only `where=` read must neither fail
+    # without torch nor import it just to filter faster.
+    if "torch" not in sys.modules:
         return None
+    import torch
     import torchfits._C as cpp
 
     output_cols = columns
