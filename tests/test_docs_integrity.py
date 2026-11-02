@@ -968,7 +968,7 @@ def test_owed_behavior_notes_match_the_implementation() -> None:
     assert "TableHDURef.head(n)" in api
 
     cutout = cli.split("### `cutout`", 1)[1].split("### `", 1)[0]
-    assert "not shifted" in cutout
+    assert "shifted by the cutout's offset" in cutout
     setkey = cli.split("### `setkey`", 1)[1].split("### `", 1)[0]
     assert "--comment" not in setkey
 

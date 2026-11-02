@@ -300,7 +300,14 @@ torchfits convert r.fits g.fits b.fits -o preview.png --to png --recipe lupton -
 
 # Cube or MEF: HDU list is shortest → longest
 torchfits convert multi_band.fits -o preview.png --bands 0,1,2 --to png
+
+# Keep array row 0 at the top of the PNG instead of the bottom
+torchfits convert g.fits r.fits i.fits -o preview.png --origin upper
 ```
+
+`--origin {lower,upper}` sets the PNG row order. `lower` (default) puts FITS
+pixel (1,1) at the bottom-left, so standard WCS images display north up as in
+ds9; `upper` puts array row 0 on top.
 
 With several input files, `--bands` is one HDU index **per input file** and its length must match the number of inputs. A band read that fails names the file and HDU it was reading (for example `g.fits: HDU 1: Could not move to HDU`), so a bad index is attributable.
 
@@ -459,7 +466,8 @@ torchfits setkey science.fits -k OBJECT --value "NGC 1234"
 # (12, -3, 300.0, 1.5e3) become int or float; anything else stays a string
 torchfits setkey science.fits -k OKFLAG --value true
 torchfits setkey science.fits -k EXPTIME --value 300.0
-torchfits setkey science.fits -k OBSID --value 007   # stays the string '007'
+# A leading-zero ID such as 007 stays the string '007'
+torchfits setkey science.fits -k OBSID --value 007
 
 # Set HIERARCH / long keyword (--delete and --rename accept the same spelling)
 torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42"
