@@ -1339,13 +1339,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             long width_chars = col.width > 0 ? col.width : 1;
             std::vector<std::string> padded =
                 torchfits::internal::pad_fits_strings(col.string_values, width_chars);
-            std::vector<const char*> ptrs;
-            ptrs.reserve(padded.size());
-            for (const auto& s : padded) {
-                ptrs.push_back(s.c_str());
-            }
-            fits_write_col(fptr, TSTRING, i + 1, 1, 1, static_cast<long>(padded.size()),
-                           const_cast<char**>(ptrs.data()), &status);
+            write_string_rows(fptr, static_cast<int>(i + 1), 1, padded, &status);
         } else {
             nb::ndarray<> tensor = col.fixed;
             if (num_rows > 0 && col.repeat > 0 &&

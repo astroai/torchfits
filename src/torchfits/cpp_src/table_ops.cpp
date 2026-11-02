@@ -305,14 +305,7 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             // a single character.
             long width_chars = repeat > 1 ? repeat : width;
             std::vector<std::string> padded = pad_fits_strings(values, width_chars);
-            std::vector<const char*> ptrs;
-            ptrs.reserve(padded.size());
-            for (const auto& s : padded) {
-                ptrs.push_back(s.c_str());
-            }
-
-            fits_write_col(fptr, TSTRING, colnum, start_row, 1, num_rows,
-                           const_cast<char**>(ptrs.data()), &status);
+            torchfits::write_string_rows(fptr, colnum, start_row, padded, &status);
             continue;
         }
 
@@ -1057,18 +1050,11 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
     // Commit. Every column is resolved and converted by now, so nothing below
     // can reject the payload: a non-zero status here is a CFITSIO I/O failure.
     int commit_status = 0;
-    std::vector<const char*> ptrs;
     for (const PlannedColumn& col : plan) {
         if (col.is_string) {
-            ptrs.clear();
-            ptrs.reserve(col.strings.size());
-            for (const std::string& s : col.strings) {
-                ptrs.push_back(s.c_str());
-            }
             const PlannedWrite& w = col.writes[0];
-            fits_write_col(fptr, w.typecode, w.colnum, w.first_row, 1,
-                           static_cast<long>(col.strings.size()),
-                           const_cast<char**>(ptrs.data()), &commit_status);
+            torchfits::write_string_rows(fptr, w.colnum, w.first_row, col.strings,
+                                         &commit_status);
             continue;
         }
         for (const PlannedWrite& w : col.writes) {

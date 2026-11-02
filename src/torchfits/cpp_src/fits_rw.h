@@ -32,6 +32,45 @@ int resolve_hdu_name_cached(const std::string& filename, const std::string& hdu_
 std::vector<torch::Tensor> read_images_batch(const std::vector<std::string>& paths, int hdu_num, bool use_mmap = true);
 std::vector<torch::Tensor> read_hdus_batch(const std::string& path, const std::vector<int>& hdus, bool use_mmap);
 std::pair<FITSFile*, std::vector<HDUInfo>> open_and_read_headers(const std::string& path, int mode);
+// Write one string per table row to string column `colnum`, starting at
+// `first_row`. Each row should already be padded to the column's full width.
+// A binary column with TFORM rAw (w < r) holds r/w sub-strings per row, and
+// CFITSIO counts TSTRING elements in sub-strings, so passing one element per
+// row put the rows into the first row's sub-strings. Split each row into its
+// w-character pieces in that case.
+inline void write_string_rows(fitsfile* fptr, int colnum, LONGLONG first_row,
+                              const std::vector<std::string>& rows, int* status) {
+    if (*status != 0 || rows.empty()) return;
+    int typecode = 0;
+    LONGLONG repeat = 0;
+    LONGLONG width = 0;
+    int type_status = 0;
+    fits_get_coltypell(fptr, colnum, &typecode, &repeat, &width, &type_status);
+    std::vector<std::string> pieces;
+    const std::vector<std::string>* out = &rows;
+    if (type_status == 0 && width > 0 && repeat > width) {
+        const LONGLONG nsub = repeat / width;
+        pieces.reserve(rows.size() * static_cast<size_t>(nsub));
+        for (const auto& row : rows) {
+            for (LONGLONG k = 0; k < nsub; ++k) {
+                const size_t off = static_cast<size_t>(k * width);
+                // CFITSIO blank-pads a short element to the sub-string width.
+                pieces.push_back(off < row.size()
+                                     ? row.substr(off, static_cast<size_t>(width))
+                                     : std::string());
+            }
+        }
+        out = &pieces;
+    }
+    std::vector<const char*> ptrs;
+    ptrs.reserve(out->size());
+    for (const auto& s : *out) {
+        ptrs.push_back(s.c_str());
+    }
+    fits_write_col(fptr, TSTRING, colnum, first_row, 1, static_cast<LONGLONG>(out->size()),
+                   const_cast<char**>(ptrs.data()), status);
+}
+
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
 // Shared owner of a Python FITSFile's fitsfile*. Throws if the handle is
