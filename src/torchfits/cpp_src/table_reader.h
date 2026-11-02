@@ -928,8 +928,21 @@ public:
                             int scale_status = 0;
                             fits_set_tscale(fptr_, col_idx + 1, 1.0, 0.0, &scale_status);
                         }
-                        fits_read_col(fptr_, datatype, col_idx + 1, start_row, firstelem, nelements,
-                                      nullptr, tensor.data_ptr(), nullptr, &status);
+                        if (col.type == FITSColumnType::BIT && col.repeat % 8 != 0) {
+                            // CFITSIO's TBIT reader walks every byte of each
+                            // cell, pad bits included, before the next row, so
+                            // a multi-row read is misaligned unless the repeat
+                            // fills whole bytes. Read one row at a time.
+                            auto* dst = static_cast<char*>(tensor.data_ptr());
+                            for (long r = 0; r < num_rows && status == 0; ++r) {
+                                fits_read_col(fptr_, datatype, col_idx + 1, start_row + r, firstelem,
+                                              static_cast<long>(col.repeat), nullptr,
+                                              dst + r * static_cast<long>(col.repeat), nullptr, &status);
+                            }
+                        } else {
+                            fits_read_col(fptr_, datatype, col_idx + 1, start_row, firstelem, nelements,
+                                          nullptr, tensor.data_ptr(), nullptr, &status);
+                        }
                     }
 
                     if (status != 0) {
