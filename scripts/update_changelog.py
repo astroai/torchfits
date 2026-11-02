@@ -10,6 +10,8 @@ Usage::
 
     update_changelog.py                       merge new commits into Unreleased
     update_changelog.py --check               exit 1 if the merge would change the file
+                                              or a non-merge subject since the tag
+                                              is not a Conventional Commit
     update_changelog.py --since v1.1.0        merge commits from an explicit base tag
     update_changelog.py --release 1.1.0 [--date YYYY-MM-DD]
                                               stamp Unreleased -> [1.1.0] - date,
@@ -23,6 +25,8 @@ Commit mapping (conventional prefixes):
     deps -> Dependencies   refactor -> Changed (--all)
 
 ``chore`` / ``ci`` / ``test`` / ``build`` / ``style`` subjects are skipped.
+A ``!`` before the colon (``feat(io)!: ...``) marks the bullet **Breaking:**
+and is never skipped; ``Revert "<subject>"`` lands under Changed.
 
 Exit code is non-zero on any failure or, with ``--check``, on drift.
 """
@@ -67,18 +71,48 @@ TYPE_MAP = {
 }
 ALWAYS_SKIP = {"chore", "ci", "test", "build", "style"}
 
-SUBJECT_RE = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?: (?P<body>.+)$")
+SUBJECT_RE = re.compile(
+    r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?: (?P<body>.+)$"
+)
+# `git revert` default subject: Revert "fix(io): reject empty HDU"
+REVERT_RE = re.compile(r'^Revert "(?P<inner>.+)"$')
+
+
+def is_conventional(subject: str) -> bool:
+    """True when the subject is a Conventional Commit of a known type."""
+    subject = subject.strip()
+    revert = REVERT_RE.match(subject)
+    if revert is not None:
+        return True
+    match = SUBJECT_RE.match(subject)
+    return match is not None and (
+        match["type"] in TYPE_MAP or match["type"] in ALWAYS_SKIP
+    )
 
 
 def parse_subject(subject: str, include_all: bool = False) -> tuple[str, str] | None:
     """Map a conventional-commit subject to (section, bullet text)."""
-    match = SUBJECT_RE.match(subject.strip())
+    subject = subject.strip()
+    revert = REVERT_RE.match(subject)
+    if revert is not None:
+        inner = revert["inner"]
+        inner_match = SUBJECT_RE.match(inner)
+        if inner_match is not None and inner_match["type"] in ALWAYS_SKIP:
+            return None  # reverting an unlisted change is unlisted too
+        parsed = parse_subject(inner, include_all=True)
+        text = parsed[1][2:] if parsed is not None else inner
+        return TYPE_MAP["revert"], "- Revert: " + text
+    match = SUBJECT_RE.match(subject)
     if match is None:
         return None
     ctype = match["type"]
-    if ctype in ALWAYS_SKIP or (ctype == "refactor" and not include_all):
+    breaking = match["bang"] is not None
+    if not breaking and (
+        ctype in ALWAYS_SKIP or (ctype == "refactor" and not include_all)
+    ):
         return None
-    section = TYPE_MAP.get(ctype)
+    # A breaking change is always listed, even for otherwise skipped types.
+    section = TYPE_MAP.get(ctype, "Changed" if breaking else None)
     if section is None:
         return None
     scope = (match["scope"] or "").strip()
@@ -87,6 +121,8 @@ def parse_subject(subject: str, include_all: bool = False) -> tuple[str, str] | 
         f"{scope}: " if scope and not body.lower().startswith(scope.lower()) else ""
     )
     bullet = prefix + body[:1].upper() + body[1:]
+    if breaking:
+        bullet = "**Breaking:** " + bullet
     return section, "- " + bullet
 
 
@@ -287,32 +323,33 @@ def stamp_release(text: str, version: str, date: str) -> str:
     return _refresh_refs(stamped, version, prev)
 
 
-def collect_bullets(since: str, *, include_all: bool) -> list[tuple[str, str]]:
-    # A commit that edits only the changelog is bookkeeping, not a change.
-    # Without the exclusion, the commit that `--release`/`changelog-update`
-    # creates is itself collected as a new Docs bullet, so every check after a
-    # regeneration is stale and the tree can never settle.
+def _subjects(since: str, *pathspec: str) -> list[str]:
     log = subprocess.run(
-        [
-            "git",
-            "log",
-            "--pretty=%s",
-            f"{since}..HEAD",
-            "--",
-            ".",
-            ":(exclude)docs/changelog.md",
-        ],
+        ["git", "log", "--no-merges", "--pretty=%s", f"{since}..HEAD", *pathspec],
         capture_output=True,
         text=True,
         cwd=ROOT,
         check=True,
     )
+    return log.stdout.splitlines()
+
+
+def collect_bullets(since: str, *, include_all: bool) -> list[tuple[str, str]]:
+    # A commit that edits only the changelog is bookkeeping, not a change.
+    # Without the exclusion, the commit that `--release`/`changelog-update`
+    # creates is itself collected as a new Docs bullet, so every check after a
+    # regeneration is stale and the tree can never settle.
     bullets: list[tuple[str, str]] = []
-    for subject in log.stdout.splitlines():
+    for subject in _subjects(since, "--", ".", ":(exclude)docs/changelog.md"):
         parsed = parse_subject(subject, include_all=include_all)
         if parsed is not None:
             bullets.append(parsed)
     return bullets
+
+
+def nonconventional_subjects(since: str) -> list[str]:
+    """Non-merge subjects since ``since`` that are not Conventional Commits."""
+    return [s for s in _subjects(since) if not is_conventional(s)]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -347,8 +384,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         try:
             bullets = collect_bullets(since, include_all=args.all)
+            invalid = nonconventional_subjects(since) if args.check else []
         except subprocess.CalledProcessError as exc:
             print(f"git log failed for range {since}..HEAD: {exc}")
+            return 1
+        if invalid:
+            print(f"non-Conventional commit subjects since {since}:")
+            for subject in invalid:
+                print(f"  {subject}")
             return 1
         if not bullets:
             print(f"no new classifiable commits since {since}")

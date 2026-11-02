@@ -337,3 +337,54 @@ def test_check_without_tags_fails_only_in_ci(tmp_path, monkeypatch, capsys) -> N
     monkeypatch.setenv("CI", "true")
     assert changelog.main(["--check"]) == 1
     assert "no git tags found" in capsys.readouterr().out
+
+
+def test_parse_subject_breaking_and_revert() -> None:
+    assert changelog.parse_subject("feat(io)!: drop the legacy reader") == (
+        "Added",
+        "- **Breaking:** io: Drop the legacy reader",
+    )
+    # Breaking changes are listed even for otherwise skipped types.
+    assert changelog.parse_subject("build!: require CMake 4") == (
+        "Changed",
+        "- **Breaking:** Require CMake 4",
+    )
+    assert changelog.parse_subject('Revert "fix(io): reject empty HDU"') == (
+        "Changed",
+        "- Revert: io: Reject empty HDU",
+    )
+    assert changelog.parse_subject('Revert "ci: tweak workflow"') is None
+    assert changelog.is_conventional("feat(io)!: x")
+    assert changelog.is_conventional('Revert "anything"')
+    assert not changelog.is_conventional("Fix the thing")
+    assert not changelog.is_conventional("wip: unknown type")
+
+
+def test_check_fails_on_nonconventional_subject(tmp_path, monkeypatch, capsys) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "tests@example.com")
+    git("config", "user.name", "Tests")
+    (tmp_path / "docs").mkdir()
+    changelog_md = tmp_path / "docs" / "changelog.md"
+    changelog_md.write_text(
+        "# Changelog\n\n## Unreleased\n\n### Fixed\n\n- Real change\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "code.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "feat: first")
+    git("tag", "v1.0.0")
+    (tmp_path / "code.py").write_text("x = 2\n", encoding="utf-8")
+    git("commit", "-qam", "fix: real change")
+
+    monkeypatch.setattr(changelog, "ROOT", tmp_path)
+    monkeypatch.setattr(changelog, "CHANGELOG", changelog_md)
+    assert changelog.main(["--check"]) == 0
+
+    (tmp_path / "code.py").write_text("x = 3\n", encoding="utf-8")
+    git("commit", "-qam", "Tweak the thing")
+    assert changelog.main(["--check"]) == 1
+    assert "Tweak the thing" in capsys.readouterr().out
