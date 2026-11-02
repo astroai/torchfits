@@ -158,3 +158,28 @@ def test_table_header_cannot_rewrite_the_table_layout(tmp_path):
     assert cards["TFORM1"].strip("' ") == "J"
     assert cards["OBSERVER"].strip("' ") == "me"
 
+
+def test_bad_header_value_is_rejected_before_overwriting(tmp_path):
+    path = str(tmp_path / "partial.fits")
+    writers = (
+        lambda hdus: C.write_fits_file(path, hdus, True),
+        lambda hdus: C.write_fits_file_compressed_images(path, hdus, True, "GZIP"),
+    )
+    for write in writers:
+        C.write_fits_file(path, [{"data": torch.ones(4, 4)}], True)
+        hdus = [{"data": torch.zeros(4, 4), "header": {"FOO": [1]}}]
+        with pytest.raises(RuntimeError, match="Unsupported FITS header value"):
+            write(hdus)
+        assert torch.equal(C.read_full(path, 0, True), torch.ones(4, 4))
+
+    # A bad card on a later HDU must not leave earlier HDUs half-written.
+    path = str(tmp_path / "handle.fits")
+    f = C.open_fits_file(path, "w")
+    f.write_hdus([{"data": torch.ones(4, 4)}], False)
+    hdus = [{"data": torch.zeros(2, 2)}, {"data": torch.zeros(2), "header": {"X": [1]}}]
+    with pytest.raises(RuntimeError, match="Unsupported FITS header value"):
+        f.write_hdus(hdus, False)
+    f.close()
+    g = C.open_fits_file(path, "r")
+    assert g.get_num_hdus() == 1
+    g.close()

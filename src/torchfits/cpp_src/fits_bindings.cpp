@@ -874,6 +874,54 @@ static int fits_header_value_type(nb::handle value) {
     return 0;
 }
 
+void validate_header_values(nb::dict header) {
+    // Reads only the Python objects, so it can run before anything is created.
+    for (auto item : header) {
+        const std::string header_key =
+            d::sanitize_fits_key(nb::cast<std::string>(item.first));
+        const int card_type = fits_header_value_type(item.second);
+        if (card_type == 0) {
+            throw std::runtime_error(
+                "Unsupported FITS header value type for key '" + header_key +
+                "': expected str, bool, int, or float"
+            );
+        }
+        if (card_type == TLONGLONG) {
+            int overflow = 0;
+            PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
+            if (overflow != 0 || PyErr_Occurred()) {
+                PyErr_Clear();
+                throw std::runtime_error(
+                    "FITS header integer out of long long range: " + header_key);
+            }
+        }
+        if (card_type == TSTRING) {
+            // Same check the loop performs before choosing fits_update_key vs
+            // fits_update_key_longstr, so a non-ASCII value is rejected here.
+            d::require_fits_ascii(nb::cast<std::string>(item.second), "header value");
+        }
+    }
+}
+
+void validate_hdu_list_headers(nb::list hdus) {
+    // Mirrors how write_hdus / write_hdus_compressed_images find each HDU's
+    // header, so every value they would reject is rejected before the first
+    // HDU (or, with overwrite, the replacement file) is created.
+    for (auto handle : hdus) {
+        nb::object hdu_obj = nb::borrow<nb::object>(handle);
+        nb::object header_obj;
+        if (nb::hasattr(hdu_obj, "header")) {
+            header_obj = hdu_obj.attr("header");
+        } else if (nb::isinstance<nb::dict>(hdu_obj)) {
+            nb::dict hd = nb::cast<nb::dict>(hdu_obj);
+            if (hd.contains("header")) header_obj = hd["header"];
+        }
+        if (header_obj.is_valid()) {
+            validate_header_values(nb::cast<nb::dict>(header_obj));
+        }
+    }
+}
+
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii) {
     struct ColumnWriteInfo {
         std::string name;
@@ -1315,32 +1363,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
     // with a complete table already on disk: measured, a header value this
     // writer refuses left an 8640-byte file whose table read back perfectly and
     // carried none of the caller's cards (R2-012). Decide all of it here, while
-    // nothing exists yet. Both checks read only the Python objects.
-    for (auto item : header) {
-        const std::string header_key =
-            d::sanitize_fits_key(nb::cast<std::string>(item.first));
-        const int card_type = fits_header_value_type(item.second);
-        if (card_type == 0) {
-            throw std::runtime_error(
-                "Unsupported FITS header value type for key '" + header_key +
-                "': expected str, bool, int, or float"
-            );
-        }
-        if (card_type == TLONGLONG) {
-            int overflow = 0;
-            PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
-            if (overflow != 0 || PyErr_Occurred()) {
-                PyErr_Clear();
-                throw std::runtime_error(
-                    "FITS header integer out of long long range: " + header_key);
-            }
-        }
-        if (card_type == TSTRING) {
-            // Same check the loop performs before choosing fits_update_key vs
-            // fits_update_key_longstr, so a non-ASCII value is rejected here.
-            d::require_fits_ascii(nb::cast<std::string>(item.second), "header value");
-        }
-    }
+    // nothing exists yet.
+    validate_header_values(header);
 
     int num_cols = static_cast<int>(columns.size());
     std::vector<std::string> ttype_store(static_cast<size_t>(num_cols));
@@ -1740,6 +1764,7 @@ void bind_fits(nb::module_& m) {
         if (overwrite) {
             final_path = "!" + path;
         }
+        validate_hdu_list_headers(hdus);
         invalidate_shared_meta(path);
         FITSFile file(final_path.c_str(), 1);
         file.write_hdus(hdus, overwrite);
@@ -1776,6 +1801,7 @@ void bind_fits(nb::module_& m) {
                   }
               }
 
+              validate_hdu_list_headers(hdus);
               invalidate_shared_meta(path);
               FITSFile file(final_path.c_str(), 1);
               file.write_hdus_compressed_images(hdus, comptype);

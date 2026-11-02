@@ -71,6 +71,9 @@ inline void write_string_rows(fitsfile* fptr, int colnum, LONGLONG first_row,
                    const_cast<char**>(ptrs.data()), status);
 }
 
+// Reject header values the card writers refuse, before anything is written.
+void validate_header_values(nb::dict header);
+void validate_hdu_list_headers(nb::list hdus);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
 // Shared owner of a Python FITSFile's fitsfile*. Throws if the handle is

@@ -660,6 +660,7 @@ std::string FITSFile::get_hdu_type(int hdu_num) {
 
 bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    validate_hdu_list_headers(hdus);
     int hdu_count = 0;
     for (auto handle : hdus) {
         nb::object hdu_obj = nb::cast<nb::object>(handle);
@@ -770,6 +771,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
 
 bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    validate_hdu_list_headers(hdus);
     int status = 0;
     long naxes0[1] = {0};
     fits_create_img(fptr_, BYTE_IMG, 0, naxes0, &status);
