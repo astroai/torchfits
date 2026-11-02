@@ -528,14 +528,43 @@ torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
 `hdu` is an index or an EXTNAME (matched case-insensitively, as in `read()`).
-Every other HDU keeps its index. An edit that cannot land where asked raises
-`ValueError` and leaves the file unchanged:
+Every other HDU keeps its index.
+
+Only the inserted or replacing HDU is written, from the call's arguments.
+Every other HDU is copied byte for byte, so it keeps the structure it had
+before the edit: tile compression, storage `BITPIX`, `BSCALE`/`BZERO`/`BLANK`,
+scaled table columns with `TSCAL`/`TZERO`, and all other cards. `compress=`
+applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
+HDU is stamped too.
+
+```python
+# Add a RICE-compressed extension; HDUs 0 and 1 are left exactly as they were.
+torchfits.insert_hdu(
+    "mef.fits", image, index=2, header={"EXTNAME": "SCI2"}, compress="RICE"
+)
+```
+
+HDU 0 changes structure only when the edit itself moves it:
+
+- `insert_hdu(..., index=0)` turns the old primary into an `IMAGE` extension
+  (`SIMPLE` becomes `XTENSION`, `PCOUNT`/`GCOUNT` added, `EXTEND` dropped);
+- `delete_hdu(path, 0)` turns an `IMAGE` extension at index 1 into the primary
+  (`XTENSION` becomes `SIMPLE`, `EXTEND = T` added, `PCOUNT`/`GCOUNT` dropped).
+
+Data bytes are unchanged in both cases; only that HDU's checksum is restamped.
+
+An edit that cannot land where asked raises `ValueError` and leaves the file
+unchanged:
 
 - a table at index 0 (`insert_hdu(..., index=0)`, `replace_hdu(path, 0, table)`,
   or `delete_hdu(path, 0)` when HDU 1 is a table) — a table cannot be the
   primary HDU;
-- `compress=` when HDU 0 holds image data — compressed files keep an empty
-  primary, so the data would move to index 1.
+- `compress=` at index 0, or `delete_hdu(path, 0)` when HDU 1 is a
+  tile-compressed image — a compressed image is a binary-table extension and
+  cannot be the primary HDU;
+- `insert_hdu(..., index=0)` when the primary holds random groups;
+- `delete_hdu(..., compress=...)` — a delete writes no HDU, so there is
+  nothing to compress.
 
 ---
 

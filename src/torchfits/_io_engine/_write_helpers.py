@@ -428,7 +428,7 @@ def _atomic_replace_target(path: str) -> Iterator[str]:
 
     This is the single copy of the recipe:
     ``write_api.atomic_write_target``, ``_hdu_rewrite._write_hdus_uncompressed``
-    and ``_hdu_rewrite._atomic_rewrite_hdus`` all route through it, so a fix to
+    and ``_hdu_splice.publish_spliced`` all route through it, so a fix to
     the window cannot reach one site and miss the others.
 
     Callers must invalidate the path caches *after* the block -- see

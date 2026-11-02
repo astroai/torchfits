@@ -47,7 +47,9 @@ def test_edits_that_would_renumber_hdus_raise(tmp_path):
     with pytest.raises(ValueError, match="primary"):
         torchfits.replace_hdu(path, 0, table)
     with pytest.raises(ValueError, match="primary"):
-        torchfits.insert_hdu(path, torch.zeros(2, 2), index=2, compress=True)
+        torchfits.insert_hdu(path, torch.zeros(2, 2), index=0, compress=True)
+    with pytest.raises(ValueError, match="primary"):
+        torchfits.replace_hdu(path, 0, torch.zeros(2, 2), compress=True)
     assert open(path, "rb").read() == before
 
     tab = str(tmp_path / "tab.fits")

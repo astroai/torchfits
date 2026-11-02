@@ -280,51 +280,6 @@ def _ordered_dict_for_columns(
     return out
 
 
-_FITS_BLOCK = 2880
-
-
-def _hdu_byte_spans(path: str) -> list[tuple[int, int, int]]:
-    """``(header_start, data_start, end)`` of every HDU, from the raw bytes."""
-    from ..header_parser import fast_parse_header_cards
-
-    spans: list[tuple[int, int, int]] = []
-    size = os.path.getsize(path)
-    with open(path, "rb") as fh:
-        pos = 0
-        while pos < size:
-            start = pos
-            chunks: list[bytes] = []
-            while True:
-                block = fh.read(_FITS_BLOCK)
-                if len(block) < _FITS_BLOCK:
-                    raise ValueError(f"truncated FITS header at byte {pos}")
-                pos += _FITS_BLOCK
-                chunks.append(block)
-                if any(
-                    block[i : i + 8] == b"END     " for i in range(0, _FITS_BLOCK, 80)
-                ):
-                    break
-            text = b"".join(chunks).decode("latin-1")
-            cards = {k: v for k, v, _c in fast_parse_header_cards(text)}
-            naxis = int(cards.get("NAXIS", 0) or 0)
-            nbytes = 0
-            if naxis > 0:
-                count = 1
-                for i in range(1, naxis + 1):
-                    count *= int(cards.get(f"NAXIS{i}", 0) or 0)
-                nbytes = (
-                    abs(int(cards.get("BITPIX", 8)))
-                    // 8
-                    * int(cards.get("GCOUNT", 1) or 1)
-                    * (int(cards.get("PCOUNT", 0) or 0) + count)
-                )
-            data_start = pos
-            pos += -(-nbytes // _FITS_BLOCK) * _FITS_BLOCK
-            fh.seek(pos)
-            spans.append((start, data_start, min(pos, size)))
-    return spans
-
-
 _BINTABLE_CELL_BYTES = {
     "L": 1,
     "B": 1,
@@ -403,7 +358,9 @@ def _scaled_columns_as_stored(
             offset += (repeat + 7) // 8
         else:
             offset += repeat * _BINTABLE_CELL_BYTES.get(code, 0)
-    data_start = _hdu_byte_spans(path)[hdu][1]
+    from .._io_engine._hdu_splice import hdu_byte_spans
+
+    data_start = hdu_byte_spans(path)[hdu][1]
     rows = np.fromfile(
         path, dtype=np.uint8, count=nrows * width, offset=data_start
     ).reshape(nrows, width)
@@ -428,10 +385,7 @@ def _rewrite_table_hdu_with_schema(
     *,
     restamp_checksums: bool = False,
 ) -> None:
-    from .._io_engine._write_helpers import (
-        _atomic_replace_target,
-        _invalidate_written_target,
-    )
+    from .._io_engine._hdu_splice import Piece, hdu_byte_spans, publish_spliced
 
     # Stage the single-HDU file in a temp path so building it never races with
     # CFITSIO's internal file-locking on the real file when another handle
@@ -453,23 +407,19 @@ def _rewrite_table_hdu_with_schema(
         # Replayed card by card: the mapping write path re-emits HISTORY and
         # COMMENT as valued cards and collapses repeated lines.
         _write_header_cards_if_supported(tmp_path, 1, header)
-        new_start, _new_data, new_end = _hdu_byte_spans(tmp_path)[1]
-        spans = _hdu_byte_spans(path)
+        new_start, _new_data, new_end = hdu_byte_spans(tmp_path)[1]
+        spans = hdu_byte_spans(path)
         old_start, _old_data, old_end = spans[target_hdu]
-        with open(tmp_path, "rb") as fh:
-            fh.seek(new_start)
-            new_hdu = fh.read(new_end - new_start)
-        with _atomic_replace_target(path) as temp_target:
-            with open(path, "rb") as src, open(temp_target, "wb") as dst:
-                dst.write(src.read(old_start))
-                dst.write(new_hdu)
-                src.seek(old_end)
-                dst.write(src.read())
-        _invalidate_written_target(path)
-        if restamp_checksums:
-            from .._io_engine.checksum_api import write_checksums
-
-            write_checksums(path, hdu=target_hdu)
+        pieces: list[Piece] = [
+            (path, 0, old_start),
+            (tmp_path, new_start, new_end),
+            (path, old_end, spans[-1][2]),
+        ]
+        publish_spliced(
+            path,
+            [p for p in pieces if isinstance(p, bytes) or p[2] > p[1]],
+            restamp=[target_hdu] if restamp_checksums else [],
+        )
     finally:
         try:
             os.unlink(tmp_path)
