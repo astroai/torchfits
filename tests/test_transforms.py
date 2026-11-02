@@ -344,6 +344,20 @@ class TestZScaleIrafParity:
             got = (float(z1[i]), float(z2[i]))
             assert got == pytest.approx(expected, rel=1e-9)
 
+    @pytest.mark.skipif(
+        not torch.backends.mps.is_available(), reason="MPS not available"
+    )
+    def test_runs_on_mps(self) -> None:
+        x, _ = _iraf_cases()["one_nan"]
+        x = x.to(torch.float32)
+        cpu = zscale_limits(x, algorithm="iraf")
+        mps = zscale_limits(x.to("mps"), algorithm="iraf")
+        for c, m in zip(cpu, mps):
+            assert m.device.type == "mps"
+            assert torch.allclose(c, m.cpu(), rtol=1e-4)
+        y = ZScaleNormalize(algorithm="iraf")(x.to("mps"))
+        assert y.device.type == "mps"
+
 
 # ---------------------------------------------------------------------------
 # FITSTransform base and Compose

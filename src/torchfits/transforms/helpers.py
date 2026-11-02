@@ -525,9 +525,11 @@ def _iraf_zscale_groups(
 
     The fit runs in float64 (astropy's dtype) and the limits are cast back to
     the input dtype, so results match ``ZScaleInterval`` to float32 rounding.
+    MPS has no float64, so the fit stays in float32 there.
     """
     out_dtype = samples.dtype
-    samples = samples.to(torch.float64)
+    fit_dtype = torch.float32 if samples.device.type == "mps" else torch.float64
+    samples = samples.to(fit_dtype)
     groups, width = samples.shape
     dtype = samples.dtype
     device = samples.device
