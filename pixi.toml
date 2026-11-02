@@ -99,7 +99,8 @@ preflight-push = "ruff check . && ruff format --check . && mypy src/torchfits &&
 gen-stub = "python scripts/gen_native_stub.py"
 check-stub = "python scripts/gen_native_stub.py --check"
 # Build a wheel and assert its contents contract (what the CI wheel-smoke job does).
-wheel-smoke = "python -m pip wheel . --no-build-isolation --no-deps -w dist && python scripts/check_wheel_contents.py dist/*.whl"
+# Fresh output dir: stale wheels left in dist/ (older versions) would be checked too.
+wheel-smoke = "rm -rf dist/wheel-smoke && python -m pip wheel . --no-build-isolation --no-deps -w dist/wheel-smoke && python scripts/check_wheel_contents.py dist/wheel-smoke/*.whl"
 # Verify the committed release-lane pins match scripts/torch_lanes.json.
 check-lane = "python scripts/release_lane.py --check"
 # `.cursor/skills` and `.cursor/hooks` are canonical and tracked; `.agents/` and
