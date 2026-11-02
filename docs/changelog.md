@@ -63,6 +63,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - io: Honor mode= and EXTNAMEs on every read route
 - io: Refuse HTTP range cutouts of table HDUs
 - io: Validate cached reads of file.fits[N] and file:// paths against the file
+- where: Take string literals literally and align read_torch literals
+- table: Key cached native table readers by the resolved path
+- hdu: Resolve TableHDURef column-file edits against the file's columns
+- hdu: Renumber column cards when TableHDU.to_fits writes a subset
+- table: Carry typed header cards through insert/replace_column
+- table: Re-stamp CHECKSUM/DATASUM after row and column edits
+- where: Refuse vector-column predicates on every backend
+- where: Resolve cpp-backend string predicates with the caller's decoding
+- table: Check ASCII and width for strings in every row mutation
+- table: Write None in string columns as a blank value
+- table: Reject delete_rows(path, None) instead of deleting every row
+- table: Compare TNULL with the stored value before TSCAL/TZERO
+- table: Refuse out-of-range integers in update_rows before writing
+- table: Keep scaled columns' stored values across insert/replace_column
+- where: Compare integer columns exactly against float and wide literals
+- where: Keep NULL OR TRUE rows with Kleene and/or
+- table: Write signed payloads into uint64 columns as physical values
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
