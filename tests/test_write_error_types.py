@@ -43,6 +43,9 @@ def test_argument_type_errors_raise_type_error(tmp_path, data, kwargs):
 
 def test_other_failures_name_the_callers_path(tmp_path):
     path = str(tmp_path / "x.fits")
-    # CFITSIO cannot tile-compress 64-bit integer images.
+    # PLIO_1 cannot hold floating-point pixels; the writer refuses them.
     with pytest.raises(RuntimeError, match="Failed to write FITS file '" + path):
+        torchfits.write(path, torch.ones(2, 2), compress="PLIO_1")
+    # 64-bit integer tile compression is refused as an argument error.
+    with pytest.raises(ValueError, match="64-bit integer"):
         torchfits.write(path, torch.ones(2, 2, dtype=torch.int64), compress=True)

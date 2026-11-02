@@ -494,7 +494,7 @@ torchfits.write(
 | `data` | `Tensor`, numpy array, `dict`, or `HDUList` | *(required)* | Data to write. Numpy arrays and tensors write an image HDU; `dict` writes a table. |
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
-| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). |
+| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). 64-bit integer images (`int64`, `uint64`) cannot be tile-compressed: `compress=` raises `ValueError`. |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
 
 !!! note "`uint16` images and `PLIO_1`"
@@ -510,6 +510,20 @@ torchfits.write(
     x = torch.tensor([[0, 1, 40000, 65535]], dtype=torch.uint16)
     torchfits.write("u16.fits", x, compress="RICE_1", overwrite=True)
     assert torch.equal(torchfits.read("u16.fits", hdu=1), x)
+    ```
+
+!!! note "No tile compression for 64-bit integers"
+    CFITSIO has no tile codec for `BITPIX = 64`. `write()`, `write_tensor()`,
+    `HDUList` writes and `insert_hdu()`/`replace_hdu()` with `compress=` raise
+    `ValueError("tile compression does not support 64-bit integer images; ...")`
+    for an `int64` or `uint64` image, before anything is written. Write it
+    uncompressed, or convert it first:
+
+    ```python
+    import torch, torchfits
+
+    x = torch.arange(16, dtype=torch.int64).reshape(4, 4)
+    torchfits.write("i32.fits", x.to(torch.int32), compress="GZIP_1", overwrite=True)
     ```
 
 !!! tip "Skewed float → int16"

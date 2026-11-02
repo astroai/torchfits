@@ -298,6 +298,19 @@ def _strip_compression_cards(header: Header) -> Header:
     return preserved
 
 
+def _reject_64bit_integer_tile_compression(data: Any, algorithm: str, idx: int) -> None:
+    """CFITSIO has no tile codec for BITPIX=64: it fails mid-write with a bare
+    "error compressing image" (status 413). Say what is wrong up front."""
+    if algorithm.strip().upper() == "NONE":
+        return
+    if isinstance(data, Tensor) and data.dtype in (torch.int64, torch.uint64):
+        raise ValueError(
+            "tile compression does not support 64-bit integer images "
+            f"(HDU {idx} is {str(data.dtype).removeprefix('torch.')}); "
+            "write uncompressed or convert to int32/float64"
+        )
+
+
 def _write_hdus_with_optional_compression(
     path: str,
     hdus: List[Any],
@@ -341,6 +354,7 @@ def _write_hdus_with_optional_compression(
         hdu_dict = _image_hdu_dict_for_fits_write(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
+        _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
         replay_header = _payload_replay_header(hdu_dict)
         if replay_header is not None:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(replay_header)

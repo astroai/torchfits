@@ -373,6 +373,9 @@ The default `GZIP_1` codec is lossless for integer and floating-point images.
 Also available: `RICE_1`, `GZIP_2`, `HCOMPRESS_1`, and `PLIO_1`; `BZIP2_1` is
 listed when the build includes bzip2. The non-default codecs use CFITSIO float
 quantization and are lossy for floating-point images; `PLIO_1` rejects floats.
+No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
+`tile compression does not support 64-bit integer images` and exits `3`
+without writing the output.
 `--hdu` applies only with `--split hdu`.
 
 ```bash
