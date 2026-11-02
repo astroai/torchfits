@@ -16,6 +16,7 @@ from ._write_helpers import (
     _COMPRESSION_CARD_PREFIXES,
     _atomic_replace_target,
     _cpp_header_mapping,
+    _filter_header_cards,
     _hdu_with_header,
     _image_hdu_dict_for_fits_write,
     _invalidate_path_caches,
@@ -193,12 +194,24 @@ def _prepare_table_hdu_for_payload(hdu: Any) -> Optional[_TableWriteProxy]:
         raw_data, schema, _ = _prepare_unsigned_table_data_for_write(raw_data)
         scale_cards = _table_schema_scale_header_cards(schema)
         # Source TFORMn spellings (astropy bare 'J'/'I', exotic '8X'/'PJ') are
-        # re-added verbatim for columns whose storage is unchanged; decoded
-        # scaled columns re-derive instead (r4b-01).
-        preserved = _preserved_table_tform_cards(hdu.header, raw_data)
+        # re-added verbatim only for the same column with the same cell
+        # layout; decoded scaled columns re-derive instead (r4b-01). Bit and
+        # wide string spellings are laid down by the writer via the schema.
+        preserved, formats, stale = _preserved_table_tform_cards(hdu.header, raw_data)
+        if formats:
+            schema = {
+                name: {
+                    **(schema or {}).get(name, {}),
+                    **({"format": formats[name]} if name in formats else {}),
+                }
+                for name in raw_data
+            }
         header = _merge_fits_write_header(
             _merge_fits_write_header(
-                _sanitize_table_header_for_write(hdu.header), preserved
+                _filter_header_cards(
+                    _sanitize_table_header_for_write(hdu.header), frozenset(stale)
+                ),
+                preserved,
             ),
             scale_cards,
         )

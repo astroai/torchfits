@@ -164,18 +164,115 @@ def _prepared_tform_code(value: Any) -> Optional[str]:
     return None
 
 
+_VLA_SIGNATURE_CODES: Dict[Any, str] = {
+    ("b", 1): "L",
+    ("u", 1): "B",
+    ("i", 1): "B",
+    ("i", 2): "I",
+    ("i", 4): "J",
+    ("i", 8): "K",
+    ("f", 4): "E",
+    ("f", 8): "D",
+    ("c", 8): "C",
+    ("c", 16): "M",
+}
+
+# Per-column annotation cards: they describe column n by position, so they
+# are stale once column n is a different column. TDIM/TNULL also describe
+# the cell layout/type and go stale when that changes.
+_TABLE_COLUMN_ANNOTATION_PREFIXES = (
+    "TUNIT",
+    "TDISP",
+    "TCTYP",
+    "TCUNI",
+    "TCRPX",
+    "TCRVL",
+    "TCDLT",
+    "TCROT",
+    "TLMIN",
+    "TLMAX",
+    "TDMIN",
+    "TDMAX",
+)
+
+
+def _parse_binary_tform(tform: Any) -> Optional[tuple[int, str, str]]:
+    """(repeat, code, rest) of a binary-table TFORM, or None if malformed."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d*)\s*([A-Za-z])(.*?)\s*", str(tform))
+    if m is None:
+        return None
+    return (int(m.group(1)) if m.group(1) else 1, m.group(2).upper(), m.group(3))
+
+
+def _derived_column_layout(value: Any) -> Optional[tuple[str, int, str]]:
+    """(kind, repeat, code) the table writer derives for a prepared column.
+
+    ``kind`` is 'num' (fixed-width numeric/bool), 'str' (repeat = max string
+    length) or 'vla' (repeat = max row length). None when unknown.
+    """
+    import numpy as np
+
+    code = _prepared_tform_code(value)
+    if code is not None:
+        shape = tuple(value.shape)
+        repeat = 1
+        for size in shape[1:]:
+            repeat *= int(size)
+        return ("num", repeat, code)
+    if isinstance(value, np.ndarray) and value.dtype.kind in {"U", "S"}:
+        lengths = [len(x) for x in value.reshape(-1).tolist()]
+        return ("str", max([1, *lengths]), "A")
+    if isinstance(value, (list, tuple)) or (
+        isinstance(value, np.ndarray) and value.dtype == np.object_
+    ):
+        items = list(value)
+        if any(isinstance(x, (str, bytes, np.str_, np.bytes_)) for x in items):
+            lengths = [len(x) for x in items if x is not None]
+            return ("str", max([1, *lengths]), "A")
+        sig = None
+        max_len = 0
+        for item in items:
+            s = _vla_item_signature(item)
+            if s is None:
+                return None
+            if s == ("none",):
+                continue
+            n = (
+                int(np.asarray(item).size)
+                if not isinstance(item, Tensor)
+                else item.numel()
+            )
+            max_len = max(max_len, n)
+            if n and sig is None:
+                sig = s
+        letter = _VLA_SIGNATURE_CODES.get(sig) if sig is not None else None
+        return ("vla", max_len, letter) if letter else None
+    return None
+
+
 def _preserved_table_tform_cards(
     source_header: Any, prepared_data: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Source ``TFORMn`` spellings preserved verbatim for columns whose
-    prepared storage still matches them.
+) -> tuple[Dict[str, Any], Dict[str, str], set[str]]:
+    """Source ``TFORMn`` spellings a rewrite may keep, by column.
 
-    astropy spells repeat-1 formats as bare type chars ('J', 'I'); C++
-    re-derivation relabels them '1J'/'1I'. Copies and rewrites must keep the
-    source spelling (and exotic spellings like '8X'/'PJ'). A column whose
-    materialized data left its storage domain (e.g. TSCAL/TZERO-scaled ints
-    decoded to floats) must NOT keep the old TFORM -- the label would
-    misdescribe the written cells (see r4b-01).
+    Returns ``(tform_cards, schema_formats, stale_keys)``:
+
+    * ``tform_cards`` -- source TFORMn kept verbatim (astropy spells repeat-1
+      formats as bare 'J'; the writer derives '1J'). A source spelling is
+      kept only when TTYPEn names the same column and it describes exactly
+      the cells the writer lays down: the same repeat and type code, so a
+      6J column replaced by a scalar, or a 10A column replaced by int64,
+      never gets relabeled (the replay step writes these cards verbatim). A
+      column whose data left its storage domain (TSCAL/TZERO-scaled ints
+      decoded to floats) does not keep its TFORM either (r4b-01).
+    * ``schema_formats`` -- spellings the writer must lay down itself
+      because the derived layout differs in bytes: 'rX' bits from a bool
+      payload, a wider 'wA' than the longest string.
+    * ``stale_keys`` -- per-column annotation cards (TDIM/TNULL/TUNIT/...)
+      describing a column that is no longer at that position or whose cells
+      changed.
     """
 
     src = (
@@ -183,22 +280,72 @@ def _preserved_table_tform_cards(
         if isinstance(source_header, Header)
         else Header(source_header or {})
     )
-    out: Dict[str, Any] = {}
-    for i, value in enumerate(prepared_data.values(), start=1):
+    cards: Dict[str, Any] = {}
+    formats: Dict[str, str] = {}
+    stale: set[str] = set()
+    ncols = len(prepared_data)
+    for key in src.keys():
+        ku = str(key).upper()
+        for prefix in ("TDIM", "TNULL", *_TABLE_COLUMN_ANNOTATION_PREFIXES):
+            suffix = ku[len(prefix) :]
+            if ku.startswith(prefix) and suffix.isdigit() and int(suffix) > ncols:
+                stale.add(ku)
+
+    for i, (name, value) in enumerate(prepared_data.items(), start=1):
+        source_name = src.get(f"TTYPE{i}")
+        # No TTYPEn: a hand-built header annotating the new columns.
+        same_column = (
+            source_name is None or str(source_name).strip() == str(name).strip()
+        )
+        if not same_column:
+            stale.update(
+                f"{prefix}{i}"
+                for prefix in ("TDIM", "TNULL", *_TABLE_COLUMN_ANNOTATION_PREFIXES)
+            )
+            continue
         tform = src.get(f"TFORM{i}")
         if tform is None:
-            continue
-        letters = "".join(ch for ch in str(tform).upper() if ch.isalpha())
-        first = letters[:1]
-        if first in {"X", "A", "P", "Q"}:
-            # Bit/string/VLA spellings carry layout the writer does not
-            # re-derive faithfully; always preserve.
-            out[f"TFORM{i}"] = tform
-            continue
-        expected = _prepared_tform_code(value)
-        if expected is None or letters == expected:
-            out[f"TFORM{i}"] = tform
-    return out
+            continue  # nothing describes the old cells; annotations stand
+        parsed = _parse_binary_tform(tform)
+        derived = _derived_column_layout(value)
+        keep = False
+        if parsed is not None and derived is not None:
+            s_repeat, s_code, s_rest = parsed
+            kind, d_repeat, d_code = derived
+            is_u8_matrix = d_code == "B" and getattr(value, "ndim", 1) == 2
+            if kind == "num":
+                if s_code == d_code and s_repeat == d_repeat and not s_rest:
+                    keep = True
+                elif s_code == "A" and is_u8_matrix and s_repeat == d_repeat:
+                    # Strings read back as (rows, width) uint8: same bytes.
+                    keep = True
+                elif s_code == "X" and d_code == "L" and s_repeat == d_repeat:
+                    keep = True
+                    formats[str(name)] = str(tform).strip()
+            elif kind == "str":
+                if s_code == "A" and s_repeat >= d_repeat and not s_rest:
+                    keep = True
+                    formats[str(name)] = str(tform).strip()
+            elif kind == "vla":
+                rest = s_rest.strip().upper()
+                if s_code == "P" and s_repeat in (0, 1) and rest[:1] == d_code:
+                    bound = rest[1:].strip()
+                    keep = bound == "" or bound == f"({d_repeat})"
+        if keep:
+            cards[f"TFORM{i}"] = tform
+        else:
+            # Cell type/shape changed: TNULL and TDIM no longer describe it.
+            stale.update((f"TNULL{i}", f"TDIM{i}"))
+            if (
+                parsed is not None
+                and derived is not None
+                and derived[0] == "num"
+                and parsed[0] == derived[1]
+            ):
+                # Same element count (e.g. scaled ints decoded to floats):
+                # TDIM still describes the cell shape.
+                stale.discard(f"TDIM{i}")
+    return cards, formats, stale
 
 
 def _cpp_header_mapping(header: Header) -> Dict[str, Any]:
