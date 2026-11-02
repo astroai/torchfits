@@ -281,6 +281,10 @@ def delete_rows(
     hdu: int | str = 1,
 ) -> None:
     path = coerce_fits_path(path)
+    if row_slice is None:
+        # None used to mean "every row"; deleting a whole table must be asked
+        # for explicitly, e.g. slice(0, None).
+        raise ValueError("row_slice is required for delete_rows")
     if isinstance(row_slice, int):
         if row_slice < 0:
             raise ValueError("row index must be >= 0")

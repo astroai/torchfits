@@ -153,3 +153,13 @@ def test_malformed_naxis2_raises_not_silent_noop(tmp_path, monkeypatch, op):
     }
     with pytest.raises((ValueError, TypeError)):
         calls[op]()
+
+
+def test_delete_rows_rejects_none_row_slice(tmp_path):
+    path = str(tmp_path / "del_none.fits")
+    torchfits.table.write(path, {"A": np.arange(3, dtype=np.int32)}, overwrite=True)
+    with pytest.raises(ValueError, match="row_slice is required"):
+        torchfits.table.delete_rows(path, None)  # type: ignore[arg-type]
+    assert torchfits.table.read_torch(path, hdu=1)["A"].tolist() == [0, 1, 2]
+    torchfits.table.delete_rows(path, slice(0, None))
+    assert torchfits.table.read(path, hdu=1).num_rows == 0
