@@ -354,7 +354,11 @@ def _arith_one_file(
                 )
 
     shapes = {tuple(t.shape) for t in tensors}
-    can_stack = len(shapes) == 1 and len(tensors) > 1
+    # Stacking is only an execution shortcut: HDUs of different dtypes would
+    # be promoted to a common dtype by torch.stack and change an HDU's output
+    # dtype, so they are processed one by one.
+    dtypes = {t.dtype for t in tensors}
+    can_stack = len(shapes) == 1 and len(dtypes) == 1 and len(tensors) > 1
     if can_stack and value is not None:
         results = list(
             _apply_op(op, torch.stack(tensors), scalar_b, dtype_spec).unbind(0)
@@ -365,7 +369,10 @@ def _arith_one_file(
         and all(isinstance(right, torch.Tensor) for right in rights)
     ):
         b_tensors = [right for right in rights if isinstance(right, torch.Tensor)]
-        if len({tuple(right.shape) for right in b_tensors}) == 1:
+        if (
+            len({tuple(right.shape) for right in b_tensors}) == 1
+            and len({right.dtype for right in b_tensors}) == 1
+        ):
             results = list(
                 _apply_op(
                     op, torch.stack(tensors), torch.stack(b_tensors), dtype_spec

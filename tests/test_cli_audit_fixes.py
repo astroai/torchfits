@@ -245,3 +245,24 @@ def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     # The supported spelling puts the extension in the path.
     assert main(["cutout", f"{src}[1][1:2,1:2]", "-o", str(out)]) == 0
     assert torch.equal(torchfits.read_tensor(str(out), hdu=0), torch.zeros(2, 2))
+
+
+# --- arith ---------------------------------------------------------------------
+
+
+def test_arith_mixed_dtype_hdus_keep_their_dtypes(tmp_path):
+    src = tmp_path / "mixed.fits"
+    torchfits.write(
+        str(src),
+        [
+            torch.tensor([[1, 2], [3, 4]], dtype=torch.int16),
+            torch.tensor([[1.5, 2.5], [3.5, 4.5]], dtype=torch.float32),
+        ],
+    )
+    out = tmp_path / "out.fits"
+    assert main(["arith", str(src), "--op", "add", "--value", "1", "-o", str(out)]) == 0
+    first = torchfits.read_tensor(str(out), hdu=0)
+    second = torchfits.read_tensor(str(out), hdu=1)
+    assert first.dtype == torch.int16
+    assert torch.equal(first, torch.tensor([[2, 3], [4, 5]], dtype=torch.int16))
+    assert second.dtype == torch.float32
