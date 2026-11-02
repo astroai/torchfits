@@ -483,7 +483,9 @@ torchfits.write(
     `uint16`, `uint32` and `uint64` images and table columns are written with
     the FITS standard convention: signed storage plus `BZERO`/`TZERO` of
     `2**15`, `2**31` or `2**63`. Reading such a file returns the unsigned
-    dtype with exact values, the same as astropy and fitsio.
+    dtype with exact values, the same as astropy and fitsio. `int8` images
+    and table columns use the signed-byte convention (unsigned byte storage
+    plus `BZERO`/`TZERO` of `-128`) and read back as `int8`.
 
     ```python
     import torch, torchfits

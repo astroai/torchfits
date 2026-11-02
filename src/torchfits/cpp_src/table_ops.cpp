@@ -65,6 +65,15 @@ int vla_payload_fits_type(const nb::dlpack::dtype& dt, int base_type) {
     return 0;
 }
 
+// True for a 'B' column using the signed-byte convention (TSCAL = 1,
+// TZERO = -128), which CFITSIO reports as equivalent type TSBYTE.
+bool column_is_signed_byte(fitsfile* fptr, int colnum) {
+    int eq_type = 0;
+    int st = 0;
+    fits_get_eqcoltype(fptr, colnum, &eq_type, nullptr, nullptr, &st);
+    return st == 0 && eq_type == TSBYTE;
+}
+
 // CFITSIO entry points (fits_close_file included) may return immediately
 // when *status != 0, so unwinding with the poisoned status would leak the
 // handle. Error paths close with a fresh status; only the success-path
@@ -535,9 +544,9 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) {
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) {
-            // FITS TBYTE storage is signed bytes (bit-identical with unsigned
-            // interpretation), so Int8 payloads map to TBYTE.
-            fits_type = TBYTE;
+            // Int8 payloads keep their bit pattern on a plain 'B' column; on a
+            // signed-byte column (TZERO = -128) CFITSIO must apply the offset.
+            fits_type = column_is_signed_byte(fptr, colnum) ? TSBYTE : TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
@@ -1095,9 +1104,9 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) {
             fits_type = TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8) {
-            // FITS TBYTE storage is signed bytes (bit-identical with unsigned
-            // interpretation), so Int8 payloads map to TBYTE.
-            fits_type = TBYTE;
+            // Int8 payloads keep their bit pattern on a plain 'B' column; on a
+            // signed-byte column (TZERO = -128) CFITSIO must apply the offset.
+            fits_type = column_is_signed_byte(fptr, colnum) ? TSBYTE : TBYTE;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 16) {
             fits_type = TSHORT;
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt &&

@@ -831,10 +831,15 @@ def _normalize_ndarray_column(value: np.ndarray) -> Any:
 
 
 def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float] | None:
-    """Return signed-storage column data plus FITS format/BZERO for uint columns."""
+    """Return storage column data plus FITS format/TZERO for the offset
+    conventions: uint16/32/64 in signed storage, int8 in unsigned bytes
+    (FITS has no signed-byte TFORM; storage is value XOR 0x80, TZERO=-128)."""
     import numpy as np
 
     if isinstance(value, torch.Tensor):
+        if value.dtype == torch.int8:
+            raw = value.detach().contiguous().view(torch.uint8) ^ 0x80
+            return raw, "B", -128.0
         if value.dtype == torch.uint16:
             raw = (value.detach().to(torch.int32) - 32768).to(torch.int16)
             return raw, "I", 32768.0
@@ -850,6 +855,9 @@ def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float]
         return None
 
     if isinstance(value, np.ndarray):
+        if value.dtype == np.int8:
+            raw_u8 = np.ascontiguousarray(value).view(np.uint8) ^ np.uint8(0x80)
+            return np.ascontiguousarray(raw_u8), "B", -128.0
         if value.dtype == np.uint16:
             raw = (value.astype(np.int32, copy=False) - 32768).astype(np.int16)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "I", 32768.0

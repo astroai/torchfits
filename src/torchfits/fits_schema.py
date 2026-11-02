@@ -311,7 +311,10 @@ def unsigned_column_dtype_names_from_header(
             continue
         # iter_table_columns always yields a float tzero (0.0 default).
         tzero = col.tzero if col.tzero is not None else 0.0
-        if code == "I" and abs(tzero - 32768.0) < 1e-5:
+        if code == "B" and tzero == -128.0:
+            # Signed-byte convention: uint8 storage, TZERO = -128.
+            out[col.name] = "int8"
+        elif code == "I" and abs(tzero - 32768.0) < 1e-5:
             out[col.name] = "uint16"
         elif code == "J" and abs(tzero - 2147483648.0) < 1e-5:
             out[col.name] = "uint32"

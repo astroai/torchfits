@@ -387,6 +387,8 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
     is_list = pa.types.is_fixed_size_list(arrow_type)
     if abs(tscal - 1.0) > 1e-5:
         new_elem = pa.float64()
+    elif info.code == "B" and tzero == -128.0:
+        new_elem = pa.int8()
     elif info.code == "I" and abs(tzero - 32768.0) < 1e-5:
         new_elem = pa.uint16()
     elif info.code == "J" and abs(tzero - 2147483648.0) < 1e-5:

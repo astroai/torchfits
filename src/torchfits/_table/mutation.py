@@ -347,7 +347,10 @@ def _warn_numeric_coercion(
         return
     if arr.dtype.kind in {"i", "u"}:
         bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
-        if code == "B" or unsigned_dtype is not None:
+        if unsigned_dtype == "int8":
+            # Signed-byte convention: 'B' with TZERO = -128.
+            low, high = -128, 127
+        elif code == "B" or unsigned_dtype is not None:
             # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
             low, high = 0, (1 << bits) - 1
         else:

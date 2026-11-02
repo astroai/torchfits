@@ -550,6 +550,13 @@ public:
                 col.unsigned_offset = 2147483648;
                 col.unsigned_target_type = torch::kUInt32;
                 col.scaled = false;
+            } else if (typecode == TBYTE && col.tzero == -128.0) {
+                // Signed-byte convention (TFORM B, TZERO = -128): storage is
+                // value XOR 0x80, read back as int8 like the image path.
+                col.is_unsigned_int = true;
+                col.unsigned_offset = -128;
+                col.unsigned_target_type = torch::kInt8;
+                col.scaled = false;
             } else if (typecode == TLONGLONG && detail::is_unsigned_longlong_offset(col.tzero)) {
                 // uint64 convention (TZERO = 2^63). The offset does not fit
                 // int64, so unsigned_offset stays 0 and every consumer keys
@@ -646,6 +653,10 @@ public:
     torch::Tensor apply_unsigned_offset(torch::Tensor raw, torch::ScalarType target) {
         if (!raw.is_contiguous()) {
             raw = raw.contiguous();
+        }
+        if (target == torch::kInt8) {
+            raw.bitwise_xor_(0x80);
+            return raw.view(torch::kInt8);
         }
         if (target == torch::kUInt16) {
             raw.bitwise_xor_(std::numeric_limits<int16_t>::min());
@@ -2222,6 +2233,9 @@ public:
         // rejection.
         switch (col.type) {
             case FITSColumnType::BYTE:
+                if (col.is_unsigned_int && col.unsigned_target_type == torch::kInt8) {
+                    return is(code::Int, 8);
+                }
                 return col.fits_typecode == TSBYTE ? is(code::Int, 8) : is(code::UInt, 8);
             case FITSColumnType::LOGICAL:
             case FITSColumnType::BIT:
@@ -2467,7 +2481,9 @@ public:
 
                     switch (col->type) {
                         case FITSColumnType::BYTE: {
-                            const bool is_sbyte = col->fits_typecode == TSBYTE;
+                            const bool offset_sbyte = col->is_unsigned_int &&
+                                                      col->unsigned_target_type == torch::kInt8;
+                            const bool is_sbyte = col->fits_typecode == TSBYTE || offset_sbyte;
                             if (is_sbyte) {
                                 if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8)) {
                                     munmap(map_ptr, sb.st_size);
@@ -2479,8 +2495,10 @@ public:
                                 close(fd);
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
-                            // Byte-for-byte identical bit pattern for signed/unsigned 8-bit.
-                            *dest = src_u8[idx];
+                            // Byte-for-byte identical bit pattern for signed/unsigned 8-bit;
+                            // the TZERO = -128 convention stores value XOR 0x80.
+                            *dest = offset_sbyte ? static_cast<uint8_t>(src_u8[idx] ^ 0x80u)
+                                                 : src_u8[idx];
                             break;
                         }
                         case FITSColumnType::LOGICAL: {
