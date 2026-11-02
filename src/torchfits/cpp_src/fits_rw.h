@@ -74,6 +74,12 @@ inline void write_string_rows(fitsfile* fptr, int colnum, LONGLONG first_row,
 // Reject header values the card writers refuse, before anything is written.
 void validate_header_values(nb::dict header);
 void validate_hdu_list_headers(nb::list hdus);
+// Write one keyword value card (not HISTORY/COMMENT): bool, str (long values
+// as LONGSTRN CONTINUE chains), int of any size, float, complex, or None for
+// an undefined value -- every value read_header produces. Throws for any
+// other type; CFITSIO failures land in *status.
+void update_header_value(fitsfile* fptr, const std::string& key, nb::handle value,
+                         const char* comment, int* status);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
 // Shared owner of a Python FITSFile's fitsfile*. Throws if the handle is

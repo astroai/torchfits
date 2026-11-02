@@ -864,14 +864,93 @@ static std::string commentary_text(nb::handle value, const std::string& comment,
 // Which FITS card type a caller-supplied header value maps to, or 0 when this
 // writer will not accept it at all. Stated once so the up-front validation in
 // write_table_hdu (which must run before fits_create_tbl creates anything) and
-// the card-writing loop itself cannot disagree about what is acceptable. The
-// order of the tests is the loop's original precedence: bool, str, int, float.
+// the card writer itself cannot disagree about what is acceptable. The order
+// of the tests is the writer's precedence: None, bool, str, int, float,
+// complex. An int outside long long is kBigIntCard (written as its literal).
+constexpr int kNullCard = -1;
+constexpr int kBigIntCard = -2;
+
 static int fits_header_value_type(nb::handle value) {
+    if (value.is_none()) return kNullCard;
     if (nb::isinstance<bool>(value)) return TLOGICAL;
     if (nb::isinstance<nb::str>(value)) return TSTRING;
-    if (PyLong_Check(value.ptr())) return TLONGLONG;
+    if (PyLong_Check(value.ptr())) {
+        int overflow = 0;
+        PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
+        if (PyErr_Occurred()) PyErr_Clear();
+        return overflow != 0 ? kBigIntCard : TLONGLONG;
+    }
     if (nb::isinstance<double>(value) || nb::isinstance<float>(value)) return TDOUBLE;
+    if (PyComplex_Check(value.ptr())) return TDBLCOMPLEX;
     return 0;
+}
+
+static const char* kHeaderTypeError =
+    "': expected str, bool, int, float, complex, or None";
+
+// FITS fixed-format integers are free-format decimal text: an int beyond
+// long long is still a legal card, so write its literal digits.
+static std::string big_int_literal(nb::handle value, const std::string& key) {
+    std::string text = nb::cast<std::string>(nb::str(value));
+    if (text.size() > 68) {
+        throw std::runtime_error("FITS header integer has too many digits for one card: " + key);
+    }
+    return text;
+}
+
+void update_header_value(fitsfile* fptr, const std::string& key, nb::handle value,
+                         const char* comment, int* status) {
+    switch (fits_header_value_type(value)) {
+        case kNullCard:
+            fits_update_key_null(fptr, key.c_str(), comment, status);
+            return;
+        case TLOGICAL: {
+            int val = nb::cast<bool>(value) ? 1 : 0;
+            fits_update_key(fptr, TLOGICAL, key.c_str(), &val, comment, status);
+            return;
+        }
+        case TSTRING: {
+            std::string val = d::require_fits_ascii(nb::cast<std::string>(value), "header value");
+            if (val.size() > 68) {
+                // fits_update_key truncates at 68 chars silently;
+                // fits_update_key_longstr splits into CONTINUE cards.
+                fits_update_key_longstr(fptr, key.c_str(), val.c_str(), comment, status);
+            } else {
+                fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), comment, status);
+            }
+            return;
+        }
+        case TLONGLONG: {
+            long long val = PyLong_AsLongLong(value.ptr());
+            fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment, status);
+            return;
+        }
+        case kBigIntCard: {
+            std::string literal = big_int_literal(value, key);
+            char card[FLEN_CARD];
+            fits_make_key(key.c_str(), literal.data(), comment, card, status);
+            fits_update_card(fptr, key.c_str(), card, status);
+            return;
+        }
+        case TDOUBLE:
+            d::update_key_double(fptr, key.c_str(), nb::cast<double>(value), comment, status);
+            return;
+        case TDBLCOMPLEX: {
+            double parts[2] = {PyComplex_RealAsDouble(value.ptr()),
+                               PyComplex_ImagAsDouble(value.ptr())};
+            char buf[40];
+            int decimals = -15;
+            for (double part : parts) {
+                std::snprintf(buf, sizeof(buf), "%.15G", part);
+                if (std::strtod(buf, nullptr) != part) decimals = -17;
+            }
+            fits_update_key_dblcmp(fptr, key.c_str(), parts, decimals, comment, status);
+            return;
+        }
+        default:
+            throw std::runtime_error(
+                "Unsupported FITS header value type for key '" + key + kHeaderTypeError);
+    }
 }
 
 void validate_header_values(nb::dict header) {
@@ -883,20 +962,13 @@ void validate_header_values(nb::dict header) {
         if (card_type == 0) {
             throw std::runtime_error(
                 "Unsupported FITS header value type for key '" + header_key +
-                "': expected str, bool, int, or float"
-            );
+                kHeaderTypeError);
         }
-        if (card_type == TLONGLONG) {
-            int overflow = 0;
-            PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
-            if (overflow != 0 || PyErr_Occurred()) {
-                PyErr_Clear();
-                throw std::runtime_error(
-                    "FITS header integer out of long long range: " + header_key);
-            }
+        if (card_type == kBigIntCard) {
+            big_int_literal(item.second, header_key);
         }
         if (card_type == TSTRING) {
-            // Same check the loop performs before choosing fits_update_key vs
+            // Same check the writer performs before choosing fits_update_key vs
             // fits_update_key_longstr, so a non-ASCII value is rejected here.
             d::require_fits_ascii(nb::cast<std::string>(item.second), "header value");
         }
@@ -1521,37 +1593,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 continue;
             }
         }
-        const int card_type = fits_header_value_type(item.second);
-        if (card_type == TLOGICAL) {
-            int val = nb::cast<bool>(item.second) ? 1 : 0;
-            fits_update_key(fptr, TLOGICAL, key.c_str(), &val, nullptr, &status);
-        } else if (card_type == TSTRING) {
-            std::string val = nb::cast<std::string>(item.second);
-            val = d::require_fits_ascii(val, "header value");
-            if (val.size() > 68) {
-                fits_update_key_longstr(fptr, key.c_str(), val.c_str(), nullptr, &status);
-            } else {
-                fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &status);
-            }
-        } else if (card_type == TLONGLONG) {
-            int overflow = 0;
-            long long val = PyLong_AsLongLongAndOverflow(item.second.ptr(), &overflow);
-            if (overflow != 0 || PyErr_Occurred()) {
-                PyErr_Clear();
-                throw std::runtime_error("FITS header integer out of long long range: " + key);
-            }
-            fits_update_key(fptr, TLONGLONG, key.c_str(), &val, nullptr, &status);
-        } else if (card_type == TDOUBLE) {
-            double val = nb::cast<double>(item.second);
-            d::update_key_double(fptr, key.c_str(), val, nullptr, &status);
-        } else {
-            // Unreachable: the pre-pass above rejected every value that lands
-            // here. Kept as the backstop the loop had before it.
-            throw std::runtime_error(
-                "Unsupported FITS header value type for key '" + key +
-                "': expected str, bool, int, or float"
-            );
-        }
+        update_header_value(fptr, key, item.second, nullptr, &status);
     }
 
     for (int i = 0; i < num_cols; ++i) {
@@ -1944,36 +1986,8 @@ void bind_fits(nb::module_& m) {
                 std::string text = commentary_text(value, comment, "COMMENT");
                 text = d::require_fits_ascii(text, "COMMENT text");
                 fits_write_comment(fptr, text.c_str(), &key_status);
-            } else if (nb::isinstance<nb::str>(value)) {
-                std::string val = d::require_fits_ascii(
-                    nb::cast<std::string>(value), "header value");
-                if (val.size() > 68) {
-                    // Long strings: fits_update_key truncates at 68 chars
-                    // silently. fits_update_key_longstr splits the value into
-                    // CONTINUE cards (FITS standard), matching astropy/fitsio.
-                    fits_update_key_longstr(fptr, key.c_str(), val.c_str(), comment_ptr, &key_status);
-                } else {
-                    fits_update_key(fptr, TSTRING, key.c_str(), (void*)val.c_str(), comment_ptr, &key_status);
-                }
-            } else if (nb::isinstance<bool>(value)) {
-                int val = nb::cast<bool>(value) ? 1 : 0;
-                fits_update_key(fptr, TLOGICAL, key.c_str(), &val, comment_ptr, &key_status);
-            } else if (PyLong_Check(value.ptr())) {
-                int overflow = 0;
-                long long val = PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
-                if (overflow != 0 || PyErr_Occurred()) {
-                    PyErr_Clear();
-                    throw std::runtime_error("FITS header integer out of long long range: " + key);
-                }
-                fits_update_key(fptr, TLONGLONG, key.c_str(), &val, comment_ptr, &key_status);
-            } else if (nb::isinstance<float>(value) || nb::isinstance<double>(value)) {
-                double val = nb::cast<double>(value);
-                d::update_key_double(fptr, key.c_str(), val, comment_ptr, &key_status);
             } else {
-                throw std::runtime_error(
-                    "Unsupported FITS header value type for key '" + key +
-                    "': expected str, bool, int, or float"
-                );
+                update_header_value(fptr, key, value, comment_ptr, &key_status);
             }
             if (key_status != 0) {
                 status = key_status;

@@ -725,46 +725,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                     key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
                     key_upper == "THEAP" || key_upper.rfind("NAXIS", 0) == 0) continue;
                 int key_status = 0;
-                bool matched = false;
-                if (nb::isinstance<bool>(item.second)) {
-                    int val = nb::cast<bool>(item.second) ? 1 : 0;
-                    fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-                    matched = true;
-                } else if (nb::isinstance<nb::str>(item.second)) {
-                    std::string val = detail::require_fits_ascii(
-                        nb::cast<std::string>(item.second), "header value");
-                    if (val.size() > 68) {
-                        fits_update_key_longstr(fptr_, key.c_str(), val.c_str(), nullptr, &key_status);
-                    } else {
-                        fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                    }
-                    matched = true;
-                } else if (PyLong_Check(item.second.ptr())) {
-                    int overflow = 0;
-                    long long val = PyLong_AsLongLongAndOverflow(
-                        item.second.ptr(), &overflow
-                    );
-                    if (overflow != 0 || PyErr_Occurred()) {
-                        PyErr_Clear();
-                        throw std::runtime_error(
-                            "FITS header integer out of long long range: " + key
-                        );
-                    }
-                    fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-                    matched = true;
-                } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
-                    double val = nb::cast<double>(item.second);
-                    detail::update_key_double(fptr_, key.c_str(), val, nullptr, &key_status);
-                    matched = true;
-                } else {
-                    throw std::runtime_error(
-                        "Unsupported FITS header value type for key '" + key +
-                        "': expected str, bool, int, or float"
-                    );
-                }
-                if (!matched) {
-                    // unreachable: matched handles all branches, kept for symmetry
-                }
+                update_header_value(fptr_, key, item.second, nullptr, &key_status);
                 if (key_status != 0) {
                     throw std::runtime_error("Failed to write FITS header keyword: " + key);
                 }
@@ -809,38 +770,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             if (key_upper.rfind("ZNAXIS", 0) == 0 || key_upper.rfind("ZTILE", 0) == 0 ||
                 key_upper.rfind("ZNAME", 0) == 0 || key_upper.rfind("ZVAL", 0) == 0) continue;
             int key_status = 0;
-            if (nb::isinstance<bool>(item.second)) {
-                int val = nb::cast<bool>(item.second) ? 1 : 0;
-                fits_update_key(fptr_, TLOGICAL, key.c_str(), &val, nullptr, &key_status);
-            } else if (nb::isinstance<nb::str>(item.second)) {
-                    std::string val = detail::require_fits_ascii(
-                        nb::cast<std::string>(item.second), "header value");
-                    if (val.size() > 68) {
-                        fits_update_key_longstr(fptr_, key.c_str(), val.c_str(), nullptr, &key_status);
-                    } else {
-                        fits_update_key(fptr_, TSTRING, key.c_str(), (void*)val.c_str(), nullptr, &key_status);
-                    }
-            } else if (PyLong_Check(item.second.ptr())) {
-                    int overflow = 0;
-                    long long val = PyLong_AsLongLongAndOverflow(
-                        item.second.ptr(), &overflow
-                    );
-                    if (overflow != 0 || PyErr_Occurred()) {
-                        PyErr_Clear();
-                        throw std::runtime_error(
-                            "FITS header integer out of long long range: " + key
-                        );
-                    }
-                    fits_update_key(fptr_, TLONGLONG, key.c_str(), &val, nullptr, &key_status);
-            } else if (nb::isinstance<double>(item.second) || nb::isinstance<float>(item.second)) {
-                    double val = nb::cast<double>(item.second);
-                    detail::update_key_double(fptr_, key.c_str(), val, nullptr, &key_status);
-            } else {
-                throw std::runtime_error(
-                    "Unsupported FITS header value type for key '" + key +
-                    "': expected str, bool, int, or float"
-                );
-            }
+            update_header_value(fptr_, key, item.second, nullptr, &key_status);
             if (key_status != 0) {
                 throw std::runtime_error("Failed to write FITS header keyword: " + key);
             }

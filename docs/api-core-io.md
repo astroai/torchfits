@@ -473,6 +473,13 @@ torchfits.write(
     the written file — passing `{"HISTORY": ...}` in `header=` sets a
     single card.
 
+!!! note "Header value types"
+    A header value may be `str`, `bool`, `int` (any size: an integer beyond
+    64 bits is written as its exact literal), `float`, `complex`, or `None`
+    (an undefined-value card) — every type `read_header` returns, so
+    `write(path, data, header=read_header(src))` round-trips. Anything else
+    raises `RuntimeError: Unsupported FITS header value type`.
+
 !!! note "Header text must be printable ASCII"
     FITS restricts header values, comments and keywords to codes 32–126.
     Non-ASCII text is rejected with a `ValueError` naming the offending byte
