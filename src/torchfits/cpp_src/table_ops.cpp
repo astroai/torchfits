@@ -28,6 +28,7 @@ namespace {
 // for the image and table write paths).
 using torchfits::internal::ndarray_is_c_contiguous;
 using torchfits::internal::ensure_c_contiguous_ndarray;
+using torchfits::internal::require_cpu_ndarray;
 using torchfits::internal::pad_fits_strings;
 
 // CFITSIO entry points (fits_close_file included) may return immediately
@@ -235,6 +236,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
                     continue;
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
+                if (arr.device_type() != nb::device::cpu::value) {
+                    rollback_inserted_rows(fptr, start_row, num_rows);
+                    require_cpu_ndarray(arr, "column " + col_name);  // throws
+                }
                 if (arr.ndim() > 1) {
                     rollback_inserted_rows(fptr, start_row, num_rows);
                     throw std::runtime_error("append_rows VLA rows must be 1D for " + col_name);
@@ -318,6 +323,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
             // maps uint8 -> TBYTE and writes num_rows * repeat bytes, overflowing
             // into the following rows.
             nb::ndarray<> t = nb::cast<nb::ndarray<>>(item.second);
+            if (t.device_type() != nb::device::cpu::value) {
+                rollback_inserted_rows(fptr, start_row, num_rows);
+                require_cpu_ndarray(t, "column " + col_name);  // throws
+            }
             int ndim_t = t.ndim();
             long rows_t = 1;
             long user_repeat = 1;
@@ -422,6 +431,10 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         }
 
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(item.second);
+        if (tensor.device_type() != nb::device::cpu::value) {
+            rollback_inserted_rows(fptr, start_row, num_rows);
+            require_cpu_ndarray(tensor, "column " + col_name);  // throws
+        }
         int ndim = tensor.ndim();
         long rows = 1;
         long repeat_vals = 1;
@@ -714,6 +727,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     continue;
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
+                require_cpu_ndarray(arr, "column " + col_name);
                 if (arr.ndim() > 1) {
                     throw std::runtime_error("update_rows VLA rows must be 1D for " + col_name);
                 }
@@ -788,6 +802,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 // right-pad with ASCII spaces (0x20) so short user
                 // payloads land the same bytes as the mmap writer.
                 nb::ndarray<> t_str = nb::cast<nb::ndarray<>>(obj);
+                require_cpu_ndarray(t_str, "column " + col_name);
                 nb::dlpack::dtype dt_str = t_str.dtype();
                 if (
                     !(dt_str.code == (uint8_t)nb::dlpack::dtype_code::UInt &&
@@ -882,6 +897,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             // run across rows, so reject it exactly like every other
             // fixed-width column below.
             nb::ndarray<> t = nb::cast<nb::ndarray<>>(item.second);
+            require_cpu_ndarray(t, "column " + col_name);
             int ndim_t = t.ndim();
             long rows_t = 1;
             long user_repeat = 1;
@@ -968,6 +984,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         }
 
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(item.second);
+        require_cpu_ndarray(tensor, "column " + col_name);
         int ndim = tensor.ndim();
         long rows = 1;
         long repeat_vals = 1;

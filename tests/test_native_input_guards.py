@@ -9,6 +9,8 @@ import sys
 import textwrap
 
 import numpy as np
+import pytest
+import torch
 
 import torchfits._C as C
 from torchfits._table.write import write as write_table
@@ -85,3 +87,30 @@ def test_mmap_reader_calls_reject_a_foreign_capsule(tmp_path):
         """
     )
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+_MPS = torch.backends.mps.is_available()
+
+
+@pytest.mark.skipif(not _MPS, reason="needs a non-CPU torch device (MPS)")
+def test_native_writes_refuse_device_arrays(tmp_path):
+    image = str(tmp_path / "img.fits")
+    table = str(tmp_path / "tab.fits")
+    dev = torch.ones(4, 4, device="mps")
+    col = torch.ones(4, device="mps")
+
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.write_fits_file(image, [{"data": dev}], True)
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.write_fits_file_compressed_images(image, [{"data": dev}], True, "GZIP")
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.write_fits_table(table, {"a": col}, {}, True, None, "binary")
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.write_fits_table(table, {"v": [col, col]}, {}, True, None, "binary")
+
+    write_table(table, {"a": np.zeros(4, dtype=np.float32)}, overwrite=True)
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.append_fits_table_rows(table, 1, {"a": col})
+    with pytest.raises(RuntimeError, match="CPU"):
+        C.update_fits_table_rows(table, 1, {"a": col}, 1, 4)
+    assert C.read_fits_table(table, 1)["a"].tolist() == [0.0] * 4

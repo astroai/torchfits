@@ -484,6 +484,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
 
 bool FITSFile::write_image(nb::ndarray<> tensor) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    torchfits::internal::require_cpu_ndarray(tensor, "image data");
     int status = 0;
     int naxis = tensor.ndim();
     std::vector<long> naxes(naxis);
@@ -861,6 +862,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         }
         if (!has_data) throw std::runtime_error("Compressed writing requires image data");
         nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(data_obj);
+        torchfits::internal::require_cpu_ndarray(tensor, "image data");
         int naxis = tensor.ndim();
         if (naxis <= 0) throw std::runtime_error("Unsupported image ndim for compressed write");
         std::vector<long> naxes(naxis);

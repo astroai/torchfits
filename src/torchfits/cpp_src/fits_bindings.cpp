@@ -742,6 +742,7 @@ namespace {
 // image and table write paths).
 using torchfits::internal::ndarray_is_c_contiguous;
 using torchfits::internal::ensure_c_contiguous_ndarray;
+using torchfits::internal::require_cpu_ndarray;
 
 }  // namespace
 
@@ -1047,6 +1048,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                         "for table mutations, not creates)");
                 }
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(elem);
+                require_cpu_ndarray(arr, "column " + col_key);
                 if (arr.ndim() > 1) {
                     throw std::runtime_error("VLA column rows must be 1D");
                 }
@@ -1149,6 +1151,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         }
 
       nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(obj);
+      require_cpu_ndarray(tensor, "column " + col_key);
       int ndim = tensor.ndim();
       if (ndim > 2) {
           // A FITS column is 1D (scalar, TFORM '1X') or 2D (vector, TFORM 'rX').
