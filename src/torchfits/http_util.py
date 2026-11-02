@@ -11,6 +11,9 @@ Residual: ``guard_cfitsio_remote_path`` gives guard-time validation only for
 CFITSIO-driver URLs (``http``/``https``/``ftp``) — CFITSIO resolves internally
 and its connections re-resolve after the check (residual TOCTOU). Public
 http(s)/ftp still go to CFITSIO; private/loopback stays blocked at the guard.
+The vendored CFITSIO http driver refuses redirects that leave the original
+host (``extern/patches/cfitsio-4.7.0-http-redirect-host.patch``); libcurl
+(https/ftps) is not configured to follow redirects at all.
 """
 
 from __future__ import annotations
