@@ -179,3 +179,44 @@ def test_no_bare_urlretrieve_call_sites_in_src():
         if "urlretrieve" in py.read_text()
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "host", ["0177.0.0.1", "127.1", "2130706433", "0x7f.0.0.1", "08.1.1.1", "1.2.3"]
+)
+def test_non_canonical_numeric_hosts_are_refused_before_cfitsio(monkeypatch, host):
+    """getaddrinfo may read ``0177.0.0.1`` as public 177.0.0.1 while CFITSIO's
+    ``inet_addr`` (and libcurl) read it as 127.0.0.1: only canonical dotted
+    decimal is accepted for numeric hosts."""
+
+    def no_dns(*args, **kwargs):
+        raise AssertionError("numeric host must be refused before DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    with pytest.raises(http_util.HttpBlockedError, match="non-canonical numeric"):
+        http_util.guard_cfitsio_remote_path(f"http://{host}:8080/x.fits")
+    with pytest.raises(http_util.HttpBlockedError, match="non-canonical numeric"):
+        torchfits.read(f"http://{host}:8080/x.fits")
+    assert http_util.is_internal_url(f"http://{host}/x.fits")
+
+
+@pytest.mark.parametrize("ip", ["100.64.0.1", "100.127.255.254", "192.0.0.8"])
+def test_non_global_addresses_are_blocked(ip):
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.guard_cfitsio_remote_path(f"http://{ip}/x.fits")
+
+
+def test_canonical_public_ipv4_still_allowed():
+    assert http_util._resolve_public_addrs("http://8.8.8.8/x.fits") == ("8.8.8.8",)
+
+
+def test_dns_failure_says_could_not_resolve(monkeypatch):
+    def fail(*args, **kwargs):
+        raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    with pytest.raises(
+        http_util.HttpBlockedError, match="could not resolve host"
+    ) as ei:
+        http_util.guard_cfitsio_remote_path("http://nosuch.example.invalid/x.fits")
+    assert "private" not in str(ei.value)

@@ -20,6 +20,7 @@ import http.client
 import ipaddress
 import math
 import os
+import re
 import socket
 import sys
 import urllib.error
@@ -120,6 +121,46 @@ def auth_headers() -> dict[str, str]:
     return {}
 
 
+_NUMERIC_HOST = re.compile(r"[0-9.]+")
+
+
+def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for any address that is not public unicast (e.g. CGNAT 100.64/10)."""
+    return (
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+        or not ip_obj.is_global
+    )
+
+
+def _numeric_ipv4_ambiguity(hostname: str) -> str | None:
+    """Reason to refuse a numeric-looking host that is not canonical IPv4.
+
+    ``0177.0.0.1``, ``127.1``, ``2130706433`` or ``0x7f.0.0.1`` mean different
+    hosts to ``getaddrinfo`` (which may read ``0177`` as decimal 177),
+    ``inet_aton``/``inet_addr`` (CFITSIO: octal, i.e. 127.0.0.1) and libcurl.
+    Only canonical dotted-decimal IPv4 is accepted for numeric hosts, so the
+    guard and every client agree on the address.
+    """
+    bare = hostname.rstrip(".")
+    try:
+        socket.inet_aton(bare)
+        numeric = True
+    except (OSError, ValueError):
+        numeric = bool(_NUMERIC_HOST.fullmatch(bare))
+    if not numeric:
+        return None
+    try:
+        ipaddress.IPv4Address(hostname)
+    except ValueError:
+        return f"non-canonical numeric host {hostname!r} is not allowed"
+    return None
+
+
 def _resolve_public_addrs(url: str) -> tuple[str, ...]:
     """Resolve *url*'s host once and validate every answer as public.
 
@@ -127,7 +168,9 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
     share one ``getaddrinfo`` result, so a DNS answer cannot change between
     the two (DNS rebinding). Multi-record answers fail closed — any
     non-public entry (private/loopback/link-local/reserved/multicast/
-    unspecified) blocks, as does resolution failure.
+    unspecified/shared, i.e. not globally routable) blocks. Numeric hosts
+    must be canonical dotted-decimal IPv4; resolution failure raises
+    :class:`HttpBlockedError` saying the host could not be resolved.
     """
     blocked = HttpBlockedError(
         f"{url}: access to internal or private networks is blocked for security reasons"
@@ -138,10 +181,13 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
         raise blocked from None
     if not hostname:
         raise blocked
+    ambiguity = _numeric_ipv4_ambiguity(hostname)
+    if ambiguity is not None:
+        raise HttpBlockedError(f"{url}: {ambiguity}; blocked for security reasons")
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except Exception:
-        raise blocked from None
+    except Exception as exc:
+        raise HttpBlockedError(f"{url}: could not resolve host {hostname!r}") from exc
     addrs: list[str] = []
     for info in infos:
         ip = str(info[4][0]).split("%", 1)[0]
@@ -149,14 +195,7 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
             ip_obj = ipaddress.ip_address(ip)
         except ValueError:
             raise blocked from None
-        if (
-            ip_obj.is_private
-            or ip_obj.is_loopback
-            or ip_obj.is_link_local
-            or ip_obj.is_reserved
-            or ip_obj.is_multicast
-            or ip_obj.is_unspecified
-        ):
+        if _is_blocked_ip(ip_obj):
             raise blocked
         if ip not in addrs:
             addrs.append(ip)
@@ -358,7 +397,9 @@ class ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     ):
         try:
             pinned = _resolve_public_addrs(newurl)
-        except HttpBlockedError:
+        except HttpBlockedError as exc:
+            if isinstance(exc.__cause__, OSError):  # DNS failure, not a block
+                raise HttpBlockedError(f"redirect target {exc}") from exc.__cause__
             raise HttpBlockedError(
                 f"{newurl}: redirect to internal or private networks is blocked "
                 "for security reasons"
@@ -419,11 +460,7 @@ def guard_cfitsio_remote_path(path: str) -> None:
     if not any(lowered.startswith(scheme) for scheme in _CFITSIO_NETWORK_SCHEMES):
         return
     # Hostname checks ignore a trailing CFITSIO ``[...]`` section.
-    if is_internal_url(candidate):
-        raise HttpBlockedError(
-            f"{path}: access to internal or private networks is blocked "
-            "for security reasons"
-        )
+    _resolve_public_addrs(candidate)
 
 
 def http_request(
