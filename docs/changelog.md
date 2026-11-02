@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - io: Read and write uint64 with the FITS BZERO/TZERO = 2**63 convention
 - io: Accept an EXTNAME in write_checksums and verify_checksums
+- data: Add return_label= to the image, cube, tensor and table datasets
+- data: Accept labels= and label_key= on the image and cube iterable datasets
+- io: Add HDUNotFoundError for unknown or out-of-range HDUs
 ### Fixed
 - table: Allow update_rows/append_rows on unsigned columns
 - table: Gather complex columns at full width in filtered mmap reads
@@ -148,10 +151,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Raise ValueError naming TNULL/TSCAL/TZERO for bad schema numerics
 - table: Return typed empty columns for 0-row tables and num_rows=0
 - io: Write the uint64 BZERO/TZERO offset as the exact integer 2**63
+- table: Let replace_column adopt the layout of unsigned and int8 values
+- io: Reject tile compression of 64-bit integer images up front
+- io: Raise FileNotFoundError for a missing local file on every route
+- cli: Report an out-of-range -e with the library's HDU message
+- io: Raise HDUNotFoundError from table, HDU-edit and HDUList lookups
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
 
+- io: Read a missing EXTNAME without an exception or lookup re-check
+- io: Answer .fits.gz metadata from one decompression per file
+- table: Read dense rows= selections through merged block reads
 ### Docs
 - Say the real-CFHT suites never run in CI and list both files
 - Correct AGENTS.md claims about test markers, changelog-check, stubs
@@ -168,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - api-core-io: Correct read_batch_info, compression losslessness and errors
 - api: Name Header.cards instead of a nonexistent read_header_cards
 - io: Note that PLIO_1 uint16 images read 32768 off in astropy
+- io: Document HDUNotFoundError and FileNotFoundError for lookups
 
 ## [1.3.1] — 2026-10-26
 
