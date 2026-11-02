@@ -33,7 +33,10 @@ source:
 build:
   number: 0
   script:
-    - cmake -G Ninja ${CMAKE_ARGS} -DCMAKE_BUILD_TYPE=Release \
+    # Block scalar: a plain multi-line scalar folds the lines and leaves
+    # "\ " escapes, turning " -DTORCHFITS_..." into one bogus argument.
+    - |
+      cmake -G Ninja ${CMAKE_ARGS} -DCMAKE_BUILD_TYPE=Release \
         -DTORCHFITS_USE_VENDORED_CFITSIO=ON \
         -DTORCHFITS_NIOBUF=80 \
         -DTORCHFITS_MINDIRECT=8640 \
