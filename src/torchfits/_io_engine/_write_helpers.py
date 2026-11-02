@@ -431,25 +431,50 @@ def _atomic_replace_target(path: str) -> Iterator[str]:
     target = os.path.realpath(path)
     original_mode = stat.S_IMODE(os.stat(target).st_mode)
     temp_path = _sibling_temp_path(target)
+    publish = temp_path
     try:
         yield temp_path
-        os.chmod(temp_path, original_mode)
-        os.replace(temp_path, target)
+        publish = _publishable_temp(temp_path, target)
+        os.chmod(publish, original_mode)
+        os.replace(publish, target)
     finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        for leftover in {temp_path, publish}:
+            if os.path.exists(leftover):
+                os.unlink(leftover)
 
 
 def _sibling_temp_path(target: str) -> str:
     """A fresh, non-existent hidden path next to ``target`` (same filesystem,
-    so publishing it is atomic). CFITSIO creates the file itself."""
+    so publishing it is atomic). CFITSIO creates the file itself.
+
+    The temp file is always plain FITS (no '.gz' anywhere in its name, which
+    CFITSIO would act on) so header-card replay and checksums can reopen it
+    for writing; ``_publishable_temp`` gzips it for a '.gz' target.
+    """
     target_dir = os.path.dirname(target) or "."
+    stem = os.path.basename(target).replace(".gz", "-gz")
     fd, temp_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(target)}.", suffix=".tmp.fits", dir=target_dir
+        prefix=f".{stem}.", suffix=".tmp.fits", dir=target_dir
     )
     os.close(fd)
     os.unlink(temp_path)
     return temp_path
+
+
+def _publishable_temp(temp_path: str, target: str) -> str:
+    """The finished temp file to publish at ``target``: gzip-compressed when
+    the target is named '.gz', so an overwritten or edited x.fits.gz stays
+    gzip instead of becoming plain FITS under a '.gz' name."""
+    if not target.lower().endswith(".gz"):
+        return temp_path
+    import gzip
+    import shutil
+
+    gz_path = temp_path + ".gz"
+    with open(temp_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    os.unlink(temp_path)
+    return gz_path
 
 
 @contextlib.contextmanager
@@ -465,13 +490,15 @@ def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
     """
     target = os.path.realpath(path)
     temp_path = _sibling_temp_path(target)
+    publish = temp_path
     try:
         yield temp_path
+        publish = _publishable_temp(temp_path, target)
         if replace:
-            os.replace(temp_path, target)
+            os.replace(publish, target)
         else:
             try:
-                os.link(temp_path, target)
+                os.link(publish, target)
             except FileExistsError:
                 raise FileExistsError(
                     f"File '{path}' already exists. Use overwrite=True to overwrite."
@@ -484,10 +511,11 @@ def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
                         f"File '{path}' already exists. "
                         "Use overwrite=True to overwrite."
                     ) from None
-                os.rename(temp_path, target)
+                os.rename(publish, target)
     finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        for leftover in {temp_path, publish}:
+            if os.path.exists(leftover):
+                os.unlink(leftover)
 
 
 def _invalidate_written_target(path: str) -> None:
