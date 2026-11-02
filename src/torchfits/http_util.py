@@ -428,7 +428,14 @@ def build_http_opener() -> urllib.request.OpenerDirector:
     )
 
 
-_CFITSIO_NETWORK_SCHEMES = ("http://", "https://", "ftp://")
+# Every CFITSIO driver that dials a remote host (cfileio.c fits_init_cfitsio):
+# the plain schemes and their file/mem/compress variants, which a caller can
+# name directly (``httpmem://host/x.fits``), plus ROOT and GridFTP.
+_CFITSIO_NETWORK_SCHEMES = tuple(
+    f"{base}{variant}://"
+    for base in ("http", "https", "ftp", "ftps")
+    for variant in ("", "file", "mem", "compress")
+) + ("root://", "gsiftp://")
 
 
 def _strip_leading_cfitsio_bang(path: str) -> str:
@@ -440,7 +447,7 @@ def _strip_leading_cfitsio_bang(path: str) -> str:
 
 
 def is_cfitsio_network_url(path: str) -> bool:
-    """True when *path* is an ``http``/``https``/``ftp`` CFITSIO filename."""
+    """True when *path* names a CFITSIO network driver (``http``, ``httpmem``, ...)."""
     lowered = _strip_leading_cfitsio_bang(path).lower()
     return any(lowered.startswith(scheme) for scheme in _CFITSIO_NETWORK_SCHEMES)
 

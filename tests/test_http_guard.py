@@ -220,3 +220,28 @@ def test_dns_failure_says_could_not_resolve(monkeypatch):
     ) as ei:
         http_util.guard_cfitsio_remote_path("http://nosuch.example.invalid/x.fits")
     assert "private" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    [
+        "httpmem",
+        "httpfile",
+        "httpcompress",
+        "httpsmem",
+        "ftps",
+        "ftpmem",
+        "root",
+        "gsiftp",
+    ],
+)
+def test_cfitsio_driver_variants_are_guarded(monkeypatch, scheme):
+    """``httpmem://127.0.0.1/...`` used to skip the guard and reach loopback."""
+    dialed = []
+    _mock_dns_and_dial(monkeypatch, {}, dialed)
+    url = f"{scheme}://127.0.0.1:8080/x.fits"
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        http_util.guard_cfitsio_remote_path(url)
+    with pytest.raises(http_util.HttpBlockedError, match="internal or private"):
+        torchfits.read(url)
+    assert dialed == []
