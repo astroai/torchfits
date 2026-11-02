@@ -135,9 +135,9 @@ void write_fits_table(const char* filename, nb::dict tensor_dict, nb::dict heade
         if (!path.empty() && path[0] != '!') {
             path = "!" + path;
         }
-        fits_create_file(&fptr, path.c_str(), &status);
+        status = torchfits::create_fits_file(&fptr, path);
     } else {
-        fits_create_file(&fptr, filename, &status);
+        status = torchfits::create_fits_file(&fptr, filename ? filename : "");
     }
 
     if (status != 0) {

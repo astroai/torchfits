@@ -1893,7 +1893,7 @@ void bind_fits(nb::module_& m) {
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(path);
-        fits_open_file(&fptr, path.c_str(), 0 /* READONLY */, &status);
+        status = d::open_fits_readonly(&fptr, path);
         if (status != 0 || !fptr) {
             throw std::runtime_error("Could not open FITS file for checksum verification");
         }

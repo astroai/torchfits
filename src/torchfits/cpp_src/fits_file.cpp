@@ -68,7 +68,7 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         status = detail::open_fits_readonly(&fptr_, filename_);
     } else {
         fits_clear_errmsg();
-        fits_create_file(&fptr_, filename, &status);
+        status = create_fits_file(&fptr_, filename_);
     }
     if (status != 0 || !fptr_) {
         const std::string message = detail::open_failure_message(filename_, status);

@@ -13,9 +13,11 @@
 #include <nanobind/stl/function.h>
 #include <ATen/ATen.h>
 #include <fitsio.h>
+#include <unistd.h>
 
 #include "torchfits_torch.h"
 #include "fits_file.h"
+#include "security.h"
 
 namespace torchfits {
 
@@ -123,15 +125,41 @@ void evict_cached_reader(const std::string& filename);
 // Throws std::runtime_error in that one case, so every caller's message improves
 // at once. Callers' `if (status != 0)` branches still handle every other status;
 // this is the only path that throws from here, and it is documented as such.
+// fits_create_file, except that a name needs_literal_disk_name() flags is
+// created with fits_create_diskfile. CFITSIO's leading '!' (replace an existing
+// file) is honoured for those names too, by removing the file first.
+inline int create_fits_file(fitsfile** fptr, const std::string& path) {
+    int status = 0;
+    *fptr = nullptr;
+    size_t i = path.find_first_not_of(' ');
+    const bool clobber = i != std::string::npos && path[i] == '!';
+    const std::string name = clobber ? path.substr(i + 1) : path;
+    if (needs_literal_disk_name(name)) {
+        if (clobber) ::unlink(name.c_str());  // ENOENT is fine, as in CFITSIO
+        fits_create_diskfile(fptr, name.c_str(), &status);
+    } else {
+        fits_create_file(fptr, path.c_str(), &status);
+    }
+    return status;
+}
+
+inline void open_fits_readwrite_raw(fitsfile** fptr, const std::string& path, int* status) {
+    if (needs_literal_disk_name(path)) {
+        fits_open_diskfile(fptr, path.c_str(), 1 /* READWRITE */, status);
+    } else {
+        fits_open_file(fptr, path.c_str(), 1 /* READWRITE */, status);
+    }
+}
+
 inline int open_fits_for_write(fitsfile** fptr, const std::string& path) {
     int status = 0;
     *fptr = nullptr;
-    fits_open_file(fptr, path.c_str(), 1 /* READWRITE */, &status);
+    open_fits_readwrite_raw(fptr, path, &status);
     if (status == FILE_NOT_OPENED) {
         evict_cached_reader(path);
         status = 0;
         *fptr = nullptr;
-        fits_open_file(fptr, path.c_str(), 1 /* READWRITE */, &status);
+        open_fits_readwrite_raw(fptr, path, &status);
         if (status == FILE_NOT_OPENED) {
             throw std::runtime_error(
                 "Failed to open '" + path + "' for writing: CFITSIO still reports "

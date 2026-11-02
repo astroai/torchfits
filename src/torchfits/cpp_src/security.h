@@ -6,18 +6,29 @@
 namespace torchfits {
 
 // Detect whether `filename` carries a CFITSIO extended filename syntax
-// section, e.g. "file.fits[1]" or "file.fits[1:10,1:10]". CFITSIO only
-// parses bracket syntax when it terminates the final path component, so a
-// naive `filename.find('[') != npos` check produces false positives for
-// paths with a literal '[' in a directory component, e.g.
-// "/home/user/[data]/file.fits". Require the string to end in ']' *and*
-// contain a '[' after the last '/' before treating it as an extended
-// filename section.
+// section, e.g. "file.fits[1]" or "file.fits[1:10,1:10]". torchfits treats
+// bracket syntax as a filter only when it terminates the final path component,
+// so a literal '[' in a directory component, e.g. "/home/user/[data]/file.fits",
+// is part of the name. Require the string to end in ']' *and* contain a '['
+// after the last '/' before treating it as an extended filename section.
+// CFITSIO's own parser does read the first '[' anywhere as a filter, so names
+// this rejects must reach CFITSIO through the *_diskfile entry points (see
+// needs_literal_disk_name).
 inline bool has_cfitsio_extended_filename_syntax(const std::string& filename) {
     if (filename.empty() || filename.back() != ']') return false;
     const size_t last_slash = filename.find_last_of('/');
     const size_t search_start = (last_slash == std::string::npos) ? 0 : last_slash + 1;
     return filename.find('[', search_start) != std::string::npos;
+}
+
+// A local path with a '[' that is not a trailing filter section, e.g.
+// "/data/[br]/a.fits". fits_open_file/fits_create_file would parse it as a
+// filter and fail, so such names are opened/created with the *_diskfile entry
+// points, which take the name literally.
+inline bool needs_literal_disk_name(const std::string& filename) {
+    return filename.find('[') != std::string::npos &&
+           filename.find("://") == std::string::npos &&
+           !has_cfitsio_extended_filename_syntax(filename);
 }
 
 // The local file whose stat identity stands for `filename`, or "" when there

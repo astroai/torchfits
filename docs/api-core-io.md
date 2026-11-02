@@ -174,6 +174,12 @@ Do not stack a path section with `read_subset` / `--box` on the same call.
 Binspec / complex CFITSIO filters are not a certified torchfits surface —
 use `table.read(..., where=)` for catalog predicates.
 
+A section is recognised only when it ends the file name. A `[` elsewhere, for
+example in a directory such as `/data/[run1]/img.fits`, is part of the path and
+every read and write works there; a section on such a path
+(`/data/[run1]/img.fits[1:10,1:10]`) is not supported, because CFITSIO would
+read the directory's `[` as the start of the filter.
+
 ---
 
 ## `open_subset_reader()`
