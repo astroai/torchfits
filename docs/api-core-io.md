@@ -466,6 +466,12 @@ torchfits.write(
     packs table columns via `table.write(..., quantize=)`. See
     [`example_quantize_int16.py`](published-examples/example_quantize_int16.py).
 
+!!! note "Errors from `write()`"
+    Invalid arguments raise `ValueError` or `TypeError` unchanged (for
+    example `compress=3` raises `TypeError`). A failure inside the writer
+    raises `RuntimeError("Failed to write FITS file '<path>': ...")`. Either
+    way nothing is created or replaced at `path`.
+
 !!! note "The `write()` data-type convention"
     `write()` dispatches on the *type* of `data`: a `dict` (of tensors or
     arrays) always writes a **table**, a `Tensor`/numpy array always writes

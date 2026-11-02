@@ -152,9 +152,10 @@ def write(
                 quantize=quantize,
                 checksum=checksum,
             )
-        except ValueError:
-            # Invalid input (non-ASCII text, bad quantize=, ...) is documented
-            # as ValueError; wrapping it hid the contract from callers.
+        except (ValueError, TypeError):
+            # Argument errors (non-ASCII text, bad quantize=, a compress= of
+            # the wrong type, ...) are documented as ValueError / TypeError;
+            # wrapping them hid the contract from callers.
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to write FITS file '{path}': {e}") from e
