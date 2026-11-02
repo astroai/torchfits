@@ -155,6 +155,23 @@ def test_info_compressed_shape_is_row_major_like_uncompressed(tmp_path, capsys):
     assert shapes == [str(tuple(data.shape))] * 2
 
 
+def test_setkey_delete_and_rename_hierarch_keys(tmp_path):
+    path = tmp_path / "h.fits"
+    torchfits.write(str(path), torch.zeros(2, 2))
+    assert main(["setkey", str(path), "-k", "ESO DET DIT", "--value", "1.5"]) == 0
+    assert main(["setkey", str(path), "-k", "VERYLONGKEYWORD", "--value", "3"]) == 0
+    # Updating an existing HIERARCH key must not add a second card.
+    assert main(["setkey", str(path), "-k", "ESO DET DIT", "--value", "2.5"]) == 0
+    keys = [c.key for c in torchfits.read_header(str(path), 0).cards]
+    assert keys.count("ESO DET DIT") == 1
+    assert main(["setkey", str(path), "--delete", "ESO DET DIT"]) == 0
+    assert main(["setkey", str(path), "--rename", "VERYLONGKEYWORD=OTHERLONGKEY"]) == 0
+    header = torchfits.read_header(str(path), 0)
+    assert "ESO DET DIT" not in header
+    assert "VERYLONGKEYWORD" not in header
+    assert header["OTHERLONGKEY"] == 3
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

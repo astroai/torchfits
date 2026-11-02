@@ -432,8 +432,9 @@ torchfits setkey science.fits -k OBJECT --value "NGC 1234"
 torchfits setkey science.fits -k OKFLAG --value true
 torchfits setkey science.fits -k EXPTIME --value 300.0
 
-# Set HIERARCH / long keyword
+# Set HIERARCH / long keyword (--delete and --rename accept the same spelling)
 torchfits setkey science.fits -k "ESO DET CHIP1 ID" --value "42"
+torchfits setkey science.fits --delete "ESO DET CHIP1 ID"
 
 # Apply across all HDUs
 torchfits setkey science.fits -k OBSERVER --value "astronomer" -e all

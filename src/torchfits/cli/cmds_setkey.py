@@ -106,6 +106,21 @@ def _normalize_keyword(raw: str) -> str:
     return key.upper()
 
 
+def _header_key(header: Any, key: str) -> str | None:
+    """The spelling under which ``key`` is stored in ``header``, if present.
+
+    ``_normalize_keyword`` spells long keys ``HIERARCH X``, but a parsed
+    header stores a HIERARCH card under its bare name ``X``.
+    """
+    if key in header:
+        return key
+    if key.upper().startswith("HIERARCH "):
+        bare = key[len("HIERARCH ") :].strip()
+        if bare in header:
+            return bare
+    return None
+
+
 def _parse_hdus(spec: str, n_hdus: int) -> list[int]:
     text = spec.strip().lower()
     if text in {"all", "*"}:
@@ -185,24 +200,26 @@ def _apply_edits(
         header = Header(torchfits.read_header(path, hdu))
         ops: list[tuple[Any, ...]] = []
         for del_key in del_keys:
-            if del_key not in header:
+            present = _header_key(header, del_key)
+            if present is None:
                 raise UsageError(f"{path}[{hdu}]: missing keyword {del_key}")
-            ops.append(("delete", del_key))
-            del header[del_key]
+            ops.append(("delete", present))
+            del header[present]
         if rename_pair is not None:
             old_key, new_key = rename_pair
-            if old_key not in header:
+            present = _header_key(header, old_key)
+            if present is None:
                 raise UsageError(f"{path}[{hdu}]: missing keyword {old_key}")
-            if new_key in header:
+            if _header_key(header, new_key) is not None:
                 raise UsageError(
                     f"{path}[{hdu}]: cannot rename {old_key} to {new_key}: "
                     f"{new_key} already exists"
                 )
-            card = next(c for c in header.cards if c.key == old_key)
+            card = next(c for c in header.cards if c.key == present)
             ops.append(("set", new_key, card.value, card.comment))
-            ops.append(("delete", old_key))
+            ops.append(("delete", present))
             header[new_key] = card.value
-            del header[old_key]
+            del header[present]
         if set_key is not None:
             ops.append(("set", set_key, set_value, ""))
             header[set_key] = set_value
