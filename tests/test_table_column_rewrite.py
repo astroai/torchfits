@@ -256,3 +256,22 @@ def test_column_rewrite_keeps_q_descriptor_vla(tmp_path):
     assert values["TFORM2"].strip("'").strip().startswith("QI")
     got = torchfits.table.read_torch(path, hdu=1)
     assert [t.tolist() for t in got["w"]] == [[], [0], [0, 1]]
+
+
+def test_file_edit_view_has_typed_header_cards(tmp_path):
+    # The refreshed view built its header from raw card strings, so
+    # TFIELDS/NAXIS2 came back as '2' / '4' instead of integers.
+    path = str(tmp_path / "typed.fits")
+    torchfits.write(
+        path,
+        {"a": np.arange(3), "b": np.ones(3)},
+        header={"LONG": "x" * 100},
+        overwrite=True,
+    )
+    with torchfits.open(path) as hdul:
+        ref = hdul[1]
+        new = ref.append_rows_file({"a": np.array([7]), "b": np.array([2.0])})
+        assert new.header["TFIELDS"] == 2 and isinstance(new.header["TFIELDS"], int)
+        assert new.header["NAXIS2"] == 4
+        assert new.header["LONG"] == "x" * 100
+        assert dict(new.header) == dict(torchfits.read_header(path, 1))

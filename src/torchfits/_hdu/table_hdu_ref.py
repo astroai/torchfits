@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
 from ._repr import render_html_table
-from .card import _reassemble_longstr_cards
 from .header import Header
 
 if TYPE_CHECKING:
@@ -390,6 +389,7 @@ class TableHDURef:
         )
 
     def _refresh_file_view(self, columns: Optional[List[str]] = None) -> "TableHDURef":
+        import torchfits
         import torchfits._C as cpp
         from .._io_engine.caches import invalidate_path_caches
         from .._io_engine.paths import guard_fits_path
@@ -400,16 +400,9 @@ class TableHDURef:
         # (C++ handle-pool invalidate is a no-op after Option A).
         invalidate_path_caches(path)
         cpp.clear_shared_read_meta_cache()
-        handle = cpp.open_fits_file(path, "r")
-        try:
-            # cpp.read_header returns raw (key, value, comment) triples with
-            # LONGSTRN '&' + CONTINUE chains un-reassembled (r4b-13).
-            header = Header(_reassemble_longstr_cards(cpp.read_header(handle, hdu)))
-        finally:
-            try:
-                handle.close()
-            except Exception:
-                pass
+        # Typed cards with LONGSTRN chains reassembled; cpp.read_header gives
+        # raw value strings (TFIELDS = '4').
+        header = torchfits.read_header(path, hdu)
         return TableHDURef(
             header=header, source_path=path, source_hdu=hdu, columns=columns
         )
