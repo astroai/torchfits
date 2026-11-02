@@ -130,7 +130,7 @@ class HDUList:
             # Headers come from the torch-free core. Importing ``torchfits._C``
             # here would preload PyTorch (~1 s) just to list HDUs; the handle
             # is opened lazily by the first HDU that touches its data.
-            from torchfits import _core as core
+            from torchfits import _core_api as core
             from torchfits.header_parser import fast_parse_header_cards
 
             num_hdus = int(core.read_num_hdus(path))

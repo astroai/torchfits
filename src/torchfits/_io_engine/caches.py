@@ -520,6 +520,10 @@ def invalidate_path_caches(path: str) -> None:
     with cache_lock:
         _invalidate_path_caches_locked(path)
 
+    from . import gz_index
+
+    gz_index.invalidate(path)
+
 
 def _invalidate_path_caches_locked(path: str) -> None:
     """Remove all Python cache entries for *path*; caller holds cache_lock."""
@@ -610,6 +614,9 @@ def clear_python_caches(
             header_cards_cache.clear()
             cold_nommap_cache.clear()
             auto_mmap_cache.clear()
+            from . import gz_index
+
+            gz_index.invalidate(None)
 
         if hdu_types:
             hdu_type_cache.clear()

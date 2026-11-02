@@ -69,6 +69,26 @@ def _parse_image_meta(header_data: Mapping[str, Any]) -> ImageMeta:
     return (bitpix, naxis, tuple(dims), bscale, bzero, is_compressed)
 
 
+def _gz_image_meta(path: str, hdu: int) -> ImageMeta | None:
+    """ImageMeta of a plain image HDU in a ``.gz`` file from the header index.
+
+    Each skinny CFITSIO probe below re-inflates a whole ``.gz`` file; one
+    indexed header answers all of them. Tile-compressed HDUs (whose image
+    geometry lives in Z* cards) still go through CFITSIO.
+    """
+    from . import gz_index
+    from ..header_parser import fast_parse_header
+
+    text = gz_index.header_string(path, hdu)
+    if text is None:
+        return None
+    try:
+        meta = _parse_image_meta(fast_parse_header(text))
+    except (TypeError, ValueError):
+        return None
+    return None if meta[5] else meta
+
+
 def _skinny_image_meta(path: str, hdu: int, cpp_module: Any) -> ImageMeta | None:
     """Build ImageMeta via skinny CFITSIO queries (no full header dump)."""
     try:
@@ -121,7 +141,9 @@ def get_image_meta(
         return cast(ImageMeta, cached)
 
     before = path_signature(path)
-    meta = _skinny_image_meta(path, hdu, cpp_module)
+    meta = _gz_image_meta(path, hdu)
+    if meta is None:
+        meta = _skinny_image_meta(path, hdu, cpp_module)
     if meta is None:
         try:
             meta = _parse_image_meta(Header(cpp_module.read_header_dict(path, hdu)))
