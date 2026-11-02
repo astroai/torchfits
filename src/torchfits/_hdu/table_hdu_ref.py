@@ -50,7 +50,9 @@ class TableHDURef:
         columns: Optional[List[str]] = None,
         row_slice: Optional[slice | tuple[int, int]] = None,
     ):
-        self.header = header or Header()
+        # A ref built from its source alone reads the header on first use, so
+        # len()/columns describe the same table read() returns.
+        self._header: Optional[Header] = header
         self._source_path = source_path
         self._source_hdu = source_hdu
         # ``columns=[]`` is a request for *no* columns, not for every column:
@@ -67,6 +69,23 @@ class TableHDURef:
         self._columns: Optional[tuple[str, ...]] = selected
         self._row_slice = row_slice
 
+    @property
+    def header(self) -> Header:
+        if self._header is None:
+            if self._source_path and self._source_hdu is not None:
+                import torchfits
+
+                self._header = torchfits.read_header(
+                    self._source_path, int(self._source_hdu)
+                )
+            else:
+                self._header = Header()
+        return self._header
+
+    @header.setter
+    def header(self, value: Header) -> None:
+        self._header = value
+
     def _require_source(self) -> tuple[str, int]:
         if not self._source_path or self._source_hdu is None:
             raise RuntimeError("This TableHDURef is not associated with a FITS file")
@@ -78,10 +97,8 @@ class TableHDURef:
             total = int(self.header.get("NAXIS2", 0))
         except Exception:
             total = 0
-        if total <= 0:
-            return 0
         if self._row_slice is None:
-            return total
+            return max(0, total)
         # One definition of the row window, shared with read()/iter_rows()
         # (r5c-15 dedupe). This property used to re-derive it with weaker rules:
         # a negative start became 0, a negative stop became 0 rows, step was
@@ -94,7 +111,7 @@ class TableHDURef:
 
         start_row, count = _normalize_row_slice(self._row_slice)
         start = max(0, start_row - 1)
-        if start >= total:
+        if total <= 0 or start >= total:
             return 0
         if count == -1:
             return total - start

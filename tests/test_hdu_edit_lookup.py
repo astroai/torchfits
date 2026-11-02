@@ -93,3 +93,41 @@ def test_hdulist_name_lookup_matches_read(tmp_path):
             hdul["NOPE"]
     assert torchfits.read(path, hdu="SCI")[0, 0].item() == 1.0
     assert torchfits.read(path, hdu="mask").shape == (3, 3)
+
+
+def test_table_hdu_ref_without_header_reads_its_own(tmp_path):
+    """A ref built from source alone must not report an empty table."""
+    import numpy as np
+
+    from torchfits.hdu import TableHDURef
+
+    path = tmp_path / "ref.fits"
+    torchfits.table.write(
+        str(path), {"ID": np.arange(5, dtype=np.int32)}, overwrite=True
+    )
+    ref = TableHDURef(source_path=str(path), source_hdu=1)
+    assert len(ref) == 5
+    assert ref.columns == ["ID"]
+    assert len(ref.read()["ID"]) == 5
+
+
+@pytest.mark.parametrize("window", [slice(0, 3, 2), slice(-1, 2), (0, 1, 2)])
+def test_table_hdu_ref_num_rows_refuses_what_read_refuses(tmp_path, window):
+    import numpy as np
+
+    from torchfits.hdu import TableHDURef
+
+    path = tmp_path / "ref.fits"
+    torchfits.table.write(
+        str(path), {"ID": np.arange(5, dtype=np.int32)}, overwrite=True
+    )
+    ref = TableHDURef(source_path=str(path), source_hdu=1, row_slice=window)
+    with pytest.raises(ValueError) as from_read:
+        ref.read()
+    with pytest.raises(ValueError) as from_len:
+        len(ref)
+    assert str(from_len.value) == str(from_read.value)
+    # An empty table refuses the same windows (it used to return 0 first).
+    empty = TableHDURef(row_slice=window)
+    with pytest.raises(ValueError):
+        empty.num_rows
