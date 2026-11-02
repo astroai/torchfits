@@ -288,6 +288,67 @@ def test_setkey_value_coercion_accepts_only_plain_numeric_literals(tmp_path):
     assert path.read_bytes() == before
 
 
+# --- compress / decompress round trip -----------------------------------------
+
+
+def _layout(path):
+    with torchfits.open(str(path)) as hdul:
+        return [
+            (hdul[i].header.get("NAXIS"), hdul[i].header.get("XTENSION"))
+            for i in range(len(hdul))
+        ]
+
+
+def test_decompress_restores_primary_image_layout(tmp_path):
+    src = tmp_path / "prim.fits"
+    image = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    second = torch.ones(2, 2, dtype=torch.int16)
+    torchfits.write(str(src), [image, second], header={"OBJECT": "M31"})
+    packed = tmp_path / "prim.fits.fz"
+    restored = tmp_path / "restored.fits"
+    assert main(["compress", str(src), str(packed)]) == 0
+    assert torchfits.read_header(str(packed), 1).get("ZSIMPLE") is True
+    assert main(["decompress", str(packed), str(restored)]) == 0
+    assert _layout(restored) == _layout(src)
+    assert torch.equal(torchfits.read_tensor(str(restored), hdu=0), image)
+    assert torch.equal(torchfits.read_tensor(str(restored), hdu=1), second)
+    header = torchfits.read_header(str(restored), 0)
+    assert header.get("OBJECT") == "M31"
+    assert "ZSIMPLE" not in header
+
+
+def test_decompress_keeps_empty_primary_of_mef(tmp_path):
+    # Hand-built: a data-less primary followed by two float32 image extensions.
+    def block(cards, data=b""):
+        head = "".join(f"{c:<80}" for c in [*cards, "END"]).encode("ascii")
+        head += b" " * (-len(head) % 2880)
+        return head + data + b"\0" * (-len(data) % 2880)
+
+    def card(key, value):
+        return f"{key:<8}= {value:>20}"
+
+    def image_ext(array):
+        rows, cols = array.shape
+        cards = ["XTENSION= 'IMAGE   '", card("BITPIX", -32), card("NAXIS", 2)]
+        cards += [card("NAXIS1", cols), card("NAXIS2", rows)]
+        cards += [card("PCOUNT", 0), card("GCOUNT", 1)]
+        return block(cards, array.astype(">f4").tobytes())
+
+    src = tmp_path / "mef.fits"
+    primary = [card("SIMPLE", "T"), card("BITPIX", 8), card("NAXIS", 0)]
+    primary.append(card("EXTEND", "T"))
+    src.write_bytes(
+        block(primary) + image_ext(np.ones((2, 2))) + image_ext(np.zeros((3, 3)))
+    )
+    packed = tmp_path / "mef.fits.fz"
+    restored = tmp_path / "restored.fits"
+    assert main(["compress", str(src), str(packed)]) == 0
+    assert "ZSIMPLE" not in torchfits.read_header(str(packed), 1)
+    assert main(["decompress", str(packed), str(restored)]) == 0
+    assert len(_layout(restored)) == 3
+    assert torch.equal(torchfits.read_tensor(str(restored), hdu=2), torch.zeros(3, 3))
+
+
 def test_cutout_section_with_extension_flag_is_usage_error(tmp_path):
     src = tmp_path / "mef.fits"
     torchfits.write(str(src), [torch.ones(4, 4), torch.zeros(4, 4)])

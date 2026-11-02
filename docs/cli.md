@@ -395,6 +395,13 @@ torchfits compress *.fits --out-dir /tmp/compressed -J 0
 
 Expands tile-compressed `.fits.fz` files back into standard uncompressed FITS files.
 
+A FITS primary HDU cannot hold a compressed image, so `compress` moves a
+primary image into HDU 1 behind an empty primary and marks it with `ZSIMPLE = T`
+(as `fpack` does). `decompress` restores such an image as the primary, like
+`funpack`, so HDU indices round-trip; files whose primary was already empty
+keep it. Compression bookkeeping cards (`ZSIMPLE`, `ZTENSION`, `ZPCOUNT`, …)
+are not copied into the uncompressed output.
+
 ```bash
 # Decompress single file
 torchfits decompress science.fits.fz science.fits
