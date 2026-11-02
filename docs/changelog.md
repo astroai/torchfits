@@ -130,6 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - transforms: Compose accepts plain callables
 - hdu: TableHDURef reads its header lazily and validates every window
 - table: Keep where= reads torch-free unless torch is already imported
+- transforms: Sigma-clip mesh background tiles with n_sigma and max_iter
+- table: Accept pathlib.Path in table.write cache invalidation
+- io: Let remote cutouts of tile-compressed HDUs fall back to a download
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
