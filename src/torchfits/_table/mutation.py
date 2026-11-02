@@ -201,6 +201,18 @@ def replace_column(
 # -- public row mutation API -----------------------------------------------------
 
 
+def _restamp_checksums(path: str, hdu: int, header_map: dict[str, Any]) -> None:
+    """Re-stamp CHECKSUM/DATASUM after an in-place edit of a stamped HDU.
+
+    The row and column edits change the HDU's bytes in place; a checksum left
+    from before the edit makes verify_checksums report corruption.
+    """
+    if "CHECKSUM" in header_map or "DATASUM" in header_map:
+        from .._io_engine.checksum_api import write_checksums
+
+        write_checksums(path, hdu=hdu)
+
+
 def append_rows(
     path: str,
     rows: dict[str, Any],
@@ -230,6 +242,7 @@ def append_rows(
     _mutation_cache_barrier(path)
     cpp.append_fits_table_rows(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def insert_rows(
@@ -273,6 +286,7 @@ def insert_rows(
     _mutation_cache_barrier(path)
     cpp.insert_fits_table_rows(path, target_hdu, normalized, start_row)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def delete_rows(
@@ -317,6 +331,7 @@ def delete_rows(
     _mutation_cache_barrier(path)
     cpp.delete_fits_table_rows(path, target_hdu, start_row, num_rows)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def _check_numeric_coercion(
@@ -559,6 +574,7 @@ def update_rows(
                     path, target_hdu, normalized, start_row, num_rows
                 )
                 _mutation_cache_barrier(path)
+                _restamp_checksums(path, target_hdu, header_map)
                 return
             except RuntimeError as exc:
                 # The mmap writer raises RuntimeError for both column layouts
@@ -579,6 +595,7 @@ def update_rows(
 
     cpp.update_fits_table_rows(path, target_hdu, normalized, start_row, num_rows)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def rename_columns(
@@ -601,7 +618,7 @@ def rename_columns(
     if len(set(normalized.values())) != len(normalized.values()):
         raise ValueError("rename_columns mapping has duplicate target names")
 
-    target_hdu, _header, columns, _tform_map = _resolve_table_hdu_index_and_columns(
+    target_hdu, header_map, columns, _tform_map = _resolve_table_hdu_index_and_columns(
         path, hdu
     )
     existing = set(columns)
@@ -620,6 +637,7 @@ def rename_columns(
     _mutation_cache_barrier(path)
     cpp.rename_fits_table_columns(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
 
 
 def drop_columns(
@@ -637,7 +655,7 @@ def drop_columns(
     if len(set(normalized)) != len(normalized):
         raise ValueError("drop_columns received duplicate column names")
 
-    target_hdu, _header, existing_columns, _tform_map = (
+    target_hdu, header_map, existing_columns, _tform_map = (
         _resolve_table_hdu_index_and_columns(path, hdu)
     )
     missing = sorted(set(normalized) - set(existing_columns))
@@ -649,3 +667,4 @@ def drop_columns(
     _mutation_cache_barrier(path)
     cpp.drop_fits_table_columns(path, target_hdu, normalized)
     _mutation_cache_barrier(path)
+    _restamp_checksums(path, target_hdu, header_map)
