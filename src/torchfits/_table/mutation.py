@@ -37,6 +37,7 @@ from ._mutation_coerce import (
     _normalize_column_values_for_format,
     _normalize_mutation_rows,
     _read_table_for_rewrite,
+    _replacement_column_layout,
 )
 
 
@@ -164,6 +165,19 @@ def replace_column(
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
+    reset_scaling = False
+    if table_type == "binary" and tscal is None and tzero is None:
+        layout_fmt, values, reset_scaling = _replacement_column_layout(
+            name,
+            values,
+            format=fmt if format is not None else None,
+            existing_meta=existing_meta,
+        )
+        if layout_fmt is not None:
+            fmt = layout_fmt
+    if reset_scaling:
+        for key in ("bzero", "bscale", "tnull"):
+            existing_meta.pop(key, None)
     if not fmt:
         fmt = _infer_column_format_for_insert(
             name, values, ascii_table=table_type == "ascii"

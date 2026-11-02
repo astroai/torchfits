@@ -445,6 +445,26 @@ the values. As in `table.write`, `uint16` / `uint32` / `uint64` values become
 ASCII one (`I6`, `I11`, `E25.15`, `A8`, ...); values an ASCII table cannot
 hold (booleans, vectors, complex) raise `ValueError` asking for `format=`.
 
+Without `format=`, `replace_column` keeps the column's TFORM unless the new
+values are `uint16` / `uint32` / `uint64` / `int8` and the column does not
+already use that `TZERO` convention: then the column layout is replaced too,
+exactly as `insert_column` would infer it, and the old `TZERO` / `TSCAL` /
+`TNULL` are dropped. With `format=` and such values, a format of the same
+storage code (`I` for `uint16`, ...) gets the `TZERO` convention; any other
+integer or float format stores the values plainly when they fit its range,
+and raises `ValueError` otherwise.
+
+```python
+import numpy as np
+import torchfits
+
+torchfits.table.write("t.fits", {"a": np.arange(3, dtype=np.int64)}, overwrite=True)
+u16 = np.array([0, 40000, 65535], dtype=np.uint16)
+torchfits.table.replace_column("t.fits", "a", u16)  # now TFORM 'I', TZERO 32768
+assert torchfits.read("t.fits", hdu=1)["a"].dtype.is_floating_point is False
+torchfits.table.replace_column("t.fits", "a", u16, format="1J")  # plain int32
+```
+
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
 `None` is written as a blank value, and a value longer than the column width

@@ -660,6 +660,91 @@ def _infer_column_format_for_insert(
     )
 
 
+_PLAIN_STORAGE_DTYPE = {
+    "B": "uint8",
+    "I": "int16",
+    "J": "int32",
+    "K": "int64",
+    "E": "float32",
+    "D": "float64",
+}
+
+
+def _offset_convention_dtype(values: Any) -> Any:
+    """numpy dtype of ``values`` when FITS stores it via the TZERO convention
+    (uint16/32/64, int8), else None."""
+    dtype = getattr(values, "dtype", None)
+    if isinstance(dtype, torch.dtype):
+        dtype = torch.empty(0, dtype=dtype).numpy().dtype
+    if dtype is not None and getattr(dtype, "str", "")[1:] in _OFFSET_CONVENTION_CODE:
+        return dtype
+    return None
+
+
+def _replacement_column_layout(
+    name: str,
+    values: Any,
+    *,
+    format: Optional[str],
+    existing_meta: dict[str, Any],
+) -> tuple[Optional[str], Any, bool]:
+    """Layout for replace_column when ``values`` use the TZERO convention.
+
+    Returns ``(fmt, values, reset_scaling)``. ``fmt`` None keeps the caller's
+    default. ``reset_scaling`` drops the column's old TZERO/TSCAL/TNULL, which
+    describe the previous storage and would turn the new cells into floats
+    (a 1K column replaced by uint16 kept 1K and gained TZERO=32768).
+    """
+    import numpy as np
+
+    dtype = _offset_convention_dtype(values)
+    if dtype is None:
+        return None, values, False
+    code = _OFFSET_CONVENTION_CODE[dtype.str[1:]]
+    offset = _UNSIGNED_TZERO[code]
+
+    if format is None:
+        _vla, old_code, _repeat = _parse_tform(str(existing_meta.get("format", "")))
+        old_bzero = existing_meta.get("bzero")
+        old_bscale = existing_meta.get("bscale")
+        already = (
+            old_code == code
+            and old_bzero is not None
+            and float(old_bzero) == float(offset)
+            and float(1.0 if old_bscale is None else old_bscale) == 1.0
+        )
+        if already:
+            return None, values, False
+        # The values' dtype wins: replace the layout as table.write would.
+        return _infer_binary_column_format(name, values), values, True
+
+    is_vla, fmt_code, _repeat = _parse_tform(format)
+    if is_vla:
+        return None, values, False
+    if fmt_code == code:
+        # Same storage code: the TZERO convention for that code applies.
+        return None, values, True
+    plain = _PLAIN_STORAGE_DTYPE.get(fmt_code)
+    if plain is None:
+        raise ValueError(
+            f"Column '{name}' has dtype {dtype}, which format '{format}' cannot "
+            "hold; use a numeric TFORM (B, I, J, K, E or D)"
+        )
+    arr = values.detach().cpu().numpy() if isinstance(values, torch.Tensor) else values
+    arr = np.asarray(arr)
+    target = np.dtype(plain)
+    if target.kind in "iu" and arr.size:
+        info = np.iinfo(target)
+        lo, hi = int(arr.min()), int(arr.max())
+        if lo < info.min or hi > info.max:
+            raise ValueError(
+                f"Column '{name}' values span [{lo}, {hi}], which format "
+                f"'{format}' (range [{info.min}, {info.max}]) cannot hold; "
+                f"use format '{code}' for {dtype} with TZERO={offset}"
+            )
+    return None, arr.astype(target), True
+
+
 def _infer_binary_column_format(name: str, values: Any) -> str:
     import numpy as np
 
