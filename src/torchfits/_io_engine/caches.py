@@ -121,6 +121,7 @@ def _stat_target(path: str) -> str | None:
     """
     from .paths import cfitsio_base_path
 
+    path = os.fspath(path)  # callers may pass pathlib.Path
     target = path[len("file://") :] if path.startswith("file://") else path
     if "://" in target:
         return None
