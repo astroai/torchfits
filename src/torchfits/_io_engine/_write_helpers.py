@@ -1184,11 +1184,31 @@ def _unsigned_tnull_to_stored(name: str, tnull: Any, code: str, bzero: float) ->
     return value - int(bzero)
 
 
+def _empty_string_column_width(value: Any) -> Optional[int]:
+    """Character width of a 0-row numpy 'S'/'U' column, else None."""
+    import numpy as np
+
+    if not (
+        isinstance(value, np.ndarray)
+        and value.dtype.kind in {"U", "S"}
+        and value.ndim == 1
+        and value.size == 0
+    ):
+        return None
+    chars = int(value.dtype.itemsize) // (4 if value.dtype.kind == "U" else 1)
+    return max(1, chars)
+
+
 def _prepare_unsigned_table_data_for_write(
     table_dict: Dict[str, Any],
     schema: Optional[Dict[str, Dict[str, Any]]] = None,
+    *,
+    ascii_table: bool = False,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]], bool]:
-    """Convert uint16/uint32 table columns to FITS pseudo-unsigned storage."""
+    """Convert uint16/uint32 table columns to FITS pseudo-unsigned storage.
+
+    Also types 0-row numpy string columns, which carry no cell to infer from.
+    """
     out: Dict[str, Any] = {}
     prepared_schema: Dict[str, Dict[str, Any]] = {
         str(name): dict(meta or {}) for name, meta in (schema or {}).items()
@@ -1197,6 +1217,16 @@ def _prepare_unsigned_table_data_for_write(
 
     for name, value in table_dict.items():
         col_name = str(name)
+        width = _empty_string_column_width(value)
+        if width is not None:
+            # No cell to infer the string type from: the dtype width is the
+            # only TFORM evidence (the writer raised std::bad_cast).
+            out[col_name] = value
+            meta = prepared_schema.setdefault(col_name, {})
+            if "format" not in meta and "tform" not in meta:
+                meta["format"] = f"A{width}" if ascii_table else f"{width}A"
+            changed = True
+            continue
         converted = _unsigned_table_storage_for_fits_write(value)
         if converted is None:
             out[col_name] = value

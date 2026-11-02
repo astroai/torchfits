@@ -71,7 +71,7 @@ def write(
     )
 
     data, schema, unsigned_converted = _prepare_unsigned_table_data_for_write(
-        data, schema
+        data, schema, ascii_table=table_kind == "ascii"
     )
     data, schema, quantized = _prepare_quantized_table_data_for_write(
         data, quantize, schema
