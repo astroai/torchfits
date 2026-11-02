@@ -378,8 +378,8 @@ def _unsigned_image_storage_for_fits_write(
     if tensor.dtype == torch.uint64:
         # FITS 4.0 unsigned 64-bit convention: int64 storage, BZERO = 2**63.
         # Subtracting 2**63 modulo 2**64 is flipping the sign bit.
-        raw = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
-        return raw, {"BSCALE": 1.0, "BZERO": 9223372036854775808.0}
+        raw64 = tensor.contiguous().view(torch.int64) ^ torch.iinfo(torch.int64).min
+        return raw64, {"BSCALE": 1.0, "BZERO": 9223372036854775808.0}
     if tensor.dtype == torch.uint16:
         raw: Tensor = (tensor.to(torch.int32) - 32768).to(torch.int16)
         return raw, {"BSCALE": 1.0, "BZERO": 32768.0}
@@ -857,8 +857,8 @@ def _unsigned_table_storage_for_fits_write(value: Any) -> tuple[Any, str, float]
             raw = (value.astype(np.int64, copy=False) - 2147483648).astype(np.int32)  # type: ignore[assignment]
             return np.ascontiguousarray(raw), "J", 2147483648.0
         if value.dtype == np.uint64:
-            raw = np.ascontiguousarray(value).view(np.int64) ^ np.iinfo(np.int64).min
-            return np.ascontiguousarray(raw), "K", 9223372036854775808.0
+            raw_np = np.ascontiguousarray(value).view(np.int64) ^ np.iinfo(np.int64).min
+            return np.ascontiguousarray(raw_np), "K", 9223372036854775808.0
         return None
 
     return None
