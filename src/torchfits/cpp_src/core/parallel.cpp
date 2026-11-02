@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -53,7 +54,15 @@ public:
     explicit Pool(int worker_count) {
         workers_.reserve(static_cast<size_t>(worker_count));
         for (int i = 0; i < worker_count; ++i) {
-            workers_.emplace_back([this] { worker_loop(); });
+            // A thread that cannot be started (EAGAIN under a thread limit)
+            // must not unwind the constructor: destroying the joinable workers
+            // already started calls std::terminate. Keep those; with none,
+            // run_chunks runs every batch on the calling thread.
+            try {
+                workers_.emplace_back([this] { worker_loop(); });
+            } catch (const std::system_error&) {
+                break;
+            }
         }
     }
 
