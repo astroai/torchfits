@@ -133,12 +133,13 @@ Used when the image is uncompressed and `mmap=True`.
 
 1. Open raw fd (`O_RDONLY | O_CLOEXEC`)
 2. Call `fits_get_hduaddrll` to get the data offset within the file
-3. `mmap()` the data region directly — CFITSIO is **not** used for pixel reads
+3. Copy the data region into a freshly allocated tensor (`pread`, or a
+   page-aligned `mmap()` + copy) — CFITSIO is **not** used for pixel reads
 4. Byte-swap in parallel via `at::parallel_for` using `__builtin_bswap16/32/64`
 5. Apply BSCALE/BZERO in the same parallel pass or on-device (controlled by
    `scale_on_device`)
-6. Return a `torch::Tensor` backed by the mmap region (zero-copy until first
-   mutation)
+6. Return the tensor. It owns its memory: no mapping stays alive, and
+   mutating it never touches the file
 
 This path bypasses `fits_read_img` entirely. The performance advantage comes
 from avoiding CFITSIO's per-row overhead and enabling parallel byte-swapping.
@@ -353,8 +354,7 @@ contention on hot image metadata.
 
 ### Compression
 
-`fits_is_compressed_image`, `fits_is_compressed_with_nulls` (via `dlsym`),
-`fits_set_compression_type`, `fits_set_tile_dim`
+`fits_is_compressed_image`, `fits_set_compression_type`, `fits_set_tile_dim`
 
 ### Checksums
 
@@ -390,14 +390,15 @@ patched CFITSIO, so behavior is identical across install channels.
 
 | FITS BITPIX | torch dtype | Notes |
 |---|---|---|
-| 8 (BYTE_IMG) | `int8` | Signed byte convention via BZERO=-128 → XOR 0x80 |
+| 8 (BYTE_IMG) | `uint8` | `int8` only with the signed-byte convention BZERO=-128 (XOR 0x80) |
 | 16 | `int16` | Byte-swapped from big-endian |
 | 32 | `int32` | Byte-swapped |
-| 64 | `int64` | Byte-swapped |
+| 64 | `int64` | Byte-swapped; `uint64` with BZERO=2**63 |
 | -32 | `float32` | IEEE 754, byte-swapped |
 | -64 | `float64` | IEEE 754, byte-swapped |
 
-Unsigned integers (BZERO=32768 for uint16, BZERO=2147483648 for uint32) are
+Unsigned integers (BZERO=32768 for uint16, BZERO=2147483648 for uint32,
+BZERO=2**63 for uint64) are
 handled by applying the offset rather than promoting to a wider signed type.
 This preserves the narrow dtype for GPU transfer.
 
@@ -409,9 +410,10 @@ dtype and avoids CFITSIO's float promotion.
 
 ## Security
 
-`security.h` rejects filenames starting or ending with `|` (pipe character)
-to prevent CFITSIO command execution via shell pipes. Leading `!` (overwrite
-prefix) is stripped.
+Filenames starting or ending with `|` (pipe character) are rejected to
+prevent CFITSIO command execution via shell pipes. The public `write()`
+rejects a leading `!` (CFITSIO clobber syntax) with `ValueError`; pass
+`overwrite=True` instead.
 
 ---
 
@@ -457,16 +459,17 @@ during benchmarking.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_DEBUG_SCALE` | `0` | Print which BSCALE/BZERO branch `_read_pipeline` took |
+| `TORCHFITS_DEBUG_SCALE` | `0` | Log which BSCALE/BZERO branch an image read took, at `DEBUG` level on the `torchfits.io` logger |
 | `TORCHFITS_COLD_NOMMAP` | `0` | Force non-mmap image reads |
-| `TORCHFITS_COLD_NOCACHE` | `0` | Disable the in-process handle/metadata cache |
+| `TORCHFITS_COLD_NOCACHE` | `0` | Accepted but has no effect: since 1.3.0 every read opens a private handle, so there is no handle cache to disable |
 | `TORCHFITS_EXAMPLE_FAST` | unset | `examples/` runner + sample-data helper: skip network downloads and fail fast, and bound the `example_megacam_cr_denoise.py` training run. `examples/test_examples.py` sets it for every example under CI and unconditionally for the denoise example; that runner also refuses to start under `PYTHONOPTIMIZE` |
 
 ### Build / docs / bench-only
 
 Not part of the runtime env-var surface; only relevant when building the C++
-extension, generating docs, or running the internal benchmark/CANFAR
-harnesses. Not enforced by the docs-completeness test above.
+extension, generating docs, or verifying wheels on CANFAR. Not enforced by
+the docs-completeness test above. Benchmark variables belong to
+torchfits-harness, not this repository.
 
 - **CMake** (`-DTORCHFITS_...=` at build time): `TORCHFITS_PGO`,
   `TORCHFITS_FINITE_MATH_ONLY`, `TORCHFITS_USE_VENDORED_CFITSIO`,
@@ -474,14 +477,9 @@ harnesses. Not enforced by the docs-completeness test above.
   `TORCHFITS_COVERAGE`.
 - **Docs build** (`scripts/build_docs_pages.sh`): `TORCHFITS_DOCS_OUT`,
   `TORCHFITS_DOCS_URL`.
-- **Benchmarks** (`scripts/bench_*.sh`): `TORCHFITS_BENCH_ENV`,
-  `TORCHFITS_BENCH_GIT`, `TORCHFITS_BENCH_LOG_REDIRECTED`,
-  `TORCHFITS_BENCH_MODE`, `TORCHFITS_BENCH_RUN_DIR`, `TORCHFITS_BENCH_RUN_ID`.
-- **CANFAR GPU bench launcher** (`scripts/*canfar*.sh`): `TORCHFITS_CANFAR_CPU`,
-  `TORCHFITS_CANFAR_EXISTING_SESSION`, `TORCHFITS_CANFAR_FOREGROUND`,
-  `TORCHFITS_CANFAR_GPU`, `TORCHFITS_CANFAR_IMAGE`,
+- **CANFAR CUDA wheel check** (`scripts/verify_wheel_cuda_canfar.sh`):
+  `TORCHFITS_CANFAR_CPU`, `TORCHFITS_CANFAR_IMAGE`,
   `TORCHFITS_CANFAR_MAX_WAIT_SECS`, `TORCHFITS_CANFAR_MEMORY`,
-  `TORCHFITS_CANFAR_NAME`, `TORCHFITS_CANFAR_POLLER`,
   `TORCHFITS_CANFAR_POLL_SECS`.
 
 `TORCHFITS_TORCH_ABI` is a compile-time C++ macro (set by CMake from the
