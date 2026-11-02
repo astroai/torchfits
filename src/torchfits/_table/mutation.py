@@ -490,6 +490,15 @@ def update_rows(
             _warn_numeric_coercion(
                 col_name, arr, tform_map.get(col_name), unsigned_names.get(col_name)
             )
+            if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
+                # Physical uint64 values: send them as uint64 so every writer
+                # applies the TZERO = 2**63 offset the same way.
+                if arr.size and int(arr.min()) < 0:
+                    raise ValueError(
+                        f"Column '{col_name}' is uint64: negative values cannot "
+                        "be stored"
+                    )
+                arr = arr.astype("uint64")
             normalized[col_name] = arr
 
     if expected_rows is None:

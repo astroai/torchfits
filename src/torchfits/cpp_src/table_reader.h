@@ -2583,8 +2583,11 @@ public:
                             }
                             uint64_t v;
                             std::memcpy(&v, &src_i64[idx], sizeof(uint64_t));
-                            if (u64_col && dt.code == (uint8_t)nb::dlpack::dtype_code::UInt) {
-                                v ^= 0x8000000000000000ULL;  // physical uint64 -> stored int64
+                            if (u64_col) {
+                                // Physical value -> stored int64 (TZERO = 2**63),
+                                // for uint64 and int64 payloads alike, matching
+                                // the SHORT/INT arms' physical semantics.
+                                v ^= 0x8000000000000000ULL;
                             }
                             v = bswap_64(v);
                             std::memcpy(dest, &v, sizeof(uint64_t));
