@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Stop truncating float literals in integer-column pushdown filters
 - table: Read BIT columns row by row when the repeat is not byte-aligned
 - stats: Promote float32 to float64 for quantiles over > 2**24 elements
+- build: Apply NIOBUF/MINDIRECT to every target via a vendored-header patch
+- build: Require the core to define every CFITSIO symbol _C imports on ELF
+- build: Ship the bzip2 license with wheels that bundle libbz2
+- build: Drop the dead CFITSIO_HAVE_SSSE3 define and document SSSE3
+- build: Clear a cached USE_BZIP2 when TORCHFITS_USE_BZIP2 is OFF
+- core: Bound the shared per-path metadata registry
+- core: Keep started pool workers when a worker thread cannot start
+- core: Create the core thread pool once under concurrent first use
+- core: Re-validate extended-syntax paths and stop caching URLs
+- core: Publish path-level probe answers only for the current generation
+- core: Type read_keys values the way read_header does
+- table: Reject a schema bit repeat that disagrees with the payload width
+- build: Size BZIP2 float tiles correctly and reject short bzip2 tiles
+- build: Keep the vendored CFITSIO tree when vendor.sh fails
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
