@@ -335,6 +335,7 @@ def _write_hdus_with_optional_compression(
     import torchfits._C as cpp
 
     payload: list[Any] = []
+    primary_header: Any = None
     for idx, hdu in enumerate(hdus):  # noqa: B007
         table_proxy = _prepare_table_hdu_for_payload(hdu)
         if table_proxy is not None:
@@ -349,6 +350,8 @@ def _write_hdus_with_optional_compression(
         # A compressed FITS file uses an empty primary HDU followed by compressed
         # image extensions; skip this placeholder to avoid duplicating it.
         if _is_skippable_empty_primary(idx, hdu):
+            # Its user cards still belong on the primary the writer emits.
+            primary_header = getattr(hdu, "header", None)
             continue
 
         hdu_dict = _image_hdu_dict_for_fits_write(
@@ -378,6 +381,8 @@ def _write_hdus_with_optional_compression(
 
     _invalidate_path_caches(path)
     cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)
+    # Structural cards (SIMPLE/NAXIS/...) are skipped by the card writer.
+    _write_header_cards_if_supported(path, 0, primary_header, invalidate=False)
     for j, item in enumerate(payload):
         _write_header_cards_if_supported(
             path, j + 1, _payload_replay_header(item), invalidate=False
