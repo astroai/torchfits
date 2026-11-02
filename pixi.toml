@@ -1,8 +1,5 @@
 [workspace]
 preview = ["pixi-build"]
-# Keep the manager itself reproducible alongside pixi.lock. Update this pin
-# deliberately when the lockfile is regenerated with a newer Pixi release.
-requires-pixi = "==0.82.0"
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
