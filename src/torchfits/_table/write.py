@@ -358,12 +358,18 @@ def _scaled_columns_as_stored(
             offset += (repeat + 7) // 8
         else:
             offset += repeat * _BINTABLE_CELL_BYTES.get(code, 0)
-    from .._io_engine._hdu_splice import hdu_byte_spans
+    from .._io_engine._hdu_splice import hdu_byte_spans, open_fits_bytes
 
+    # Offsets are into the FITS byte stream, which for x.fits.gz is the
+    # decompressed one: read through the same opener, not the raw file.
     data_start = hdu_byte_spans(path)[hdu][1]
-    rows = np.fromfile(
-        path, dtype=np.uint8, count=nrows * width, offset=data_start
-    ).reshape(nrows, width)
+    nbytes = nrows * width
+    with open_fits_bytes(path) as fh:
+        fh.seek(data_start)
+        raw = fh.read(nbytes)
+    if len(raw) != nbytes:
+        raise OSError(f"{path}: table HDU {hdu} data is truncated")
+    rows = np.frombuffer(raw, dtype=np.uint8).reshape(nrows, width)
     big_endian = {"B": "u1", "I": ">i2", "J": ">i4", "K": ">i8", "E": ">f4", "D": ">f8"}
     for col in scaled:
         dtype = np.dtype(big_endian[col.tform_info.code or ""])
