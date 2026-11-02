@@ -112,6 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - transforms: Ignore empty tiles in the mesh background 3x3 filter
 - transforms: Run IRAF zscale on MPS in float32
 - transforms: Keep NaN/masked pixels out of the IRAF zscale fit
+- cli: Decompress restores a compressed primary image as the primary
+- cli: Setkey coerces only plain numeric literals
+- cli: Convert reports bad --columns/--where as usage errors
+- cli: Cutout --box shifts CRPIX to the cutout origin
+- cli: Arith keeps huge integral scalars as floats
+- cli: Arith output dtype no longer follows a float64 operand B
+- cli: Arith stacks HDUs only when their dtypes match
+- cli: Setkey validates before copying to -o/--out-dir
+- cli: Setkey refreshes CHECKSUM/DATASUM in edited HDUs that had them
+- cli: Setkey refuses structural and tile-compression keywords
+- cli: Setkey --delete/--rename find HIERARCH keywords
+- cli: Report compressed image shapes row-major like uncompressed ones
+- cli: Cutout checks compressed image size and refuses -e with a section
+- cli: Stats over finite pixels in float64 with midpoint median
+- cli: Diff compares pixels and table rows exactly
 ### Performance
 - png: Export PNG scanlines in one copy instead of per-element Python loop
 - rgb: Float32 display path, in-place prep, subsampled p90; convert --origin
@@ -119,6 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 - Say the real-CFHT suites never run in CI and list both files
 - Correct AGENTS.md claims about test markers, changelog-check, stubs
+- examples: Say the cutout command now shifts CRPIX
+- cli: Document convert --origin; align docs contract with CRPIX shift
 
 ## [1.3.1] — 2026-10-26
 
