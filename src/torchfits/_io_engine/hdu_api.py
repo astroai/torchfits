@@ -252,6 +252,9 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
         return hdul
     except PermissionError:
         raise PermissionError(f"Permission denied accessing file: {path}")
+    except (ValueError, FileNotFoundError, KeyError):
+        # Argument errors (unsupported mode=, bad path) keep their type.
+        raise
     except Exception as exc:
         prefix = f"Failed to open FITS file '{path}'"
         if isinstance(exc, RuntimeError) and str(exc).startswith(prefix):

@@ -79,6 +79,10 @@ def _read_prelude(
     """
     import torchfits
 
+    # Same contract as read()/read_header(): a negative index is an argument
+    # error, not CFITSIO's "illegal HDU number" RuntimeError.
+    if isinstance(hdu, int) and not isinstance(hdu, bool) and hdu < 0:
+        raise ValueError("hdu must be a non-negative integer")
     if not columns:
         columns = None
     else:
