@@ -89,7 +89,7 @@ iterators and deep learning training pipelines), use the in-process Python API
 | Code | Meaning | Example |
 |---|---|---|
 | `0` | Success | Command completed successfully |
-| `1` | Difference found | `torchfits diff` found header or image discrepancies |
+| `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
 | `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
 | `3` | I/O error | File not found, permission denied, or invalid FITS structure |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
@@ -107,7 +107,7 @@ A downstream consumer that closes the pipe early (`torchfits info many.fits | he
 | [`info`](#info) | Summary of HDUs (extension index, name, type, dimensions, data type) |
 | [`header`](#header) | Display header cards, filter keywords, or build multi-file summary tables |
 | [`verify`](#verify) | Validate `DATASUM` and `CHECKSUM` integrity across HDUs |
-| [`diff`](#diff) | Compare header keywords and pixel statistics between two FITS files |
+| [`diff`](#diff) | Compare header keywords, image pixels, and table data between two FITS files |
 | [`stats`](#stats) | Compute image statistics (min, max, mean, standard deviation, median) |
 | [`table`](#table) | Inspect binary/ASCII table schemas and preview rows |
 | [`cutout`](#cutout) | Extract sub-regions using pixel coordinates or CFITSIO sections |
@@ -186,8 +186,10 @@ Output statuses:
 
 Compares two FITS files HDU by HDU. Header card order, repeated cards, values,
 and comments must match (transient `CHECKSUM`/`DATASUM` cards are ignored).
-Image extensions also compare shapes, minimums, maximums, and means. Returns
-exit code `0` if identical, `1` if different.
+Image HDUs are compared pixel by pixel (shape, dtype, and every value exactly;
+`NaN`, including `BLANK` pixels read as `NaN`, equals `NaN`), and table HDUs
+row by row in every column. Returns exit code `0` only if headers and data are
+identical, `1` if anything differs; each difference is listed on stderr.
 
 ```bash
 # Compare two files
@@ -472,7 +474,7 @@ torchfits probe vos:username/data/sample.fits
 | `info` | [`fitsinfo`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsinfo) (Astropy) | Overview of HDU extensions, dimensions, and data types |
 | `header` | [`fitsheader`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsheader) (Astropy), [`dfits` / `fitsort`](https://www.eso.org/sci/software/eclipse/eug/eug/node13.html) (ESO Eclipse) | Dump header cards; filter by keyword; multi-file summary tables |
 | `verify` | [`fitscheck`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitscheck) (Astropy), [`fitsverify`](https://heasarc.gsfc.nasa.gov/docs/software/ftools/fitsverify/) (NASA HEASARC) | Check `DATASUM` and `CHECKSUM` keyword integrity |
-| `diff` | [`fitsdiff`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsdiff) (Astropy) | Compare headers and image statistics between two FITS files |
+| `diff` | [`fitsdiff`](https://docs.astropy.org/en/stable/io/fits/usage/scripts.html#fitsdiff) (Astropy) | Compare headers, image pixels, and table data between two FITS files |
 | `stats` | [`imstat`](https://iraf.net/irafdocs/imstat.php) (IRAF), [`aststatistics`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-aststatistics.html) (Gnuastro) | Compute min, max, mean, standard deviation, and median pixel values |
 | `table` | [`asttable`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-asttable.html) (Gnuastro), `tablist` (NASA HEASARC FTOOLS) | Preview binary/ASCII table schema and row values |
 | `cutout` | [`astcrop`](https://www.gnu.org/software/gnuastro/manual/html_node/Invoking-astcrop.html) (Gnuastro), CFITSIO image sections | Extract sub-regions using pixel ranges (`[x1:x2, y1:y2]`) or bounding boxes |

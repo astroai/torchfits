@@ -1,4 +1,4 @@
-"""``torchfits diff`` — compare FITS headers and image metadata."""
+"""``torchfits diff`` — compare FITS headers, image pixels, and table data."""
 
 from __future__ import annotations
 
@@ -29,26 +29,99 @@ def _header_cards(header: Any) -> list[tuple[str, Any, str]]:
     ]
 
 
-def _image_record(path: str, index: int) -> dict[str, Any]:
+def _read_image(path: str, index: int) -> Any:
     import torch
 
     tensor = torchfits.read_tensor(path, hdu=index)
     if not isinstance(tensor, torch.Tensor):
         raise IoError(f"{path}:{index} read_tensor did not return a tensor")
-    # min/max/mean must run on an upcast copy (torch has no uint reductions)
-    # that KEEPS float64 in float64: tensor.float().mean() rounds float64
-    # images to float32 and hides real mean differences. An empty region has
-    # no defined stats (NaN, which _values_equal treats as equal to NaN);
-    # torch reductions raise on numel() == 0.
-    stats_t = tensor if tensor.dtype.is_floating_point else tensor.float()
-    empty = stats_t.numel() == 0
-    nan = float("nan")
-    return {
-        "shape": list(tensor.shape),
-        "min": nan if empty else float(stats_t.min()),
-        "max": nan if empty else float(stats_t.max()),
-        "mean": nan if empty else float(stats_t.mean()),
-    }
+    return tensor
+
+
+def _image_diffs(path_a: str, path_b: str, index: int) -> list[str]:
+    """Exact pixel comparison; NaN (and BLANK, read as NaN) equals NaN.
+
+    Summary statistics are not enough: a permuted image, or integers that
+    differ beyond float32 precision, share min/max/mean with the original.
+    """
+    import numpy as np
+
+    tensor_a = _read_image(path_a, index)
+    tensor_b = _read_image(path_b, index)
+    if tuple(tensor_a.shape) != tuple(tensor_b.shape):
+        return [
+            f"HDU {index} image shape: {list(tensor_a.shape)!r} vs "
+            f"{list(tensor_b.shape)!r}"
+        ]
+    diffs: list[str] = []
+    if tensor_a.dtype != tensor_b.dtype:
+        diffs.append(
+            f"HDU {index} image dtype: {str(tensor_a.dtype).replace('torch.', '')}"
+            f" vs {str(tensor_b.dtype).replace('torch.', '')}"
+        )
+    array_a = tensor_a.numpy()
+    array_b = tensor_b.numpy()
+    if np.array_equal(array_a, array_b, equal_nan=True):
+        return diffs
+    differ = array_a != array_b
+    if array_a.dtype.kind == "f" or array_b.dtype.kind == "f":
+        differ &= ~(np.isnan(array_a) & np.isnan(array_b))
+    diffs.append(
+        f"HDU {index} image data: {int(differ.sum())} of {differ.size} pixels differ"
+    )
+    return diffs
+
+
+def _py_equal(a: Any, b: Any) -> bool:
+    """Exact, NaN-aware equality for Arrow ``as_py`` values (incl. lists)."""
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (a != a and b != b)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_py_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_py_equal(a[k], b[k]) for k in a)
+    return bool(a == b)
+
+
+def _table_diffs(path_a: str, path_b: str, index: int) -> list[str]:
+    from torchfits import table as tf_table
+
+    table_a = tf_table.read(path_a, hdu=index)
+    table_b = tf_table.read(path_b, hdu=index)
+    diffs: list[str] = []
+    if table_a.num_rows != table_b.num_rows:
+        diffs.append(
+            f"HDU {index} table rows: {table_a.num_rows} vs {table_b.num_rows}"
+        )
+    names_a = list(table_a.column_names)
+    names_b = list(table_b.column_names)
+    if names_a != names_b:
+        diffs.append(f"HDU {index} table columns: {names_a!r} vs {names_b!r}")
+    if diffs:
+        return diffs
+    for name in names_a:
+        col_a = table_a.column(name)
+        col_b = table_b.column(name)
+        if col_a.type != col_b.type:
+            diffs.append(
+                f"HDU {index} table column {name!r} type: {col_a.type} vs {col_b.type}"
+            )
+            continue
+        # Fast path; Arrow's equals treats NaN != NaN, so an unequal result
+        # falls back to an exact NaN-aware per-row comparison.
+        if col_a.equals(col_b):
+            continue
+        rows = sum(
+            1
+            for value_a, value_b in zip(col_a.to_pylist(), col_b.to_pylist())
+            if not _py_equal(value_a, value_b)
+        )
+        if rows:
+            diffs.append(
+                f"HDU {index} table column {name!r}: {rows} of {table_a.num_rows} "
+                "rows differ"
+            )
+    return diffs
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -97,14 +170,9 @@ def _diff_pair(path_a: str, path_b: str) -> list[str]:
                             f"HDU {index} card {position + 1}: {card_a!r} vs {card_b!r}"
                         )
                 if type_a == "IMAGE" and type_b == "IMAGE":
-                    stats_a = _image_record(path_a, index)
-                    stats_b = _image_record(path_b, index)
-                    for field in ("shape", "min", "max", "mean"):
-                        if not _values_equal(stats_a[field], stats_b[field]):
-                            diffs.append(
-                                f"HDU {index} image {field}: "
-                                f"{stats_a[field]!r} vs {stats_b[field]!r}"
-                            )
+                    diffs.extend(_image_diffs(path_a, path_b, index))
+                elif type_a == "TABLE" and type_b == "TABLE":
+                    diffs.extend(_table_diffs(path_a, path_b, index))
     except IoError:
         raise
     except Exception as exc:
