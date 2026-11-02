@@ -13,6 +13,7 @@ __all__ = [
     "guard_fits_path",
     "guard_write_path",
     "has_bz2_support",
+    "has_curl_support",
     "has_cfitsio_filter",
     "is_cfitsio_network_url",
 ]
@@ -44,6 +45,36 @@ def require_bz2_support(path: str) -> None:
         )
 
 
+def has_curl_support() -> bool:
+    """True when this build's CFITSIO can open ``https://`` / ``ftps://`` URLs.
+
+    CFITSIO reaches TLS URLs through libcurl and is compiled without them when
+    libcurl is not found; ``_C.HAS_CURL`` mirrors that build-time result.
+    """
+    try:
+        import torchfits._C as _C
+
+        return bool(getattr(_C, "HAS_CURL", True))
+    except Exception:
+        return True
+
+
+_TLS_URL_PREFIXES = ("https", "ftps")
+
+
+def require_curl_support(path: str) -> None:
+    """Raise the actionable error for TLS URLs on builds without libcurl."""
+    lowered = str(path).lstrip().lstrip("!").lstrip().lower()
+    scheme, sep, _ = lowered.partition("://")
+    if sep and scheme.startswith(_TLS_URL_PREFIXES) and not has_curl_support():
+        raise ValueError(
+            f"{path}: this torchfits build's CFITSIO was compiled without "
+            "libcurl, so https:// and ftps:// URLs cannot be opened. Download "
+            "the file first, use an http:// URL, or install a build with "
+            "libcurl."
+        )
+
+
 def coerce_fits_path(path: Any) -> Any:
     """Normalize an ``os.PathLike`` path to ``str`` at the read boundary.
 
@@ -71,6 +102,7 @@ def guard_fits_path(path: str) -> str:
     fetches pin instead — see ``http_util.guard_cfitsio_remote_path``.
     """
     guard_cfitsio_remote_path(path)
+    require_curl_support(path)
     return path
 
 

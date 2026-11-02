@@ -250,7 +250,10 @@ def open_hdulist(path: str, mode: str = "r") -> HDUList:
     except PermissionError:
         raise PermissionError(f"Permission denied accessing file: {path}")
     except Exception as exc:
-        raise RuntimeError(f"Failed to open FITS file '{path}': {exc}") from exc
+        prefix = f"Failed to open FITS file '{path}'"
+        if isinstance(exc, RuntimeError) and str(exc).startswith(prefix):
+            raise  # HDUList.fromfile already said it; do not repeat the prefix
+        raise RuntimeError(f"{prefix}: {exc}") from exc
 
 
 def _resolve_hdu_index(

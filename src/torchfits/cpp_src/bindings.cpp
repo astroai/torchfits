@@ -93,6 +93,11 @@ NB_MODULE(_C, m) {
 #else
     m.attr("HAS_BZIP2") = false;
 #endif
+#ifdef TORCHFITS_HAVE_CURL
+    m.attr("HAS_CURL") = true;
+#else
+    m.attr("HAS_CURL") = false;
+#endif
     // libtorchfits_core owns CFITSIO and the metadata cache; _C calls into it.
     // torchfits/__init__.py compares this against torchfits._core.__build_id__
     // so a stale core next to a fresh extension fails at import, not later.

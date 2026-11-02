@@ -67,9 +67,11 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         // Private per-instance handle (CFITSIO §4 Option A): no shared CHDU.
         status = detail::open_fits_readonly(&fptr_, filename_);
     } else {
+        fits_clear_errmsg();
         fits_create_file(&fptr_, filename, &status);
     }
     if (status != 0 || !fptr_) {
+        const std::string message = detail::open_failure_message(filename_, status);
         // CFITSIO may leave a partially-initialized handle on failure; close it
         // to avoid leaking the underlying file.
         if (fptr_) {
@@ -77,7 +79,7 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
             fits_close_file(fptr_, &close_status);
             fptr_ = nullptr;
         }
-        throw std::runtime_error("Could not open FITS file: " + filename_);
+        throw std::runtime_error(message);
     }
     fptr_owner_.reset(fptr_, [](fitsfile* f) {
         int close_status = 0;

@@ -127,6 +127,10 @@ TORCHFITS_CORE_API std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(cons
 TORCHFITS_CORE_API int open_readonly_fd(const std::string& filename);
 // Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
 TORCHFITS_CORE_API int open_fits_readonly(fitsfile** fptr, const std::string& path);
+// "Could not open FITS file: <path> (<CFITSIO error stack>)". Drains CFITSIO's
+// error-message stack so the cause (404, no libcurl, bad URL, ...) reaches the
+// caller instead of being discarded; call it before closing a failed handle.
+TORCHFITS_CORE_API std::string open_failure_message(const std::string& path, int status);
 TORCHFITS_CORE_API std::shared_ptr<RawFdHolder> get_shared_raw_fd(
     const std::shared_ptr<SharedReadMeta>& meta, const std::string& filename);
 TORCHFITS_CORE_API bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes);

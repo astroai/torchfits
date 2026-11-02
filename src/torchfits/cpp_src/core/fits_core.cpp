@@ -323,12 +323,42 @@ int open_readonly_fd(const std::string& filename) {
 // Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
 int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     int status = 0;
+    // Drop stale messages so open_failure_message() reports this open only.
+    fits_clear_errmsg();
     if (has_cfitsio_extended_filename_syntax(path) || path.find("://") != std::string::npos) {
         fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
     } else {
         fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
     }
     return status;
+}
+
+std::string open_failure_message(const std::string& path, int status) {
+    std::string details;
+    char msg[FLEN_ERRMSG];
+    while (fits_read_errmsg(msg) != 0) {
+        std::string line(msg);
+        while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+        if (!details.empty()) {
+            details += "; ";
+        }
+        details += line;
+    }
+    if (details.empty() && status != 0) {
+        char text[FLEN_STATUS];
+        fits_get_errstatus(status, text);
+        details = text;
+    }
+    std::string out = "Could not open FITS file: " + path;
+    if (!details.empty()) {
+        out += " (" + details + ")";
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

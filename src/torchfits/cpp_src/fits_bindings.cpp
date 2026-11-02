@@ -79,7 +79,7 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
     fitsfile* fptr = nullptr;
     int open_status = d::open_fits_readonly(&fptr, path);
     if (open_status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, open_status));
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
@@ -328,7 +328,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     fitsfile* fptr = nullptr;
     int open_status = d::open_fits_readonly(&fptr, path);
     if (open_status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, open_status));
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
@@ -552,7 +552,7 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
     auto shared_meta = d::get_shared_meta_for_path(path);
     status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, status));
     }
 
     auto close_guard = [&]() {

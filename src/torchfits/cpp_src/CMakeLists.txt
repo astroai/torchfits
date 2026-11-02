@@ -436,6 +436,9 @@ endif()
 
 if(CFITSIO_FOUND)
     message(STATUS "Found environment CFITSIO: ${CFITSIO_INCLUDE_DIRS} ${CFITSIO_LIBRARIES}")
+    # An environment CFITSIO does not say whether it links libcurl; assume it
+    # does and let its open error (now surfaced) explain an https failure.
+    set(_TORCHFITS_CFITSIO_HAS_CURL ON)
 else()
     # Vendor CFITSIO as fallback
     if(NOT EXISTS "${CFITSIO_SOURCE_DIR}/CMakeLists.txt")
@@ -497,6 +500,16 @@ else()
         # Build and link CFITSIO, but do not install its headers, static archive,
         # pkg-config file, or CMake metadata into the Python wheel.
         add_subdirectory("${CFITSIO_SOURCE_DIR}" cfitsio_build EXCLUDE_FROM_ALL)
+        # CFITSIO's own CMakeLists adds -DCFITSIO_HAVE_CURL only when it found
+        # libcurl (https/ftps support). Mirror that result as _C.HAS_CURL.
+        get_directory_property(_cfitsio_dir_defs
+            DIRECTORY "${CFITSIO_SOURCE_DIR}" COMPILE_DEFINITIONS)
+        if("CFITSIO_HAVE_CURL" IN_LIST _cfitsio_dir_defs)
+            set(_TORCHFITS_CFITSIO_HAS_CURL ON)
+        else()
+            set(_TORCHFITS_CFITSIO_HAS_CURL OFF)
+        endif()
+        message(STATUS "Vendored CFITSIO https/ftps (libcurl): ${_TORCHFITS_CFITSIO_HAS_CURL}")
 
         # The vendored cfitsio CMakeLists publishes its dependency include
         # dirs (zlib/curl/bzip2) as PUBLIC usage requirements. A dep resolved
@@ -789,6 +802,10 @@ target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI
 # capability-aware instead of blanket-rejecting .bz2 inputs.
 if(USE_BZIP2)
     target_compile_definitions(_C PRIVATE TORCHFITS_HAVE_BZIP2=1)
+endif()
+# _C.HAS_CURL: whether CFITSIO can open https:// and ftps:// URLs.
+if(_TORCHFITS_CFITSIO_HAS_CURL)
+    target_compile_definitions(_C PRIVATE TORCHFITS_HAVE_CURL=1)
 endif()
 
 

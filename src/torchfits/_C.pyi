@@ -29,6 +29,8 @@ else:
 
 HAS_BZIP2: bool
 
+HAS_CURL: bool
+
 __core_build_id__: str
 
 class FITSFile:

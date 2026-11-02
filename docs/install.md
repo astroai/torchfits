@@ -72,7 +72,7 @@ torchfits info --help
 
 ## Building from source
 
-Builds link libbz2 when available (conda prefix or system via CMake), which enables `BZIP2_1` tile compression and transparent reading of whole-file `.bz2` FITS (`torchfits._C.HAS_BZIP2` reports the capability). Without it, `.bz2` inputs raise an actionable error.
+Builds link libbz2 when available (conda prefix or system via CMake), which enables `BZIP2_1` tile compression and transparent reading of whole-file `.bz2` FITS (`torchfits._C.HAS_BZIP2` reports the capability). Without it, `.bz2` inputs raise an actionable error. Likewise, CFITSIO opens `https://` and `ftps://` URLs through libcurl when the build finds it (`torchfits._C.HAS_CURL`); without it those URLs raise an actionable `ValueError` instead of a generic open failure.
 
 Building from source is only needed when developing torchfits or using a
 platform without a published wheel. Use PyTorch 2.14.x.

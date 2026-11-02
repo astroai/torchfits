@@ -63,7 +63,7 @@ auto with_open(const std::string& path, F&& body) -> decltype(body(std::declval<
     fitsfile* fptr = nullptr;
     const int status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || fptr == nullptr) {
-        throw std::runtime_error("Could not open FITS file: " + path);
+        throw std::runtime_error(d::open_failure_message(path, status));
     }
     struct Guard {
         fitsfile* fptr;
@@ -609,12 +609,13 @@ FitsReader::FitsReader(const std::string& path) : path_(path) {
     int status = 0;
     status = d::open_fits_readonly(&fptr_, path_);
     if (status != 0 || fptr_ == nullptr) {
+        const std::string message = d::open_failure_message(path_, status);
         if (fptr_ != nullptr) {
             int close_status = 0;
             fits_close_file(fptr_, &close_status);
             fptr_ = nullptr;
         }
-        throw std::runtime_error("Could not open FITS file: " + path_);
+        throw std::runtime_error(message);
     }
     if (has_cfitsio_extended_filename_syntax(path_)) {
         fits_get_hdu_num(fptr_, &start_hdu_);
