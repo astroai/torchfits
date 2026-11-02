@@ -373,3 +373,34 @@ def test_elf_gate_still_fails_on_a_cfitsio_symbol_the_core_lacks(
     )
     assert result.returncode != 0
     assert "ffpcks" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_ignores_libc_ff_names(tmp_path: Path) -> None:
+    """libc's fflush/ffs/ffsl/ffsll match the ``ff`` prefix but are not CFITSIO."""
+    undefined = "".join(
+        f"                 U {name}\n"
+        for name in (
+            "ffclos",
+            "fflush@GLIBC_2.2.5",
+            "ffs@GLIBC_2.2.5",
+            "ffsl",
+            "ffsll@GLIBC_2.27",
+        )
+    )
+    result = _run_elf_gate(tmp_path, undefined, "0000000000012340 T ffclos\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "resolves every CFITSIO symbol" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not installed")
+def test_elf_gate_still_flags_cfitsio_names_near_libc_ones(tmp_path: Path) -> None:
+    """The libc exclusions are whole names: ffsrow is still CFITSIO."""
+    result = _run_elf_gate(
+        tmp_path,
+        "                 U fflush\n                 U ffsrow\n",
+        "0000000000012340 T ffclos\n",
+    )
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "ffsrow" in output and "fflush" not in output.split("symbol(s):")[-1]

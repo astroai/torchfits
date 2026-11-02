@@ -99,6 +99,10 @@ else()
     # _ZN9torchfits6detail17open_fits_readonlyE... contains "_fits_" and must
     # not be read as a CFITSIO symbol (it broke every Linux build).
     string(REGEX MATCHALL "[ \t]_?(fits|ff)[a-z0-9_]+" _LEAKED "${_UNDEF}")
+    # libc's fflush/ffs* share the ff prefix (nm prints `U fflush@GLIBC_2.2.5`
+    # and the match stops at '@'); they are not CFITSIO.
+    list(TRANSFORM _LEAKED REPLACE "^[ \t]_?" "")
+    list(FILTER _LEAKED EXCLUDE REGEX "^(fflush|fflush_unlocked|ffs|ffsl|ffsll)$")
     # Undefined `ff*`/`fits_*` in a shared object is how a dynamic import
     # looks. They are filled at load when libtorchfits_core is NEEDED -- but
     # only if the core actually defines them: NEEDED alone excused a symbol
