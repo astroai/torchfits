@@ -14,7 +14,7 @@ updates:
       github-actions:
         patterns: ["*"]
     commit-message:
-      prefix: "ci(deps)"
+      prefix: "ci"
       include: scope
 
   - package-ecosystem: pip
@@ -34,5 +34,5 @@ updates:
       python-deps:
         patterns: ["*"]
     commit-message:
-      prefix: "build(deps)"
+      prefix: "build"
       include: scope
