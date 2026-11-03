@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Docs
+- backlog: Drop r7c-22, commentary replay is fixed in 1.3.2
+
 ## [1.3.2] — 2026-11-03
 
 Final release of 1.3.2rc1 with no code changes: the full wheel matrix
