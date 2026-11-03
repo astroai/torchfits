@@ -97,7 +97,7 @@ jobs:
           python -m pip install -q --upgrade pip packaging
           python scripts/check_torch_extra_pins.py
       - name: Build wheels
-        uses: pypa/cibuildwheel@61a6d5d56175ad7cc8478df487b849cd7b85e0ce
+        uses: pypa/cibuildwheel@8c2dcd2e96041a619f5ff03c9638d7941e2553a4
       - name: Validate macOS wheel tag and native floor
         if: runner.os == 'macOS'
         run: python scripts/check_macos_wheel_floor.py wheelhouse/*.whl
@@ -275,7 +275,7 @@ jobs:
         run: |
           python scripts/validate_release_sdist.py dist/sdist/*.tar.gz --version "${RELEASE_TAG#v}"
           python scripts/validate_release_wheels.py dist/wheels --version "${RELEASE_TAG#v}" --sdist dist/sdist/*.tar.gz --verify-manifest dist/RELEASE-MANIFEST.sha256
-      - uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
