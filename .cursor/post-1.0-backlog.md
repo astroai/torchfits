@@ -215,7 +215,6 @@ Open after the R1–R16 directory pass. Do not re-fix these in silence: each one
 - r7c-18 — image–image `arith` does not look at `BUNIT`.
 - r7c-19 — `BITPIX=64` multiply stays in int64 and can wrap at 2^63.
 - r7c-21 — a header dict whose commentary value is a list (`{"HISTORY": ["h1", "h2"]}`) hits `std::bad_cast` in card replay.
-- r7c-22 — replaying commentary cards appends `HISTORY`/`COMMENT` instead of replacing them.
 - r7c-23 — `write_parquet` / `write_csv` / `write_ipc` reject a column dict that `table.write` accepts.
 - r7c-25 — non-finite pixels cast to an integer output are platform-dependent.
 - r8b-08 — table write bindings and `TableReader` construction hold the GIL across CFITSIO calls.
