@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.3.2] — 2026-11-03
+
+Final release of 1.3.2rc1 with no code changes: the full wheel matrix
+(Linux x86_64/aarch64 for Python 3.11–3.15, macOS arm64 for 3.11–3.14) was
+built and validated from the candidate. See **1.3.2rc1** below for the
+highlights, behaviour changes, security fixes and the complete list.
+
 ## [1.3.2rc1] — 2026-11-03
 
 ### Highlights
@@ -1968,7 +1975,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.2rc1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2
 [1.3.2rc1]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2rc1
 [1.3.1]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1
 [1.3.1rc3]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1rc3
