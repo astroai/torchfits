@@ -1,5 +1,6 @@
 from torchfits.hdu import Header
 
+
 def test_header_update_commentary_replaces():
     h = Header()
     h["HISTORY"] = "old 1"
