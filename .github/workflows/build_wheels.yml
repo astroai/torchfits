@@ -97,7 +97,7 @@ jobs:
           python -m pip install -q --upgrade pip packaging
           python scripts/check_torch_extra_pins.py
       - name: Build wheels
-        uses: pypa/cibuildwheel@8c2dcd2e96041a619f5ff03c9638d7941e2553a4
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e
       - name: Validate macOS wheel tag and native floor
         if: runner.os == 'macOS'
         run: python scripts/check_macos_wheel_floor.py wheelhouse/*.whl
