@@ -171,6 +171,9 @@ class Header(dict[str, Any]):
             else:
                 plain.update(arg)
         plain.update(kwargs)
+        for key in list(plain.keys()) + [card.key for card in cardwise]:
+            if str(key) in _COMMENTARY_KEYS and key in self:
+                self.remove(str(key), ignore_missing=True, remove_all=True)
         self._update_from_cards(cardwise)
         for key, value in plain.items():
             if (
