@@ -85,7 +85,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Build wheels
-        uses: pypa/cibuildwheel@8c2dcd2e96041a619f5ff03c9638d7941e2553a4
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e
       - name: Validate macOS wheel tag and native floor
         if: runner.os == 'macOS'
         run: python scripts/check_macos_wheel_floor.py wheelhouse/*.whl
@@ -259,7 +259,7 @@ jobs:
         run: |
           python scripts/validate_release_sdist.py dist/sdist/*.tar.gz --version "${RELEASE_TAG#v}"
           python scripts/validate_release_wheels.py dist/wheels --version "${RELEASE_TAG#v}" --sdist dist/sdist/*.tar.gz --verify-manifest dist/RELEASE-MANIFEST.sha256
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
