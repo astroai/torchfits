@@ -1,19 +1,18 @@
 #pragma once
 
-// Torch-free replacement for at::parallel_for.
+// Torch-free replacement for at::parallel_for, and the pool every native
+// parallel decode in torchfits runs on (no native target links libtorch).
+// The API mirrors the at::parallel_for contract the codebase relies on --
+// inclusive/exclusive range [begin, end), a grain size in work units, and a
+// body invoked as body(begin, end) that must be safe to run concurrently.
 //
-// libtorchfits_core must never link libtorch, so it cannot use ATen's thread
-// pool.  The API here mirrors the at::parallel_for contract the codebase
-// relies on -- inclusive/exclusive range [begin, end), a grain size in work
-// units, and a body invoked as body(begin, end) that must be safe to run
-// concurrently -- so call sites can be moved between the two libraries
-// unchanged.
+// Thread count: TORCHFITS_NUM_THREADS when set, otherwise the hardware
+// concurrency, clamped to [1, 64].  A single caller thread plus the pool
+// workers means at most `thread_count()` threads are ever running user code.
 //
-// Thread count: TORCHFITS_NUM_THREADS when set (same spelling ATen honours),
-// otherwise the hardware concurrency, clamped to [1, 64].  A single caller
-// thread plus the pool workers means at most `thread_count()` threads are ever
-// running user code, so nesting a core parallel_for inside an at::parallel_for
-// cannot oversubscribe the machine.
+// The calling thread claims chunks alongside the workers, so a call never
+// waits on a worker that has not started; idle workers poll briefly before
+// sleeping, so back-to-back calls (one per table column) skip the wake-up.
 //
 // Nesting a core parallel_for inside another one is safe but does not fan out
 // a second time: a call made from inside a pool worker runs its chunks inline

@@ -315,9 +315,12 @@ Table column decoding and the sign-bit XOR for signed-byte columns run on
 not use PyTorch's intra-op pool. Column decodes split a range the way
 `at::parallel_for` did -- at most one chunk per pool thread, each at least one
 grain (`native::parallel_for` in `native_tensor.h`). Work smaller than one grain
-runs inline on the calling thread, and the caller keeps one chunk so a nested
-`parallel_for` cannot deadlock on workers the outer call owns. Threshold for
-taking the XOR parallel branch at all: 256 KB
+runs inline on the calling thread. Otherwise the caller claims chunks alongside
+the workers (so a nested `parallel_for` on the calling thread cannot deadlock
+on workers the outer call owns, and a slow or late worker just takes fewer
+chunks), and idle workers poll for about 100 µs before sleeping, so the
+one-call-per-column pattern of a table decode does not pay a thread wake-up per
+column. Threshold for taking the XOR parallel branch at all: 256 KB
 (`TORCHFITS_XOR_PARALLEL_MIN_BYTES`); its grain is 1 MiB.
 `TORCHFITS_NUM_THREADS` sizes the core pool; `torch.set_num_threads` does not
 affect it.
