@@ -28,6 +28,11 @@ _FD_PROBE = textwrap.dedent(
     """
     import os, sys
     import torchfits
+    # torchfits imports torch lazily, on the first tensor result. torch's own
+    # import can hold descriptors (seen with newer torch on Linux/Python 3.14+),
+    # so load it before the baseline: only the read cache's memo is counted.
+    import torch
+    import torch.utils.dlpack
 
     paths = sys.argv[1:]
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Runs inside astroai/base on CANFAR (headless GPU session): install the
-# published (CPU-linked) torchfits wheel for one torch lane and verify it
-# against a CUDA-flavored lane torch on a real GPU. There is no separate
-# CUDA torchfits wheel. Driver-vs-flavor fit is probed, not assumed: try
-# each CUDA flavor the lane ships (scripts/torch_lanes.json); the first one
-# where torch.cuda.is_available() succeeds wins.
+# published torchfits wheel and verify it against a CUDA-flavored PyTorch of
+# one minor ("lane" = torch minor, e.g. 2.12) on a real GPU. There is no
+# separate CUDA torchfits wheel: the extension links no libtorch, so one wheel
+# serves every CUDA build. Driver-vs-flavor fit is probed, not assumed: try
+# each CUDA flavor in TORCHFITS_CU_FLAVORS (default cu130 cu128 cu126); the
+# first one where torch.cuda.is_available() succeeds wins.
 #
 # Prints a one-line "[ OK ] lane=<lane> cu=<flavor> driver=<ver>" or
 # "[FAIL] lane=<lane> ..." result marker that the launcher greps for.
@@ -28,37 +29,9 @@ if command -v nvidia-smi >/dev/null; then
 fi
 echo "driver=${DRIVER:-unknown}"
 
-SPEC="$(pixi run python - "${TORCHFITS_CUDA_VERIFY_LANE}" <<'PY'
-import json, pathlib, sys
-lane = sys.argv[1]
-major, minor = (int(x) for x in lane.split("."))
-lanes = json.loads(pathlib.Path("scripts/torch_lanes.json").read_text())
-print(">={},<{}.{}".format(lane, major, minor + 1))
-PY
-)"
-VERSION="$(pixi run python - "${TORCHFITS_CUDA_VERIFY_LANE}" <<'PY'
-import json, pathlib, re, sys
-lane = sys.argv[1]
-lanes = json.loads(pathlib.Path("scripts/torch_lanes.json").read_text())
-if lane in lanes:
-    version = lanes[lane]["torchfits_version"]
-else:
-    current = next(iter(lanes.values()))
-    version = f"{current['torchfits_version']}.dev0+torch{lane.replace('.', '')}"
-print(version)
-PY
-)"
-CU_FLAVORS="$(pixi run python - "${TORCHFITS_CUDA_VERIFY_LANE}" <<'PY'
-import json, pathlib, sys
-lane = sys.argv[1]
-lanes = json.loads(pathlib.Path("scripts/torch_lanes.json").read_text())
-if lane in lanes:
-    flavors = lanes[lane]["cu"]
-else:
-    flavors = next(iter(lanes.values()))["cu"]
-print(" ".join(flavors))
-PY
-)"
+SPEC="==${TORCHFITS_CUDA_VERIFY_LANE}.*"
+VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)"
+CU_FLAVORS="${TORCHFITS_CU_FLAVORS:-cu130 cu128 cu126}"
 
 PYBIN="$(pixi run python -c 'import sys; print(sys.executable)')"
 VENV="$WORK/venv"

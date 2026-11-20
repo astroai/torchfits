@@ -91,7 +91,7 @@ def check(wheel: Path) -> int:
             problems.append(message)
 
     # --- compiled extension -------------------------------------------------
-    # Three native artifacts ship: the torch-linked extension, the metadata
+    # Three native artifacts ship: the tensor extension, the metadata
     # module over the torch-free library, and that library. The split is only
     # real if the library actually travels -- without it, `_core` fails to
     # dlopen and every metadata call breaks on a clean install.

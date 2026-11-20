@@ -1,514 +1,250 @@
 #!/usr/bin/env python3
-"""Render or check the PyTorch release-lane pins across the repo.
+"""Render or check torchfits's supported-PyTorch range across the repo.
 
-torchfits wheels are ABI-matched to a single PyTorch minor — the "lane"
-(PyTorch has no stable C++ ABI across minors). ``scripts/torch_lanes.json``
-maps every supported torch minor to the torchfits version released for it and
-the CUDA build flavors that lane ships.
+torchfits's native extension includes and links no libtorch: decoded buffers
+reach PyTorch as DLPack capsules through its public Python API, and the
+extension targets the CPython stable ABI. One wheel per platform therefore
+serves every PyTorch from the tested floor up, with no upper cap.
+``scripts/torch_support.json`` holds:
 
-This script renders or checks the lane pins in:
+- ``torchfits_version``: the release being prepared (plain ``X.Y.Z``);
+- ``torch_min``: the oldest PyTorch minor CI tests (the runtime floor);
+- ``torch_tested``: the newest PyTorch minor CI tests.
 
-- ``pyproject.toml`` — project version, the ``torch`` build-requirement and
-  runtime pins, and the ``[cpu]`` / ``[cuda]`` extra pins,
-- ``constraints-wheel.txt`` — build-time torch constraint (cibuildwheel),
-- ``pixi.toml`` — package version and the ``pytorch`` build/host/run/dev pins,
-- ``packaging/conda/recipe.yaml`` — conda recipe version and pytorch pin,
-- ``src/torchfits/__init__.py`` — ``__version__``.
+This script renders or checks:
 
-The repo (main) always tracks the newest lane; older lanes are rendered from
-tags with ``--apply`` when cutting a release.
+- ``pyproject.toml``: version and ``torch>=<min>`` (no build-time torch, no
+  upper bound);
+- ``pixi.toml``: package version and every ``pytorch = ">=<min>"`` pin;
+- ``packaging/conda/recipe.yaml``: version and the ``pytorch`` floor;
+- ``src/torchfits/__init__.py``: ``__version__``.
+
+It fails when a GitHub workflow hard-codes a torch pin: workflows read the
+pins from ``--print-pins``.
 
 Usage::
 
-    release_lane.py                print the current lane (from committed files)
-    release_lane.py --check        verify committed files match torch_lanes.json
-    release_lane.py --lane 2.13    print the rendered state for a lane
-    release_lane.py --lane 2.13 --check   verify files match a rendered lane
-    release_lane.py --lane 2.13 --apply   rewrite the files for that lane
-    release_lane.py --lane 2.13 --prerelease rc5 --apply
-                                   rewrite the files for a release candidate
-                                   (the suffix is appended to that lane's
-                                   torchfits_version)
+    release_lane.py                          print the supported range
+    release_lane.py --check                  verify committed files match the support map
+    release_lane.py --print-pins             print KEY=VALUE pins (CI: >> "$GITHUB_ENV")
+    release_lane.py --apply                  render the plain release version
+    release_lane.py --apply --prerelease rc1 render a release candidate (1.3.3rc1)
 
-``--check`` is wired into preflight/CI so a lane pin can never drift from the
-lane map. Exit code is non-zero on any mismatch. Pre-release states (a lane's
-``torchfits_version`` plus a PEP 440 suffix) are recognized by ``--check``
-as that base; ``--apply`` without ``--prerelease`` always renders the plain
-map version (finalize).
+``--check`` is wired into preflight/CI so a pin can never drift from the
+support map. A committed pre-release (``1.3.3rc1``) checks as its base.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LANES_FILE = ROOT / "scripts" / "torch_lanes.json"
-
+SUPPORT_FILE = ROOT / "scripts" / "torch_support.json"
 PYPROJECT = ROOT / "pyproject.toml"
-CONSTRAINTS = ROOT / "constraints-wheel.txt"
 PIXI = ROOT / "pixi.toml"
 RECIPE = ROOT / "packaging" / "conda" / "recipe.yaml"
 INIT = ROOT / "src" / "torchfits" / "__init__.py"
+WORKFLOWS = ROOT / ".github" / "workflows"
 
-_PYPROJECT_VERSION_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
+_VERSION_LINE_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
 _INIT_VERSION_RE = re.compile(r'^(__version__ = ")([^"]+)(")$', re.MULTILINE)
-_PIXI_VERSION_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
-_PIXI_PYTORCH_RE = re.compile(r'^(pytorch = ")(>=2\.\d+,<2\.\d+)(")$', re.MULTILINE)
-# Only the workspace pin is lane-coupled; [package.run-dependencies] carries
-# the same specifier and must not be rewritten by the same pattern.
-_PIXI_PYARROW_RE = re.compile(
-    r'^(# a version preference[^\n]*\n(?:#[^\n]*\n)*pyarrow = ")'
-    r'(?:>=25\.0\.0(?:,<26)?|>=24,<25)(")$',
-    re.MULTILINE,
-)
-_CONSTRAINTS_RE = re.compile(r"^(torch>=2\.\d+,<2\.\d+)$", re.MULTILINE)
-
-# conda-forge pins strict libabseil minors; torch 2.10's flatbuffers build
-# needs abseil 20260107.1 while every pyarrow 25.0.0 build needs abseil
-# 20260526+, so pyarrow must fall back to 24.x on the 2.10 lane (pyarrow 24
-# ships cp310-cp314 builds that accept the older abseil).
-_LANE_PIXI_PYARROW: dict[str, str] = {
-    "2.10": ">=24,<25",
-}
 _RECIPE_VERSION_RE = re.compile(r'^(  version: ")([^"]+)(")$', re.MULTILINE)
-_RECIPE_TORCH_PIN_RE = re.compile(
-    r'^(  torch_pin: ")(>=2\.\d+,<2\.\d+)(")$', re.MULTILINE
-)
-
-# PEP 440 prerelease suffixes the lane tool accepts on top of a lane version:
-# 1.0.0rc5 / 1.0.0b1 / 1.0.0a2, optionally with a .postN segment. Dev local
-# segments (.dev0+torch213) are stripped first so backport-candidate builds
-# resolve back to their lane base too.
-_PRERELEASE_SUFFIX_RE = re.compile(
-    r"(?:rc\d+|a\d+|b\d+|alpha\d+|beta\d+)(?:\.post\d+)?$"
-)
-_DEV_LOCAL_RE = re.compile(r"\.dev0\+torch\d+$")
-
-# The lane an experimental build names in its local segment. ``render`` writes
-# ``f"{base}.dev0+torch{lane.replace('.', '')}"``, so the inverse of that
-# encoding is the first digit as the major and the rest as the minor — the same
-# recovery ``scripts/verify_wheel_matrix.sh`` does from a wheel filename.
-_DEV_LOCAL_LANE_RE = re.compile(r"\.dev0\+torch(\d)(\d+)$")
+_RECIPE_TORCH_PIN_RE = re.compile(r'^(  torch_pin: ")([^"]+)(")$', re.MULTILINE)
+_PYPROJECT_TORCH_RE = re.compile(r'^(\s*")torch[<>=!~][^"]*(",?.*)$', re.MULTILINE)
+_PIXI_PYTORCH_RE = re.compile(r'^(pytorch = ")[^"]*(")$', re.MULTILINE)
+# A version comparison on torch in a workflow (``torch>=2.14``, ``torch==2.14.0``).
+_WORKFLOW_TORCH_RE = re.compile(r"\btorch\s*(?:==|>=|<=|~=|<|>)\s*\d")
+_PRERELEASE_RE = re.compile(r"(?:rc|a|b)\d+$")
+_MINOR_RE = re.compile(r"\d+\.\d+")
 
 
-def local_lane(version: str) -> str | None:
-    """The torch lane a ``+torch<minor>`` dev build is pinned to, if any.
+def minor_key(minor: str) -> tuple[int, int]:
+    major, rest = minor.split(".")
+    return int(major), int(rest)
 
-    ``X.Y.Z.dev0+torch212`` is an *experimental* lane render, not the release
-    lane its base version names. Stripping the suffix (as ``--check`` does when
-    it maps a version back to the lane map) silently reports the release lane
-    instead, so a tree on 2.12 would hand CI a 2.13 torch pin.
-    """
-    match = _DEV_LOCAL_LANE_RE.search(version)
-    return f"{match.group(1)}.{match.group(2)}" if match else None
+
+def load_support() -> dict[str, str]:
+    data = json.loads(SUPPORT_FILE.read_text(encoding="utf-8"))
+    if not re.fullmatch(r"\d+\.\d+\.\d+", str(data.get("torchfits_version", ""))):
+        raise SystemExit("torch_support.json: bad torchfits_version (want X.Y.Z)")
+    for key in ("torch_min", "torch_tested"):
+        if not _MINOR_RE.fullmatch(str(data.get(key, ""))):
+            raise SystemExit(f"torch_support.json: {key} must be a minor such as 2.14")
+    if minor_key(data["torch_min"]) > minor_key(data["torch_tested"]):
+        raise SystemExit("torch_support.json: torch_min is newer than torch_tested")
+    return data
 
 
 def strip_prerelease(version: str) -> str:
-    """Return the lane base version of *version* (drop prerelease/dev-local)."""
-    return _PRERELEASE_SUFFIX_RE.sub("", _DEV_LOCAL_RE.sub("", version))
+    return _PRERELEASE_RE.sub("", version)
 
 
-PYPROJECT_BUILD_REQUIRES_BLOCK = """requires = [
-    "scikit-build-core>=1.0.3",
-    "nanobind>=3.0.1",
-    # The build-time torch must be the lane torch and no other. Under pip's
-    # default build isolation this list is what the build environment resolves,
-    # so a floor with no upper bound builds against whichever minor is newest
-    # on PyPI and stamps that minor into the extension (CMake embeds it as
-    # TORCHFITS_TORCH_ABI) -- which then refuses to import under the {lane}
-    # this release is pinned to. Every source path inside this repo passes
-    # --no-build-isolation and never sees the difference; this pin is what
-    # protects a plain `pip install .` and the packager SDIST-README.txt is
-    # written for. Keep it identical to the runtime pin below.
-    "torch>={lane},<{next_lane}",
-    "numpy>=2.4.6"
-]"""
-
-# The [build-system] requires list is the only top-level `requires = [` in the
-# file, so this anchor is unique; _replace_once turns that into an assertion.
-_PYPROJECT_BUILD_REQUIRES_RE = re.compile(
-    r"^requires = \[\n.*?^\]$", re.MULTILINE | re.DOTALL
-)
-
-PYPROJECT_DEPS_BLOCK = """# Core runtime dependencies for the library.
-# These are automatically managed by pixi for conda packages
-# but needed here for PyPI compatibility
-dependencies = [
-    # Do not loosen this upper bound. Published wheels are ABI-matched to the
-    # {lane} lane: libtorch_python has no stable C++ ABI across torch minors, so
-    # a wheel built on {lane} that pip resolves against a newer minor can crash
-    # at import. Other torch minors ship as separate torchfits releases, one per
-    # lane (scripts/torch_lanes.json, docs/install.md). Every other runtime
-    # dependency is deliberately uncapped.
-    "torch>={lane},<{next_lane}",
-    # Floors name the oldest release that still has wheels for the minimum
-    # supported Python (3.11) and is within one minor of the newest release.
-    # numpy 2.5 dropped cp311, so 2.4.6 is the newest floor 3.11 can install;
-    # 3.12+ resolves 2.5.x from the same specifier.
-    "numpy>=2.4.6",  # Core numerical operations
-    "pyarrow>=25.0.0",  # Table I/O (Arrow interchange)
-]"""
-
-_PYPROJECT_DEPS_RE = re.compile(
-    r"^# Core runtime dependencies for the library\..*?^\]$",
-    re.MULTILINE | re.DOTALL,
-)
-
-PYPROJECT_EXTRAS_HEADER = """# Torch build flavors — pick one. Extras cannot embed index URLs, so [cpu] /
-# [cuda] resolve only when the matching download.pytorch.org index is
-# reachable (PIP_EXTRA_INDEX_URL or pip.conf extra-index-url; see
-# docs/install.md). Exact pins track the {lane} ABI lane (see
-# scripts/torch_lanes.json).
-"""
-
-_PYPROJECT_EXTRAS_HEADER_RE = re.compile(
-    r"^# Torch build flavors — pick one\..*?^\]$",
-    re.MULTILINE | re.DOTALL,
-)
-
-PYPROJECT_CPU_BLOCK = """cpu = [
-    # Thin CPU-only PyTorch: no CUDA runtime / cuDNN stack. Linux only —
-    # macOS has no +cpu wheel; MPS ships inside the default macOS build.
-    "torch=={lane}.0+cpu; sys_platform == 'linux'",
-]"""
-
-PYPROJECT_CUDA_BLOCK = """cuda = [
-    # CUDA-enabled PyTorch ({cuda_default}). Linux only — macOS has no
-    # +{cuda_default} wheels; MPS ships inside the default macOS torch build.
-    "torch=={lane}.0+{cuda_default}; sys_platform == 'linux'",
-]"""
-
-_PYPROJECT_CUDA_RE = re.compile(r"^cuda = \[.*?^\]$", re.MULTILINE | re.DOTALL)
-
-
-def load_lanes() -> dict[str, dict[str, object]]:
-    data = json.loads(LANES_FILE.read_text(encoding="utf-8"))
-    lanes: dict[str, dict[str, object]] = {}
-    for lane, spec in data.items():
-        if not re.fullmatch(r"\d+\.\d+", lane):
-            raise SystemExit(f"torch_lanes.json: invalid lane {lane!r}")
-        if not re.fullmatch(r"\d+\.\d+\.\d+", str(spec["torchfits_version"])):
-            raise SystemExit(f"torch_lanes.json: bad torchfits_version for lane {lane}")
-        lanes[lane] = spec
-    return lanes
-
-
-def next_lane(lane: str) -> str:
-    major, minor = lane.split(".")
-    return f"{major}.{int(minor) + 1}"
-
-
-def lane_for_version(version: str, lanes: dict[str, dict[str, object]]) -> str:
-    base = strip_prerelease(version)
-    for lane, spec in lanes.items():
-        if spec["torchfits_version"] == base:
-            return lane
-    raise SystemExit(
-        f"version {version!r} is not a torchfits release-lane version "
-        f"(torch_lanes.json: {', '.join(lanes)})"
-    )
-
-
-def current_lane() -> str:
-    """The lane the committed tree actually tracks.
-
-    An experimental (``+torch<minor>``) build names its own lane in the version
-    local segment; everything else is looked up in the release-lane map.
-    """
-    version = committed_version()
-    if version is None:
+def committed_version() -> str:
+    match = _VERSION_LINE_RE.search(PYPROJECT.read_text(encoding="utf-8"))
+    if match is None:
         raise SystemExit("pyproject.toml has no version field")
-    dev = local_lane(version)
-    return dev if dev is not None else lane_for_version(version, load_lanes())
+    return match.group(2)
 
 
-def committed_torch_spec() -> str | None:
-    """The torch specifier ``constraints-wheel.txt`` actually pins, if any."""
-    match = _CONSTRAINTS_RE.search(CONSTRAINTS.read_text(encoding="utf-8"))
-    return match.group(0).removeprefix("torch") if match else None
-
-
-def _replace_once(text: str, pattern: re.Pattern[str], new: str, what: str) -> str:
-    updated, count = pattern.subn(new, text)
-    if count != 1:
-        raise SystemExit(f"expected exactly one match for {what}; found {count}")
+def _replace(
+    text: str, pattern: re.Pattern[str], repl: str, what: str, count: int | None = 1
+) -> str:
+    updated, found = pattern.subn(repl, text)
+    if (count is None and found == 0) or (count is not None and found != count):
+        want = "at least one" if count is None else str(count)
+        raise SystemExit(f"expected {want} match(es) for {what}; found {found}")
     return updated
 
 
-def render(
-    lane: str, version: str | None, prerelease: str | None = None
-) -> dict[Path, str]:
-    lanes = load_lanes()
-    if lane in lanes:
-        spec = lanes[lane]
-        expected_version = str(spec["torchfits_version"])
-        if prerelease is not None:
-            # Release candidate: base version + PEP 440 prerelease suffix.
-            if version is not None and strip_prerelease(version) != expected_version:
-                raise SystemExit(
-                    f"lane {lane} releases as torchfits {expected_version}, "
-                    f"not {version!r} (torch_lanes.json)"
-                )
-            version = f"{expected_version}{prerelease}"
-        elif version is None:
-            # Plain apply/finalize: always the map version.
-            version = expected_version
-        elif strip_prerelease(version) != expected_version:
-            raise SystemExit(
-                f"lane {lane} releases as torchfits {expected_version}, "
-                f"not {version!r} (torch_lanes.json)"
-            )
-        cu_default = str(spec["cu_default"])
-    else:
-        # Not a release lane: render an experimental dev build. The version
-        # derives from the current release with a +torch<minor> local segment
-        # (PEP 440), so backport-candidate wheels never collide with the real
-        # release version and verify_wheel_matrix.sh can recover the lane.
-        if prerelease is not None:
-            raise SystemExit(
-                f"lane {lane!r} is not a release lane in torch_lanes.json; "
-                "--prerelease only applies to release lanes"
-            )
-        # Read the release base from pyproject; after --apply the version has a
-        # dev local segment (e.g. 1.0.0.dev0+torch212), so strip it first.
-        match = _PYPROJECT_VERSION_RE.search(PYPROJECT.read_text(encoding="utf-8"))
-        if match is None:
-            raise SystemExit("pyproject.toml has no version field")
-        base = strip_prerelease(match.group(2))
-        base_lane = lane_for_version(base, load_lanes())
-        expected_dev_version = f"{base}.dev0+torch{lane.replace('.', '')}"
-        if version is not None and version != expected_dev_version:
-            raise SystemExit(
-                f"lane {lane!r} is not a release lane in torch_lanes.json; "
-                f"expected version {expected_dev_version!r}, got {version!r}"
-            )
-        version = expected_dev_version
-        cu_default = str(lanes[base_lane]["cu_default"])
-    nxt = next_lane(lane)
+def render(version: str | None, prerelease: str | None = None) -> dict[Path, str]:
+    spec = load_support()
+    base = spec["torchfits_version"]
+    if prerelease is not None:
+        version = f"{base}{prerelease}"
+    elif version is None:
+        version = base
+    elif strip_prerelease(version) != base:
+        raise SystemExit(
+            f"torch_support.json prepares torchfits {base}, not {version!r}"
+        )
+    floor = spec["torch_min"]
 
     rendered: dict[Path, str] = {}
-
-    pyproject = PYPROJECT.read_text(encoding="utf-8")
-    pyproject = _replace_once(
-        pyproject, _PYPROJECT_VERSION_RE, rf"\g<1>{version}\g<3>", "pyproject version"
+    py = PYPROJECT.read_text(encoding="utf-8")
+    py = _replace(py, _VERSION_LINE_RE, rf"\g<1>{version}\g<3>", "pyproject version")
+    py = _replace(
+        py, _PYPROJECT_TORCH_RE, rf"\g<1>torch>={floor}\g<2>", "runtime torch"
     )
-    pyproject = _replace_once(
-        pyproject,
-        _PYPROJECT_BUILD_REQUIRES_RE,
-        PYPROJECT_BUILD_REQUIRES_BLOCK.format(lane=lane, next_lane=nxt),
-        "pyproject build-system requires",
-    )
-    pyproject = _replace_once(
-        pyproject,
-        _PYPROJECT_DEPS_RE,
-        PYPROJECT_DEPS_BLOCK.format(lane=lane, next_lane=nxt),
-        "pyproject dependencies",
-    )
-    pyproject = _replace_once(
-        pyproject,
-        _PYPROJECT_EXTRAS_HEADER_RE,
-        PYPROJECT_EXTRAS_HEADER.format(lane=lane)
-        + PYPROJECT_CPU_BLOCK.format(lane=lane),
-        "pyproject extras header + cpu block",
-    )
-    pyproject = _replace_once(
-        pyproject,
-        _PYPROJECT_CUDA_RE,
-        PYPROJECT_CUDA_BLOCK.format(lane=lane, cuda_default=cu_default),
-        "pyproject cuda extra",
-    )
-    rendered[PYPROJECT] = pyproject
-
-    constraints = CONSTRAINTS.read_text(encoding="utf-8")
-    constraints = _replace_once(
-        constraints,
-        _CONSTRAINTS_RE,
-        f"torch>={lane},<{nxt}",
-        "constraints-wheel.txt torch pin",
-    )
-    rendered[CONSTRAINTS] = constraints
+    rendered[PYPROJECT] = py
 
     pixi = PIXI.read_text(encoding="utf-8")
-    pixi = _replace_once(
-        pixi, _PIXI_VERSION_RE, rf"\g<1>{version}\g<3>", "pixi version"
-    )
-    updated, count = _PIXI_PYTORCH_RE.subn(rf"\g<1>>={lane},<{nxt}\g<3>", pixi)
-    if count == 0:
-        raise SystemExit("no pixi pytorch pins found to render")
-    pixi = updated
-    pyarrow_pin = _LANE_PIXI_PYARROW.get(lane, ">=25.0.0")
-    pixi = _replace_once(
-        pixi,
-        _PIXI_PYARROW_RE,
-        rf"\g<1>{pyarrow_pin}\g<2>",
-        "pixi pyarrow pin",
+    pixi = _replace(pixi, _VERSION_LINE_RE, rf"\g<1>{version}\g<3>", "pixi version")
+    pixi = _replace(
+        pixi, _PIXI_PYTORCH_RE, rf"\g<1>>={floor}\g<2>", "pixi pytorch", count=None
     )
     rendered[PIXI] = pixi
 
     recipe = RECIPE.read_text(encoding="utf-8")
-    recipe = _replace_once(
+    recipe = _replace(
         recipe, _RECIPE_VERSION_RE, rf"\g<1>{version}\g<3>", "recipe version"
     )
-    recipe = _replace_once(
-        recipe, _RECIPE_TORCH_PIN_RE, rf"\g<1>>={lane},<{nxt}\g<3>", "recipe torch_pin"
+    recipe = _replace(
+        recipe, _RECIPE_TORCH_PIN_RE, rf"\g<1>>={floor}\g<3>", "recipe torch_pin"
     )
     rendered[RECIPE] = recipe
 
     init = INIT.read_text(encoding="utf-8")
-    init = _replace_once(
+    rendered[INIT] = _replace(
         init, _INIT_VERSION_RE, rf"\g<1>{version}\g<3>", "__init__ version"
     )
-    rendered[INIT] = init
-
     return rendered
 
 
-def check() -> int:
-    version = committed_version()
-    if version is None:
-        print("[FAIL] pyproject.toml has no version field", flush=True)
-        return 1
+def _display(path: Path) -> str:
     try:
-        lane = current_lane()
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return path.name
+
+
+def workflow_problems() -> list[str]:
+    problems = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if _WORKFLOW_TORCH_RE.search(line):
+                problems.append(
+                    f"{path.name}:{number}: hard-coded torch pin; "
+                    "use release_lane.py --print-pins"
+                )
+    return problems
+
+
+def check() -> int:
+    try:
+        spec = load_support()
+        version = committed_version()
+        expected = render(version)
     except SystemExit as exc:
         print(f"[FAIL] {exc}", flush=True)
         return 1
     print(
-        f"[INFO] committed state is torch lane {lane} (torchfits {version})", flush=True
+        f"[INFO] torchfits {version}, torch >={spec['torch_min']} "
+        f"(tested {spec['torch_min']}..{spec['torch_tested']})",
+        flush=True,
     )
-    try:
-        expected = render(lane, version)
-    except SystemExit as exc:
-        print(f"[FAIL] {exc}", flush=True)
-        return 1
-    return _verify(lane, expected)
-
-
-def _verify(lane: str, expected: dict[Path, str]) -> int:
     failed = False
     for path, want in expected.items():
-        got = path.read_text(encoding="utf-8")
-        if got == want:
-            print(f"[ OK ] {path.name}", flush=True)
+        if path.read_text(encoding="utf-8") == want:
+            print(f"[ OK ] {_display(path)}", flush=True)
         else:
-            print(f"[FAIL] {path.name} drifted from the {lane} lane", flush=True)
+            print(
+                f"[FAIL] {_display(path)} drifted from torch_support.json "
+                "(re-render with release_lane.py --apply)",
+                flush=True,
+            )
             failed = True
+    for problem in workflow_problems():
+        print(f"[FAIL] {problem}", flush=True)
+        failed = True
     return 1 if failed else 0
 
 
-def prerelease_help() -> str:
-    """Help text whose example is the lane map, not a hardcoded old version."""
-    versions = [str(spec["torchfits_version"]) for spec in load_lanes().values()]
-    shown = ", ".join(f"rc5 -> {version}rc5" for version in versions)
-    return (
-        "PEP 440 prerelease suffix appended to the lane's torchfits_version "
-        f"in torch_lanes.json (e.g. {shown})"
-    )
-
-
-def committed_version() -> str | None:
-    match = _PYPROJECT_VERSION_RE.search(PYPROJECT.read_text(encoding="utf-8"))
-    return match.group(2) if match is not None else None
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", help="torch minor lane to render (e.g. 2.13)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--apply", action="store_true", help="rewrite the pinned files in place"
     )
     parser.add_argument(
-        "--check", action="store_true", help="verify committed files match the lane map"
+        "--check", action="store_true", help="verify committed files match the map"
     )
     parser.add_argument(
-        "--prerelease",
-        help=prerelease_help(),
+        "--print-pins", action="store_true", help="print KEY=VALUE pins for CI"
     )
-    parser.add_argument(
-        "--print-pins",
-        action="store_true",
-        help="print the committed tree's lane/version/torch pin (CI use)",
-    )
+    parser.add_argument("--prerelease", help="PEP 440 suffix such as rc1")
     args = parser.parse_args()
-
-    if args.prerelease is not None and not re.fullmatch(
-        r"(?:rc|a|b|alpha|beta)\d+", args.prerelease
-    ):
-        parser.error(
-            f"--prerelease {args.prerelease!r} is not a PEP 440 prerelease suffix "
-            "(e.g. rc5, b1)"
-        )
+    if args.prerelease is not None and not _PRERELEASE_RE.fullmatch(args.prerelease):
+        parser.error(f"--prerelease {args.prerelease!r} is not rcN/aN/bN")
 
     if args.check:
-        if args.lane is not None:
-            # Validate against the committed version (may carry a prerelease
-            # suffix), so a checked-out rc state verifies as the lane's base.
-            try:
-                expected = render(args.lane, committed_version())
-            except SystemExit as exc:
-                print(f"[FAIL] {exc}", flush=True)
-                return 1
-            return _verify(args.lane, expected)
         return check()
-
     if args.print_pins:
-        # Consumers install `pip install "torch$TORCH_PIN"`, so the pin printed
-        # here must be the pin the committed tree carries -- not one inferred
-        # from the release-lane map. An experimental-lane tree (dev0+torch<minor>)
-        # is a real state this repo's own scripts produce, and the map lookup
-        # reported the wrong lane for it; assert the two agree instead.
-        version = committed_version()
-        if version is None:
-            print("[FAIL] pyproject.toml has no version field", flush=True)
+        # Consumers do `pip install "torch$TORCH_PIN"`; refuse to print pins
+        # for a tree whose committed files disagree with the support map.
+        with contextlib.redirect_stdout(sys.stderr):
+            status = check()
+        if status != 0:
             return 1
-        try:
-            lane = current_lane()
-        except SystemExit as exc:
-            print(f"[FAIL] {exc}", flush=True)
-            return 1
-        want = f">={lane},<{next_lane(lane)}"
-        got = committed_torch_spec()
-        if got != want:
-            print(
-                f"[FAIL] {lane} lane expects constraints-wheel.txt to pin torch{want} "
-                f"but it pins {got!r}; re-render with "
-                f"'release_lane.py --lane {lane} --apply'",
-                flush=True,
-            )
-            return 1
-        print(f"lane={lane} version={version} torch={got}")
+        spec = load_support()
+        # NAME=VALUE lines for $GITHUB_ENV; each VALUE is a full specifier,
+        # so `pip install "torch$TORCH_MIN_PIN"` reads torch==2.12.*.
+        pins = {
+            "VERSION": committed_version(),
+            "TORCH_PIN": f">={spec['torch_min']}",
+            "TORCH_MIN_PIN": f"=={spec['torch_min']}.*",
+            "TORCH_TESTED_PIN": f"=={spec['torch_tested']}.*",
+        }
+        for name, value in pins.items():
+            print(f"{name}={value}")
         return 0
-
-    if args.lane is None:
-        if args.apply:
-            # Refuse to silently no-op a release-critical rewrite.
-            parser.error("--apply requires --lane (e.g. --lane 2.13)")
-        lane = current_lane()
-        print(f"current lane: {lane}", flush=True)
-        return 0
-
-    rendered = render(args.lane, None, prerelease=args.prerelease)
-    version_match = _PYPROJECT_VERSION_RE.search(rendered[PYPROJECT])
-    assert version_match is not None
-    version = version_match.group(2)
     if not args.apply:
-        for path, text in rendered.items():
-            print(f"--- {path.relative_to(ROOT)} ---")
-            print(text)
+        spec = load_support()
+        print(
+            f"torchfits {spec['torchfits_version']}: torch >={spec['torch_min']} "
+            f"(tested up to {spec['torch_tested']})"
+        )
         return 0
-
-    for path, text in rendered.items():
+    for path, text in render(None, prerelease=args.prerelease).items():
         path.write_text(text, encoding="utf-8")
-        print(f"wrote {path.relative_to(ROOT)}", flush=True)
-    print(
-        f"repo now tracks torch lane {args.lane} (torchfits {version}). "
-        "Re-run `pixi install` to sync the dev environment.",
-        flush=True,
-    )
+        print(f"wrote {_display(path)}", flush=True)
     return 0
 
 

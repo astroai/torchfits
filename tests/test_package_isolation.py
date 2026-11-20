@@ -22,98 +22,51 @@ REPO_ROOT = PACKAGE_ROOT.parents[1]
 def _requirement_name(requirement: str) -> str:
     """The distribution name of a PEP 508 requirement string.
 
-    Splitting on the specifier/version characters rather than on a comma keeps
-    ``torch>=2.13,<2.14`` intact and, more importantly, keeps ``torchvision``
-    from being read as torch: a naive ``startswith("torch")`` would treat every
-    extra torch-family build requirement as a lane escape hatch.
+    Splitting on the specifier/version characters keeps ``torchvision`` from
+    being read as torch: a naive ``startswith("torch")`` would count every
+    torch-family requirement as a second torch pin.
     """
     return re.split(r"[<>=!~;\[ ]", requirement.strip(), maxsplit=1)[0]
 
 
-def _resolve_on_index(requirement: str) -> list[str] | None:
-    """Versions pip's own resolver picks for ``requirement`` on the real index.
-
-    Returns ``None`` when the index cannot be reached so the caller can skip
-    rather than fail on a machine with no network.
-    """
-    report = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--dry-run",
-            "--quiet",
-            "--ignore-installed",
-            "--no-deps",
-            "--report",
-            "-",
-            requirement,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=REPO_ROOT,
-        env=_pip_report_env(),
+def _torch_floor() -> str:
+    support = json.loads(
+        (REPO_ROOT / "scripts" / "torch_support.json").read_text(encoding="utf-8")
     )
-    if report.returncode != 0:
-        return None
-    # CI sets FORCE_COLOR, and pip then wraps the report in ANSI. That is not JSON.
-    payload = _strip_ansi(report.stdout)
-    return [entry["metadata"]["version"] for entry in json.loads(payload)["install"]]
+    return support["torch_min"]
 
 
-def _pip_report_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("FORCE_COLOR", None)
-    env["NO_COLOR"] = "1"
-    env["PIP_NO_COLOR"] = "1"
-    return env
-
-
-def _strip_ansi(text: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
-
-
-def test_pip_report_color_is_still_json() -> None:
-    """FORCE_COLOR makes pip wrap ``--report`` JSON in ANSI escapes."""
-    colored = '\x1b[1m{\x1b[0m\n  \x1b[1;34m"install"\x1b[0m: []\n\x1b[1m}\x1b[0m\n'
-    assert json.loads(_strip_ansi(colored)) == {"install": []}
-
-
-def _wheel_lane_spec() -> str:
-    constraints = (REPO_ROOT / "constraints-wheel.txt").read_text(encoding="utf-8")
-    match = re.search(r"torch(>=2\.\d+,<2\.\d+)", constraints)
-    assert match, "constraints-wheel.txt must pin torch to the current ABI lane"
-    return match.group(1)
-
-
-def test_native_torch_abi_range_is_consistent() -> None:
+def test_torch_support_range_is_consistent() -> None:
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
     pixi = tomllib.loads((REPO_ROOT / "pixi.toml").read_text(encoding="utf-8"))
-    lane_spec = _wheel_lane_spec()
+    floor = _torch_floor()
 
-    # The build requirement and the runtime requirement must be the SAME pin.
-    # Under pip's default build isolation `build-system.requires` is what the
-    # build environment resolves, so a floor with no upper bound compiles
-    # against the newest torch on PyPI and CMake stamps that minor into the
-    # extension -- which then refuses to import under the lane this release is
-    # pinned to. `test_native_extension_rejects_mismatched_torch_runtime` below
-    # measures that refusal; this is the assertion that keeps the two pins from
-    # ever disagreeing again.
-    assert f"torch{lane_spec}" in pyproject["build-system"]["requires"]
-    # Published wheels carry the ABI lane pin (one torchfits release per torch
-    # minor, see scripts/torch_lanes.json).
-    assert f"torch{lane_spec}" in pyproject["project"]["dependencies"]
-    assert "torch>=2.10" not in pyproject["build-system"]["requires"]
-    assert "torch>=2.10,<2.11" not in pyproject["build-system"]["requires"]
-    assert "torch>=2.10,<2.11" not in pyproject["project"]["dependencies"]
-    # Dev pixi / published wheels stay on the wheel ABI lane.
-    for section in ("build-dependencies", "host-dependencies", "run-dependencies"):
-        assert pixi["package"][section]["pytorch"] == lane_spec
-    assert pixi["dependencies"]["pytorch"] == lane_spec
+    # The build needs no torch at all: the extension links no libtorch.
+    assert not [
+        r
+        for r in pyproject["build-system"]["requires"]
+        if _requirement_name(r) in {"torch", "numpy"}
+    ]
+    # Runtime: the supported floor, deliberately uncapped, and the only torch
+    # requirement (no per-flavor extras pinning one minor).
+    torch_reqs = [
+        r
+        for group in (
+            pyproject["project"]["dependencies"],
+            *pyproject["project"]["optional-dependencies"].values(),
+        )
+        for r in group
+        if _requirement_name(r) == "torch"
+    ]
+    assert torch_reqs == [f"torch>={floor}"]
+    assert pyproject["tool"]["scikit-build"]["wheel"]["py-api"] == "cp312"
+    # Pixi: PyTorch is a run dependency only, with the same floor.
+    for section in ("build-dependencies", "host-dependencies"):
+        assert "pytorch" not in pixi["package"][section]
+    assert pixi["package"]["run-dependencies"]["pytorch"] == f">={floor}"
+    assert pixi["dependencies"]["pytorch"] == f">={floor}"
 
     workflow_paths = (
         REPO_ROOT / ".github" / "workflows" / "ci.yml",
@@ -121,18 +74,12 @@ def test_native_torch_abi_range_is_consistent() -> None:
     )
     for path in workflow_paths:
         workflow = path.read_text(encoding="utf-8")
-        # CI resolves the lane from scripts/torch_lanes.json at runtime.
-        assert 'pip install "torch$TORCH_PIN"' in workflow
+        # CI resolves the range from scripts/torch_support.json at runtime.
+        assert "release_lane.py --print-pins" in workflow
         assert "pip install torch " not in workflow
-
-    # constraints-wheel.txt must stay in lockstep with the newest lane in
-    # torch_lanes.json (the wheel ABI lane every workflow builds against).
-    lanes = json.loads(
-        (REPO_ROOT / "scripts" / "torch_lanes.json").read_text(encoding="utf-8")
-    )
-    current = max(lanes)
-    major, minor = map(int, current.split("."))
-    assert lane_spec == f">={major}.{minor},<{major}.{minor + 1}"
+    ci = workflow_paths[0].read_text(encoding="utf-8")
+    assert 'pip install "torch$TORCH_PIN"' in ci
+    assert 'pip install "torch$TORCH_MIN_PIN"' in ci
 
     wheel_workflow = (
         REPO_ROOT / ".github" / "workflows" / "build_wheels.yml"
@@ -142,8 +89,11 @@ def test_native_torch_abi_range_is_consistent() -> None:
     assert frontend == {"name": "pip", "args": ["--no-build-isolation"]} or (
         isinstance(frontend, str) and "no-build-isolation" in frontend
     )
-    assert "cp314-*" in str(cibw.get("build", ""))
+    assert "cp311-*" in str(cibw.get("build", ""))
+    assert "cp312-*" in str(cibw.get("build", ""))
     assert "cp31?t-*" in str(cibw.get("skip", ""))
+    # Nothing to exclude any more: the wheel carries no libtorch reference.
+    assert "--exclude" not in cibw["linux"]["repair-wheel-command"]
     assert "ubuntu-24.04-arm" in wheel_workflow
     cibw_pin = re.search(r"pypa/cibuildwheel@([0-9a-f]{40})", wheel_workflow)
     assert cibw_pin is not None, "cibuildwheel action pin not found"
@@ -177,16 +127,15 @@ def test_native_torch_abi_range_is_consistent() -> None:
     cmake_args = " ".join(pyproject["tool"]["scikit-build"]["cmake"]["args"])
     assert "CONDA_PREFIX" not in cmake_args
     assert "-DUSE_CUDA=OFF" in cmake_args
-    assert (REPO_ROOT / "constraints-wheel.txt").is_file()
-    assert f"torch{lane_spec}" in (REPO_ROOT / "constraints-wheel.txt").read_text(
-        encoding="utf-8"
-    )
+    assert not (REPO_ROOT / "constraints-wheel.txt").exists()
 
     cmake = (PACKAGE_ROOT / "cpp_src" / "CMakeLists.txt").read_text(encoding="utf-8")
     bindings = (PACKAGE_ROOT / "cpp_src" / "bindings.cpp").read_text(encoding="utf-8")
-    assert "TORCHFITS_BUILD_TORCH_VERSION" in cmake
-    assert 'TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI}"' in cmake
-    assert "matching_abi" in bindings
+    assert "find_package(Torch" not in cmake
+    assert "TORCHFITS_TORCH_ABI" not in cmake
+    assert "STABLE_ABI" in cmake
+    assert "SKBUILD_SABI_COMPONENT" in cmake
+    assert "matching_abi" not in bindings
     assert "pip should not compile" in cmake
     assert (REPO_ROOT / "scripts" / "cibw_before_build.sh").is_file()
     assert (REPO_ROOT / "scripts" / "cibw_test.sh").is_file()
@@ -246,112 +195,81 @@ def test_every_tracked_file_is_re_addable() -> None:
     )
 
 
-def test_sdist_readme_states_the_abi_rule_and_names_no_loose_torch_floor() -> None:
-    """The packager-facing build note must not repeat the loose floor.
+def test_sdist_readme_names_the_runtime_requirement_not_a_torch_version() -> None:
+    """The packager-facing build note must not restate a torch version.
 
     SDIST-README.txt ships inside the sdist tarball, which is exactly the
     audience a wrong version claim reaches: downstream packagers reading it
-    have no other statement of the PyTorch requirement. It used to say
-    "pre-installed PyTorch (>= 2.10, ABI-matched)", a floor that admits every
-    future minor while the extension in fact accepts exactly one -- the same
-    claim that made `build-system.requires` dangerous. The note now points at
-    `build-system.requires` as the authority instead of restating a version, so
-    it cannot drift when the lane moves; this test keeps it that way.
+    have no other statement of the PyTorch requirement. It points at
+    `project.dependencies` as the authority instead of restating a version, so
+    it cannot drift when the floor moves, and says the build itself needs no
+    PyTorch (the extension links no libtorch).
     """
     readme = (REPO_ROOT / "SDIST-README.txt").read_text(encoding="utf-8")
-    assert "build-system.requires" in readme, (
-        "SDIST-README.txt must point at pyproject's build-system.requires as the "
-        "authoritative torch pin rather than restating a version that can drift"
-    )
-    assert "--no-build-isolation" in readme, (
-        "a packager with a pre-installed torch has no way to know they must "
-        "bypass the isolated build env for the ABI stamp to match"
-    )
-    # No torch version claim of any shape: a named floor is what started this.
+    assert "project.dependencies" in readme
+    assert "needs no PyTorch" in readme
+    # No torch version claim of any shape.
     assert not re.search(r"[Pp]y[Tt]orch\s*[\(<>=]*\s*\d", readme), (
         "SDIST-README.txt must not state a torch version; point at the pin instead"
     )
-    for stale in (">= 2.10", ">=2.10", r"2\.10"):
-        assert stale not in readme, f"SDIST-README.txt still mentions {stale!r}"
 
 
-def test_native_extension_rejects_mismatched_torch_runtime() -> None:
-    import torch
+def _native_artifacts() -> list[Path]:
+    import torchfits._C as native
+    import torchfits._core as core
 
-    expected_abi = ".".join(torch.__version__.split(".")[:2])
-    script = """
-import torch
-torch.__version__ = "9.99.0"
-import torchfits._C
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=False
-    )
-    assert result.returncode != 0
-    assert (
-        f"built for PyTorch {expected_abi}.x but found PyTorch 9.99.0" in result.stderr
-    )
+    paths = {Path(native.__file__), Path(core.__file__)}
+    lib_dir = Path(native.__file__).parent
+    paths.update(lib_dir.glob("libtorchfits_core.*"))
+    return sorted(paths)
 
 
-def test_build_env_torch_pin_cannot_resolve_outside_the_lane() -> None:
-    """The isolated build env must not be able to pick another torch minor.
+def test_native_extensions_link_no_libtorch() -> None:
+    """No native artifact names a libtorch library in its load commands.
 
-    The defect this guards is a *resolution* failure, not an import failure, so
-    it is measured with pip's own resolver rather than by reading the pin: with
-    the loose `torch>=2.10` floor, `pip install .` under build isolation
-    resolved 2.14.0 (newest on PyPI) for the build env while the runtime pin
-    admitted only 2.13.x, and the resulting extension refused to import with
-    "built for PyTorch 2.14.x but found PyTorch 2.13.0".  A test that only
-    asserted the string in pyproject would have passed straight through that.
+    A libtorch link ties the extension to one PyTorch minor's C++ ABI (there is
+    no stable one), which is what the per-minor release lanes existed to manage.
     """
-    pyproject = tomllib.loads(
-        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    forbidden = (
+        b"libtorch.",
+        b"libtorch_cpu",
+        b"libtorch_python",
+        b"libc10.",
+        b"THPVariable_Wrap",
     )
-    lane_spec = _wheel_lane_spec()
-    build_requires = pyproject["build-system"]["requires"]
-    # Every torch requirement in the build list must be the lane pin verbatim:
-    # a floor, a range, or a second torch entry all let the resolver leave the
-    # lane (a range only if it admits another minor).
-    torch_reqs = [r for r in build_requires if _requirement_name(r) == "torch"]
-    assert torch_reqs == [f"torch{lane_spec}"]
-
-    # And the resolver agrees: nothing outside the lane satisfies it, against
-    # the real index. `--ignore-installed` is load-bearing -- the test env
-    # already has the lane torch, so without it pip reports an empty plan and
-    # every assertion below passes vacuously. With it, `torch>=2.10` resolves
-    # 2.14.0 and `torch>=2.13,<2.14` resolves 2.13.0 on the same index.
-    resolved = _resolve_on_index(f"torch{lane_spec}")
-    if resolved is None:
-        pytest.skip("index unreachable")
-    assert resolved, f"pip resolved nothing at all for torch{lane_spec}"
-    lane_minor = lane_spec.split(">=")[1].split(",")[0]
-    for version in resolved:
-        major, minor = (int(x) for x in version.split(".")[:2])
-        assert f"{major}.{minor}" == lane_minor, (
-            f"build requirement torch{lane_spec} resolved to {version}, "
-            "which the extension's ABI check would reject at import"
-        )
+    artifacts = _native_artifacts()
+    assert any(p.name.startswith("_C") for p in artifacts)
+    for path in artifacts:
+        payload = path.read_bytes()
+        hits = [name.decode() for name in forbidden if name in payload]
+        assert not hits, f"{path.name} references {hits}"
 
 
-def test_native_extension_rechecks_abi_after_metadata_import() -> None:
-    """A metadata-first process still checks ABI before tensor entry points."""
-    import torch
-
-    expected_abi = ".".join(torch.__version__.split(".")[:2])
+def test_native_extension_imports_without_torch() -> None:
+    """Importing the extension (and reading metadata) never loads torch."""
     script = """
-import torchfits._C
+import sys
+import torchfits._C as C
+assert C.__core_build_id__
+assert not hasattr(C, "_check_torch_abi")
+assert "torch" not in sys.modules, "importing torchfits._C loaded torch"
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_native_extension_accepts_any_reported_torch_version(tmp_path) -> None:
+    """No import-time ABI gate: results reach torch through DLPack only."""
+    path = tmp_path / "x.fits"
+    script = f"""
 import torch
 torch.__version__ = "9.99.0"
 import torchfits
-torchfits.read
+x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+torchfits.write({str(path)!r}, x, overwrite=True)
+y = torchfits.read({str(path)!r})
+assert isinstance(y, torch.Tensor) and torch.equal(x, y), y
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=False
-    )
-    assert result.returncode != 0
-    assert (
-        f"built for PyTorch {expected_abi}.x but found PyTorch 9.99.0" in result.stderr
-    )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_metadata_works_with_neither_torch_nor_numpy(tmp_path) -> None:

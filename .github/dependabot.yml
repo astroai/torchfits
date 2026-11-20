@@ -23,11 +23,10 @@ updates:
       interval: monthly
     open-pull-requests-limit: 3
     ignore:
-      # Not a version preference: the torch pin is the wheel ABI lane.
-      # libtorch_python has no stable C++ ABI across torch minors, so a wheel
-      # built on one minor crashed against another. Lane moves are release
-      # decisions (scripts/torch_lanes.json, docs/release.md) and are made by
-      # scripts/release_lane.py --apply, never by a dependency PR.
+      # The torch requirement is a tested floor with no upper bound. Moving the
+      # floor is a release decision (scripts/torch_support.json,
+      # docs/release.md) rendered by scripts/release_lane.py --apply, never by
+      # a dependency PR.
       - dependency-name: "torch"
       - dependency-name: "pytorch"
     groups:

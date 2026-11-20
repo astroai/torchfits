@@ -12,7 +12,6 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/unordered_map.h>
-#include <ATen/Parallel.h>
 #include <functional>
 #include <memory>
 #include <new>
@@ -31,8 +30,8 @@
 #include <cassert>
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
-#include "torch_compat.h"
+#include "native_tensor.h"
+#include "native_py.h"
 #include "hardware.h"
 #include "nb_ndarray_utils.h"
 #include "fits_detail.h"
@@ -251,23 +250,23 @@ public:
                 col.type = FITSColumnType::VARIABLE;
                 int abs_type = -typecode;
                 switch (abs_type) {
-                    case TLOGICAL: col.torch_type = torch::kBool; break;
-                    case TBYTE: col.torch_type = torch::kUInt8; break;
-                    case TSBYTE: col.torch_type = torch::kInt8; break;
-                    case TSHORT: col.torch_type = torch::kInt16; break;
-                    case TINT: col.torch_type = torch::kInt32; break;
-                    case TLONG: col.torch_type = torch::kInt32; break;
-                    case TLONGLONG: col.torch_type = torch::kInt64; break;
-                    case TFLOAT: col.torch_type = torch::kFloat32; break;
-                    case TDOUBLE: col.torch_type = torch::kFloat64; break;
+                    case TLOGICAL: col.torch_type = native::kBool; break;
+                    case TBYTE: col.torch_type = native::kUInt8; break;
+                    case TSBYTE: col.torch_type = native::kInt8; break;
+                    case TSHORT: col.torch_type = native::kInt16; break;
+                    case TINT: col.torch_type = native::kInt32; break;
+                    case TLONG: col.torch_type = native::kInt32; break;
+                    case TLONGLONG: col.torch_type = native::kInt64; break;
+                    case TFLOAT: col.torch_type = native::kFloat32; break;
+                    case TDOUBLE: col.torch_type = native::kFloat64; break;
                     // 'PA': raw bytes, like fixed-width string columns.
-                    case TSTRING: col.torch_type = torch::kUInt8; break;
+                    case TSTRING: col.torch_type = native::kUInt8; break;
                     // 'PC'/'PM'/'PX' are rejected when read (see
                     // read_vla_column_flat); record the true element type
                     // instead of the old silent float32 fallback.
-                    case TCOMPLEX: col.torch_type = torch::kComplexFloat; break;
-                    case TDBLCOMPLEX: col.torch_type = torch::kComplexDouble; break;
-                    default: col.torch_type = torch::kFloat32;
+                    case TCOMPLEX: col.torch_type = native::kComplexFloat; break;
+                    case TDBLCOMPLEX: col.torch_type = native::kComplexDouble; break;
+                    default: col.torch_type = native::kFloat32;
                 }
                 col.width = 8;
                 // P descriptors occupy 8 bytes and Q descriptors occupy 16 bytes,
@@ -282,42 +281,42 @@ public:
                 switch (typecode) {
                     case TLOGICAL:
                         col.type = FITSColumnType::LOGICAL;
-                        col.torch_type = torch::kBool;
+                        col.torch_type = native::kBool;
                         col.width = 1;
                         break;
                     case TBYTE:
                         col.type = FITSColumnType::BYTE;
-                        col.torch_type = torch::kUInt8;
+                        col.torch_type = native::kUInt8;
                         col.width = 1;
                         break;
                     case TSBYTE:
                         // Signed bytes must stay signed: kUInt8 would turn
                         // 128..255 into -128..-1 on every read path.
                         col.type = FITSColumnType::BYTE;
-                        col.torch_type = torch::kInt8;
+                        col.torch_type = native::kInt8;
                         col.width = 1;
                         break;
                     case TBIT:
                         col.type = FITSColumnType::BIT;
-                        col.torch_type = torch::kUInt8;
+                        col.torch_type = native::kUInt8;
                         // Expose bit arrays as uint8[repeat] values (0/1).
                         col.width = 1;
                         break;
                     case TSHORT:
                     case TUSHORT:
                         col.type = FITSColumnType::SHORT;
-                        col.torch_type = torch::kInt16;
+                        col.torch_type = native::kInt16;
                         col.width = 2;
                         break;
                     case TINT:
                     case TUINT:
                         col.type = FITSColumnType::INT;
-                        col.torch_type = torch::kInt32;
+                        col.torch_type = native::kInt32;
                         col.width = 4;
                         break;
                     case TSTRING:
                         col.type = FITSColumnType::STRING;
-                        col.torch_type = torch::kUInt8;
+                        col.torch_type = native::kUInt8;
                         if (is_ascii_) {
                              col.repeat = 1; // One string per row
                              // width_long derives from the TFORM/field width and
@@ -354,46 +353,46 @@ public:
                     case TLONG:
                         // CFITSIO reports TLONG as FITS 32-bit integer (same code as TINT32BIT).
                         col.type = FITSColumnType::INT;
-                        col.torch_type = torch::kInt32;
+                        col.torch_type = native::kInt32;
                         col.width = 4;
                         break;
                     case TULONG:
                         if (sizeof(long) == 8) {
                             col.type = FITSColumnType::LONG;
-                            col.torch_type = torch::kInt64;
+                            col.torch_type = native::kInt64;
                             col.width = 8;
                         } else {
                             col.type = FITSColumnType::INT;
-                            col.torch_type = torch::kInt32;
+                            col.torch_type = native::kInt32;
                             col.width = 4;
                         }
                         break;
                     case TLONGLONG:
                         col.type = FITSColumnType::LONG;
-                        col.torch_type = torch::kInt64;
+                        col.torch_type = native::kInt64;
                         col.width = 8;
                         break;
                     case TFLOAT:
                         col.type = FITSColumnType::FLOAT;
-                        col.torch_type = torch::kFloat32;
+                        col.torch_type = native::kFloat32;
                         col.width = 4;
                         break;
                     case TDOUBLE:
                         col.type = FITSColumnType::DOUBLE;
-                        col.torch_type = torch::kFloat64;
+                        col.torch_type = native::kFloat64;
                         col.width = 8;
                         break;
 #ifdef TCOMPLEX
                     case TCOMPLEX:
                         col.type = FITSColumnType::COMPLEX_FLOAT;
-                        col.torch_type = at::kComplexFloat;
+                        col.torch_type = native::kComplexFloat;
                         col.width = 8; // two float32 values
                         break;
 #endif
 #ifdef TDBLCOMPLEX
                     case TDBLCOMPLEX:
                         col.type = FITSColumnType::COMPLEX_DOUBLE;
-                        col.torch_type = at::kComplexDouble;
+                        col.torch_type = native::kComplexDouble;
                         col.width = 16; // two float64 values
                         break;
 #endif
@@ -491,14 +490,14 @@ public:
     // Helper struct to hold column data (either fixed or VLA)
     struct ColumnData {
         bool is_vla;
-        torch::Tensor fixed_data;
-        std::vector<torch::Tensor> vla_data;
-        torch::Tensor vla_offsets;
+        native::Tensor fixed_data;
+        std::vector<native::Tensor> vla_data;
+        native::Tensor vla_offsets;
 
         ColumnData() : is_vla(false) {}
-        ColumnData(torch::Tensor t) : is_vla(false), fixed_data(t) {}
-        ColumnData(std::vector<torch::Tensor> v) : is_vla(true), vla_data(v) {}
-        ColumnData(torch::Tensor values, torch::Tensor offsets, bool /*flat_vla*/)
+        ColumnData(native::Tensor t) : is_vla(false), fixed_data(t) {}
+        ColumnData(std::vector<native::Tensor> v) : is_vla(true), vla_data(v) {}
+        ColumnData(native::Tensor values, native::Tensor offsets, bool /*flat_vla*/)
             : is_vla(true), fixed_data(values), vla_offsets(offsets) {}
     };
 
@@ -539,7 +538,7 @@ public:
             if ((typecode == TSHORT || typecode == TUSHORT) && detail::is_unsigned_short_offset(col.tzero)) {
                 col.is_unsigned_int = true;
                 col.unsigned_offset = 32768;
-                col.unsigned_target_type = torch::kUInt16;
+                col.unsigned_target_type = native::kUInt16;
                 col.scaled = false;
             } else if (
                 // CFITSIO reports FITS `J` as TLONG/TINT32BIT (41), not TINT (31).
@@ -548,14 +547,14 @@ public:
                 detail::is_unsigned_long_offset(col.tzero)) {
                 col.is_unsigned_int = true;
                 col.unsigned_offset = 2147483648;
-                col.unsigned_target_type = torch::kUInt32;
+                col.unsigned_target_type = native::kUInt32;
                 col.scaled = false;
             } else if (typecode == TBYTE && col.tzero == -128.0) {
                 // Signed-byte convention (TFORM B, TZERO = -128): storage is
                 // value XOR 0x80, read back as int8 like the image path.
                 col.is_unsigned_int = true;
                 col.unsigned_offset = -128;
-                col.unsigned_target_type = torch::kInt8;
+                col.unsigned_target_type = native::kInt8;
                 col.scaled = false;
             } else if (typecode == TLONGLONG && detail::is_unsigned_longlong_offset(col.tzero)) {
                 // uint64 convention (TZERO = 2^63). The offset does not fit
@@ -563,7 +562,7 @@ public:
                 // on unsigned_target_type == kUInt64 (sign-bit flip).
                 col.is_unsigned_int = true;
                 col.unsigned_offset = 0;
-                col.unsigned_target_type = torch::kUInt64;
+                col.unsigned_target_type = native::kUInt64;
                 col.scaled = false;
             }
         }
@@ -576,14 +575,14 @@ public:
 
     // A real scalar added to a complex tensor touches only the real part.
     // TZERO has to move both components.
-    static void scale_complex_inplace(torch::Tensor& tensor, double tscale, double tzero) {
+    static void scale_complex_inplace(native::Tensor& tensor, double tscale, double tzero) {
         if (tscale != 1.0) tensor.mul_(tscale);
         if (tzero == 0.0) return;
-        if (tensor.scalar_type() == torch::kComplexFloat) {
-            tensor.add_(c10::complex<float>(
+        if (tensor.scalar_type() == native::kComplexFloat) {
+            tensor.add_(std::complex<float>(
                 static_cast<float>(tzero), static_cast<float>(tzero)));
         } else {
-            tensor.add_(c10::complex<double>(tzero, tzero));
+            tensor.add_(std::complex<double>(tzero, tzero));
         }
     }
 
@@ -591,34 +590,34 @@ public:
     // after the linear map. Shared by the fixed-width post-process and the VLA
     // decode so both obey one convention: raw integer TNULL without
     // TSCAL/TZERO stays a sentinel (tnull-read-torch).
-    torch::Tensor apply_scale_and_nulls(const ColumnInfo& col, torch::Tensor raw) {
-        torch::Tensor null_mask;
-        if (col.has_tnull && at::isIntegralType(raw.scalar_type(), /*includeBool=*/false)) {
+    native::Tensor apply_scale_and_nulls(const ColumnInfo& col, native::Tensor raw) {
+        native::Tensor null_mask;
+        if (col.has_tnull && native::is_integral(raw.scalar_type(), /*includeBool=*/false)) {
             const long long null_ll = col.tnull;
             bool compared = false;
             switch (raw.scalar_type()) {
-                case torch::kInt8:
+                case native::kInt8:
                     if (null_ll >= std::numeric_limits<int8_t>::min() &&
                         null_ll <= std::numeric_limits<int8_t>::max()) {
                         null_mask = raw.eq(static_cast<int8_t>(null_ll));
                         compared = true;
                     }
                     break;
-                case torch::kUInt8:
+                case native::kUInt8:
                     if (null_ll >= 0 &&
                         null_ll <= static_cast<long long>(std::numeric_limits<uint8_t>::max())) {
                         null_mask = raw.eq(static_cast<uint8_t>(null_ll));
                         compared = true;
                     }
                     break;
-                case torch::kInt16:
+                case native::kInt16:
                     if (null_ll >= std::numeric_limits<int16_t>::min() &&
                         null_ll <= std::numeric_limits<int16_t>::max()) {
                         null_mask = raw.eq(static_cast<int16_t>(null_ll));
                         compared = true;
                     }
                     break;
-                case torch::kInt32:
+                case native::kInt32:
                     if (null_ll >= std::numeric_limits<int32_t>::min() &&
                         null_ll <= std::numeric_limits<int32_t>::max()) {
                         null_mask = raw.eq(static_cast<int32_t>(null_ll));
@@ -629,10 +628,10 @@ public:
                     break;
             }
             if (!compared) {
-                null_mask = raw.to(torch::kInt64).eq(static_cast<int64_t>(null_ll));
+                null_mask = raw.to(native::kInt64).eq(static_cast<int64_t>(null_ll));
             }
         }
-        torch::Tensor scaled = raw.to(torch::kFloat64);
+        native::Tensor scaled = raw.to(native::kFloat64);
         if (col.tscale != 1.0) {
             scaled.mul_(col.tscale);
         }
@@ -650,30 +649,30 @@ public:
     // sign bit, so reinterpret the signed buffer as unsigned and XOR in place:
     // no int64 upcast and no second allocation. The input is a freshly decoded
     // column owned by the caller, so mutating it is safe.
-    torch::Tensor apply_unsigned_offset(torch::Tensor raw, torch::ScalarType target) {
+    native::Tensor apply_unsigned_offset(native::Tensor raw, native::ScalarType target) {
         if (!raw.is_contiguous()) {
             raw = raw.contiguous();
         }
-        if (target == torch::kInt8) {
+        if (target == native::kInt8) {
             raw.bitwise_xor_(0x80);
-            return raw.view(torch::kInt8);
+            return raw.view(native::kInt8);
         }
-        if (target == torch::kUInt16) {
+        if (target == native::kUInt16) {
             raw.bitwise_xor_(std::numeric_limits<int16_t>::min());
-            return raw.view(torch::kUInt16);
+            return raw.view(native::kUInt16);
         }
-        if (target == torch::kUInt32) {
+        if (target == native::kUInt32) {
             raw.bitwise_xor_(std::numeric_limits<int32_t>::min());
-            return raw.view(torch::kUInt32);
+            return raw.view(native::kUInt32);
         }
-        if (target == torch::kUInt64) {
+        if (target == native::kUInt64) {
             raw.bitwise_xor_(std::numeric_limits<int64_t>::min());
-            return raw.view(torch::kUInt64);
+            return raw.view(native::kUInt64);
         }
-        // Defensive fallback for any future target width.
-        torch::Tensor converted = raw.to(torch::kInt64);
-        converted.add_(static_cast<int64_t>(1) << (8 * raw.element_size() - 1));
-        return converted.to(target);
+        // ensure_column_scale only ever selects the four targets above.
+        throw std::logic_error(
+            std::string("unsigned-offset convention has no target ") +
+            native::dtype_name(target));
     }
 
     // Read columns from the table
@@ -829,7 +828,7 @@ public:
                 "Invalid table geometry for column " + col.name + " allocation");
 
             // Create tensor
-            torch::Tensor tensor = torch::empty(shape, torch::TensorOptions().dtype(col.torch_type));
+            native::Tensor tensor = native::empty(shape, native::TensorOptions().dtype(col.torch_type));
 
             // Store in result map as ColumnData
 
@@ -886,7 +885,7 @@ public:
                     }
                 } else {
                     // Read fixed width column
-                    torch::Tensor tensor = result[col_idx].fixed_data;
+                    native::Tensor tensor = result[col_idx].fixed_data;
 
                     int status = 0;
                     // Use fits_read_col to read directly into tensor memory
@@ -1006,13 +1005,13 @@ public:
                 const auto& col = columns_[col_idx];
                 if (col.type != FITSColumnType::VARIABLE) continue;
                 if (vla_flat) {
-                    torch::Tensor values = torch::empty(
-                        {0}, torch::TensorOptions().dtype(col.torch_type));
-                    torch::Tensor offsets = torch::zeros(
-                        {1}, torch::TensorOptions().dtype(torch::kInt64));
+                    native::Tensor values = native::empty(
+                        {0}, native::TensorOptions().dtype(col.torch_type));
+                    native::Tensor offsets = native::zeros(
+                        {1}, native::TensorOptions().dtype(native::kInt64));
                     result[col_idx] = ColumnData(values, offsets, true);
                 } else {
-                    result[col_idx] = ColumnData(std::vector<torch::Tensor>{});
+                    result[col_idx] = ColumnData(std::vector<native::Tensor>{});
                 }
             }
         } else if (use_buffered) {
@@ -1056,7 +1055,7 @@ public:
             }
             // (2) BIT->bool coercion.
             if (col.type == FITSColumnType::BIT) {
-                it->second.fixed_data = it->second.fixed_data.to(torch::kBool);
+                it->second.fixed_data = it->second.fixed_data.to(native::kBool);
             }
             // (3) Unsigned integer offset for the uint16/uint32 convention.
             // Unsigned columns never enter block (1) (scaled == false), so
@@ -1124,7 +1123,7 @@ public:
         }
 
         if (repeat == 1) {
-            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                 for (long i = start; i < end; i++) {
                     RawT raw_val;
                     memcpy(&raw_val, col_ptr + i * row_width_bytes, elem_size);
@@ -1133,7 +1132,7 @@ public:
                 }
             });
         } else {
-            at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                 for (long i = start; i < end; i++) {
                     OutT* row_out = out + i * repeat;
                     for (long j = 0; j < repeat; j++) {
@@ -1148,7 +1147,7 @@ public:
     }
 
     // Memory-mapped column reading
-    // Returns a dict of column name to torch::Tensor (or numpy array for strings)
+    // Returns a dict of column name to native::Tensor (or numpy array for strings)
     // in file/request column order (see read_columns signature comment).
     // A truncated file must raise a clean error instead of SIGBUS on first
     // touch: header-derived extents are validated against the real size.
@@ -1212,7 +1211,7 @@ public:
         }
     }
 
-    std::vector<std::pair<std::string, torch::Tensor>> read_columns_mmap(
+    std::vector<std::pair<std::string, native::Tensor>> read_columns_mmap(
         const std::vector<std::string>& column_names = {},
         long start_row = 1, long num_rows = -1) {
 
@@ -1248,7 +1247,7 @@ public:
             // Typed empty columns come from the CFITSIO reader (same dtype
             // post-processing as a non-empty read; no bytes to map).
             auto rows = read_columns(column_names, start_row, 0, false);
-            std::vector<std::pair<std::string, torch::Tensor>> out;
+            std::vector<std::pair<std::string, native::Tensor>> out;
             out.reserve(rows.size());
             for (auto& kv : rows) {
                 if (kv.second.is_vla) {
@@ -1309,7 +1308,7 @@ public:
         // return the same fixed-column tensor map the mmap path produces.
         if (!direct_io_ok()) {
             auto rows = read_columns(column_names, start_row, num_rows, false);
-            std::vector<std::pair<std::string, torch::Tensor>> out;
+            std::vector<std::pair<std::string, native::Tensor>> out;
             out.reserve(rows.size());
             for (auto& kv : rows) {
                 out.emplace_back(kv.first, std::move(kv.second.fixed_data));
@@ -1346,7 +1345,7 @@ public:
         // size must match the original mmap() length (full file) passed to munmap().
         MMapHandle mmap_guard(map_ptr, sb.st_size, fd_owner.detach_fd());
 
-        std::unordered_map<int, torch::Tensor> result;
+        std::unordered_map<int, native::Tensor> result;
         const uint8_t* base_ptr = static_cast<const uint8_t*>(map_ptr) + data_offset;
 
         // Calculate start offset based on start_row (0-based offset).
@@ -1385,24 +1384,24 @@ public:
 
             try {
                 // Create Torch Tensor and copy/swap
-                torch::ScalarType dtype;
+                native::ScalarType dtype;
                 switch (col.type) {
-                    case FITSColumnType::FLOAT: dtype = torch::kFloat32; break;
-                    case FITSColumnType::DOUBLE: dtype = torch::kFloat64; break;
-                    case FITSColumnType::INT: dtype = torch::kInt32; break;
-                    case FITSColumnType::SHORT: dtype = torch::kInt16; break;
-                    case FITSColumnType::LONG: dtype = torch::kInt64; break;
+                    case FITSColumnType::FLOAT: dtype = native::kFloat32; break;
+                    case FITSColumnType::DOUBLE: dtype = native::kFloat64; break;
+                    case FITSColumnType::INT: dtype = native::kInt32; break;
+                    case FITSColumnType::SHORT: dtype = native::kInt16; break;
+                    case FITSColumnType::LONG: dtype = native::kInt64; break;
                     case FITSColumnType::BYTE: dtype = col.torch_type; break;  // kUInt8, or kInt8 for TSBYTE
-                    case FITSColumnType::BIT: dtype = torch::kBool; break;
-                    case FITSColumnType::LOGICAL: dtype = torch::kBool; break;
-                    case FITSColumnType::STRING: dtype = torch::kUInt8; break;
-                    case FITSColumnType::COMPLEX_FLOAT: dtype = at::kComplexFloat; break;
-                    case FITSColumnType::COMPLEX_DOUBLE: dtype = at::kComplexDouble; break;
-                    default: dtype = torch::kFloat32;
+                    case FITSColumnType::BIT: dtype = native::kBool; break;
+                    case FITSColumnType::LOGICAL: dtype = native::kBool; break;
+                    case FITSColumnType::STRING: dtype = native::kUInt8; break;
+                    case FITSColumnType::COMPLEX_FLOAT: dtype = native::kComplexFloat; break;
+                    case FITSColumnType::COMPLEX_DOUBLE: dtype = native::kComplexDouble; break;
+                    default: dtype = native::kFloat32;
                 }
 
-                auto options = torch::TensorOptions().dtype(dtype);
-                torch::Tensor tensor = torch::empty(shape, options);
+                auto options = native::TensorOptions().dtype(dtype);
+                native::Tensor tensor = native::empty(shape, options);
 
                 // Parallel copy and swap
                 long repeat = (col.repeat > 1) ? col.repeat : 1;
@@ -1427,7 +1426,7 @@ public:
                         col_ptr, tensor.data_ptr<int64_t>(), num_rows, repeat, row_width_bytes_);
                 } else if (col.type == FITSColumnType::BYTE || col.type == FITSColumnType::STRING) {
                     uint8_t* out = tensor.data_ptr<uint8_t>();
-                    at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                    native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                         for (long i = start; i < end; i++) {
                             const uint8_t* in = (const uint8_t*)(col_ptr + i * row_width_bytes_);
                             uint8_t* row_out = out + i * repeat;
@@ -1441,7 +1440,7 @@ public:
                     }
                 } else if (col.type == FITSColumnType::BIT) {
                     bool* out = tensor.data_ptr<bool>();
-                    at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                    native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                         for (long i = start; i < end; i++) {
                             const uint8_t* row_in =
                                 col_ptr + i * row_width_bytes_;
@@ -1454,12 +1453,12 @@ public:
                         }
                     });
                 } else if (col.type == FITSColumnType::COMPLEX_FLOAT) {
-                    c10::complex<float>* out = tensor.data_ptr<c10::complex<float>>();
-                    at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                    std::complex<float>* out = tensor.data_ptr<std::complex<float>>();
+                    native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                         for (long i = start; i < end; i++) {
                             const uint8_t* row_in =
                                 col_ptr + i * row_width_bytes_;
-                            c10::complex<float>* row_out = out + i * repeat;
+                            std::complex<float>* row_out = out + i * repeat;
                             for (long j = 0; j < repeat; j++) {
                                 int32_t re_bits, im_bits;
                                 std::memcpy(
@@ -1477,17 +1476,17 @@ public:
                                 im_bits = bswap_32(im_bits);
                                 std::memcpy(&re, &re_bits, sizeof(float));
                                 std::memcpy(&im, &im_bits, sizeof(float));
-                                row_out[j] = c10::complex<float>(re, im);
+                                row_out[j] = std::complex<float>(re, im);
                             }
                         }
                     });
                 } else if (col.type == FITSColumnType::COMPLEX_DOUBLE) {
-                    c10::complex<double>* out = tensor.data_ptr<c10::complex<double>>();
-                    at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                    std::complex<double>* out = tensor.data_ptr<std::complex<double>>();
+                    native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                         for (long i = start; i < end; i++) {
                             const uint8_t* row_in =
                                 col_ptr + i * row_width_bytes_;
-                            c10::complex<double>* row_out = out + i * repeat;
+                            std::complex<double>* row_out = out + i * repeat;
                             for (long j = 0; j < repeat; j++) {
                                 int64_t re_bits, im_bits;
                                 std::memcpy(
@@ -1505,13 +1504,13 @@ public:
                                 im_bits = bswap_64(im_bits);
                                 std::memcpy(&re, &re_bits, sizeof(double));
                                 std::memcpy(&im, &im_bits, sizeof(double));
-                                row_out[j] = c10::complex<double>(re, im);
+                                row_out[j] = std::complex<double>(re, im);
                             }
                         }
                     });
                 } else if (col.type == FITSColumnType::LOGICAL) {
                     bool* out = tensor.data_ptr<bool>();
-                    at::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+                    native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
                         for (long i = start; i < end; i++) {
                             const char* in = (const char*)(col_ptr + i * row_width_bytes_);
                             bool* row_out = out + i * repeat; // repeat is usually 1 for logical
@@ -1542,7 +1541,7 @@ public:
         }
 
         // Order by file/request column index (see signature comment).
-        std::vector<std::pair<std::string, torch::Tensor>> ordered;
+        std::vector<std::pair<std::string, native::Tensor>> ordered;
         ordered.reserve(col_indices.size());
         for (int col_idx : col_indices) {
             auto it = result.find(col_idx);
@@ -1554,7 +1553,7 @@ public:
     }
 
     // Filtered reading
-    std::vector<std::pair<std::string, torch::Tensor>> read_columns_mmap_filtered(
+    std::vector<std::pair<std::string, native::Tensor>> read_columns_mmap_filtered(
         const std::vector<std::string>& column_names,
         const std::vector<TableFilter>& filters) {
 
@@ -1671,7 +1670,7 @@ public:
                     bool constant_predicate = false;
                     bool u64_target_mapped = false;
                     const bool is_u64_col =
-                        c.is_unsigned_int && c.unsigned_target_type == torch::kUInt64;
+                        c.is_unsigned_int && c.unsigned_target_type == native::kUInt64;
                     if (f.out_of_int64 != 0 && !ctx.is_float && !ctx.is_double) {
                         // A literal outside int64 on an integer column: val_i is
                         // a clamped proxy (X < 2^63 + 0.5 must keep INT64_MAX).
@@ -2081,7 +2080,7 @@ public:
         }
 
         // Gather results (num_valid==0 → empty tensors, keyed schema preserved)
-        std::unordered_map<int, torch::Tensor> result;
+        std::unordered_map<int, native::Tensor> result;
         long num_valid = valid_indices.size();
 
         std::vector<int> out_col_indices;
@@ -2132,9 +2131,9 @@ public:
                 shape.push_back(col.repeat);
             }
 
-            auto options = torch::TensorOptions().dtype(
-                col.type == FITSColumnType::BIT ? torch::kBool : col.torch_type);
-            torch::Tensor out_tensor = torch::empty(shape, options);
+            auto options = native::TensorOptions().dtype(
+                col.type == FITSColumnType::BIT ? native::kBool : col.torch_type);
+            native::Tensor out_tensor = native::empty(shape, options);
 
             if (num_valid == 0) {
                 result[col_idx] = out_tensor;
@@ -2170,7 +2169,7 @@ public:
             // would decode both as true (both nonzero).
             if (col.type == FITSColumnType::LOGICAL) {
                 bool* out_bool = static_cast<bool*>(out_tensor.data_ptr());
-                at::parallel_for(0, num_valid, 2048, [&](long start, long end) {
+                native::parallel_for(0, num_valid, 2048, [&](long start, long end) {
                     for (long k = start; k < end; k++) {
                         const uint8_t* src =
                             data_ptr + valid_indices[k] * row_width_bytes_ + col.byte_offset;
@@ -2185,7 +2184,7 @@ public:
             if (col.type == FITSColumnType::BIT) {
                 bool* out_bool = static_cast<bool*>(out_tensor.data_ptr());
                 const long repeat = std::max(1L, (long)col.repeat);
-                at::parallel_for(0, num_valid, 2048, [&](long start, long end) {
+                native::parallel_for(0, num_valid, 2048, [&](long start, long end) {
                     for (long k = start; k < end; k++) {
                         const uint8_t* row_in =
                             data_ptr + valid_indices[k] * row_width_bytes_ + col.byte_offset;
@@ -2203,7 +2202,7 @@ public:
             // Parallel gathering with contiguous block detection.
             // Each thread processes a disjoint range of valid_indices and writes
             // to output at deterministic offsets, so no synchronization needed.
-            at::parallel_for(0, num_valid, 2048, [&](long start, long end) {
+            native::parallel_for(0, num_valid, 2048, [&](long start, long end) {
                 long k = start;
                 while (k < end) {
                     long run_start_k = k;
@@ -2264,7 +2263,7 @@ public:
         }
 
         // Order by file/request column index (see read_columns signature comment).
-        std::vector<std::pair<std::string, torch::Tensor>> ordered;
+        std::vector<std::pair<std::string, native::Tensor>> ordered;
         ordered.reserve(out_col_indices.size());
         for (int col_idx : out_col_indices) {
             auto it = result.find(col_idx);
@@ -2291,7 +2290,7 @@ public:
         // rejection.
         switch (col.type) {
             case FITSColumnType::BYTE:
-                if (col.is_unsigned_int && col.unsigned_target_type == torch::kInt8) {
+                if (col.is_unsigned_int && col.unsigned_target_type == native::kInt8) {
                     return is(code::Int, 8);
                 }
                 return col.fits_typecode == TSBYTE ? is(code::Int, 8) : is(code::UInt, 8);
@@ -2540,7 +2539,7 @@ public:
                     switch (col->type) {
                         case FITSColumnType::BYTE: {
                             const bool offset_sbyte = col->is_unsigned_int &&
-                                                      col->unsigned_target_type == torch::kInt8;
+                                                      col->unsigned_target_type == native::kInt8;
                             const bool is_sbyte = col->fits_typecode == TSBYTE || offset_sbyte;
                             if (is_sbyte) {
                                 if (!(dt.code == (uint8_t)nb::dlpack::dtype_code::Int && dt.bits == 8)) {
@@ -2629,7 +2628,7 @@ public:
                         }
                         case FITSColumnType::LONG: {
                             const bool u64_col = col->is_unsigned_int &&
-                                                 col->unsigned_target_type == torch::kUInt64;
+                                                 col->unsigned_target_type == native::kUInt64;
                             const bool dtype_ok =
                                 dt.bits == 64 &&
                                 (dt.code == (uint8_t)nb::dlpack::dtype_code::Int ||
@@ -2729,7 +2728,7 @@ public:
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
                             const auto* src_complex32 =
-                                static_cast<const c10::complex<float>*>(tensor.data());
+                                static_cast<const std::complex<float>*>(tensor.data());
                             int32_t re_bits = 0;
                             int32_t im_bits = 0;
                             float re = src_complex32[idx].real();
@@ -2751,7 +2750,7 @@ public:
                                 throw std::runtime_error("update_rows mmap dtype mismatch for " + name);
                             }
                             const auto* src_complex64 =
-                                static_cast<const c10::complex<double>*>(tensor.data());
+                                static_cast<const std::complex<double>*>(tensor.data());
                             int64_t re_bits = 0;
                             int64_t im_bits = 0;
                             double re = src_complex64[idx].real();
@@ -2793,11 +2792,11 @@ public:
 
     // Read a Variable Length Array column
     // Returns a list of tensors (one per row) as views into one flat buffer.
-    std::vector<torch::Tensor> read_vla_column(int col_idx, long start_row, long num_rows, const ColumnInfo& col) {
+    std::vector<native::Tensor> read_vla_column(int col_idx, long start_row, long num_rows, const ColumnInfo& col) {
         auto flat = read_vla_column_flat(col_idx, start_row, num_rows, col);
-        torch::Tensor& values = flat.first;
-        torch::Tensor& offs = flat.second;
-        std::vector<torch::Tensor> column_data;
+        native::Tensor& values = flat.first;
+        native::Tensor& offs = flat.second;
+        std::vector<native::Tensor> column_data;
         column_data.reserve(static_cast<size_t>(num_rows));
         const int64_t* op = offs.data_ptr<int64_t>();
         for (long i = 0; i < num_rows; i++) {
@@ -2807,7 +2806,7 @@ public:
     }
 
     // Read a VLA column as flat values + row offsets for fast Arrow ListArray construction.
-    std::pair<torch::Tensor, torch::Tensor> read_vla_column_flat(
+    std::pair<native::Tensor, native::Tensor> read_vla_column_flat(
         int col_idx, long start_row, long num_rows, const ColumnInfo& col
     ) {
         {
@@ -2847,14 +2846,14 @@ public:
 
         size_t elem_bytes = 0;
         switch (col.torch_type) {
-            case torch::kBool:
-            case torch::kUInt8:
-            case torch::kInt8: elem_bytes = 1; break;
-            case torch::kInt16: elem_bytes = 2; break;
-            case torch::kInt32:
-            case torch::kFloat32: elem_bytes = 4; break;
-            case torch::kInt64:
-            case torch::kFloat64: elem_bytes = 8; break;
+            case native::kBool:
+            case native::kUInt8:
+            case native::kInt8: elem_bytes = 1; break;
+            case native::kInt16: elem_bytes = 2; break;
+            case native::kInt32:
+            case native::kFloat32: elem_bytes = 4; break;
+            case native::kInt64:
+            case native::kFloat64: elem_bytes = 8; break;
             default:
                 throw std::runtime_error("Unsupported VLA scalar type for column " + col.name);
         }
@@ -2954,14 +2953,11 @@ public:
             }
         }
 
-        torch::Tensor values = torch::empty(
-            {total}, torch::TensorOptions().dtype(col.torch_type)
+        native::Tensor values = native::empty(
+            {total}, native::TensorOptions().dtype(col.torch_type)
         );
-        torch::Tensor offs = torch::from_blob(
-            offsets.data(),
-            {static_cast<long long>(offsets.size())},
-            torch::TensorOptions().dtype(torch::kInt64)
-        ).clone();
+        native::Tensor offs = native::copy_of(
+            offsets.data(), static_cast<int64_t>(offsets.size()), native::kInt64);
 
         // TSCAL/TZERO/TNULL follow the fixed-width convention: raw cells in,
         // float64 physical values (NaN at TNULL) out. Both heap paths read raw
@@ -2969,7 +2965,7 @@ public:
         // path resets CFITSIO auto-scaling first), so the map is applied once
         // here.
         auto finish = [&]() {
-            if (col.scaled && !col.is_unsigned_int && values.scalar_type() != torch::kBool) {
+            if (col.scaled && !col.is_unsigned_int && values.scalar_type() != native::kBool) {
                 values = apply_scale_and_nulls(col, values);
             }
             return std::make_pair(values, offs);
@@ -2977,17 +2973,17 @@ public:
 
         int type_code = 0;
         switch (col.torch_type) {
-            case torch::kFloat32: type_code = TFLOAT; break;
-            case torch::kFloat64: type_code = TDOUBLE; break;
-            case torch::kInt8: type_code = TSBYTE; break;
-            case torch::kInt32: type_code = TINT; break;
-            case torch::kInt16: type_code = TSHORT; break;
-            case torch::kInt64: type_code = TLONGLONG; break;
-            case torch::kUInt8: type_code = TBYTE; break;
-            case torch::kBool: type_code = TLOGICAL; break;
+            case native::kFloat32: type_code = TFLOAT; break;
+            case native::kFloat64: type_code = TDOUBLE; break;
+            case native::kInt8: type_code = TSBYTE; break;
+            case native::kInt32: type_code = TINT; break;
+            case native::kInt16: type_code = TSHORT; break;
+            case native::kInt64: type_code = TLONGLONG; break;
+            case native::kUInt8: type_code = TBYTE; break;
+            case native::kBool: type_code = TLOGICAL; break;
             default: type_code = TFLOAT;
         }
-        const bool heap_element_supported = values.scalar_type() != torch::kBool;
+        const bool heap_element_supported = values.scalar_type() != native::kBool;
 
         // Contiguous heap → one pread + endian convert (skips N× fits_read_col).
         // Default off until THEAP/offset edge cases are fully proven vs CFITSIO.
@@ -3149,28 +3145,28 @@ public:
 
             void* dst = nullptr;
             switch (values.scalar_type()) {
-                case torch::kBool:
+                case native::kBool:
                     dst = static_cast<void*>(values.data_ptr<bool>() + cursor);
                     break;
-                case torch::kUInt8:
+                case native::kUInt8:
                     dst = static_cast<void*>(values.data_ptr<uint8_t>() + cursor);
                     break;
-                case torch::kInt8:
+                case native::kInt8:
                     dst = static_cast<void*>(values.data_ptr<int8_t>() + cursor);
                     break;
-                case torch::kInt16:
+                case native::kInt16:
                     dst = static_cast<void*>(values.data_ptr<int16_t>() + cursor);
                     break;
-                case torch::kInt32:
+                case native::kInt32:
                     dst = static_cast<void*>(values.data_ptr<int32_t>() + cursor);
                     break;
-                case torch::kInt64:
+                case native::kInt64:
                     dst = static_cast<void*>(values.data_ptr<int64_t>() + cursor);
                     break;
-                case torch::kFloat32:
+                case native::kFloat32:
                     dst = static_cast<void*>(values.data_ptr<float>() + cursor);
                     break;
-                case torch::kFloat64:
+                case native::kFloat64:
                     dst = static_cast<void*>(values.data_ptr<double>() + cursor);
                     break;
                 default:
@@ -3381,7 +3377,7 @@ public:
             try {
                 for (int col_idx : col_indices) {
                     const auto& col = columns_[col_idx];
-                    torch::Tensor tensor = result[col_idx].fixed_data;
+                    native::Tensor tensor = result[col_idx].fixed_data;
                     uint8_t* dest_ptr =
                         (uint8_t*)get_tensor_data_ptr(
                             tensor,
@@ -3419,16 +3415,16 @@ public:
         }
     }
 
-    void* get_tensor_data_ptr(torch::Tensor& tensor, long offset) {
+    void* get_tensor_data_ptr(native::Tensor& tensor, long offset) {
         switch (tensor.scalar_type()) {
-            case torch::kBool: return tensor.data_ptr<bool>() + offset;
-            case torch::kUInt8: return tensor.data_ptr<uint8_t>() + offset;
-            case torch::kInt8: return tensor.data_ptr<int8_t>() + offset;
-            case torch::kInt16: return tensor.data_ptr<int16_t>() + offset;
-            case torch::kInt32: return tensor.data_ptr<int32_t>() + offset;
-            case torch::kInt64: return tensor.data_ptr<int64_t>() + offset;
-            case torch::kFloat32: return tensor.data_ptr<float>() + offset;
-            case torch::kFloat64: return tensor.data_ptr<double>() + offset;
+            case native::kBool: return tensor.data_ptr<bool>() + offset;
+            case native::kUInt8: return tensor.data_ptr<uint8_t>() + offset;
+            case native::kInt8: return tensor.data_ptr<int8_t>() + offset;
+            case native::kInt16: return tensor.data_ptr<int16_t>() + offset;
+            case native::kInt32: return tensor.data_ptr<int32_t>() + offset;
+            case native::kInt64: return tensor.data_ptr<int64_t>() + offset;
+            case native::kFloat32: return tensor.data_ptr<float>() + offset;
+            case native::kFloat64: return tensor.data_ptr<double>() + offset;
             default: throw std::runtime_error("Unsupported tensor type");
         }
     }
@@ -3457,7 +3453,7 @@ public:
         //
         // Each row writes to a non-overlapping region of dest
         // (dest + i * total_width), so parallelizing across rows is
-        // thread-safe.  This matches the mmap path's at::parallel_for
+        // thread-safe.  This matches the mmap path's native::parallel_for
         // with grain size 2048, bringing the buffered read path to
         // parity with the mmap path for multi-core systems.
         const bool swap_endian = host_is_little_endian();
@@ -3470,7 +3466,7 @@ public:
             if (num_rows < 512) {
                 body(0L, num_rows);
             } else {
-                at::parallel_for(0, num_rows, grain, body);
+                native::parallel_for(0, num_rows, grain, body);
             }
         };
 

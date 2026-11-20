@@ -37,9 +37,7 @@ jobs:
         run: python -m pip install "ruff>=0.16.7" packaging
       - name: Duplicate C++ check
         run: python3 scripts/check_duplicate_cpp.py
-      - name: Torch flavor extras resolve on PyTorch indexes
-        run: python scripts/check_torch_extra_pins.py
-      - name: Release lane pins check
+      - name: Supported torch range check
         run: python scripts/release_lane.py --check
       - name: Changelog freshness check
         run: python scripts/update_changelog.py --check
@@ -50,7 +48,7 @@ jobs:
       # mypy needs torch/numpy; the pixi / release-gate jobs run it.
 
   test:
-    name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
+    name: Test (${{ matrix.os }}, py${{ matrix.python-version }}, torch ${{ matrix.torch }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     strategy:
@@ -58,6 +56,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        # newest: whatever the uncapped floor resolves to (the newest release).
+        # min: the supported floor itself (scripts/torch_support.json).
+        torch: [newest]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.13"
+            torch: min
+          - os: macos-15
+            python-version: "3.13"
+            torch: min
         exclude:
           # torch 2.14's cp315 macOS wheels were built against CPython 3.15.0b3
           # and segfault on the first tensor op outside the main thread
@@ -70,14 +78,18 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Resolve torch ABI lane
-        run: echo "TORCH_PIN=$(python scripts/release_lane.py --print-pins | sed 's/.*torch=//')" >> "$GITHUB_ENV"
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
       - name: Vendor CFITSIO
         run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          if [ "${{ matrix.torch }}" = "min" ]; then
+            pip install "torch$TORCH_MIN_PIN" --index-url https://download.pytorch.org/whl/cpu
+          else
+            pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          fi
           pip install numpy pytest nanobind scikit-build-core psutil pyarrow
       - name: Build and install
         run: pip install -e . --no-build-isolation
@@ -97,15 +109,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Resolve torch ABI lane
-        run: echo "TORCH_PIN=$(python scripts/release_lane.py --print-pins | sed 's/.*torch=//')" >> "$GITHUB_ENV"
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
       - name: Vendor CFITSIO
         run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       - name: Install build dependencies
+        # The build needs no PyTorch: the extension links no libtorch.
         run: |
           python -m pip install --upgrade pip wheel
-          pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy nanobind scikit-build-core cmake ninja
+          pip install nanobind scikit-build-core cmake ninja
       - name: Build wheel
         run: pip wheel . --no-build-isolation --no-deps -w dist
       - name: Wheel contents contract
@@ -114,7 +126,7 @@ jobs:
         run: |
           python -m venv /tmp/smoke
           /tmp/smoke/bin/python -m pip install --upgrade pip
-          /tmp/smoke/bin/python -m pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          /tmp/smoke/bin/python -m pip install "torch$TORCH_MIN_PIN" --index-url https://download.pytorch.org/whl/cpu
           /tmp/smoke/bin/python -m pip install pytest numpy pyarrow dist/*.whl
       - name: Release smoke against the installed wheel
         # Same command cibuildwheel runs at release time, so a tag-time
@@ -132,8 +144,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Resolve torch ABI lane
-        run: echo "TORCH_PIN=$(python scripts/release_lane.py --print-pins | sed 's/.*torch=//')" >> "$GITHUB_ENV"
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
       - name: Vendor CFITSIO
         run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       - name: Install
@@ -158,8 +170,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Resolve torch ABI lane
-        run: echo "TORCH_PIN=$(python scripts/release_lane.py --print-pins | sed 's/.*torch=//')" >> "$GITHUB_ENV"
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
       - name: Vendor CFITSIO
         run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
       - name: Install

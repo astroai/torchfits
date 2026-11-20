@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
-#include <ATen/Parallel.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
@@ -32,8 +31,8 @@
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/tuple.h>
 
-#include "torchfits_torch.h"
-#include "torch_compat.h"
+#include "native_tensor.h"
+#include "native_py.h"
 #include "security.h"
 #include "internal_utils.h"
 #include "nb_ndarray_utils.h"
@@ -52,7 +51,7 @@ namespace nb = nanobind;
 
 namespace torchfits {
 
-namespace d = detail;  // alias to resolve ambiguity with torch::detail
+namespace d = detail;
 
 void invalidate_shared_meta(const std::string& filename) {
     d::invalidate_shared_meta_for_path(filename);
@@ -65,7 +64,7 @@ void clear_shared_read_meta_cache() {
 // ---------------------------------------------------------------------------
 // read_full_cached — fast path using cached CFITSIO handle + SharedReadMeta
 // ---------------------------------------------------------------------------
-torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mmap) {
+native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mmap) {
     // Every other entry point enforces the filename security policy; keep this
     // cached fast path consistent (blocks '|' and 'sh://' command execution).
     check_fits_filename_security(path);
@@ -236,17 +235,17 @@ torch::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_mm
     const std::array<LONGLONG, 9> naxes_ll = local->naxes_ll;
 
     if (naxis == 0) {
-        torch::ScalarType dtype = torch::kUInt8;
+        native::ScalarType dtype = native::kUInt8;
         switch (bitpix) {
-            case BYTE_IMG: dtype = torch::kUInt8; break;
-            case SHORT_IMG: dtype = torch::kInt16; break;
-            case LONG_IMG: dtype = torch::kInt32; break;
-            case LONGLONG_IMG: dtype = torch::kInt64; break;
-            case FLOAT_IMG: dtype = torch::kFloat32; break;
-            case DOUBLE_IMG: dtype = torch::kFloat64; break;
-            default: dtype = torch::kUInt8; break;
+            case BYTE_IMG: dtype = native::kUInt8; break;
+            case SHORT_IMG: dtype = native::kInt16; break;
+            case LONG_IMG: dtype = native::kInt32; break;
+            case LONGLONG_IMG: dtype = native::kInt64; break;
+            case FLOAT_IMG: dtype = native::kFloat32; break;
+            case DOUBLE_IMG: dtype = native::kFloat64; break;
+            default: dtype = native::kUInt8; break;
         }
-        return torch::empty({0}, torch::TensorOptions().dtype(dtype));
+        return native::empty({0}, native::TensorOptions().dtype(dtype));
     }
 
     get_scale();
@@ -426,9 +425,9 @@ void record_batch_error(std::vector<std::string>& errors, size_t i) {
 }
 }  // namespace
 
-std::vector<torch::Tensor> read_images_batch(const std::vector<std::string>& paths, int hdu_num, bool use_mmap) {
+std::vector<native::Tensor> read_images_batch(const std::vector<std::string>& paths, int hdu_num, bool use_mmap) {
     size_t n = paths.size();
-    std::vector<torch::Tensor> results(n);
+    std::vector<native::Tensor> results(n);
     std::vector<std::string> errors(n);
 
     if (n == 0) {
@@ -510,9 +509,9 @@ std::vector<torch::Tensor> read_images_batch(const std::vector<std::string>& pat
 // ---------------------------------------------------------------------------
 // read_hdus_batch
 // ---------------------------------------------------------------------------
-std::vector<torch::Tensor> read_hdus_batch(const std::string& path, const std::vector<int>& hdus, bool use_mmap) {
+std::vector<native::Tensor> read_hdus_batch(const std::string& path, const std::vector<int>& hdus, bool use_mmap) {
     FITSFile file(path.c_str(), 0);
-    std::vector<torch::Tensor> results;
+    std::vector<native::Tensor> results;
     results.reserve(hdus.size());
     for (int hdu_num : hdus) {
         try {
@@ -535,7 +534,7 @@ std::vector<torch::Tensor> read_hdus_batch(const std::string& path, const std::v
 // ---------------------------------------------------------------------------
 // read_full_unmapped_raw
 // ---------------------------------------------------------------------------
-torch::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
+native::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
     FITSFile file(path.c_str(), 0);
     return file.read_image_raw(hdu_num, false);
 }
@@ -543,7 +542,7 @@ torch::Tensor read_full_unmapped_raw(const std::string& path, int hdu_num) {
 // ---------------------------------------------------------------------------
 // read_full_nocache — cold open/read/close (no handle pool). Float/CompImage
 // stays ultra-thin; integer/scaled paths keep shared meta + raw_fd so mmap/pread
-torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_mmap) {
+native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_mmap) {
     // Security first: get_shared_meta_for_path stats and inserts a global-map
     // entry, so it must never run on a rejected path (cache pollution).
     check_fits_filename_security(path);
@@ -611,18 +610,18 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
         }
 
         if (naxis == 0) {
-            torch::ScalarType dtype;
+            native::ScalarType dtype;
             switch (bitpix) {
-                case BYTE_IMG:     dtype = torch::kUInt8; break;
-                case SHORT_IMG:    dtype = torch::kInt16; break;
-                case LONG_IMG:     dtype = torch::kInt32; break;
-                case LONGLONG_IMG: dtype = torch::kInt64; break;
-                case FLOAT_IMG:    dtype = torch::kFloat32; break;
-                case DOUBLE_IMG:   dtype = torch::kFloat64; break;
-                default:           dtype = torch::kUInt8; break;
+                case BYTE_IMG:     dtype = native::kUInt8; break;
+                case SHORT_IMG:    dtype = native::kInt16; break;
+                case LONG_IMG:     dtype = native::kInt32; break;
+                case LONGLONG_IMG: dtype = native::kInt64; break;
+                case FLOAT_IMG:    dtype = native::kFloat32; break;
+                case DOUBLE_IMG:   dtype = native::kFloat64; break;
+                default:           dtype = native::kUInt8; break;
             }
             close_guard();
-            return torch::empty({0}, torch::TensorOptions().dtype(dtype));
+            return native::empty({0}, native::TensorOptions().dtype(dtype));
         }
 
         bool compressed = false;
@@ -653,10 +652,10 @@ torch::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_m
             int64_t torch_shape[9];
             for (int i = 0; i < naxis; ++i)
                 torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
-            const auto dtype = (bitpix == FLOAT_IMG) ? torch::kFloat32 : torch::kFloat64;
+            const auto dtype = (bitpix == FLOAT_IMG) ? native::kFloat32 : native::kFloat64;
             const int datatype = (bitpix == FLOAT_IMG) ? TFLOAT : TDOUBLE;
-            auto tensor = torch::empty(
-                at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
+            auto tensor = native::empty(
+                torch_shape, static_cast<size_t>(naxis), native::TensorOptions().dtype(dtype));
             int anynul = 0;
             float fnullval = NAN;
             double dnullval = NAN;
@@ -856,7 +855,7 @@ static std::string commentary_text(nb::handle value, const std::string& comment,
     if (value.is_none()) return comment;
     if (!nb::isinstance<nb::str>(value)) {
         throw std::runtime_error(std::string(which) + " text must be a str, got " +
-                                 Py_TYPE(value.ptr())->tp_name);
+                                 torchfits::internal::python_type_name(value));
     }
     return nb::cast<std::string>(value);
 }
@@ -1649,7 +1648,7 @@ void bind_fits(nb::module_& m) {
     nb::class_<FITSFile>(m, "FITSFile")
         .def(nb::init<const char*, int>(), nb::arg("filename"), nb::arg("mode") = 0)
         .def("read_tensor", [](FITSFile& self, int hdu_num, bool use_mmap) {
-            torch::Tensor tensor;
+            native::Tensor tensor;
             {
                 nb::gil_scoped_release release;
                 tensor = self.read_tensor(hdu_num, use_mmap);
@@ -1700,7 +1699,7 @@ void bind_fits(nb::module_& m) {
             return bitpix;
         }, nb::arg("hdu_num"))
         .def("read_subset", [](FITSFile& self, int hdu_num, long x1, long y1, long x2, long y2) {
-            torch::Tensor tensor;
+            native::Tensor tensor;
             {
                 nb::gil_scoped_release release;
                 tensor = self.read_subset(hdu_num, x1, y1, x2, y2);
@@ -1711,7 +1710,7 @@ void bind_fits(nb::module_& m) {
     nb::class_<SubsetReader>(m, "SubsetReader")
         .def(nb::init<const std::string&, int>(), nb::arg("filename"), nb::arg("hdu_num") = 0)
         .def("read", [](SubsetReader& self, long x1, long y1, long x2, long y2) {
-            torch::Tensor tensor;
+            native::Tensor tensor;
             {
                 nb::gil_scoped_release release;
                 tensor = self.read(x1, y1, x2, y2);
@@ -1724,7 +1723,7 @@ void bind_fits(nb::module_& m) {
         .def_prop_ro("hdu", &SubsetReader::hdu);
 
     m.def("read_full", [](const std::string& filename, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             // Open + read without the GIL: network opens and disk IO must
             // not stall other Python threads.
@@ -1736,7 +1735,7 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("filename"), nb::arg("hdu_num"), nb::arg("use_mmap") = true);
 
     m.def("read_full_cached", [](const std::string& filename, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             nb::gil_scoped_release release;
             tensor = read_full_cached(filename, hdu_num, use_mmap);
@@ -1759,7 +1758,7 @@ void bind_fits(nb::module_& m) {
 
 
     m.def("read_full_raw", [](const std::string& filename, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             nb::gil_scoped_release release;
             FITSFile file(filename.c_str(), 0);
@@ -1769,7 +1768,7 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("filename"), nb::arg("hdu_num"), nb::arg("use_mmap") = true);
 
     m.def("read_full_raw_with_scale", [](const std::string& filename, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         FITSFile::ScaleInfo scale_info;
         {
             nb::gil_scoped_release release;
@@ -1787,7 +1786,7 @@ void bind_fits(nb::module_& m) {
 
 
     m.def("read_full_unmapped_raw", [](const std::string& filename, int hdu_num) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             nb::gil_scoped_release release;
             tensor = read_full_unmapped_raw(filename, hdu_num);
@@ -1796,7 +1795,7 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("filename"), nb::arg("hdu_num"));
 
     m.def("read_full_nocache", [](const std::string& filename, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             nb::gil_scoped_release release;
             tensor = read_full_nocache(filename, hdu_num, use_mmap);
@@ -1805,7 +1804,7 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("filename"), nb::arg("hdu_num"), nb::arg("use_mmap") = true);
 
     m.def("read_full", [](FITSFile& file, int hdu_num, bool use_mmap) {
-        torch::Tensor tensor;
+        native::Tensor tensor;
         {
             nb::gil_scoped_release release;
             tensor = file.read_tensor(hdu_num, use_mmap);

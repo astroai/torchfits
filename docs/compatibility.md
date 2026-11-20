@@ -1,6 +1,6 @@
 # Environment & Platform Compatibility
 
-Supported Python versions, PyTorch runtime ABIs, CUDA flavors, and operating systems for **torchfits**.
+Supported Python versions, PyTorch versions, CUDA flavors, and operating systems for **torchfits**.
 
 For supported FITS formats, HDU types, tile compression, and catalog features, see [Evaluation](evaluation.md).
 
@@ -10,28 +10,35 @@ For supported FITS formats, HDU types, tile compression, and catalog features, s
 
 | Component | Prebuilt Wheels | Source Builds |
 |---|---|---|
-| **Python** | **3.11, 3.12, 3.13, 3.14**; **3.15** (Linux only) | **3.11+** |
-| **PyTorch** | **2.14.x** (ABI-matched wheels) | **2.14.x** (`pip install --no-deps --no-build-isolation .`) |
-| **Hardware & CUDA** | **CPU**, **CUDA 12.6, 13.0**, **Apple Silicon MPS** | All PyTorch-supported compute devices |
+| **Python** | **3.11** (`cp311` wheel), **3.12–3.15** (one `cp312-abi3` wheel) | **3.11+** |
+| **PyTorch** | **2.12 or newer** (`torch>=2.12`, no upper bound) | Same; the build needs no PyTorch |
+| **Hardware & CUDA** | **CPU**, **any CUDA build of a supported PyTorch**, **Apple Silicon MPS** | All PyTorch-supported compute devices |
 | **Operating Systems** | **Linux** (`x86_64` with SSSE3, `aarch64`, glibc 2.28+)<br>**macOS 14+** (`arm64` Apple Silicon) | Linux with glibc 2.28+, macOS 14+; `x86_64` builds require an SSSE3 CPU |
 | **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 25.0.0** | Same |
 
 ---
 
-## PyTorch Minor Version ABI Matching
+## PyTorch Version Support
 
-Because PyTorch does not guarantee C++ ABI stability across minor version releases ($2.12 \to 2.13 \to 2.14$), each `torchfits` binary wheel embeds the specific PyTorch C++ ABI tag it was compiled against.
+The native extension includes and links no libtorch. It decodes FITS data into
+its own buffers and hands them to PyTorch through DLPack (zero copy), using
+only PyTorch's public Python API. A wheel is therefore not tied to the PyTorch
+C++ ABI of any one minor release, and the same wheel works with every PyTorch
+from the floor up.
 
-| PyTorch Version | Wheel Distribution Channel | Installation Command |
-|---|---|---|
-| **PyTorch 2.14.x** | **Default PyPI Release** | `pip install torchfits` |
-| **Any other minor** | **Unsupported by this release** | Build and runtime metadata require 2.14.x |
+| PyTorch Version | Status |
+|---|---|
+| **2.12 – 2.15** | Tested in CI (floor and newest), `pip install torchfits` |
+| **Newer releases** | Supported (no upper bound); report regressions |
+| **Older than 2.12** | Unsupported (below the tested floor) |
+
+The floor and the newest tested minor live in `scripts/torch_support.json`.
 
 ---
 
 ## CUDA & Accelerator Compatibility
 
-- **Universal CUDA / CPU Wheels:** A single `torchfits` wheel functions across all CUDA flavors of its PyTorch minor version (`cu126`, `cu130`) as well as CPU-only (`+cpu`) installations.
+- **Universal CUDA / CPU Wheels:** A single `torchfits` wheel functions with every CUDA flavor of every supported PyTorch (`cu126`, `cu128`, `cu130`, ...) as well as CPU-only (`+cpu`) installations. Decoding runs on the CPU; `device=` moves the result with PyTorch.
 - **Apple Silicon (MPS):** Native `arm64` wheels for macOS leverage Metal Performance Shaders (`device="mps"`).
 - **Graceful Fallback:** CUDA-built environments run seamlessly on CPU-only machines via automatic CPU fallback.
 - **MPS dtype handling:** `device="mps"` (and `mps:N`) downcasts `float64 → float32` and `complex128 → complex64` before the host-to-device transfer because MPS has no native 64-bit float/complex. Each downcast emits a `UserWarning` (Python's default filter shows it once per call site): `MPS does not support float64; downcasting to float32 (precision loss)` and `MPS does not support complex128; downcasting to complex64 (precision loss)`. The result keeps its shape and lands on the requested device; CPU and CUDA paths keep 64-bit.
@@ -39,7 +46,7 @@ Because PyTorch does not guarantee C++ ABI stability across minor version releas
 
 ### Known limitations
 
-- **No Python 3.15 macOS wheel in the 1.3 series:** PyTorch 2.14's cp315 macOS and Windows wheels were built against CPython 3.15.0b3 headers, whose `PyThreadState` layout predates 3.15.0b4. The first Python-level tensor operation outside the main thread then segfaults inside pybind11's `gil_scoped_acquire` ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)); the Linux cp315 wheels are unaffected. macOS users on Python 3.15 need PyTorch 2.15, which this release does not target.
+- **Python 3.15 on macOS needs PyTorch 2.15+:** PyTorch 2.14's cp315 macOS and Windows wheels were built against CPython 3.15.0b3 headers, whose `PyThreadState` layout predates 3.15.0b4. The first Python-level tensor operation outside the main thread then segfaults inside pybind11's `gil_scoped_acquire` ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)); the Linux cp315 wheels are unaffected. The torchfits `cp312-abi3` wheel installs on macOS Python 3.15; pair it with PyTorch 2.15 or newer.
 - **No Windows support:** Prebuilt wheels and CI are Linux and macOS only; Windows is documented as unsupported.
 - **Runtime env knobs:** every `TORCHFITS_*` variable the library reads, with its default and effect, is listed under [Environment variables](architecture.md#environment-variables). Those knobs are not a stable public API and may change without notice.
 - **`KMP_DUPLICATE_LIB_OK`:** importing `torchfits` runs `os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")` before PyTorch loads. macOS otherwise aborts when PyTorch's `libomp` and a second OpenMP runtime (Homebrew or conda) are both mapped. An existing value is left alone. See [Install](install.md) if you import `torch` first.

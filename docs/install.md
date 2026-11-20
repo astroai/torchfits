@@ -2,7 +2,7 @@
 
 `torchfits` is distributed as prebuilt binary wheels for **Linux (x86_64,
 aarch64, glibc 2.28+)** and **macOS 14+ (Apple Silicon arm64)** supporting
-**Python 3.11–3.15 on Linux** and **3.11–3.14 on macOS**. CFITSIO is vendored
+**Python 3.11–3.15** and **PyTorch 2.12 or newer**. CFITSIO is vendored
 directly into the wheels, so no C++ compiler, system libraries, or manual build
 steps are required.
 
@@ -22,35 +22,42 @@ pip install torchfits
 
 ### 2. CPU-only install (Minimal footprint)
 
-On headless servers, CI runners, or containers where CUDA runtime libraries are not needed, use the lightweight CPU index with `[cpu]` extra:
+On headless servers, CI runners, or containers where CUDA runtime libraries are
+not needed, install a CPU build of PyTorch from its CPU index, then torchfits:
 
 ```bash
-pip install "torchfits[cpu]" --extra-index-url https://download.pytorch.org/whl/cpu
-# Or explicitly pinning the CPU PyTorch build:
-pip install torchfits "torch==2.14.0+cpu" --extra-index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torchfits
 ```
 
 ### 3. Specific CUDA toolkit versions
 
-To match a specific CUDA version installed on your system (e.g. `cu126`, `cu130`):
+To match a specific CUDA version installed on your system (e.g. `cu126`, `cu130`),
+install that PyTorch build first:
 
 ```bash
-pip install "torchfits[cuda]" --extra-index-url https://download.pytorch.org/whl/cu130
-# Or explicitly pinning the CUDA PyTorch build:
-pip install torchfits "torch==2.14.0+cu130" --extra-index-url https://download.pytorch.org/whl/cu130
+pip install torch --index-url https://download.pytorch.org/whl/cu130
+pip install torchfits
 ```
+
+The same torchfits wheel serves every PyTorch build flavor (CPU, any CUDA, MPS).
 
 ---
 
 ## PyTorch Version Compatibility
 
-The PyPI release is built against one PyTorch minor version at a time (an "ABI lane"); the current lane is **PyTorch 2.14.x** (`torch>=2.14,<2.15`). Wheels are ABI-matched to that minor, so keep your PyTorch on 2.14.x.
+torchfits supports **PyTorch 2.12 and newer** (`torch>=2.12`, no upper bound).
+The native extension does not link libtorch: decoded buffers are handed to
+PyTorch through DLPack, its public zero-copy exchange protocol, so a torchfits
+wheel keeps working when you upgrade PyTorch. CI tests the floor (2.12) and the
+newest release (2.15); `scripts/torch_support.json` records both.
 
-Source builds use the same supported **PyTorch 2.14.x** lane. Other PyTorch
-minor versions are not supported by this release.
+The extension also targets the CPython stable ABI: one `cp312-abi3` wheel per
+platform serves Python 3.12 and every later CPython, and Python 3.11 has its
+own wheel.
 
 !!! warning "Python 3.15 on macOS"
-    PyTorch 2.14's cp315 macOS wheels were built against CPython 3.15.0b3 headers and segfault on the first tensor operation outside the main thread ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). PyTorch 2.14 has no fixed rebuild, so the 1.3 release series does not publish cp315 macOS wheels; use Python 3.14 or the Linux cp315 wheel until PyTorch 2.15.
+    PyTorch 2.14's cp315 macOS wheels were built against CPython 3.15.0b3 headers and segfault on the first tensor operation outside the main thread ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). On macOS with Python 3.15, use PyTorch 2.15 or newer.
 
 ---
 
@@ -82,13 +89,13 @@ python -c "import torchfits._C as c; print('bzip2:', c.HAS_BZIP2, 'https/ftps:',
 ```
 
 Building from source is only needed when developing torchfits or using a
-platform without a published wheel. Use PyTorch 2.14.x.
+platform without a published wheel. The build itself needs no PyTorch.
 
 ### Prerequisites
 - Python 3.11+
 - C++20 compiler (GCC 10+, Clang 14+, MSVC 2019+)
 - [CMake](https://cmake.org/) 3.21+ and [Ninja](https://ninja-build.org/)
-- [PyTorch](https://pytorch.org/) 2.14.x, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 25
+- At runtime: [PyTorch](https://pytorch.org/) ≥ 2.12, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 25
 
 === "Linux"
 
@@ -115,7 +122,7 @@ git clone https://github.com/astroai/torchfits.git
 cd torchfits
 ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt   # downloads the pinned CFITSIO
 
-# Install build dependencies and compile against your environment
+# Runtime dependencies, then the build backend (the build needs no PyTorch)
 pip install torch numpy pyarrow scikit-build-core nanobind
 pip install --no-deps --no-build-isolation -e .
 ```
@@ -172,13 +179,14 @@ export KMP_DUPLICATE_LIB_OK=TRUE
 **`No matching distribution found for torchfits`**
 
 Prebuilt binary wheels are available for Linux (x86_64 and aarch64, glibc
-2.28+) on CPython 3.11–3.15 and macOS 14+ (Apple Silicon arm64) on CPython
-3.11–3.14. Windows, musl Linux, older glibc, older macOS, and x86_64 macOS are
-unsupported.
+2.28+) and macOS 14+ (Apple Silicon arm64) on CPython 3.11–3.15. Windows, musl
+Linux, older glibc, older macOS, and x86_64 macOS are unsupported.
 
-**`ImportError: ... ABI mismatch`**
+**`ImportError: torchfits was built for PyTorch 2.x.x but found PyTorch ...`**
 
-The binary extension was built against a different PyTorch minor version than the one currently active in Python. Either install the matching prebuilt wheel for your PyTorch version or rebuild from source.
+Releases before 1.3.3 linked libtorch and only imported under the PyTorch minor
+they were built for. Upgrade torchfits: 1.3.3 and newer work with every
+PyTorch from 2.12 on.
 
 **`./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt` fails**
 

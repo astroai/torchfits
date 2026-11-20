@@ -1,6 +1,8 @@
 #include "core/parallel.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
@@ -18,22 +20,59 @@ namespace torchfits {
 namespace core {
 namespace {
 
-// One parallel_for call's worth of work. Every finished chunk decrements
-// `remaining`; the calling thread blocks until it reaches zero and then
+// One parallel_for call's worth of work. Chunks are claimed dynamically
+// through `next`: pool workers that picked up a ticket for this batch and the
+// calling thread itself all take the next unclaimed chunk until none is left.
+// The caller therefore never idles behind a worker that has not woken up yet
+// (for a range of a few grains it usually runs every chunk itself), and a
+// slow core (an efficiency core, a preempted worker) simply claims fewer
+// chunks. The caller waits only for chunks a worker has already claimed, then
 // rethrows the first captured exception on its own stack, so callers keep the
 // "throws out of parallel_for" contract at::parallel_for provides.
 struct Batch {
-    std::mutex mutex;
-    std::condition_variable cv;
-    int remaining = 0;
-    std::exception_ptr error;
-};
-
-struct Task {
     detail::ParallelThunk thunk = nullptr;
     void* ctx = nullptr;
     std::int64_t begin = 0;
     std::int64_t end = 0;
+    std::int64_t grain = 1;
+    std::int64_t chunks = 0;
+    std::atomic<std::int64_t> next{0};
+    std::atomic<std::int64_t> done{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::exception_ptr error;
+
+    // Run unclaimed chunks until none remain. Every chunk runs even after one
+    // throws (as before); the first exception is kept.
+    void drain() {
+        for (;;) {
+            const std::int64_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= chunks) return;
+            const std::int64_t lo = begin + i * grain;
+            const std::int64_t hi = (lo + grain < end) ? lo + grain : end;
+            std::exception_ptr err;
+            try {
+                thunk(ctx, lo, hi);
+            } catch (...) {
+                err = std::current_exception();
+            }
+            if (err) {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (!error) error = err;
+            }
+            if (done.fetch_add(1, std::memory_order_acq_rel) + 1 == chunks) {
+                // Taking the mutex orders this notify after the waiter's
+                // predicate check, so the wake-up cannot be lost.
+                std::lock_guard<std::mutex> lock(mutex);
+                cv.notify_all();
+            }
+        }
+    }
+};
+
+// A worker's handle on a batch. After the batch is fully claimed a late
+// ticket finds nothing to do; it never touches `ctx` (the caller's stack).
+struct Task {
     std::shared_ptr<Batch> batch;
 };
 
@@ -68,45 +107,69 @@ public:
 
     int worker_count() const { return static_cast<int>(workers_.size()); }
 
-    void submit(const std::vector<Task>& tasks) {
-        if (tasks.empty()) return;
+    // Queue `tickets` handles on `batch`. Workers still spinning after their
+    // last batch pick them up without a wake-up; only the shortfall is woken,
+    // one notify per sleeping worker needed (a broadcast for a four-chunk
+    // batch woke every idle worker to contend for the queue lock).
+    void submit(const std::shared_ptr<Batch>& batch, int tickets) {
+        if (tickets <= 0) return;
+        int wake = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            queue_.insert(queue_.end(), tasks.begin(), tasks.end());
+            for (int i = 0; i < tickets; ++i) queue_.push_back(Task{batch});
+            pending_.fetch_add(tickets, std::memory_order_release);
+            const int spinning = spinners_.load(std::memory_order_acquire);
+            wake = std::min(tickets - std::min(tickets, spinning), sleepers_);
         }
-        work_cv_.notify_all();
+        for (int i = 0; i < wake; ++i) work_cv_.notify_one();
     }
 
 private:
-    static void finish(const Task& task, const std::exception_ptr& err) {
-        std::shared_ptr<Batch> batch = task.batch;
-        if (!batch) return;
-        {
-            std::lock_guard<std::mutex> lock(batch->mutex);
-            if (err && !batch->error) batch->error = err;
-            --batch->remaining;
-        }
-        batch->cv.notify_all();
+    // How long an idle worker keeps polling for the next batch before it
+    // sleeps on the condition variable. Table decodes issue one parallel_for
+    // per column back to back; a futex wake per worker per column cost about
+    // 8 us per call (measured: 10-column, 10k-row window 0.31 ms vs 0.23 ms
+    // serial) while the work per chunk is a few microseconds. ATen's OpenMP
+    // pool, which the decoders used before, spins for 200 ms by default; a
+    // short spin keeps the back-to-back case fast without holding idle cores.
+    static constexpr auto kSpin = std::chrono::microseconds(100);
+
+    bool try_pop(Task& task) {
+        if (pending_.load(std::memory_order_acquire) == 0) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (queue_.empty()) return false;
+        task = std::move(queue_.front());
+        queue_.pop_front();
+        pending_.fetch_sub(1, std::memory_order_relaxed);
+        return true;
     }
 
     void worker_loop() {
         for (;;) {
             Task task;
-            {
+            bool got = false;
+            spinners_.fetch_add(1, std::memory_order_acq_rel);
+            const auto deadline = std::chrono::steady_clock::now() + kSpin;
+            for (unsigned i = 0; !got; ++i) {
+                got = try_pop(task);
+                if (got) break;
+                if ((i & 63u) == 63u && std::chrono::steady_clock::now() >= deadline) break;
+                std::this_thread::yield();
+            }
+            spinners_.fetch_sub(1, std::memory_order_acq_rel);
+            if (!got) {
                 std::unique_lock<std::mutex> lock(mutex_);
+                ++sleepers_;
                 work_cv_.wait(lock, [this] { return !queue_.empty(); });
-                task = queue_.front();
+                --sleepers_;
+                task = std::move(queue_.front());
                 queue_.pop_front();
+                pending_.fetch_sub(1, std::memory_order_relaxed);
             }
-            std::exception_ptr err;
+            // drain() catches everything the user body throws.
             t_is_pool_worker = true;
-            try {
-                task.thunk(task.ctx, task.begin, task.end);
-            } catch (...) {
-                err = std::current_exception();
-            }
+            task.batch->drain();
             t_is_pool_worker = false;
-            finish(task, err);
         }
     }
 
@@ -114,10 +177,13 @@ private:
     std::mutex mutex_;
     std::condition_variable work_cv_;
     std::deque<Task> queue_;
+    std::atomic<int> pending_{0};   // queue_.size(), readable without the lock
+    std::atomic<int> spinners_{0};  // workers polling, not yet asleep
+    int sleepers_ = 0;              // workers in work_cv_.wait (under mutex_)
 };
 
-// Resolve TORCHFITS_NUM_THREADS once. ATen reads the same variable, so a
-// process that pins ATen also pins the core pool.
+// Resolve TORCHFITS_NUM_THREADS once (PyTorch's own thread settings do not
+// size this pool).
 int resolve_thread_count() {
     int threads = 0;
     if (const char* raw = std::getenv("TORCHFITS_NUM_THREADS")) {
@@ -224,47 +290,35 @@ void run_chunks(
         return;
     }
 
-    // The caller keeps the last chunk so a parallel_for nested on the *calling*
-    // thread cannot deadlock waiting on workers the outer call owns. Worker-side
-    // nesting never reaches here: it is handled by the t_is_pool_worker branch
-    // above, which never waits.
-    const std::int64_t offloaded = chunks - 1;
+    // The caller drains the batch alongside the workers, so a parallel_for
+    // nested on the *calling* thread cannot deadlock waiting on workers the
+    // outer call owns: it can always finish every unclaimed chunk itself, and
+    // a chunk a worker claimed runs to completion. Worker-side nesting never
+    // reaches here: it is handled by the t_is_pool_worker branch above, which
+    // never waits.
     auto batch = std::make_shared<Batch>();
-    batch->remaining = static_cast<int>(offloaded);
+    batch->thunk = thunk;
+    batch->ctx = ctx;
+    batch->begin = begin;
+    batch->end = end;
+    batch->grain = grain_size;
+    batch->chunks = chunks;
+    const std::int64_t helpers = std::min<std::int64_t>(
+        chunks - 1, static_cast<std::int64_t>(workers.worker_count()));
+    workers.submit(batch, static_cast<int>(helpers));
 
-    std::vector<Task> tasks;
-    tasks.reserve(static_cast<size_t>(offloaded));
-    for (std::int64_t i = 0; i < offloaded; ++i) {
-        const std::int64_t lo = begin + i * grain_size;
-        Task task;
-        task.thunk = thunk;
-        task.ctx = ctx;
-        task.begin = lo;
-        task.end = (lo + grain_size < end) ? lo + grain_size : end;
-        task.batch = batch;
-        tasks.push_back(task);
-    }
-    workers.submit(tasks);
+    batch->drain();
 
-    const std::int64_t last_begin = begin + offloaded * grain_size;
-    std::exception_ptr inline_error;
-    try {
-        thunk(ctx, last_begin, end);
-    } catch (...) {
-        inline_error = std::current_exception();
-    }
-
-    std::exception_ptr worker_error;
+    std::exception_ptr error;
     {
         std::unique_lock<std::mutex> lock(batch->mutex);
-        batch->cv.wait(lock, [&batch] { return batch->remaining == 0; });
-        worker_error = batch->error;
+        batch->cv.wait(lock, [&batch] {
+            return batch->done.load(std::memory_order_acquire) == batch->chunks;
+        });
+        error = batch->error;
     }
-    if (inline_error) {
-        std::rethrow_exception(inline_error);
-    }
-    if (worker_error) {
-        std::rethrow_exception(worker_error);
+    if (error) {
+        std::rethrow_exception(error);
     }
 }
 

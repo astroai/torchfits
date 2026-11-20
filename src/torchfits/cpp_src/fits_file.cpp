@@ -16,8 +16,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include <ATen/ATen.h>
-#include <ATen/Parallel.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
@@ -27,8 +25,8 @@
 #include <nanobind/stl/tuple.h>
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
-#include "torch_compat.h"
+#include "native_tensor.h"
+#include "native_py.h"
 #include "core/metadata_api.h"
 #include "security.h"
 #include "hardware.h"
@@ -279,7 +277,7 @@ const std::tuple<int, int, std::array<LONGLONG, 9>>& FITSFile::get_image_info(in
     return inserted.first->second;
 }
 
-torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
+native::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     int status = 0;
     ensure_hdu(hdu_num, &status);
@@ -292,17 +290,17 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     detail::read_image_params_9d(fptr_, &bitpix, &naxis, naxes_ll, &status);
     if (status != 0) throw std::runtime_error("Could not read image parameters");
     if (naxis == 0) {
-        torch::ScalarType dtype;
+        native::ScalarType dtype;
         switch (bitpix) {
-            case BYTE_IMG:   dtype = torch::kUInt8; break;
-            case SHORT_IMG:  dtype = torch::kInt16; break;
-            case LONG_IMG:   dtype = torch::kInt32; break;
-            case LONGLONG_IMG: dtype = torch::kInt64; break;
-            case FLOAT_IMG:  dtype = torch::kFloat32; break;
-            case DOUBLE_IMG: dtype = torch::kFloat64; break;
-            default:         dtype = torch::kUInt8; break;
+            case BYTE_IMG:   dtype = native::kUInt8; break;
+            case SHORT_IMG:  dtype = native::kInt16; break;
+            case LONG_IMG:   dtype = native::kInt32; break;
+            case LONGLONG_IMG: dtype = native::kInt64; break;
+            case FLOAT_IMG:  dtype = native::kFloat32; break;
+            case DOUBLE_IMG: dtype = native::kFloat64; break;
+            default:         dtype = native::kUInt8; break;
         }
-        return torch::empty({0}, torch::TensorOptions().dtype(dtype));
+        return native::empty({0}, native::TensorOptions().dtype(dtype));
     }
     detail::ResolvedFITSMeta meta;
     meta.bitpix = bitpix;
@@ -347,7 +345,7 @@ torch::Tensor FITSFile::read_tensor(int hdu_num, bool use_mmap) {
     return detail::read_tensor_canonical(fptr_, filename_, meta, use_mmap, fd, /*use_chunking=*/false);
 }
 
-torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
+native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     int status = 0;
     ensure_hdu(hdu_num, &status);
@@ -362,27 +360,27 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
         naxes_ll = std::get<2>(info);
     }
     if (naxis == 0) {
-        torch::ScalarType dtype;
+        native::ScalarType dtype;
         switch (bitpix) {
-            case BYTE_IMG:   dtype = torch::kUInt8; break;
-            case SHORT_IMG:  dtype = torch::kInt16; break;
-            case LONG_IMG:   dtype = torch::kInt32; break;
-            case LONGLONG_IMG: dtype = torch::kInt64; break;
-            case FLOAT_IMG:  dtype = torch::kFloat32; break;
-            case DOUBLE_IMG: dtype = torch::kFloat64; break;
-            default:         dtype = torch::kUInt8; break;
+            case BYTE_IMG:   dtype = native::kUInt8; break;
+            case SHORT_IMG:  dtype = native::kInt16; break;
+            case LONG_IMG:   dtype = native::kInt32; break;
+            case LONGLONG_IMG: dtype = native::kInt64; break;
+            case FLOAT_IMG:  dtype = native::kFloat32; break;
+            case DOUBLE_IMG: dtype = native::kFloat64; break;
+            default:         dtype = native::kUInt8; break;
         }
-        return torch::empty({0}, torch::TensorOptions().dtype(dtype));
+        return native::empty({0}, native::TensorOptions().dtype(dtype));
     }
-    torch::ScalarType dtype;
+    native::ScalarType dtype;
     int datatype;
     switch (bitpix) {
-        case BYTE_IMG:     dtype = torch::kUInt8;  datatype = TBYTE;      break;
-        case SHORT_IMG:    dtype = torch::kInt16;  datatype = TSHORT;     break;
-        case LONG_IMG:     dtype = torch::kInt32;  datatype = TINT;       break;
-        case LONGLONG_IMG: dtype = torch::kInt64;  datatype = TLONGLONG;  break;
-        case FLOAT_IMG:    dtype = torch::kFloat32; datatype = TFLOAT;     break;
-        case DOUBLE_IMG:   dtype = torch::kFloat64; datatype = TDOUBLE;    break;
+        case BYTE_IMG:     dtype = native::kUInt8;  datatype = TBYTE;      break;
+        case SHORT_IMG:    dtype = native::kInt16;  datatype = TSHORT;     break;
+        case LONG_IMG:     dtype = native::kInt32;  datatype = TINT;       break;
+        case LONGLONG_IMG: dtype = native::kInt64;  datatype = TLONGLONG;  break;
+        case FLOAT_IMG:    dtype = native::kFloat32; datatype = TFLOAT;     break;
+        case DOUBLE_IMG:   dtype = native::kFloat64; datatype = TDOUBLE;    break;
         default: throw std::runtime_error("Unsupported BITPIX");
     }
     LONGLONG nelements = 0;
@@ -391,7 +389,7 @@ torch::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     }
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i) torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
-    auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
+    auto tensor = native::empty(torch_shape, static_cast<size_t>(naxis), native::TensorOptions().dtype(dtype));
     const bool compressed = is_compressed_image_cached(hdu_num);
     if (want_mmap && !compressed && bitpix == BYTE_IMG) {
         if (!has_cfitsio_extended_filename_syntax(filename_)) {
@@ -556,7 +554,7 @@ int FITSFile::get_dtype(int hdu_num) {
     return core::image_bitpix(fptr_);
 }
 
-torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long y2) {
+native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long y2) {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     int status = 0;
     ensure_hdu(hdu_num, &status);
@@ -582,7 +580,7 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
     if (x2 > max_x) x2 = max_x; if (y2 > max_y) y2 = max_y;
     const auto& scale_info = get_scale_info(hdu_num, bitpix);
     bool scaled = scale_info.scaled;
-    torch::ScalarType dtype;
+    native::ScalarType dtype;
     int datatype;
     // Mirror the dtype conventions of read_tensor_canonical: BZERO=32768 /
     // 2^31 / -128 are unsigned/signed integer conventions, not float scale.
@@ -592,24 +590,24 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
         scaled && bitpix == SHORT_IMG && scale_info.bscale == 1.0 && detail::is_unsigned_short_offset(scale_info.bzero);
     const bool unsigned_long =
         scaled && bitpix == LONG_IMG && scale_info.bscale == 1.0 && detail::is_unsigned_long_offset(scale_info.bzero);
-    if (signed_byte_scaled) { dtype = torch::kInt8;  datatype = TSBYTE; }
-    else if (unsigned_short) { dtype = torch::kUInt16; datatype = TUSHORT; }
-    else if (unsigned_long) { dtype = torch::kUInt32; datatype = TUINT; }
+    if (signed_byte_scaled) { dtype = native::kInt8;  datatype = TSBYTE; }
+    else if (unsigned_short) { dtype = native::kUInt16; datatype = TUSHORT; }
+    else if (unsigned_long) { dtype = native::kUInt32; datatype = TUINT; }
     else if (scaled && bitpix == LONGLONG_IMG && scale_info.bscale == 1.0 &&
              detail::is_unsigned_longlong_offset(scale_info.bzero)) {
-        dtype = torch::kUInt64; datatype = TULONGLONG;
+        dtype = native::kUInt64; datatype = TULONGLONG;
     }
     else if (scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
-        dtype = torch::kFloat32; datatype = TFLOAT;
-    } else if (scaled) { dtype = torch::kFloat64; datatype = TDOUBLE; }
+        dtype = native::kFloat32; datatype = TFLOAT;
+    } else if (scaled) { dtype = native::kFloat64; datatype = TDOUBLE; }
     else {
         switch (bitpix) {
-            case BYTE_IMG:     dtype = torch::kUInt8;  datatype = TBYTE;      break;
-            case SHORT_IMG:    dtype = torch::kInt16;  datatype = TSHORT;     break;
-            case LONG_IMG:    dtype = torch::kInt32;  datatype = TINT;       break;
-            case LONGLONG_IMG: dtype = torch::kInt64;  datatype = TLONGLONG;  break;
-            case FLOAT_IMG:    dtype = torch::kFloat32; datatype = TFLOAT;     break;
-            case DOUBLE_IMG:   dtype = torch::kFloat64; datatype = TDOUBLE;    break;
+            case BYTE_IMG:     dtype = native::kUInt8;  datatype = TBYTE;      break;
+            case SHORT_IMG:    dtype = native::kInt16;  datatype = TSHORT;     break;
+            case LONG_IMG:    dtype = native::kInt32;  datatype = TINT;       break;
+            case LONGLONG_IMG: dtype = native::kInt64;  datatype = TLONGLONG;  break;
+            case FLOAT_IMG:    dtype = native::kFloat32; datatype = TFLOAT;     break;
+            case DOUBLE_IMG:   dtype = native::kFloat64; datatype = TDOUBLE;    break;
             default: throw std::runtime_error("Unsupported BITPIX");
         }
     }
@@ -623,14 +621,14 @@ torch::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, long
         for (int i = naxis - 1; i >= 2; --i) empty_shape.push_back(naxes[i]);
         empty_shape.push_back(empty_height);
         empty_shape.push_back(empty_width);
-        return torch::empty(empty_shape, torch::TensorOptions().dtype(dtype));
+        return native::empty(empty_shape, native::TensorOptions().dtype(dtype));
     }
     long width = x2 - x1, height = y2 - y1;
     std::vector<int64_t> shape;
     for (int i = naxis - 1; i >= 2; --i) shape.push_back(naxes[i]);
     shape.push_back(height);
     shape.push_back(width);
-    auto tensor = torch::empty(shape, torch::TensorOptions().dtype(dtype));
+    auto tensor = native::empty(shape, native::TensorOptions().dtype(dtype));
     std::vector<long> fpixel(naxis, 1), lpixel(naxis, 1), inc(naxis, 1);
     fpixel[0] = x1 + 1; fpixel[1] = y1 + 1;
     lpixel[0] = x2; lpixel[1] = y2;
@@ -970,32 +968,32 @@ void SubsetReader::init_from_hdu() {
     // read_tensor_canonical); only arbitrary BSCALE/BZERO falls back to
     // fits_read_subset float promotion.
     if (scale.scaled && bitpix == BYTE_IMG && scale.bscale == 1.0 && scale.bzero == -128.0) {
-        dtype_ = torch::kInt8; datatype_ = TSBYTE; elem_bytes_ = 1;
+        dtype_ = native::kInt8; datatype_ = TSBYTE; elem_bytes_ = 1;
         mmap_conv_ = MmapConv::SignedByte;
     } else if (scale.scaled && bitpix == SHORT_IMG && scale.bscale == 1.0 &&
                detail::is_unsigned_short_offset(scale.bzero)) {
-        dtype_ = torch::kUInt16; datatype_ = TUSHORT; elem_bytes_ = 2;
+        dtype_ = native::kUInt16; datatype_ = TUSHORT; elem_bytes_ = 2;
         mmap_conv_ = MmapConv::UInt16;
     } else if (scale.scaled && bitpix == LONG_IMG && scale.bscale == 1.0 &&
                detail::is_unsigned_long_offset(scale.bzero)) {
-        dtype_ = torch::kUInt32; datatype_ = TUINT; elem_bytes_ = 4;
+        dtype_ = native::kUInt32; datatype_ = TUINT; elem_bytes_ = 4;
         mmap_conv_ = MmapConv::UInt32;
     } else if (scale.scaled && bitpix == LONGLONG_IMG && scale.bscale == 1.0 &&
                detail::is_unsigned_longlong_offset(scale.bzero)) {
         // uint64 convention: CFITSIO converts (TULONGLONG); no mmap path.
-        dtype_ = torch::kUInt64; datatype_ = TULONGLONG; return;
+        dtype_ = native::kUInt64; datatype_ = TULONGLONG; return;
     } else if (scale.scaled && (bitpix == BYTE_IMG || bitpix == SHORT_IMG)) {
-        dtype_ = torch::kFloat32; datatype_ = TFLOAT; return;
+        dtype_ = native::kFloat32; datatype_ = TFLOAT; return;
     } else if (scale.scaled) {
-        dtype_ = torch::kFloat64; datatype_ = TDOUBLE; return;
+        dtype_ = native::kFloat64; datatype_ = TDOUBLE; return;
     } else {
         switch (bitpix) {
-            case BYTE_IMG:     dtype_ = torch::kUInt8;  datatype_ = TBYTE;      elem_bytes_ = 1; break;
-            case SHORT_IMG:    dtype_ = torch::kInt16;  datatype_ = TSHORT;     elem_bytes_ = 2; break;
-            case LONG_IMG:     dtype_ = torch::kInt32;  datatype_ = TINT;       elem_bytes_ = 4; break;
-            case LONGLONG_IMG: dtype_ = torch::kInt64;  datatype_ = TLONGLONG;  elem_bytes_ = 8; break;
-            case FLOAT_IMG:    dtype_ = torch::kFloat32; datatype_ = TFLOAT;    elem_bytes_ = 4; break;
-            case DOUBLE_IMG:   dtype_ = torch::kFloat64; datatype_ = TDOUBLE;   elem_bytes_ = 8; break;
+            case BYTE_IMG:     dtype_ = native::kUInt8;  datatype_ = TBYTE;      elem_bytes_ = 1; break;
+            case SHORT_IMG:    dtype_ = native::kInt16;  datatype_ = TSHORT;     elem_bytes_ = 2; break;
+            case LONG_IMG:     dtype_ = native::kInt32;  datatype_ = TINT;       elem_bytes_ = 4; break;
+            case LONGLONG_IMG: dtype_ = native::kInt64;  datatype_ = TLONGLONG;  elem_bytes_ = 8; break;
+            case FLOAT_IMG:    dtype_ = native::kFloat32; datatype_ = TFLOAT;    elem_bytes_ = 4; break;
+            case DOUBLE_IMG:   dtype_ = native::kFloat64; datatype_ = TDOUBLE;   elem_bytes_ = 8; break;
             default: throw std::runtime_error("Unsupported BITPIX");
         }
     }
@@ -1096,7 +1094,7 @@ void SubsetReader::release_data_mmap() {
 }
 
 bool SubsetReader::try_read_via_mmap(
-    long x1, long y1, long x2, long y2, torch::Tensor& out
+    long x1, long y1, long x2, long y2, native::Tensor& out
 ) {
     if (!ensure_data_mmap()) return false;
 
@@ -1168,7 +1166,7 @@ bool SubsetReader::try_read_via_mmap(
     return true;
 }
 
-torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
+native::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     std::lock_guard<std::mutex> lock(io_mutex_);
     if (closed_) throw std::runtime_error("SubsetReader is closed");
     if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
@@ -1182,14 +1180,14 @@ torch::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
         for (int i = naxis_ - 1; i >= 2; --i) empty_shape.push_back(naxes_[i]);
         empty_shape.push_back(empty_height);
         empty_shape.push_back(empty_width);
-        return torch::empty(empty_shape, torch::TensorOptions().dtype(dtype_));
+        return native::empty(empty_shape, native::TensorOptions().dtype(dtype_));
     }
     long width = x2 - x1, height = y2 - y1;
     std::vector<int64_t> shape;
     for (int i = naxis_ - 1; i >= 2; --i) shape.push_back(naxes_[i]);
     shape.push_back(height);
     shape.push_back(width);
-    auto tensor = torch::empty(shape, torch::TensorOptions().dtype(dtype_));
+    auto tensor = native::empty(shape, native::TensorOptions().dtype(dtype_));
     if (try_read_via_mmap(x1, y1, x2, y2, tensor)) {
         return tensor;
     }

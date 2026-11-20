@@ -22,10 +22,10 @@ an eager import, lazy import, or tensor-returning native call cannot pass by
 merely inspecting ``sys.modules``.
 
 The native metadata half (``libtorchfits_core``, exposed as ``torchfits._core``)
-gets its own cases for a second reason: it is the only part of the extension
-that can be checked for a *link-level* libtorch dependency. ``_C`` links
-libtorch by design; the core is what makes ``read_header`` cheap, and that only
-holds if the library has no libtorch in its dependency list.
+gets its own cases for a second reason: a *link-level* libtorch dependency is
+invisible to ``sys.modules``. No native artifact links libtorch -- ``_C`` hands
+results to PyTorch as DLPack capsules -- and that is checked against the
+platform's own dependency listing below.
 """
 
 from __future__ import annotations
@@ -304,8 +304,9 @@ def test_torch_free_core_library_is_usable(
     _assert_torch_free(_substitute(statement, fits_files))
 
 
-def test_core_library_does_not_link_libtorch() -> None:
-    """``libtorchfits_core`` must not have libtorch in its dependency list.
+@pytest.mark.parametrize("artifact", ["libtorchfits_core", "_core", "_C"])
+def test_native_artifacts_do_not_link_libtorch(artifact: str) -> None:
+    """No native artifact may have libtorch in its dependency list.
 
     ``sys.modules`` proves the *Python* ``torch`` module was not imported, which
     is what the other cases check. It cannot see a libtorch that the dynamic
@@ -314,7 +315,9 @@ def test_core_library_does_not_link_libtorch() -> None:
     own dependency listing, which is the only thing that can see it.
 
     macOS and Linux are the two platforms torchfits ships wheels for, so this
-    is a hard requirement there rather than a best-effort probe.
+    is a hard requirement there rather than a best-effort probe. For ``_C`` it
+    is also what keeps one wheel valid across PyTorch minors: a libtorch link
+    would tie it to one minor's C++ ABI.
     """
     if sys.platform == "darwin":
         tool = ["otool", "-L"]
@@ -323,10 +326,16 @@ def test_core_library_does_not_link_libtorch() -> None:
     else:
         pytest.skip(f"no dependency lister for {sys.platform!r}")
 
+    import torchfits._C as native
     import torchfits._core as core
 
-    core_lib = Path(core.__file__).resolve().parent / _core_library_name()
-    assert core_lib.is_file(), f"libtorchfits_core not found next to {core.__file__}"
+    if artifact == "_C":
+        core_lib = Path(native.__file__).resolve()
+    elif artifact == "_core":
+        core_lib = Path(core.__file__).resolve()
+    else:
+        core_lib = Path(core.__file__).resolve().parent / _core_library_name()
+    assert core_lib.is_file(), f"{artifact} not found next to {core.__file__}"
 
     proc = subprocess.run(
         [*tool, str(core_lib)], capture_output=True, text=True, check=True
@@ -344,8 +353,9 @@ def test_core_library_does_not_link_libtorch() -> None:
         line for line in lines if re.search(r"lib(torch|c10|c10_cuda|caffe2|omp)", line)
     ]
     assert not offenders, (
-        f"{core_lib.name} links libtorch: {offenders}. The metadata core exists so "
-        "importing it does not pull libtorch into the process."
+        f"{core_lib.name} links libtorch: {offenders}. No native artifact may: "
+        "importing it would pull libtorch into the process and tie the wheel "
+        "to one PyTorch minor's C++ ABI."
     )
 
 

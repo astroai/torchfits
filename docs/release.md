@@ -2,48 +2,48 @@
 
 Maintainer runbook for cutting a release.
 
-## 0. Release lane
+## 0. Supported PyTorch range
 
-Each torchfits release targets **one PyTorch minor** (the wheel "lane"),
-because PyTorch has no stable C++ ABI across minors. Lanes live in
-`scripts/torch_lanes.json` (single source of truth):
+The native extension links no libtorch (results reach PyTorch as DLPack
+capsules) and targets the CPython stable ABI, so one release serves every
+PyTorch from a floor up, with no upper bound. The range lives in
+`scripts/torch_support.json` (single source of truth):
 
-| PyTorch lane | torchfits release |
+| Key | Meaning |
 |---|---|
-| **2.14.x** | **1.3.2** (lane base. CUDA flavors cu126/cu130) |
+| `torchfits_version` | the release being prepared (plain `X.Y.Z`) |
+| `torch_min` | the runtime floor: the oldest PyTorch minor CI tests |
+| `torch_tested` | the newest PyTorch minor CI tests |
 
-`scripts/torch_lanes.json` currently defines a single lane; auxiliary
-`+torchNNN` local-version wheels are created by adding lanes to that file and
-re-running `scripts/release_lane.py --apply`.
+Raise `torch_min` only when a release needs a newer PyTorch API; raise
+`torch_tested` when CI has run the suite against a newer minor.
 
 ## 1. Version sync
 
-Apply the lane everywhere in one step:
+Render the version and the floor everywhere in one step:
 
 ```bash
-pixi run python scripts/release_lane.py --lane <X.Y> --apply
+pixi run python scripts/release_lane.py --apply
 pixi run check-lane
 ```
 
-`--apply` rewrites the version + torch pin in:
+`--apply` rewrites the version and the torch floor in:
 
-- `pyproject.toml` (`version`, `[cpu]` / `[cuda]` extra pins)
-- `constraints-wheel.txt` (wheel ABI lane)
-- `pixi.toml`
-- `packaging/conda/recipe.yaml` (torch_pin)
+- `pyproject.toml` (`version`, `torch>=<torch_min>`)
+- `pixi.toml` (`version`, every `pytorch = ">=<torch_min>"`)
+- `packaging/conda/recipe.yaml` (`version`, `torch_pin`)
 - `src/torchfits/__init__.py` (`__version__`)
 
-Release candidates (pre-tag validation runs) render the lane base plus a PEP 440
-prerelease suffix:
+Release candidates (pre-tag validation runs) render the base version plus a
+PEP 440 prerelease suffix:
 
 ```bash
-pixi run python scripts/release_lane.py --lane <X.Y> --prerelease rc<N> --apply
+pixi run python scripts/release_lane.py --apply --prerelease rc<N>
 ```
 
-e.g. `--prerelease rc5` on lane 2.14 appends `rc5` to that lane's `torchfits_version`, and
-`--check` / `check-lane` accept the rc state as the lane's base version.
-A plain `--apply` (no `--prerelease`) always finalizes back to the map
-version.
+e.g. `--prerelease rc1` renders `1.3.3rc1`, and `--check` / `check-lane` accept
+the rc state as that base version. A plain `--apply` (no `--prerelease`) always
+finalizes back to `torchfits_version`.
 
 **Release-candidate gate.** From 1.3.1 onward, every stable tag is preceded by
 an `rc` tag for the same version. The rc and the stable tag carry the same
@@ -53,9 +53,11 @@ version. `scripts/check_release_rc.py` enforces the gate before PyPI upload,
 and section 9 runs it locally. `1.3.0` (2026-10-22) was published without an
 rc.
 
-`check-lane` fails unless all five agree with `scripts/torch_lanes.json`.
-Update the compatibility / install docs (README.md, `docs/install.md`,
-`docs/compatibility.md`) when the current-lane numbers change.
+`check-lane` fails unless all four files agree with
+`scripts/torch_support.json`, and when a workflow hard-codes a torch pin
+(workflows read them from `release_lane.py --print-pins`). Update the
+compatibility / install docs (README.md, `docs/install.md`,
+`docs/compatibility.md`) when the floor or the tested minor changes.
 
 ## 2. Changelog
 
@@ -86,10 +88,9 @@ pixi run ci-local
 pixi run release-gate
 ```
 
-All must pass. `preflight-push` includes `check-lane` (all five lane files
-agree). `ci-local` and the CI lint job also run `check-torch-pins`, which
-resolves the `[cpu]` / `[cuda]` extra pins against the PyTorch indexes on the
-wheel ABI lane.
+All must pass. `preflight-push` includes `check-lane` (the version and torch
+floor agree with `scripts/torch_support.json`). CI tests the newest PyTorch on
+every Python and the floor (`TORCH_MIN_PIN`) on Python 3.13.
 
 ## 4. Public-API freeze (SemVer 1.0 / breaking cuts)
 
@@ -134,16 +135,16 @@ torchfits-harness.
 - [x] README and docs do not claim torchfits ownership of WCS, sphere geometry,
       HEALPix, or sky-domain simulation.
 - [x] Install docs still document CPU-only (no CUDA libs) and GPU torch index
-      recipes, and the `[cpu]` / `[cuda]` extra pins track the current wheel
-      lane (`pixi run check-torch-pins` enforces this).
+      recipes (install the PyTorch build first, then torchfits).
 
 ## 8. Local artifact check (optional)
 
-Wheel matrix (lanes × Python, built in tar copies so the working tree stays
-clean):
+Wheels (one cp311 wheel and one cp312-abi3 wheel, built in tar copies so the
+working tree stays clean), then each verified against the torch floor and the
+newest tested minor:
 
 ```bash
-bash scripts/build_wheels_local.sh --lanes <list> --pythons "3.11 3.12 3.13 3.14 3.15" dist-local
+bash scripts/build_wheels_local.sh --pythons 3.11,3.13 dist-local
 bash scripts/verify_wheel_matrix.sh --jobs 4 dist-local
 ```
 
@@ -193,13 +194,14 @@ they are the product. Put evidence in the changelog / docs site.
 
 Publishing triggers `.github/workflows/build_wheels.yml`, which:
 
-1. Runs tests (each job resolves the lane's torch pin via
+1. Runs tests against the torch floor (pins from
    `release_lane.py --print-pins`).
-2. Builds wheels (Linux x86_64 + aarch64 on cp311–cp315; macOS arm64 on
-   cp311–cp314, because torch 2.14's cp315 macOS wheel is ABI-broken —
-   [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779); torch
-   pinned to the lane via `scripts/cibw_before_build.sh`). An sdist is
-   attached to the GitHub Release only — **not** uploaded to PyPI.
+2. Builds wheels without PyTorch: per platform (Linux x86_64 + aarch64, macOS
+   arm64) one `cp311` wheel and one `cp312-abi3` wheel, which cibuildwheel
+   tests on every later CPython (macOS skips cp315, because torch 2.14's cp315
+   macOS wheel is ABI-broken —
+   [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). An
+   sdist is attached to the GitHub Release only — **not** uploaded to PyPI.
 3. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via
    OIDC trusted publishing (`id-token: write` on the `pypi` Environment).
    There is no `password:` / `PYPI_API_TOKEN` in the workflow.

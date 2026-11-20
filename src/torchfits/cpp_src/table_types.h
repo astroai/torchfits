@@ -7,10 +7,9 @@
 #include <cstdlib>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-#include <ATen/ATen.h>
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
+#include "native_tensor.h"
 #include "internal_utils.h"
 #include "security.h"
 #include "fits_handle.h"
@@ -37,7 +36,7 @@ struct ColumnInfo {
     FITSColumnType type;
     int repeat;
     int width;
-    torch::ScalarType torch_type;
+    native::ScalarType torch_type;
     long byte_offset; // Offset in bytes from start of row
     double tscale = 1.0;
     double tzero = 0.0;
@@ -47,7 +46,7 @@ struct ColumnInfo {
     long long tnull = 0;
     bool is_unsigned_int = false;  // uint16/uint32 FITS convention (TZERO offset)
     int64_t unsigned_offset = 0;   // 32768 or 2147483648
-    torch::ScalarType unsigned_target_type = torch::kInt64;  // kUInt16 or kUInt32
+    native::ScalarType unsigned_target_type = native::kInt64;  // kUInt16 or kUInt32
     long storage_bytes = 0;        // Physical bytes occupied by one table row
     int fits_typecode = 0;         // CFITSIO typecode from analyze_table
 };
