@@ -293,7 +293,9 @@ def _select_table_rows(chunk: dict[str, Any], row_mask: torch.Tensor) -> dict[st
     out: dict[str, Any] = {}
     for name, value in chunk.items():
         if isinstance(value, torch.Tensor):
-            out[name] = value.index_select(0, keep.to(value.device))
+            # Advanced indexing, not index_select: torch < 2.14 has no
+            # index_select kernel for uint16/uint32/uint64 columns.
+            out[name] = value[keep.to(value.device)]
         elif isinstance(value, list):
             out[name] = [value[i] for i in picked]
         else:
