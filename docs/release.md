@@ -41,7 +41,7 @@ PEP 440 prerelease suffix:
 pixi run python scripts/release_lane.py --apply --prerelease rc<N>
 ```
 
-e.g. `--prerelease rc1` renders `1.4.0rc1`, and `--check` / `check-lane` accept
+e.g. `--prerelease rc1` renders `1.3.3rc1`, and `--check` / `check-lane` accept
 the rc state as that base version. A plain `--apply` (no `--prerelease`) always
 finalizes back to `torchfits_version`.
 

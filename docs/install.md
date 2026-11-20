@@ -184,8 +184,8 @@ Linux, older glibc, older macOS, and x86_64 macOS are unsupported.
 
 **`ImportError: torchfits was built for PyTorch 2.x.x but found PyTorch ...`**
 
-Releases before 1.4.0 linked libtorch and only imported under the PyTorch minor
-they were built for. Upgrade torchfits: 1.4.0 and newer work with every
+Releases before 1.3.3 linked libtorch and only imported under the PyTorch minor
+they were built for. Upgrade torchfits: 1.3.3 and newer work with every
 PyTorch from 2.12 on.
 
 **`./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt` fails**

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.3.3rc1] — 2026-11-20
+
 ### Highlights
 The native extension no longer links libtorch. It decodes into its own
 buffers and hands each result to PyTorch through DLPack (zero copy, public
@@ -2020,7 +2022,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.3rc1...HEAD
+[1.3.3rc1]: https://github.com/astroai/torchfits/compare/v1.3.2...v1.3.3rc1
 [1.3.2]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2
 [1.3.2rc1]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2rc1
 [1.3.1]: https://github.com/astroai/torchfits/compare/v1.3.0...v1.3.1

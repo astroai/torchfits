@@ -37,7 +37,7 @@ return type is a `torch.Tensor`, or that takes `device=`.** Nothing before it.
 The rule exists because the cost of violating it is invisible to an
 operation-level benchmark: a header peek reads a 2880-byte block in
 microseconds, while importing the Python tensor runtime costs about a second.
-Before 1.4.0 the extension linked libtorch and checked the PyTorch ABI at the
+Before 1.3.3 the extension linked libtorch and checked the PyTorch ABI at the
 tensor boundary; it now links no libtorch, and the first tensor result imports
 `torch.utils.dlpack` to adopt the decoded buffer.
 

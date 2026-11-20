@@ -28,10 +28,10 @@ Usage::
     release_lane.py --check                  verify committed files match the support map
     release_lane.py --print-pins             print KEY=VALUE pins (CI: >> "$GITHUB_ENV")
     release_lane.py --apply                  render the plain release version
-    release_lane.py --apply --prerelease rc1 render a release candidate (1.4.0rc1)
+    release_lane.py --apply --prerelease rc1 render a release candidate (1.3.3rc1)
 
 ``--check`` is wired into preflight/CI so a pin can never drift from the
-support map. A committed pre-release (``1.4.0rc1``) checks as its base.
+support map. A committed pre-release (``1.3.3rc1``) checks as its base.
 """
 
 from __future__ import annotations
