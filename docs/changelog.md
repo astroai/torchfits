@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Highlights
+The native extension no longer links libtorch. It decodes into its own
+buffers and hands each result to PyTorch through DLPack (zero copy, public
+Python API only), and it is built against the CPython stable ABI. One wheel per
+platform (`cp312-abi3`, plus `cp311`) now works with **PyTorch 2.12 and every
+later release** (`torch>=2.12`, no upper bound) instead of one torchfits
+release per PyTorch minor. Dtypes, zero-copy behaviour, scaling, string,
+variable-length and NULL handling are unchanged.
+
+### Behaviour changes
+- **PyTorch range.** The runtime requirement is `torch>=2.12` (was
+  `>=2.14,<2.15`). CI tests the floor and the newest release (2.15);
+  `scripts/torch_support.json` records both.
+- **No `[cpu]` / `[cuda]` extras.** They pinned one PyTorch minor's build
+  flavour. Install the PyTorch build you want first
+  (`pip install torch --index-url https://download.pytorch.org/whl/cpu`, or a
+  `cuXXX` index), then `pip install torchfits`.
+- **No import-time PyTorch version check.** `import torchfits._C` loads no
+  libtorch and no longer raises "built for PyTorch X.Y"; the first tensor result
+  imports `torch.utils.dlpack`.
+- **Threads.** Native table decoding runs on torchfits's own pool, sized by
+  `TORCHFITS_NUM_THREADS`, instead of PyTorch's intra-op pool, so
+  `torch.set_num_threads` no longer limits it.
+- **Building from source needs no PyTorch.**
+
+### Changed
+- **Breaking:** native: Link no libtorch; one abi3 wheel serves torch>=2.12
+
+### Fixed
+- data: Select where= rows by advanced indexing, not index_select
+  (torch before 2.14 has no `index_select` for uint16/uint32/uint64, so
+  `where=` on a table dataset with an unsigned column fell back to the Arrow
+  representation)
+
+### Performance
+- core: Let the caller claim parallel_for chunks; idle workers spin briefly
+  (buffered table reads of 50k-100k rows are 20-40% faster than 1.3.2 on an
+  8-core arm64 Mac; 2k-10k-row windows and image reads are within ~5%). Each
+  returned tensor costs about 0.3-0.6 us more to hand over (DLPack import
+  instead of a libtorch wrap), visible only on many tiny reads: a 64x64 cutout
+  +0.3 us (+20-30%), a 100-column 1k-row table +60 us (+15-25%).
+
 ### Docs
 - backlog: Drop r7c-22, commentary replay is fixed in 1.3.2
 
