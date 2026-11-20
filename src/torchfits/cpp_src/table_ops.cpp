@@ -12,7 +12,7 @@
 #undef READONLY
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
+#include "native_tensor.h"
 #include "fits_handle.h"
 #include "table_types.h"
 #include "nb_ndarray_utils.h"

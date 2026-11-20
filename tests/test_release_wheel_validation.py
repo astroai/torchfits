@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import check_macos_wheel_floor as macos_floor  # noqa: E402
 import validate_release_wheels as release_wheels  # noqa: E402
+
+_COMMITTED_TORCH_REQUIREMENT = release_wheels.expected_torch_requirement
 from archive_safety import (  # noqa: E402
     MAX_ARCHIVE_MEMBERS,
     MAX_COMPRESSION_RATIO,
@@ -20,8 +22,17 @@ from archive_safety import (  # noqa: E402
 )
 
 
-def _wheel(directory: Path, version: str, python: str, platform: str) -> Path:
-    name = f"torchfits-{version}-{python}-{python}-{platform}.whl"
+def _wheel(
+    directory: Path,
+    version: str,
+    python: str,
+    platform: str,
+    abi: str | None = None,
+    torch: str = "torch>=2.12",
+    members: dict[str, bytes] | None = None,
+) -> Path:
+    abi = abi or ("abi3" if python != "cp311" else python)
+    name = f"torchfits-{version}-{python}-{abi}-{platform}.whl"
     path = directory / name
     dist_info = f"torchfits-{version}.dist-info"
     metadata = (
@@ -29,39 +40,106 @@ def _wheel(directory: Path, version: str, python: str, platform: str) -> Path:
         "Name: torchfits\n"
         f"Version: {version}\n"
         "Requires-Python: >=3.11\n"
-        "Requires-Dist: torch<2.15,>=2.14\n"
+        f"Requires-Dist: {torch}\n"
     )
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(f"{dist_info}/METADATA", metadata)
         tags = "".join(
-            f"Tag: {python}-{python}-{platform_tag}\n"
+            f"Tag: {python}-{abi}-{platform_tag}\n"
             for platform_tag in platform.split(".")
         )
         archive.writestr(
             f"{dist_info}/WHEEL",
             f"Wheel-Version: 1.0\n{tags}",
         )
+        for member, payload in (members or {}).items():
+            archive.writestr(member, payload)
     return path
 
 
-def _matrix(directory: Path, version: str = "1.3.1rc2") -> list[Path]:
+def _matrix(directory: Path, version: str = "1.4.0rc2", **kwargs) -> list[Path]:
     wheels = []
-    for python in ("cp311", "cp312", "cp313", "cp314", "cp315"):
-        wheels.append(_wheel(directory, version, python, "manylinux_2_28_x86_64"))
-        wheels.append(_wheel(directory, version, python, "manylinux_2_28_aarch64"))
-    for python in ("cp311", "cp312", "cp313", "cp314"):
-        wheels.append(_wheel(directory, version, python, "macosx_14_0_arm64"))
+    for python in ("cp311", "cp312"):
+        for platform in (
+            "manylinux_2_28_x86_64",
+            "manylinux_2_28_aarch64",
+            "macosx_14_0_arm64",
+        ):
+            wheels.append(_wheel(directory, version, python, platform, **kwargs))
     return wheels
+
+
+@pytest.fixture(autouse=True)
+def _floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Decouple the fixtures from the committed floor.
+    monkeypatch.setattr(release_wheels, "expected_torch_requirement", lambda: ">=2.12")
 
 
 def test_exact_release_matrix_passes_and_writes_manifest(tmp_path: Path) -> None:
     _matrix(tmp_path)
-    wheels, problems = release_wheels.validate(tmp_path, "1.3.1rc2")
+    wheels, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
     assert problems == []
     manifest = tmp_path / "WHEEL-MANIFEST.sha256"
     release_wheels.write_manifest(wheels, manifest)
-    assert len(manifest.read_text(encoding="utf-8").splitlines()) == 14
+    assert len(manifest.read_text(encoding="utf-8").splitlines()) == 6
     assert release_wheels.verify_manifest(wheels, manifest) == []
+
+
+def test_committed_floor_is_the_expected_torch_requirement() -> None:
+    import json
+
+    support = json.loads(
+        (ROOT / "scripts" / "torch_support.json").read_text(encoding="utf-8")
+    )
+    assert _COMMITTED_TORCH_REQUIREMENT() == f">={support['torch_min']}"
+
+
+@pytest.mark.parametrize(
+    "torch",
+    ["torch<2.15,>=2.14", "torch>=2.11", "torch", "torch>=2.12,<3"],
+)
+def test_release_matrix_rejects_capped_or_wrong_torch_floor(
+    tmp_path: Path, torch: str
+) -> None:
+    _matrix(tmp_path, torch=torch)
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
+    assert any("torch requirement" in item for item in problems)
+
+
+def test_release_matrix_rejects_version_specific_wheel_above_cp311(
+    tmp_path: Path,
+) -> None:
+    _matrix(tmp_path)
+    _wheel(tmp_path, "1.4.0rc2", "cp313", "manylinux_2_28_x86_64", abi="cp313")
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
+    assert any("unexpected Python/ABI tag cp313-cp313" in item for item in problems)
+
+
+@pytest.mark.parametrize(
+    "needed", [b"libtorch_python.so", b"@rpath/libc10.dylib", b"libtorch_cpu.so"]
+)
+def test_release_matrix_rejects_libtorch_linkage(tmp_path: Path, needed: bytes) -> None:
+    _matrix(
+        tmp_path,
+        members={
+            "torchfits/_C.abi3.so": b"\x7fELF..." + needed + b"\x00",
+            # torchfits's own core library must not trip the check.
+            "torchfits/libtorchfits_core.so": b"\x7fELF...libtorchfits_core.so",
+        },
+    )
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
+    assert any("references libtorch" in item for item in problems)
+
+
+def test_release_matrix_accepts_torchfits_core_library(tmp_path: Path) -> None:
+    _matrix(
+        tmp_path,
+        members={
+            "torchfits/libtorchfits_core.dylib": b"@rpath/libtorchfits_core.dylib"
+        },
+    )
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
+    assert problems == []
 
 
 def test_manifest_rejects_changed_wheel(tmp_path: Path) -> None:
@@ -78,13 +156,13 @@ def test_torch_requirement_requires_exact_distribution_name() -> None:
     from email.parser import Parser
 
     for name in ("torchvision", "torch-extra", "torch.foo"):
-        metadata = Parser().parsestr(f"Requires-Dist: {name}<2.15,>=2.14\n")
+        metadata = Parser().parsestr(f"Requires-Dist: {name}>=2.12\n")
         assert release_wheels._torch_requirement(metadata) is None
 
 
 def test_release_manifest_includes_and_verifies_sdist(tmp_path: Path) -> None:
     wheels = _matrix(tmp_path)
-    sdist = tmp_path / "torchfits-1.3.1rc2.tar.gz"
+    sdist = tmp_path / "torchfits-1.4.0rc2.tar.gz"
     sdist.write_bytes(b"sdist")
     manifest = tmp_path / "RELEASE-MANIFEST.sha256"
     release_wheels.write_manifest(wheels + [sdist], manifest)
@@ -101,7 +179,7 @@ def test_release_matrix_rejects_old_macos_tag(tmp_path: Path) -> None:
     wheels = _matrix(tmp_path)
     mac = next(wheel for wheel in wheels if "macosx" in wheel.name)
     mac.rename(Path(str(mac).replace("macosx_14_0", "macosx_11_0")))
-    _, problems = release_wheels.validate(tmp_path, "1.3.1rc2")
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
     assert any("unexpected platform tag macosx_11_0_arm64" in item for item in problems)
     assert any("wheel matrix mismatch" in item for item in problems)
 
@@ -110,7 +188,7 @@ def test_release_matrix_rejects_wrong_manylinux_floor(tmp_path: Path) -> None:
     wheels = _matrix(tmp_path)
     linux = next(wheel for wheel in wheels if "manylinux" in wheel.name)
     linux.rename(Path(str(linux).replace("manylinux_2_28", "manylinux_2_17")))
-    _, problems = release_wheels.validate(tmp_path, "1.3.1rc2")
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
     assert any("unexpected platform tag manylinux_2_17" in item for item in problems)
 
 
@@ -118,11 +196,11 @@ def test_release_matrix_rejects_duplicate_cell(tmp_path: Path) -> None:
     _matrix(tmp_path)
     _wheel(
         tmp_path,
-        "1.3.1rc2",
+        "1.4.0rc2",
         "cp311",
         "manylinux_2_28_x86_64.manylinux_2_26_x86_64",
     )
-    _, problems = release_wheels.validate(tmp_path, "1.3.1rc2")
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
     assert "wheel matrix contains duplicate cells" in problems
 
 
@@ -150,7 +228,7 @@ def test_release_matrix_accepts_compressed_linux_platform_tags(
     with zipfile.ZipFile(compressed, "w") as archive:
         for name, payload in entries.items():
             archive.writestr(name, payload)
-    _, problems = release_wheels.validate(tmp_path, "1.3.1rc2")
+    _, problems = release_wheels.validate(tmp_path, "1.4.0rc2")
     assert problems == []
 
 

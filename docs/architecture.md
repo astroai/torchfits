@@ -21,9 +21,11 @@ flowchart TB
 `io.py` is a thin re-export layer. All real work happens in `_io_engine/`
 (submodules: `_read_pipeline.py`, `table_api.py`, `caches.py`) which call
 into `torchfits._C`. The C++ extension is compiled via scikit-build-core +
-nanobind; it vendors CFITSIO statically. It still links libtorch, but importing
-the extension no longer imports the Python `torch` package: the ABI check is
-deferred until a tensor boundary is actually used.
+nanobind against the CPython stable ABI; it vendors CFITSIO statically and
+includes or links no libtorch. It decodes into its own buffers
+(`native_tensor.h`) and hands each result to PyTorch as a DLPack capsule
+(`native_py.h`, `torch.utils.dlpack.from_dlpack`, zero copy), so importing it
+never loads torch and one wheel works with every supported PyTorch release.
 
 ---
 
@@ -35,9 +37,9 @@ return type is a `torch.Tensor`, or that takes `device=`.** Nothing before it.
 The rule exists because the cost of violating it is invisible to an
 operation-level benchmark: a header peek reads a 2880-byte block in
 microseconds, while importing the Python tensor runtime costs about a second.
-The old extension also imported `torch` in its module body for the ABI check;
-the current extension defers that import until a tensor conversion, while
-retaining an explicit ABI check before every tensor wrap.
+Before 1.4.0 the extension linked libtorch and checked the PyTorch ABI at the
+tensor boundary; it now links no libtorch, and the first tensor result imports
+`torch.utils.dlpack` to adopt the decoded buffer.
 
 | Entry point | Loads torch | Why |
 |---|---|---|
@@ -54,13 +56,13 @@ retaining an explicit ABI check before every tensor wrap.
 
 The Arrow path crosses the extension without creating a Python tensor at all:
 the native reader exports each decoded column as a read-only buffer (a
-capsule-owned `torch::Tensor` behind a minimal buffer-protocol type), and
+capsule-owned native tensor behind a minimal buffer-protocol type), and
 `pyarrow` wraps that memory with `Array.from_buffers`. Clean numeric and
 fixed-width byte columns therefore go buffer → Arrow with no `bytearray` copy
 and no NumPy hop.
 
-The dynamic-dependency split has landed. The native stack is two libraries, and
-the metadata path never touches the one that links libtorch:
+The native stack is two modules over one shared library, and neither links
+libtorch:
 
 ```mermaid
 flowchart TB
@@ -88,14 +90,15 @@ both modules, for three reasons:
 2. **`SharedReadMeta` and the handle registry must be one instance.** Two caches
    would both return correct answers and quietly disagree after a file is
    rewritten. `tests/test_core_library.py` asserts a single registry.
-3. **`_core` must load without libtorch.** Linking torch into it would defeat
-   the entire split, so the CMake target links no Torch target (enforced by a
-   configure-time guard) and the test suite reads the library's own dependency
-   list with `otool -L` / `ldd`.
+3. **No native target may link libtorch.** A libtorch link ties a wheel to one
+   PyTorch minor's C++ ABI and makes metadata imports load it, so no CMake
+   target links a Torch target (enforced by a configure-time guard), the test
+   suite reads the library's own dependency list with `otool -L` / `ldd`, and
+   the release validator rejects a wheel whose binaries name a libtorch library.
 
-The extension keeps its torch ABI guard. The core carries a build-id constant
-stamped into the library, into `_core`, and into `_C`; a mismatched pair is
-rejected with an `ImportError` at the boundary instead of misreading data.
+The core carries a build-id constant stamped into the library, into `_core`,
+and into `_C`; a mismatched pair is rejected with an `ImportError` at the
+boundary instead of misreading data.
 
 ### Current status
 
@@ -136,7 +139,7 @@ Used when the image is uncompressed and `mmap=True`.
 2. Call `fits_get_hduaddrll` to get the data offset within the file
 3. Copy the data region into a freshly allocated tensor (`pread`, or a
    page-aligned `mmap()` + copy) — CFITSIO is **not** used for pixel reads
-4. Byte-swap in parallel via `at::parallel_for` using `__builtin_bswap16/32/64`
+4. Byte-swap in parallel on the core thread pool using `__builtin_bswap16/32/64`
 5. Apply BSCALE/BZERO in the same parallel pass or on-device (controlled by
    `scale_on_device`)
 6. Return the tensor. It owns its memory: no mapping stays alive, and
@@ -203,7 +206,7 @@ in-process:
 
 1. mmap the file
 2. Pre-byte-swap filter target values to match raw FITS bytes
-3. Scan rows in parallel via `at::parallel_for`
+3. Scan rows in parallel on the core thread pool
 4. For EQ/NE on integers: compare raw bytes directly (zero bswap per row)
 5. For GT/LT/GE/LE: byte-swap per row then compare
 
@@ -307,15 +310,17 @@ back to sequential. Each thread opens its own `FITSFile` independently.
 
 ### Parallel byte-swapping
 
-Table column decoding and batch reads use `at::parallel_for` (PyTorch's intra-op
-thread pool). The sign-bit XOR for signed-byte columns runs in
-`libtorchfits_core`, which cannot use ATen, so it has its own pool
-(`core/parallel.cpp`): work smaller than one grain runs inline on the calling
-thread, and the caller keeps one chunk so a nested `parallel_for` cannot
-deadlock on workers the outer call owns. Threshold for taking the parallel
-branch at all: 256 KB (`TORCHFITS_XOR_PARALLEL_MIN_BYTES`); the grain is 1 MiB.
-`TORCHFITS_NUM_THREADS` sizes the core pool and is read by ATen too, so pinning
-it pins both.
+Table column decoding and the sign-bit XOR for signed-byte columns run on
+`libtorchfits_core`'s own thread pool (`core/parallel.cpp`); the extension does
+not use PyTorch's intra-op pool. Column decodes split a range the way
+`at::parallel_for` did -- at most one chunk per pool thread, each at least one
+grain (`native::parallel_for` in `native_tensor.h`). Work smaller than one grain
+runs inline on the calling thread, and the caller keeps one chunk so a nested
+`parallel_for` cannot deadlock on workers the outer call owns. Threshold for
+taking the XOR parallel branch at all: 256 KB
+(`TORCHFITS_XOR_PARALLEL_MIN_BYTES`); its grain is 1 MiB.
+`TORCHFITS_NUM_THREADS` sizes the core pool; `torch.set_num_threads` does not
+affect it.
 
 ### Handle / metadata thread safety
 
@@ -452,7 +457,7 @@ profiling or working around a specific bottleneck.
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
 | `TORCHFITS_XOR_PARALLEL_MIN_BYTES` | `262144` | Threshold for parallel sign-bit XOR |
 | `TORCHFITS_MAX_CACHED_FDS` | `32` | Raw descriptors SharedReadMeta keeps open across reads, LRU-evicted. The table is per-process, so an unbounded cache starves every other library in it (measured: 90 reads at `RLIMIT_NOFILE=64` left 64/64 descriptors held and 199/200 further opens failing with EMFILE). `0` restores unbounded retention |
-| `TORCHFITS_NUM_THREADS` | hardware concurrency (capped at 64) | Worker threads for `libtorchfits_core`'s own `parallel_for`. ATen reads the same variable, so pinning it also pins the ATen pool; set it when the two pools would otherwise oversubscribe |
+| `TORCHFITS_NUM_THREADS` | hardware concurrency (capped at 64) | Worker threads for `libtorchfits_core`'s pool, which runs every native parallel decode (table columns, row filters, sign-bit XOR). `torch.set_num_threads` does not size it; set this when the pool and PyTorch's intra-op threads would otherwise oversubscribe |
 | `TORCHFITS_VLA_HEAP_PREAD` | `0` (off) | Contiguous-heap single-`pread` fast path for VLA table columns; off by default until THEAP/offset edge cases are fully proven vs CFITSIO |
 
 ### Debug / bench-only
@@ -482,11 +487,7 @@ torchfits-harness, not this repository.
 - **CANFAR CUDA wheel check** (`scripts/verify_wheel_cuda_canfar.sh`):
   `TORCHFITS_CANFAR_CPU`, `TORCHFITS_CANFAR_IMAGE`,
   `TORCHFITS_CANFAR_MAX_WAIT_SECS`, `TORCHFITS_CANFAR_MEMORY`,
-  `TORCHFITS_CANFAR_POLL_SECS`.
-
-`TORCHFITS_TORCH_ABI` is a compile-time C++ macro (set by CMake from the
-PyTorch build version) — see
-[PyTorch ABI compatibility](#pytorch-abi-compatibility) below.
+  `TORCHFITS_CANFAR_POLL_SECS`, `TORCHFITS_CU_FLAVORS`.
 
 ---
 
@@ -567,9 +568,12 @@ promises `torch.Tensor` fails the build.
 
 ---
 
-## PyTorch ABI compatibility
+## PyTorch version compatibility
 
-The extension performs a runtime check that the PyTorch version prefix
-matches `TORCHFITS_TORCH_ABI` (a compile-time constant). Wheels built
-against a different PyTorch ABI will fail to load with a clear error
-message.
+The extension includes and links no libtorch, so it has no PyTorch C++ ABI to
+match: it hands decoded buffers to `torch.utils.dlpack.from_dlpack` as DLPack
+capsules, and device moves (`device="cuda"`, `"mps"`) happen in Python with
+`Tensor.to`. One wheel therefore serves every PyTorch from the supported floor
+(`torch>=2.12`) up, with no upper bound. `scripts/torch_support.json` records
+the floor and the newest minor CI tests; `scripts/release_lane.py` renders the
+floor into `pyproject.toml`, `pixi.toml` and the conda recipe.

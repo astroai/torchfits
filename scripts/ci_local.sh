@@ -11,9 +11,7 @@ echo "=== ci_local: lint ==="
 pixi run ruff check .
 pixi run ruff format --check .
 pixi run python scripts/check_duplicate_cpp.py
-# Resolves the [cpu]/[cuda] extra pins against download.pytorch.org (needs network).
-pixi run check-torch-pins
-# Verifies the committed lane pins match scripts/torch_lanes.json (no network).
+# Verifies the committed version and torch floor match scripts/torch_support.json.
 pixi run check-lane
 
 if [[ "${FAST}" == "1" ]]; then

@@ -4,9 +4,14 @@ torchfits reads and writes FITS as tensors and tables. World coordinates, units,
 
 ## Where things stand
 
-The **1.3 release series** uses the PyTorch 2.14 lane. It moves
-to Python 3.11–3.15 (3.10 is dropped), makes `torchfits.open()` and header/HDU
-inspection run without importing PyTorch, and wraps native table buffers in
+**1.4** drops the per-PyTorch-minor release lanes: the native extension no
+longer links libtorch (decoded buffers reach PyTorch through DLPack) and
+targets the CPython stable ABI, so one wheel per platform works with PyTorch
+2.12 and every later release.
+
+The **1.3 release series** used the PyTorch 2.14 lane. It moved
+to Python 3.11–3.15 (3.10 is dropped), made `torchfits.open()` and header/HDU
+inspection run without importing PyTorch, and wrapped native table buffers in
 Arrow instead of staging them through a copy. The [changelog](changelog.md) has
 the notes. The changes that matter for what you call:
 
@@ -28,10 +33,6 @@ the notes. The changes that matter for what you call:
   [torchfits-harness](https://github.com/astroai/torchfits-harness).
 - Single-column projection on the buffered path still `pread`s whole rows; a
   strided per-column read would close the remaining `mmap=False` gap.
-- `compress` and `decompress` only re-encode bytes, but they still load the torch-linked library.
-- The raw table reader still lives in the torch-linked extension, so `table.read`
-  maps `libtorch` even though it never imports Python `torch`. Moving the reader
-  into `libtorchfits_core` would drop that dependency.
 
 ## Later
 

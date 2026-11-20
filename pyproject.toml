@@ -2,23 +2,12 @@
 requires = [
     "scikit-build-core>=1.0.3",
     "nanobind>=3.0.1",
-    # The build-time torch must be the lane torch and no other. Under pip's
-    # default build isolation this list is what the build environment resolves,
-    # so a floor with no upper bound builds against whichever minor is newest
-    # on PyPI and stamps that minor into the extension (CMake embeds it as
-    # TORCHFITS_TORCH_ABI) -- which then refuses to import under the 2.14
-    # this release is pinned to. Every source path inside this repo passes
-    # --no-build-isolation and never sees the difference; this pin is what
-    # protects a plain `pip install .` and the packager SDIST-README.txt is
-    # written for. Keep it identical to the runtime pin below.
-    "torch>=2.14,<2.15",
-    "numpy>=2.4.6"
 ]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "torchfits"
-version = "1.3.2"
+version = "1.4.0"
 description = "FITS I/O for PyTorch with native tensor reads, datasets, and transforms"
 authors = [{ name = "Seb Fabbro", email = "sebfabbro@gmail.com" }]
 readme = "README.md"
@@ -49,13 +38,12 @@ requires-python = ">=3.11"
 # These are automatically managed by pixi for conda packages
 # but needed here for PyPI compatibility
 dependencies = [
-    # Do not loosen this upper bound. Published wheels are ABI-matched to the
-    # 2.14 lane: libtorch_python has no stable C++ ABI across torch minors, so
-    # a wheel built on 2.14 that pip resolves against a newer minor can crash
-    # at import. Other torch minors ship as separate torchfits releases, one per
-    # lane (scripts/torch_lanes.json, docs/install.md). Every other runtime
-    # dependency is deliberately uncapped.
-    "torch>=2.14,<2.15",
+    # Supported floor, deliberately uncapped: the native extension links no
+    # libtorch (results cross into PyTorch as DLPack capsules), so a wheel works
+    # with every PyTorch from the floor up. The floor is the oldest minor CI
+    # tests; scripts/torch_support.json owns it and scripts/release_lane.py
+    # renders it here.
+    "torch>=2.12",
     # Floors name the oldest release that still has wheels for the minimum
     # supported Python (3.11) and is within one minor of the newest release.
     # numpy 2.5 dropped cp311, so 2.4.6 is the newest floor 3.11 can install;
@@ -93,22 +81,6 @@ examples = [
     "matplotlib>=3.11",
 ]
 
-# Torch build flavors — pick one. Extras cannot embed index URLs, so [cpu] /
-# [cuda] resolve only when the matching download.pytorch.org index is
-# reachable (PIP_EXTRA_INDEX_URL or pip.conf extra-index-url; see
-# docs/install.md). Exact pins track the 2.14 ABI lane (see
-# scripts/torch_lanes.json).
-cpu = [
-    # Thin CPU-only PyTorch: no CUDA runtime / cuDNN stack. Linux only —
-    # macOS has no +cpu wheel; MPS ships inside the default macOS build.
-    "torch==2.14.0+cpu; sys_platform == 'linux'",
-]
-cuda = [
-    # CUDA-enabled PyTorch (cu130). Linux only — macOS has no
-    # +cu130 wheels; MPS ships inside the default macOS torch build.
-    "torch==2.14.0+cu130; sys_platform == 'linux'",
-]
-
 [tool.scikit-build]
 cmake.source-dir = "src/torchfits/cpp_src"
 cmake.build-type = "Release"
@@ -116,11 +88,9 @@ cmake.args = [
     "-DTORCHFITS_USE_VENDORED_CFITSIO=ON",
     "-DTORCHFITS_NIOBUF=80",
     "-DTORCHFITS_MINDIRECT=8640",
-    # No .cu kernels. Wheels (and pip installs) build against the CPU
-    # libtorch from download.pytorch.org/whl/cpu. CMakeLists.txt stubs
-    # Caffe2 CUDA targets if a CUDA-enabled libtorch is used instead
-    # (pixi GPU / CANFAR); do not point CUDA_TOOLKIT_ROOT_DIR at conda
-    # here — that made blank-machine pip source builds look for conda.
+    # No .cu kernels and no libtorch: the build needs neither CUDA nor
+    # PyTorch. Do not point CUDA_TOOLKIT_ROOT_DIR at conda here -- that made
+    # blank-machine pip source builds look for conda.
     "-DUSE_CUDA=OFF",
     "-DCMAKE_C_FLAGS=-O3",
     "-DCMAKE_CXX_FLAGS=-O3",
@@ -132,6 +102,12 @@ install.strip = false
 wheel.packages = ["src/torchfits"]
 wheel.exclude = ["torchfits/cpp_src/**"]
 
+# The extensions include and link no libtorch, so the wheel targets the CPython
+# stable ABI rather than one PyTorch minor: one cp312-abi3 wheel per platform
+# serves CPython >= 3.12 and every torch from the floor up. Building on 3.11
+# (below the stable-ABI floor nanobind supports) yields a regular cp311 wheel.
+wheel.py-api = "cp312"
+
 # Incremental builds via CMake/Ninja for fast iteration.
 build-dir = "build/{wheel_tag}"
 
@@ -140,9 +116,11 @@ build-dir = "build/{wheel_tag}"
 exclude = [".cursor/**", ".pixi/**", ".github/**"]
 force-include = { "extern/cfitsio" = "extern/cfitsio" }
 
-# Published wheels: CPython 3.11–3.15, Linux glibc x86_64 + aarch64, macOS
-# arm64. Built against CPU torch; the same wheel loads CUDA torch of the
-# matching minor. Free-threaded (cp315t) and musl are out of scope.
+# Published wheels: Linux glibc x86_64 + aarch64, macOS arm64. CPython 3.12+
+# shares one cp312-abi3 wheel per platform (cibuildwheel builds it once and
+# tests it on every later CPython); 3.11 gets its own cp311 wheel. The
+# extension links no libtorch, so the same wheel serves CPU and CUDA builds of
+# every supported PyTorch. Free-threaded (cp315t) and musl are out of scope.
 [tool.cibuildwheel]
 build = "cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = "*-musllinux_* *-manylinux_i686 *-win32 cp31?t-*"
@@ -158,19 +136,20 @@ manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 before-all = "yum install -y bzip2-devel && bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt"
 environment = { PIP_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu" }
-repair-wheel-command = "auditwheel repair --exclude libtorch_python.so --exclude libtorch_cpu.so --exclude libtorch.so --exclude libc10.so -w {dest_dir} {wheel}"
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-# cp315 macOS wheels are not published for 1.3.0: torch 2.14's own cp315 macOS
-# wheel was built against CPython 3.15.0b3 headers and segfaults on the first
-# tensor op outside the main thread (pytorch/pytorch#200779). The Linux cp315
-# wheels are unaffected. Repeat the free-threaded skip: a platform-specific
-# `skip` replaces the global one.
+# The cp312-abi3 wheel also installs on CPython 3.15, but cibuildwheel does not
+# test it there: torch 2.14's own cp315 macOS wheel was built against CPython
+# 3.15.0b3 headers and segfaults on the first tensor op outside the main thread
+# (pytorch/pytorch#200779). The Linux cp315 cells are unaffected. Repeat the
+# free-threaded skip: a platform-specific `skip` replaces the global one.
 skip = "cp31?t-* cp315-*"
 before-all = "bash ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt"
 environment = { _PYTHON_HOST_PLATFORM = "macosx-14.0-arm64", MACOSX_DEPLOYMENT_TARGET = "14.0", CMAKE_OSX_DEPLOYMENT_TARGET = "14.0", PIP_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu" }
-# ponytail: PyTorch extensions resolve torch at runtime; delocate breaks @rpath.
+# Nothing to delocate: libtorchfits_core ships beside the extension
+# (@loader_path) and every other dependency is a macOS system library.
 repair-wheel-command = ""
 
 [tool.pytest.ini_options]

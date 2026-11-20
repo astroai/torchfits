@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # OPTIONAL CUDA verification tier — never part of preflight/ci-local/
-# release-gate. torchfits ships one CPU-linked wheel per (CPython, arch);
-# this script installs that wheel against lane-pinned CUDA-flavored PyTorch
-# on real GPUs via headless CANFAR sessions.
+# release-gate. torchfits ships one wheel per platform that links no libtorch;
+# this script installs it against CUDA-flavored PyTorch of each requested
+# minor ("lane"; default: the floor and the newest tested minor from
+# scripts/torch_support.json) on real GPUs via headless CANFAR sessions.
 #
 # Soft-fail by default: per-lane [FAIL] lines are printed and results land
 # under benchmarks_results/canfar_cuda_verify_<run-id>/ but the script exits 0
@@ -13,7 +14,8 @@
 #
 # Env overrides:
 #   TORCHFITS_LANES, TORCHFITS_JOBS, TORCHFITS_GIT_REF (default main),
-#   TORCHFITS_WHEEL_URL (default: PyPI torchfits==<lane version>),
+#   TORCHFITS_WHEEL_URL (default: PyPI torchfits==<pyproject version>),
+#   TORCHFITS_CU_FLAVORS (default: cu130 cu128 cu126),
 #   TORCHFITS_CANFAR_IMAGE, TORCHFITS_CANFAR_CPU, TORCHFITS_CANFAR_MEMORY,
 #   TORCHFITS_CUDA_VERIFY_STRICT, TORCHFITS_CANFAR_MAX_WAIT_SECS.
 set -euo pipefail
@@ -23,7 +25,7 @@ cd "$ROOT_DIR"
 
 LANES="${TORCHFITS_LANES:-}"
 if [[ -z "${LANES}" ]]; then
-  LANES="$(pixi run python -c 'import json; print(",".join(json.load(open("scripts/torch_lanes.json"))))')"
+  LANES="$(pixi run python -c 'import json; s = json.load(open("scripts/torch_support.json")); print(",".join(dict.fromkeys([s["torch_min"], s["torch_tested"]])))')"
 fi
 JOBS="${TORCHFITS_JOBS:-2}"
 GIT_REF="${TORCHFITS_GIT_REF:-main}"
@@ -33,6 +35,7 @@ MEMORY="${TORCHFITS_CANFAR_MEMORY:-16}"
 MAX_WAIT_SECS="${TORCHFITS_CANFAR_MAX_WAIT_SECS:-5400}"
 STRICT="${TORCHFITS_CUDA_VERIFY_STRICT:-0}"
 WHEEL_URL="${TORCHFITS_WHEEL_URL:-}"
+CU_FLAVORS="${TORCHFITS_CU_FLAVORS:-cu130 cu128 cu126}"
 POLL_SECS="${TORCHFITS_CANFAR_POLL_SECS:-30}"
 REPO_URL="${TORCHFITS_GIT_URL:-https://github.com/astroai/torchfits.git}"
 CLONE_DIR="/tmp/torchfits"
@@ -67,6 +70,7 @@ verify_lane() {
     --gpu 1 \
     --env "TORCHFITS_CUDA_VERIFY_LANE=${lane}" \
     --env "TORCHFITS_WHEEL_URL=${WHEEL_URL}" \
+    --env "TORCHFITS_CU_FLAVORS=${CU_FLAVORS}" \
     --env "PIXI_HOME=/scratch/torchfits-pixi-home" \
     --env "PIXI_CACHE_DIR=/scratch/torchfits-pixi-cache" \
     -- bash -c "${tabs}" > "$create_log" 2>&1; then
@@ -142,7 +146,7 @@ run_lane() {
 }
 
 export -f verify_lane run_lane
-export ROOT_DIR LANES RUN_ID LOCAL_OUT IMAGE CPU MEMORY GIT_REF REPO_URL CLONE_DIR
+export ROOT_DIR LANES RUN_ID LOCAL_OUT IMAGE CPU MEMORY GIT_REF REPO_URL CLONE_DIR CU_FLAVORS
 export WHEEL_URL MAX_WAIT_SECS POLL_SECS
 
 echo "=== CANFAR CUDA wheel verification (soft-fail, strict=${STRICT}) ==="

@@ -1,10 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 project(torchfits_cpp)
 
-# C++20 is the floor, not a preference: torch 2.14's TorchConfig.cmake sets
-# CXX_STANDARD 20, and its ATen headers use concepts (`requires`) that a
-# C++17 build cannot parse -- the failure is a template error inside
-# TensorBase.h, not a warning anyone can read past.
+# The native sources include no torch/ATen header (tensors cross the Python
+# boundary as DLPack capsules), so the language level is the project's own.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -140,7 +138,10 @@ if(DEFINED ENV{PREFIX} AND EXISTS "$ENV{PREFIX}/bin/python")
     set(Python_EXECUTABLE "$ENV{PREFIX}/bin/python" CACHE FILEPATH "Python executable" FORCE)
 endif()
 set(Python_FIND_STRATEGY LOCATION)
-find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+# SKBUILD_SABI_COMPONENT is Development.SABIModule when wheel.py-api asks for
+# the stable ABI (CPython >= 3.12): the extensions are then abi3 and one wheel
+# per platform serves every later CPython.
+find_package(Python COMPONENTS Interpreter Development.Module ${SKBUILD_SABI_COMPONENT} REQUIRED)
 
 # Find nanobind
 # Detect the installed nanobind package and import it into CMake
@@ -189,37 +190,6 @@ message(DEBUG "torchfits: NANOBIND_PYTHON_EXECUTABLE=${NANOBIND_PYTHON_EXECUTABL
 message(DEBUG "torchfits: nanobind_DIR=${nanobind_DIR}")
 message(DEBUG "torchfits: nanobind_ROOT=${nanobind_ROOT}")
 
-# Find PyTorch
-execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import torch; print(torch.utils.cmake_prefix_path)"
-    OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import torch; print(torch.__version__)"
-    OUTPUT_VARIABLE TORCHFITS_BUILD_TORCH_VERSION
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-# Require PyTorch >= 2.10; embed major.minor as the ABI tag for the runtime check.
-string(REGEX MATCH "^([0-9]+)\\.([0-9]+)" _torch_mm "${TORCHFITS_BUILD_TORCH_VERSION}")
-if(NOT _torch_mm)
-    message(FATAL_ERROR
-        "Could not parse PyTorch version '${TORCHFITS_BUILD_TORCH_VERSION}'. "
-        "Install torch>=2.10 before building torchfits from source."
-    )
-endif()
-set(TORCHFITS_TORCH_ABI_MAJOR "${CMAKE_MATCH_1}")
-set(TORCHFITS_TORCH_ABI_MINOR "${CMAKE_MATCH_2}")
-set(TORCHFITS_TORCH_ABI "${TORCHFITS_TORCH_ABI_MAJOR}.${TORCHFITS_TORCH_ABI_MINOR}")
-if(TORCHFITS_TORCH_ABI_MAJOR LESS 2 OR (TORCHFITS_TORCH_ABI_MAJOR EQUAL 2 AND TORCHFITS_TORCH_ABI_MINOR LESS 10))
-    message(FATAL_ERROR
-        "torchfits requires PyTorch >= 2.10 at build time; found ${TORCHFITS_BUILD_TORCH_VERSION}. "
-        "Pre-install a matching torch, then build with --no-build-isolation."
-    )
-endif()
-message(STATUS "torchfits: building against PyTorch ${TORCHFITS_BUILD_TORCH_VERSION} (ABI ${TORCHFITS_TORCH_ABI})")
-list(APPEND CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
-
 # Identity of the torch-free core, stamped into the core, into _core, and into
 # _C. The three must agree at runtime: a wheel built by a half-finished build
 # can leave a stale libtorchfits_core beside a fresh _C, and the failure mode
@@ -229,105 +199,6 @@ string(REPLACE ";" ":" _TORCHFITS_BUILD_DIR "${CMAKE_BINARY_DIR}")
 set(TORCHFITS_CORE_BUILD_ID
     "torchfits-core/1 build=${_TORCHFITS_BUILD_STAMP} type=${CMAKE_BUILD_TYPE} dir=${_TORCHFITS_BUILD_DIR}")
 message(STATUS "torchfits: core build id = ${TORCHFITS_CORE_BUILD_ID}")
-
-# CUDA-enabled PyTorch only: cuda.cmake expects CUDA::nvrtc before extension targets link. Conda
-# toolkits and CMake 4.x often omit that imported target; CPU-only PyTorch skips this path.
-set(TORCHFITS_PYTORCH_CUDA_VERSION "")
-execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import torch; print(torch.version.cuda or '')"
-    OUTPUT_VARIABLE TORCHFITS_PYTORCH_CUDA_VERSION
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-# PyTorch's cuda.cmake (pulled in by find_package(Torch)) calls get_target_property on CUDA::nvrtc
-# before extension code runs. INTERFACE_LINK_LIBRARIES is read by PyTorch for nvrtc shorthash.
-if(TORCHFITS_PYTORCH_CUDA_VERSION AND NOT TARGET CUDA::nvrtc)
-    set(_TORCHFITS_CUDA_LIB_HINTS "")
-    foreach(_root IN ITEMS "${CUDAToolkit_ROOT}" "${CUDAToolkit_LIBRARY_ROOT}" "$ENV{CUDA_HOME}" "$ENV{CUDA_PATH}")
-        if(_root)
-            if(_root MATCHES "/include/?$")
-                get_filename_component(_root "${_root}" DIRECTORY)
-            endif()
-            list(APPEND _TORCHFITS_CUDA_LIB_HINTS "${_root}/lib" "${_root}/lib64")
-            list(APPEND _TORCHFITS_CUDA_LIB_HINTS "${_root}/targets/x86_64-linux/lib")
-            list(APPEND _TORCHFITS_CUDA_LIB_HINTS "${_root}/targets/sbsa/lib")
-        endif()
-    endforeach()
-    list(APPEND _TORCHFITS_CUDA_LIB_HINTS
-        "$ENV{CONDA_PREFIX}/targets/x86_64-linux/lib"
-        "$ENV{PREFIX}/targets/x86_64-linux/lib"
-        "$ENV{CONDA_PREFIX}/lib"
-        "$ENV{PREFIX}/lib"
-    )
-    list(REMOVE_DUPLICATES _TORCHFITS_CUDA_LIB_HINTS)
-    set(TORCHFITS_NVRTC_LIBRARY "")
-    foreach(_hint IN LISTS _TORCHFITS_CUDA_LIB_HINTS)
-        if(NOT EXISTS "${_hint}")
-            continue()
-        endif()
-        file(GLOB _TORCHFITS_NVRTC_GLOB "${_hint}/libnvrtc.so.*")
-        if(_TORCHFITS_NVRTC_GLOB)
-            list(GET _TORCHFITS_NVRTC_GLOB 0 TORCHFITS_NVRTC_LIBRARY)
-            break()
-        endif()
-    endforeach()
-    if(NOT TORCHFITS_NVRTC_LIBRARY)
-        find_library(TORCHFITS_NVRTC_LIBRARY NAMES nvrtc HINTS ${_TORCHFITS_CUDA_LIB_HINTS})
-    endif()
-    if(NOT TORCHFITS_NVRTC_LIBRARY)
-        message(STATUS "CUDA-enabled PyTorch needs libnvrtc (CUDA::nvrtc) but none was found. Creating dummy CUDA::nvrtc target.")
-        add_library(CUDA::nvrtc INTERFACE IMPORTED GLOBAL)
-    else()
-        add_library(CUDA::nvrtc SHARED IMPORTED GLOBAL)
-        set_target_properties(CUDA::nvrtc PROPERTIES
-            IMPORTED_LOCATION "${TORCHFITS_NVRTC_LIBRARY}"
-            INTERFACE_LINK_LIBRARIES "${TORCHFITS_NVRTC_LIBRARY}"
-        )
-    endif()
-endif()
-
-# Pre-create dummy `torch::cudart` (and related) interface targets so Caffe2/public/cuda.cmake's
-# "poor man's include guard" at the top fires BEFORE its `find_package(CUDA)` / `find_package
-# (CUDAToolkit)` / `enable_language(CUDA)` probes. This sidesteps the FATAL_ERROR
-# "Your installed Caffe2 version uses CUDA but I cannot find the CUDA libraries" when pixi/conda
-# envs ship only libcudart.so (no cuda.h, no nvcc). The extension is CPU-only (compile-time)
-# so dummy interface targets are safe for link/load.
-if(TORCHFITS_PYTORCH_CUDA_VERSION)
-    foreach(_torchfits_cuda_target
-            torch::cudart torch::cuda torch::nvrtc torch::cudnn torch::cufile
-            caffe2::cuda caffe2::cublas caffe2::curand caffe2::cufft
-            caffe2::cudnn caffe2::cufft_static caffe2::nvrtc caffe2::cudart
-            caffe2::nvrtc caffe2::cudart_static caffe2::cusolver
-            caffe2::cusparse caffe2::nccl caffe2::cufile caffe2::cusparselt
-            caffe2::cudss caffe2::mkldnn
-            CUDA::cudart CUDA::cublas CUDA::curand CUDA::cufft CUDA::cudnn
-            CUDA::cusolver CUDA::cusparse CUDA::nccl CUDA::nvrtc CUDA::nvToolsExt)
-        if(NOT TARGET ${_torchfits_cuda_target})
-            add_library(${_torchfits_cuda_target} INTERFACE IMPORTED GLOBAL)
-        endif()
-    endforeach()
-endif()
-
-find_package(Torch REQUIRED)
-
-# Some distributions ship a Torch CMake target with include paths that may be missing.
-# Filter out any non-existent include dirs to avoid CMake configure errors.
-if(TARGET torch)
-    get_target_property(TORCH_INCLUDE_DIRS torch INTERFACE_INCLUDE_DIRECTORIES)
-    if(TORCH_INCLUDE_DIRS)
-        set(TORCH_INCLUDE_DIRS_FILTERED "")
-        foreach(DIR ${TORCH_INCLUDE_DIRS})
-            if(EXISTS "${DIR}")
-                list(APPEND TORCH_INCLUDE_DIRS_FILTERED "${DIR}")
-            else()
-                message(STATUS "Dropping missing Torch include dir: ${DIR}")
-            endif()
-        endforeach()
-        if(TORCH_INCLUDE_DIRS_FILTERED)
-            set_target_properties(torch PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${TORCH_INCLUDE_DIRS_FILTERED}")
-        endif()
-    endif()
-endif()
 
 # Find ZLIB (Required for compressed FITS support)
 find_package(ZLIB REQUIRED)
@@ -591,15 +462,6 @@ else()
     endif()
 endif()
 
-# Find DLPack headers (used for zero-copy tensor exchange)
-find_path(DLPACK_INCLUDE_DIR dlpack/dlpack.h)
-if(DLPACK_INCLUDE_DIR)
-    message(STATUS "Found DLPack include: ${DLPACK_INCLUDE_DIR}")
-else()
-    message(WARNING "DLPack headers not found - DLPack-based zero-copy will fail to compile until headers are available")
-endif()
-
-
 # Source files
 set(SOURCES
     bindings.cpp
@@ -619,21 +481,17 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# libtorchfits_core -- the torch-free half of the native stack.
+# libtorchfits_core -- CFITSIO and the metadata cache, shared by both modules.
 #
 # CFITSIO and the FITS inspection / metadata-cache code live here rather than
-# in _C, for two reasons:
+# in _C because there must be exactly one CFITSIO in the process. Its error
+# stack and internal buffers are global, so two statically linked copies would
+# let a status produced by one be resolved by the other. _C and _core therefore
+# resolve every fits_* against this library (see check_core_link.cmake, which
+# fails the build if any of them is left undefined).
 #
-#   1. `import torchfits._core` (metadata) must not dlopen libtorch. Loading it
-#      costs ~1 s on a cold process; `torchfits.read_header` should not pay that.
-#   2. There must be exactly one CFITSIO in the process. Its error stack and
-#      internal buffers are global, so two statically linked copies would let a
-#      status produced by one be resolved by the other. _C therefore resolves
-#      every fits_* against this library (see check_core_link.cmake, which fails
-#      the build if any of them is left undefined).
-#
-# The target links no Torch target and includes no ATen/torch header; the guard
-# below turns that from a convention into a build error.
+# No native target links a Torch target or includes an ATen/torch header; the
+# guard after the _C target turns that from a convention into a build error.
 # ---------------------------------------------------------------------------
 add_library(torchfits_core SHARED
     core/fits_core.cpp
@@ -709,19 +567,8 @@ set_target_properties(torchfits_core PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
 )
 
-# No Torch target may appear in the core's link interface. Without this check a
-# future `target_link_libraries(torchfits_core ... torch)` would silently
-# reintroduce the libtorch load the split exists to avoid.
-get_target_property(_CORE_LINK_LIBS torchfits_core LINK_LIBRARIES)
-foreach(_lib IN LISTS _CORE_LINK_LIBS)
-    if(_lib MATCHES "^(torch|torch_python|c10|caffe2|Torch::|torch::|caffe2::)")
-        message(FATAL_ERROR
-            "torchfits_core must stay torch-free, but it links '${_lib}'")
-    endif()
-endforeach()
-
 # The _core module: the same library with nanobind/Python on top. No ATen.
-nanobind_add_module(_core core/core_bindings.cpp)
+nanobind_add_module(_core STABLE_ABI NB_STATIC core/core_bindings.cpp)
 target_link_libraries(_core PRIVATE torchfits_core)
 target_include_directories(_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CFITSIO_INCLUDE_DIR}")
 if(CFITSIO_INCLUDE_DIRS)
@@ -739,8 +586,11 @@ set_target_properties(_core PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
 )
 
-# Create python binding module
-nanobind_add_module(_C ${SOURCES})
+# Create python binding module. Like the core, it includes no torch/ATen header
+# and links no Torch target: decoded buffers leave as DLPack capsules that
+# torch's Python API adopts (native_py.h), so the extension is independent of
+# the installed PyTorch's C++ ABI.
+nanobind_add_module(_C STABLE_ABI NB_STATIC ${SOURCES})
 
 # These optimize and isolate the Python extension. They must not propagate to
 # vendored CFITSIO, whose C ABI relies on its own visibility/interposition rules.
@@ -756,8 +606,6 @@ set_target_properties(_C PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
 )
 
-# Link libraries
-target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES})
 # CFITSIO comes from the core (see the comment above the core target). Link the
 # core first so fits_* resolves against it.
 target_link_libraries(_C PRIVATE torchfits_core)
@@ -765,39 +613,13 @@ target_link_libraries(_C PRIVATE torchfits_core)
 # extension's own sources, so its include root has to be visible here too.
 target_include_directories(_C PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Link torch_python for THPVariable_Wrap (bypasses DLPack overhead)
-execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import torch, os; print(os.path.dirname(torch.__file__))"
-    OUTPUT_VARIABLE TORCH_ROOT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-message(DEBUG "torchfits: TORCH_ROOT=${TORCH_ROOT}")
-
-# Avoid stale cached paths when switching environments/interpreters.
-unset(TORCH_PYTHON_LIBRARY CACHE)
-unset(TORCH_PYTHON_LIBRARY_FALLBACK CACHE)
-
-find_library(TORCH_PYTHON_LIBRARY torch_python PATHS "${TORCH_ROOT}/lib" NO_DEFAULT_PATH)
-if(TORCH_PYTHON_LIBRARY)
-    target_link_libraries(_C PRIVATE ${TORCH_PYTHON_LIBRARY})
-    message(STATUS "Found libtorch_python: ${TORCH_PYTHON_LIBRARY}")
-else()
-    # torch_compat.h calls THPVariable_Wrap unconditionally, so a missing
-    # libtorch_python is a link-time failure, not a fallback to DLPack.
-    message(WARNING "libtorch_python not found in ${TORCH_ROOT}/lib - torch tensor conversion may fail to link")
-endif()
-
 if(TARGET cfitsio)
     target_include_directories(_C PRIVATE "${CFITSIO_INCLUDE_DIR}")
 else()
     target_include_directories(_C PRIVATE ${CFITSIO_INCLUDE_DIRS} ${CFITSIO_INCLUDE_DIR})
 endif()
 
-if(DLPACK_INCLUDE_DIR)
-    target_include_directories(_C PRIVATE ${DLPACK_INCLUDE_DIR})
-endif()
 target_compile_definitions(_C PRIVATE HAS_CFITSIO)
-target_compile_definitions(_C PRIVATE TORCHFITS_TORCH_ABI="${TORCHFITS_TORCH_ABI}")
 # Feature flag surfaced to Python as _C.HAS_BZIP2 so guards can be
 # capability-aware instead of blanket-rejecting .bz2 inputs.
 if(USE_BZIP2)
@@ -808,6 +630,20 @@ if(_TORCHFITS_CFITSIO_HAS_CURL)
     target_compile_definitions(_C PRIVATE TORCHFITS_HAVE_CURL=1)
 endif()
 
+
+# No Torch target may appear in any native target's link interface. Without
+# this check a future `target_link_libraries(... torch)` would silently tie the
+# wheel to one PyTorch C++ ABI again (and make `import torchfits._core` load
+# libtorch).
+foreach(_torchfits_target IN ITEMS torchfits_core _core _C)
+    get_target_property(_TARGET_LINK_LIBS ${_torchfits_target} LINK_LIBRARIES)
+    foreach(_lib IN LISTS _TARGET_LINK_LIBS)
+        if(_lib MATCHES "^(torch|torch_python|torch_cpu|c10|caffe2)$|^(Torch|torch|caffe2)::|(^|/)lib(torch|torch_python|torch_cpu|c10)\\.")
+            message(FATAL_ERROR
+                "${_torchfits_target} must stay torch-free, but it links '${_lib}'")
+        endif()
+    endforeach()
+endforeach()
 
 # Compiler flags
 target_compile_definitions(_C PRIVATE VERSION_INFO="")

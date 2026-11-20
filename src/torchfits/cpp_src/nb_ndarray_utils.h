@@ -12,7 +12,9 @@
 #include <string>
 #include <vector>
 
+#include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
 
 namespace nb = nanobind;
 
@@ -22,6 +24,15 @@ namespace internal {
 // ---------------------------------------------------------------------------
 // nanobind ndarray helpers shared by the image and table write paths
 // ---------------------------------------------------------------------------
+
+/// The C-level type name CPython reports as ``tp_name`` (``int``,
+/// ``numpy.bool``), read through the stable ABI: PyTypeObject is opaque there.
+inline std::string python_type_name(nb::handle value) {
+    nb::handle type = value.type();
+    const std::string qualname = nb::cast<std::string>(type.attr("__qualname__"));
+    const std::string module = nb::cast<std::string>(type.attr("__module__"));
+    return module == "builtins" ? qualname : module + "." + qualname;
+}
 
 /// CFITSIO reads and writes host memory: a GPU/MPS array's data() is a device
 /// pointer, so dereferencing it reads garbage or faults. Refuse it up front.

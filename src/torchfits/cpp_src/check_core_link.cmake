@@ -1,6 +1,6 @@
 # Post-link guard for the torch-free core split.
 #
-# libtorchfits_core owns the one and only copy of CFITSIO. The torch-linked
+# libtorchfits_core owns the one and only copy of CFITSIO. The tensor
 # extension (_C) calls fits_* directly, so its link line resolves those symbols
 # against the core's dynamic symbol table. If that ever stops happening -- a
 # stale core, a stripped export, an LTO pass internalizing a symbol -- _C

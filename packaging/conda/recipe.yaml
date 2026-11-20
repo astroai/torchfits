@@ -1,27 +1,28 @@
 # torchfits conda recipe (rattler-build format).
 #
-# Lane pins (version, pytorch range) are rendered from
-# scripts/torch_lanes.json by scripts/release_lane.py --apply, so the recipe
-# always tracks the same torch ABI lane as the wheels.
+# The version and the pytorch floor are rendered from scripts/torch_support.json
+# by scripts/release_lane.py --apply, so the recipe tracks the same supported
+# PyTorch range as the wheels.
 #
 # The build compiles the SAME sha256-pinned, patched vendored CFITSIO as the
 # wheels (extern/vendor.sh + extern/VERSIONS.txt) so every distribution
-# channel carries the PLIO buffer fix and BZIP2_1 support. The lane-pinned
-# conda-forge PyTorch is linked via bare CMake (pixi-build-cmake backend on
+# channel carries the PLIO buffer fix and BZIP2_1 support. The extension links
+# no libtorch (tensors cross into PyTorch as DLPack capsules), so PyTorch is a
+# run requirement only. The build uses bare CMake (pixi-build-cmake backend on
 # pixi.toml); the CMake install rules mirror the scikit-build-core wheel
 # layout (site-packages + console script).
 #
 # Not yet upstreamed. Local verification:
 #   pixi run build   (or: rattler-build build -r packaging/conda)
-# then install the resulting .conda into a fresh env pinned to the same
-# pytorch lane and run tests/test_release_smoke.py.
+# then install the resulting .conda into a fresh env with a supported pytorch
+# and run tests/test_release_smoke.py.
 schema_version: 1
 
 context:
-  version: "1.3.2"
-  # Wheel ABI lane. Rendered from scripts/torch_lanes.json; do not widen
-  # (libtorch_python has no stable C++ ABI across torch minors).
-  torch_pin: ">=2.14,<2.15"
+  version: "1.4.0"
+  # Supported PyTorch floor, no upper bound. Rendered from
+  # scripts/torch_support.json.
+  torch_pin: ">=2.12"
 
 package:
   name: torchfits
@@ -50,7 +51,6 @@ requirements:
     - cmake >=3.21
     - ninja
     - python >=3.11
-    - pytorch ${{ torch_pin }}
     - nanobind >=3.0.1
     # Vendored-CFITSIO build needs the download at configure time; the
     # tarball is sha256-verified against extern/VERSIONS.txt (H4).
@@ -58,7 +58,6 @@ requirements:
     - git
   host:
     - python >=3.11
-    - pytorch ${{ torch_pin }}
     - nanobind >=3.0.1
     - zlib >=1.2.13
     - bzip2  # enables BZIP2_1 in the vendored CFITSIO (parity with wheels)
@@ -87,9 +86,9 @@ about:
   summary: FITS I/O for PyTorch with native tensor reads, datasets, and transforms
   description: |
     torchfits provides FITS I/O for PyTorch with native tensor reads,
-    datasets, and transforms, built on CFITSIO and the PyTorch C++ API.
-    Wheels and the conda package are ABI-matched to a single PyTorch minor
-    (the "lane"); one torchfits release ships per torch minor.
+    datasets, and transforms, built on CFITSIO. The native extension does
+    not link libtorch: decoded buffers reach PyTorch through DLPack, so one
+    build serves every supported PyTorch release.
 
 extra:
   recipe-maintainers:

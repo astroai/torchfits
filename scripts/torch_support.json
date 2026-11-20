@@ -1,0 +1,5 @@
+{
+  "torchfits_version": "1.4.0",
+  "torch_min": "2.12",
+  "torch_tested": "2.15"
+}

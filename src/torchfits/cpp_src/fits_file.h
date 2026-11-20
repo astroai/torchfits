@@ -12,10 +12,9 @@
 #include <sys/types.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-#include <ATen/ATen.h>
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
+#include "native_tensor.h"
 
 namespace torchfits {
 namespace detail {
@@ -75,13 +74,13 @@ public:
     bool is_compressed_image_cached(int hdu_num);
     const std::tuple<int, int, std::array<LONGLONG, 9>>& get_image_info(int hdu_num);
 
-    torch::Tensor read_tensor(int hdu_num, bool use_mmap = true);
-    torch::Tensor read_image_raw(int hdu_num, bool use_mmap = true);
+    native::Tensor read_tensor(int hdu_num, bool use_mmap = true);
+    native::Tensor read_image_raw(int hdu_num, bool use_mmap = true);
     bool write_image(nb::ndarray<> tensor);
     std::vector<std::tuple<std::string, std::string, std::string>> get_header(int hdu_num);
     std::vector<long> get_shape(int hdu_num);
     int get_dtype(int hdu_num);
-    torch::Tensor read_subset(int hdu_num, long x1, long y1, long x2, long y2);
+    native::Tensor read_subset(int hdu_num, long x1, long y1, long x2, long y2);
     int get_num_hdus();
     std::string get_hdu_type(int hdu_num);
     bool write_hdus(nb::list hdus, bool overwrite);
@@ -133,7 +132,7 @@ class SubsetReader {
 public:
     SubsetReader(const std::string& filename, int hdu_num = 0);
     ~SubsetReader();
-    torch::Tensor read(long x1, long y1, long x2, long y2);
+    native::Tensor read(long x1, long y1, long x2, long y2);
     void close();
     long width() const { return max_x_; }
     long height() const { return max_y_; }
@@ -141,7 +140,7 @@ public:
 private:
     void init_from_hdu();
     bool ensure_data_mmap();
-    bool try_read_via_mmap(long x1, long y1, long x2, long y2, torch::Tensor& out);
+    bool try_read_via_mmap(long x1, long y1, long x2, long y2, native::Tensor& out);
     void release_data_mmap();
     FITSFile file_;
     std::string filename_;
@@ -150,7 +149,7 @@ private:
     long max_y_ = 0;
     int naxis_ = 0;
     std::vector<long> naxes_;
-    torch::ScalarType dtype_ = torch::kFloat32;
+    native::ScalarType dtype_ = native::kFloat32;
     int datatype_ = TFLOAT;
     int bitpix_ = FLOAT_IMG;
     LONGLONG data_offset_ = 0;

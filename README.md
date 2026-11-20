@@ -12,7 +12,7 @@ Read and write FITS files as PyTorch tensors and Arrow tables. Cutouts,
 Arrow columns are zero-copy views over the decoded buffers, and header or
 Arrow reads do not import PyTorch.
 
-Prebuilt wheels for **Python 3.11–3.15 on Linux** and **3.11–3.14 on macOS**, with **PyTorch 2.14.x**: Linux (x86_64, aarch64) and macOS Apple Silicon.
+Prebuilt wheels for **Python 3.11–3.15** with **PyTorch 2.12 or newer** (no upper bound; the extension links no libtorch): Linux (x86_64, aarch64) and macOS Apple Silicon.
 
 Docs: [stable](https://astroai.github.io/torchfits/) · [edge](https://astroai.github.io/torchfits/edge/) (`main` tip)
 

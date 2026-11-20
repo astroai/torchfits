@@ -176,7 +176,7 @@ inline void* cfitsio_float_nulval_ptr(
 // ---------------------------------------------------------------------------
 // read_tensor_canonical — shared core for all image read paths
 // ---------------------------------------------------------------------------
-inline torch::Tensor read_tensor_canonical(
+inline native::Tensor read_tensor_canonical(
     fitsfile* fptr,
     const std::string& path,
     const ResolvedFITSMeta& meta,
@@ -194,17 +194,17 @@ inline torch::Tensor read_tensor_canonical(
 
     validate_image_naxis(naxis);
     if (naxis == 0) {
-        torch::ScalarType dtype = torch::kUInt8;
+        native::ScalarType dtype = native::kUInt8;
         switch (bitpix) {
-            case BYTE_IMG: dtype = torch::kUInt8; break;
-            case SHORT_IMG: dtype = torch::kInt16; break;
-            case LONG_IMG: dtype = torch::kInt32; break;
-            case LONGLONG_IMG: dtype = torch::kInt64; break;
-            case FLOAT_IMG: dtype = torch::kFloat32; break;
-            case DOUBLE_IMG: dtype = torch::kFloat64; break;
+            case BYTE_IMG: dtype = native::kUInt8; break;
+            case SHORT_IMG: dtype = native::kInt16; break;
+            case LONG_IMG: dtype = native::kInt32; break;
+            case LONGLONG_IMG: dtype = native::kInt64; break;
+            case FLOAT_IMG: dtype = native::kFloat32; break;
+            case DOUBLE_IMG: dtype = native::kFloat64; break;
             default: break;
         }
-        return torch::empty({0}, torch::TensorOptions().dtype(dtype));
+        return native::empty({0}, native::TensorOptions().dtype(dtype));
     }
 
     LONGLONG nelements = checked_nelements_product(naxes_ll.data(), naxis);
@@ -219,36 +219,36 @@ inline torch::Tensor read_tensor_canonical(
     const bool unsigned_longlong =
         scaled && bitpix == LONGLONG_IMG && bscale == 1.0 && is_unsigned_longlong_offset(bzero);
 
-    torch::ScalarType dtype;
+    native::ScalarType dtype;
     int datatype;
     if (scaled) {
         if (bitpix == BYTE_IMG && bscale == 1.0 && bzero == -128.0) {
-            dtype = at::kChar; datatype = TSBYTE;
+            dtype = native::kChar; datatype = TSBYTE;
         } else if (unsigned_short) {
-            dtype = torch::kUInt16; datatype = TUSHORT;
+            dtype = native::kUInt16; datatype = TUSHORT;
         } else if (unsigned_long) {
-            dtype = torch::kUInt32; datatype = TUINT;
+            dtype = native::kUInt32; datatype = TUINT;
         } else if (unsigned_longlong) {
-            dtype = torch::kUInt64; datatype = TULONGLONG;
+            dtype = native::kUInt64; datatype = TULONGLONG;
         } else if (bitpix == BYTE_IMG || bitpix == SHORT_IMG) {
             // int8/int16 codes are exact in float32. int32/int64 are not.
-            dtype = torch::kFloat32; datatype = TFLOAT;
+            dtype = native::kFloat32; datatype = TFLOAT;
         } else {
-            dtype = torch::kFloat64; datatype = TDOUBLE;
+            dtype = native::kFloat64; datatype = TDOUBLE;
         }
     } else {
         switch (bitpix) {
-            case BYTE_IMG: dtype = torch::kUInt8; datatype = TBYTE; break;
-            case SHORT_IMG: dtype = torch::kInt16; datatype = TSHORT; break;
-            case LONG_IMG: dtype = torch::kInt32; datatype = TINT; break;
-            case LONGLONG_IMG: dtype = torch::kInt64; datatype = TLONGLONG; break;
-            case FLOAT_IMG: dtype = torch::kFloat32; datatype = TFLOAT; break;
-            case DOUBLE_IMG: dtype = torch::kFloat64; datatype = TDOUBLE; break;
+            case BYTE_IMG: dtype = native::kUInt8; datatype = TBYTE; break;
+            case SHORT_IMG: dtype = native::kInt16; datatype = TSHORT; break;
+            case LONG_IMG: dtype = native::kInt32; datatype = TINT; break;
+            case LONGLONG_IMG: dtype = native::kInt64; datatype = TLONGLONG; break;
+            case FLOAT_IMG: dtype = native::kFloat32; datatype = TFLOAT; break;
+            case DOUBLE_IMG: dtype = native::kFloat64; datatype = TDOUBLE; break;
             default: throw std::runtime_error("Unsupported BITPIX");
         }
     }
 
-    auto tensor = torch::empty(at::IntArrayRef(torch_shape, naxis), torch::TensorOptions().dtype(dtype));
+    auto tensor = native::empty(torch_shape, static_cast<size_t>(naxis), native::TensorOptions().dtype(dtype));
 
     // BYTE_IMG direct pread — works for mmap on/off (pread is buffered I/O,
     // not a secret mmap). Beats CFITSIO fits_read_img on large int8 payloads.

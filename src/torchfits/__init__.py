@@ -12,8 +12,9 @@ import os
 import sys
 
 # Must run before libomp is loaded (import torch after torchfits, or pixi
-# activation.env for torch-first). Required on macOS when both PyTorch and the
-# extension link libomp; harmless elsewhere but process-wide so scope to Darwin.
+# activation.env for torch-first). The extension links no libomp itself, but a
+# process that maps PyTorch's libomp next to another OpenMP runtime aborts on
+# macOS without it; harmless elsewhere but process-wide so scope to Darwin.
 if sys.platform == "darwin":
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -21,11 +22,7 @@ import threading
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from torchfits._torch_libs import install as _install_torch_lib_preload
-
-_install_torch_lib_preload()
-
-__version__ = "1.3.2"
+__version__ = "1.4.0"
 
 _NAMESPACES: dict[str, str] = {
     "table": "torchfits.table",
@@ -164,15 +161,12 @@ def _ensure_runtime_init() -> None:
     if _RUNTIME_INITIALIZED:
         return
 
-    # Pre-import torch so its dependency libraries (libcudart.so.12,
-    # libtorch_cuda.so, libtorch_python.so) are loaded before torchfits._C.
+    # Tensor entry points return torch tensors. The extension links no libtorch
+    # (results cross as DLPack capsules), so import torch here, once, rather
+    # than on the first result.
     import torch  # noqa: F401
 
     native = import_module("torchfits._C")
-    # Metadata may have imported the extension before torch was present.  The
-    # module initializer then intentionally skipped this check, so enforce the
-    # ABI again at the tensor boundary after loading torch.
-    getattr(native, "_check_torch_abi")()
     _check_core_build_id(native)
 
     _RUNTIME_INITIALIZED = True

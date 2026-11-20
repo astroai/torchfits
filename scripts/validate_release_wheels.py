@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import zipfile
 from email.parser import Parser
@@ -11,15 +12,44 @@ from pathlib import Path
 
 from archive_safety import zip_safety_problems
 
+ROOT = Path(__file__).resolve().parents[1]
+SUPPORT_FILE = ROOT / "scripts" / "torch_support.json"
+
+# One wheel per (ABI, platform): CPython 3.12+ share the cp312-abi3 wheel (the
+# extension links no libtorch and targets the stable ABI); 3.11 is below the
+# stable-ABI floor and keeps its own cp311 wheel.
+PYTHON_ABIS = (("cp311", "cp311"), ("cp312", "abi3"))
+PLATFORM_CELLS = (
+    ("manylinux", "x86_64"),
+    ("manylinux", "aarch64"),
+    ("macosx_14_0", "arm64"),
+)
 EXPECTED_CELLS = {
-    *((f"cp{minor}", "manylinux", "x86_64") for minor in range(311, 316)),
-    *((f"cp{minor}", "manylinux", "aarch64") for minor in range(311, 316)),
-    *((f"cp{minor}", "macosx_14_0", "arm64") for minor in range(311, 315)),
+    (python, abi, platform, arch)
+    for python, abi in PYTHON_ABIS
+    for platform, arch in PLATFORM_CELLS
 }
 WHEEL_RE = re.compile(
-    r"^torchfits-(?P<version>[^-]+)-(?P<python>cp\d+)-(?P<abi>cp\d+)-"
+    r"^torchfits-(?P<version>[^-]+)-(?P<python>cp\d+)-(?P<abi>cp\d+|abi3)-"
     r"(?P<platform>[^-]+)\.whl$"
 )
+# Load-command / DT_NEEDED names of libtorch's shared libraries. A native
+# member naming one of them is tied to a single PyTorch C++ ABI again.
+# (libtorchfits_core is torchfits's own library and must not match.)
+LIBTORCH_NAMES = (
+    b"libtorch.",
+    b"libtorch_cpu",
+    b"libtorch_python",
+    b"libtorch_cuda",
+    b"libc10.",
+    b"libc10_cuda",
+)
+
+
+def expected_torch_requirement() -> str:
+    """``>=<floor>`` from scripts/torch_support.json (no upper bound)."""
+    support = json.loads(SUPPORT_FILE.read_text(encoding="utf-8"))
+    return f">={support['torch_min']}"
 
 
 def _field(message, name: str) -> str | None:
@@ -38,9 +68,9 @@ def _torch_requirement(message) -> str | None:
     return None
 
 
-def _cell(python: str, platform: str) -> tuple[str, str, str] | None:
+def _cell(python: str, abi: str, platform: str) -> tuple[str, str, str, str] | None:
     if platform == "macosx_14_0_arm64":
-        return python, "macosx_14_0", "arm64"
+        return python, abi, "macosx_14_0", "arm64"
     if "manylinux" not in platform:
         return None
     if platform.endswith("_x86_64"):
@@ -59,15 +89,20 @@ def _cell(python: str, platform: str) -> tuple[str, str, str] | None:
             return None
     if not platform_tags:
         return None
-    return python, "manylinux", arch
+    return python, abi, "manylinux", arch
 
 
-def validate(wheel_dir: Path, version: str) -> tuple[list[Path], list[str]]:
+def validate(
+    wheel_dir: Path, version: str, torch_requirement: str | None = None
+) -> tuple[list[Path], list[str]]:
     wheels = sorted(wheel_dir.glob("*.whl"))
     problems: list[str] = []
-    cells: list[tuple[str, str, str]] = []
-    if len(wheels) != 14:
-        problems.append(f"expected exactly 14 wheels, found {len(wheels)}")
+    cells: list[tuple[str, str, str, str]] = []
+    want_torch = torch_requirement or expected_torch_requirement()
+    if len(wheels) != len(EXPECTED_CELLS):
+        problems.append(
+            f"expected exactly {len(EXPECTED_CELLS)} wheels, found {len(wheels)}"
+        )
     for wheel in wheels:
         match = WHEEL_RE.fullmatch(wheel.name)
         if match is None:
@@ -78,9 +113,9 @@ def validate(wheel_dir: Path, version: str) -> tuple[list[Path], list[str]]:
         platform = match.group("platform")
         if match.group("version") != version:
             problems.append(f"{wheel.name}: filename version is not {version}")
-        if abi != python:
-            problems.append(f"{wheel.name}: ABI tag {abi} does not match {python}")
-        cell = _cell(python, platform)
+        if (python, abi) not in PYTHON_ABIS:
+            problems.append(f"{wheel.name}: unexpected Python/ABI tag {python}-{abi}")
+        cell = _cell(python, abi, platform)
         if cell is None:
             problems.append(f"{wheel.name}: unexpected platform tag {platform}")
         else:
@@ -104,6 +139,16 @@ def validate(wheel_dir: Path, version: str) -> tuple[list[Path], list[str]]:
             if len(metadata_names) != 1 or len(wheel_names) != 1:
                 problems.append(f"{wheel.name}: expected one METADATA and one WHEEL")
                 continue
+            for info in infos:
+                if not info.filename.endswith((".so", ".dylib")):
+                    continue
+                payload = archive.read(info)
+                linked = [name.decode() for name in LIBTORCH_NAMES if name in payload]
+                if linked:
+                    problems.append(
+                        f"{wheel.name}: {info.filename} references libtorch "
+                        f"({', '.join(linked)}); the extension must stay torch-free"
+                    )
             metadata = Parser().parsestr(
                 archive.read(metadata_names[0]).decode("utf-8")
             )
@@ -114,12 +159,12 @@ def validate(wheel_dir: Path, version: str) -> tuple[list[Path], list[str]]:
             problems.append(f"{wheel.name}: METADATA Version is not {version}")
         if _field(metadata, "Requires-Python") != ">=3.11":
             problems.append(f"{wheel.name}: Requires-Python is not >=3.11")
-        torch_requirement = _torch_requirement(metadata)
-        if torch_requirement is None or set(torch_requirement.split(",")) != {
-            ">=2.14",
-            "<2.15",
-        }:
-            problems.append(f"{wheel.name}: torch requirement is not >=2.14,<2.15")
+        torch_spec = _torch_requirement(metadata)
+        if torch_spec is None or torch_spec.split(",") != [want_torch]:
+            problems.append(
+                f"{wheel.name}: torch requirement is {torch_spec!r}, not "
+                f"{want_torch} with no upper bound"
+            )
         expected_tags = {
             f"{python}-{abi}-{platform_tag}" for platform_tag in platform.split(".")
         }
@@ -204,7 +249,7 @@ def main() -> int:
             for problem in manifest_problems:
                 print(f"[FAIL] {problem}")
             return 1
-    print(f"[ OK ] exact 14-wheel release matrix for {args.version}")
+    print(f"[ OK ] exact {len(EXPECTED_CELLS)}-wheel release matrix for {args.version}")
     return 0
 
 

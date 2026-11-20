@@ -21,8 +21,8 @@
 #include <nanobind/stl/unordered_map.h>
 #include <fitsio.h>
 
-#include "torchfits_torch.h"
-#include "torch_compat.h"
+#include "native_tensor.h"
+#include "native_py.h"
 #include "fits_rw.h"
 #include "fits_detail.h"
 #include "fits_handle.h"
@@ -31,6 +31,7 @@
 #include "table_ops.h"
 
 namespace nb = nanobind;
+namespace native = torchfits::native;
 
 namespace {
 
@@ -200,7 +201,7 @@ std::vector<ThreadLocalReaderCache*> ThreadLocalReaderCache::g_registry;
 static thread_local ThreadLocalReaderCache g_reader_cache;
 
 nb::dict tensor_map_to_python(
-    const std::vector<std::pair<std::string, torch::Tensor>>& result_map
+    const std::vector<std::pair<std::string, native::Tensor>>& result_map
 ) {
     // Must be called with the GIL held: wraps each C++ tensor as a Python
     // object. The heavy read work itself happens GIL-free in the callers.
@@ -218,28 +219,28 @@ nb::dict tensor_map_to_python(
     return result_dict;
 }
 
-const char* tensor_dtype_name(torch::ScalarType dtype) {
+const char* tensor_dtype_name(native::ScalarType dtype) {
     switch (dtype) {
-        case torch::kBool: return "bool";
-        case torch::kUInt8: return "uint8";
-        case torch::kInt8: return "int8";
-        case torch::kInt16: return "int16";
-        case torch::kInt32: return "int32";
-        case torch::kInt64: return "int64";
-        case torch::kFloat16: return "float16";
-        case torch::kFloat32: return "float32";
-        case torch::kFloat64: return "float64";
-        case torch::kBFloat16: return "bfloat16";
-        case torch::kUInt16: return "uint16";
-        case torch::kUInt32: return "uint32";
-        case torch::kUInt64: return "uint64";
-        case torch::kComplexFloat: return "complex64";
-        case torch::kComplexDouble: return "complex128";
+        case native::kBool: return "bool";
+        case native::kUInt8: return "uint8";
+        case native::kInt8: return "int8";
+        case native::kInt16: return "int16";
+        case native::kInt32: return "int32";
+        case native::kInt64: return "int64";
+        case native::kFloat16: return "float16";
+        case native::kFloat32: return "float32";
+        case native::kFloat64: return "float64";
+        case native::kBFloat16: return "bfloat16";
+        case native::kUInt16: return "uint16";
+        case native::kUInt32: return "uint32";
+        case native::kUInt64: return "uint64";
+        case native::kComplexFloat: return "complex64";
+        case native::kComplexDouble: return "complex128";
         default: return nullptr;
     }
 }
 
-nb::list tensor_shape_to_python(const torch::Tensor& tensor) {
+nb::list tensor_shape_to_python(const native::Tensor& tensor) {
     nb::list shape;
     for (const auto dim : tensor.sizes()) {
         shape.append(static_cast<int64_t>(dim));
@@ -250,16 +251,16 @@ nb::list tensor_shape_to_python(const torch::Tensor& tensor) {
 // ---------------------------------------------------------------------------
 // Zero-copy column transport.
 //
-// The reader decodes a column into a torch::Tensor. Arrow callers must consume
+// The reader decodes a column into a native::Tensor. Arrow callers must consume
 // that memory without (a) wrapping it as a Python tensor, which loads the torch
 // runtime, or (b) copying it into a Python bytearray. `TensorBuffer` is a
 // minimal read-only 1-D buffer exporter; it owns a capsule that holds the
 // tensor, so the storage outlives the memoryview and any pa.Buffer that keeps
-// the memoryview alive. Nothing here calls THPVariable_Wrap.
+// the memoryview alive. Nothing here touches torch.
 // ---------------------------------------------------------------------------
 struct TensorBuffer {
     PyObject_HEAD
-    PyObject* owner;  // capsule holding a heap-allocated torch::Tensor
+    PyObject* owner;  // capsule holding a heap-allocated native::Tensor
     char* data;
     Py_ssize_t len;
     Py_ssize_t shape[1];
@@ -271,7 +272,12 @@ constexpr const char* kTensorCapsuleName = "torchfits.tensor_storage";
 void tensor_buffer_dealloc(PyObject* self) {
     auto* buffer = reinterpret_cast<TensorBuffer*>(self);
     Py_XDECREF(buffer->owner);
-    Py_TYPE(self)->tp_free(self);
+    // Stable-ABI spelling of Py_TYPE(self)->tp_free(self). Instances of a heap
+    // type own a reference to the type, released last.
+    PyTypeObject* type = Py_TYPE(self);
+    auto tp_free = reinterpret_cast<freefunc>(PyType_GetSlot(type, Py_tp_free));
+    tp_free(self);
+    Py_DECREF(type);
 }
 
 int tensor_buffer_getbuffer(PyObject* self, Py_buffer* view, int flags) {
@@ -317,14 +323,14 @@ PyType_Spec tensor_buffer_spec = {
 PyTypeObject* tensor_buffer_type = nullptr;
 
 // Expose a decoded column as a zero-copy read-only memoryview.
-nb::object tensor_buffer_to_python(const torch::Tensor& tensor) {
+nb::object tensor_buffer_to_python(const native::Tensor& tensor) {
     if (!tensor.defined()) {
         throw std::runtime_error("cannot transport an undefined table tensor");
     }
     if (!tensor.device().is_cpu()) {
         throw std::runtime_error("raw table transport requires a CPU tensor");
     }
-    const torch::Tensor contiguous = tensor.contiguous();
+    const native::Tensor contiguous = tensor.contiguous();
     const size_t nbytes = static_cast<size_t>(contiguous.numel()) *
                           static_cast<size_t>(contiguous.element_size());
     if (nbytes > static_cast<size_t>(std::numeric_limits<Py_ssize_t>::max())) {
@@ -339,12 +345,12 @@ nb::object tensor_buffer_to_python(const torch::Tensor& tensor) {
         }
     }
 
-    auto* holder = new torch::Tensor(contiguous);
+    auto* holder = new native::Tensor(contiguous);
     PyObject* capsule = PyCapsule_New(
         holder,
         kTensorCapsuleName,
         [](PyObject* cap) {
-            delete static_cast<torch::Tensor*>(
+            delete static_cast<native::Tensor*>(
                 PyCapsule_GetPointer(cap, kTensorCapsuleName));
         });
     if (capsule == nullptr) {
@@ -352,7 +358,7 @@ nb::object tensor_buffer_to_python(const torch::Tensor& tensor) {
         throw nb::python_error();
     }
 
-    PyObject* buffer = tensor_buffer_type->tp_alloc(tensor_buffer_type, 0);
+    PyObject* buffer = PyType_GenericAlloc(tensor_buffer_type, 0);
     if (buffer == nullptr) {
         Py_DECREF(capsule);
         throw nb::python_error();
@@ -376,7 +382,7 @@ nb::object tensor_buffer_to_python(const torch::Tensor& tensor) {
     return nb::steal(view);
 }
 
-nb::dict raw_fixed_column_to_python(const torch::Tensor& tensor) {
+nb::dict raw_fixed_column_to_python(const native::Tensor& tensor) {
     const char* dtype = tensor_dtype_name(tensor.scalar_type());
     if (dtype == nullptr) {
         throw std::runtime_error("unsupported tensor dtype in raw table transport");
@@ -512,7 +518,7 @@ nb::dict table_result_to_raw_python(
 }
 
 nb::dict tensor_map_to_raw_python(
-    const std::vector<std::pair<std::string, torch::Tensor>>& result_map
+    const std::vector<std::pair<std::string, native::Tensor>>& result_map
 ) {
     nb::dict result;
     // First TTYPE wins here too; see table_result_to_raw_python.
@@ -546,7 +552,7 @@ nb::dict table_result_to_python(
                     continue;
                 }
                 // One flat buffer → list of row views (avoids per-row CFITSIO + extra C++ vector).
-                const torch::Tensor& values = col_data.fixed_data;
+                const native::Tensor& values = col_data.fixed_data;
                 const int64_t* op = col_data.vla_offsets.data_ptr<int64_t>();
                 const long n = col_data.vla_offsets.size(0) - 1;
                 nb::list vla_list;
@@ -953,10 +959,10 @@ void bind_table(nb::module_& m) {
             // NumPy integer scalars convert through __index__, so this branch
             // can never truncate a float.
             nb::handle val = item[2];
-            const char* type_name = Py_TYPE(val.ptr())->tp_name;
+            const std::string type_name = torchfits::internal::python_type_name(val);
             if (nb::isinstance<bool>(val) ||
-                std::strcmp(type_name, "numpy.bool") == 0 ||
-                std::strcmp(type_name, "numpy.bool_") == 0) {
+                type_name == "numpy.bool" ||
+                type_name == "numpy.bool_") {
                 throw std::runtime_error("Unsupported filter value type (only float/int)");
             }
             if (PyIndex_Check(val.ptr())) {
@@ -981,10 +987,10 @@ void bind_table(nb::module_& m) {
                 // NumPy floating scalars are not Python float subclasses
                 // (except float64), so isinstance<float> misses float32/16.
                 const bool numpy_float =
-                    std::strcmp(type_name, "numpy.float16") == 0 ||
-                    std::strcmp(type_name, "numpy.float32") == 0 ||
-                    std::strcmp(type_name, "numpy.float64") == 0 ||
-                    std::strcmp(type_name, "numpy.longdouble") == 0;
+                    type_name == "numpy.float16" ||
+                    type_name == "numpy.float32" ||
+                    type_name == "numpy.float64" ||
+                    type_name == "numpy.longdouble";
                 if (!nb::isinstance<float>(val) && !numpy_float) {
                     throw std::runtime_error(
                         "Unsupported filter value type (only float/int)");

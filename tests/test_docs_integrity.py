@@ -960,7 +960,7 @@ def test_owed_behavior_notes_match_the_implementation() -> None:
     assert "KMP_DUPLICATE_LIB_OK" in compat
     assert "residual TOCTOU" in compat
     assert "float32" in compat and "float64" in compat
-    assert "PyTorch ABI compatibility" in arch
+    assert "PyTorch version compatibility" in arch
 
     assert "three-valued" in tables
     assert "NaN" in tables
@@ -978,12 +978,13 @@ def test_owed_behavior_notes_match_the_implementation() -> None:
 
     import json
 
-    lanes = json.loads(
-        (ROOT / "scripts" / "torch_lanes.json").read_text(encoding="utf-8")
+    support = json.loads(
+        (ROOT / "scripts" / "torch_support.json").read_text(encoding="utf-8")
     )
-    current = lanes["2.14"]["torchfits_version"]
+    assert support["torch_min"]
     release = (ROOT / "docs" / "release.md").read_text(encoding="utf-8")
-    assert f"**{current}**" in release
+    assert "scripts/torch_support.json" in release
+    assert "torch_lanes.json" not in release
     assert "1.0.0rc5" not in release
 
 
@@ -1168,8 +1169,8 @@ def test_docs_state_the_real_numpy_and_pyarrow_floors() -> None:
     """docs/compatibility.md must not advertise floors the package cannot install.
 
     The "Core Libraries" row is the first place a reader looks when asking
-    "can I run this on my numpy/pyarrow?", and the wheel-lane guard
-    (scripts/check_torch_extra_pins.py) only ever read the *torch* specifier.
+    "can I run this on my numpy/pyarrow?", and the release tooling
+    (scripts/release_lane.py) only ever renders the *torch* specifier.
     The page claimed NumPy >= 1.20 and PyArrow >= 5.0 while pyproject,
     packaging/conda/recipe.yaml, pixi.toml and scripts/release_lane.py all
     pin numpy>=1.26 / pyarrow>=17.0 -- and docs/changelog.md says so in as many
@@ -1203,6 +1204,31 @@ def test_docs_state_the_real_numpy_and_pyarrow_floors() -> None:
             f"real floor is >={floor} (pyproject.toml, packaging/conda/recipe.yaml, "
             f"pixi.toml and scripts/release_lane.py all say >={floor})"
         )
+
+
+def test_docs_state_the_real_torch_floor() -> None:
+    """Every user-facing statement of the PyTorch requirement names the floor.
+
+    The floor lives in scripts/torch_support.json and release_lane.py renders it
+    into pyproject; the prose has no renderer, so a floor move must not leave a
+    page advertising another range (or the old per-minor lane).
+    """
+    import json
+
+    floor = json.loads(
+        (ROOT / "scripts" / "torch_support.json").read_text(encoding="utf-8")
+    )["torch_min"]
+    assert _dependency_floor("torch") == floor
+    compat = (ROOT / "docs" / "compatibility.md").read_text(encoding="utf-8")
+    row = re.search(r"^\| \*\*PyTorch\*\* \| (?P<cells>.+?) \|$", compat, re.M)
+    assert row, "compatibility.md lost its 'PyTorch' support-matrix row"
+    assert f"`torch>={floor}`" in row.group("cells")
+    install = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
+    assert f"`torch>={floor}`, no upper bound" in install
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"**PyTorch {floor} or newer**" in readme
+    for page in (compat, install, readme):
+        assert "ABI lane" not in page and "<2.1" not in page
 
 
 def _api_signature_sections(page: str) -> list[tuple[str, str]]:

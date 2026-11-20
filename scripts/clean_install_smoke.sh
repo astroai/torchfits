@@ -33,9 +33,9 @@ smoke() {
   source "$venv/bin/activate"
   python -m pip install -q --upgrade pip
    # Documented CPU-only one-liner (docs/install.md): local wheel + the
-   # torch ABI lane pin rendered from scripts/torch_lanes.json, so this
-   # smoke cannot rot when the lane moves.
-   TORCH_PIN="$(python "$ROOT/scripts/release_lane.py" --print-pins | sed 's/.*torch=//')"
+   # supported torch floor from scripts/torch_support.json (uncapped), so this
+   # smoke cannot rot when the floor moves.
+   TORCH_PIN="$(python "$ROOT/scripts/release_lane.py" --print-pins | sed -n 's/^TORCH_PIN=//p')"
    python -m pip install -q "$WHEEL" "torch$TORCH_PIN" --extra-index-url https://download.pytorch.org/whl/cpu
   python - <<'PY'
 import tempfile
