@@ -19,7 +19,7 @@
 schema_version: 1
 
 context:
-  version: "1.3.3rc1"
+  version: "1.3.3"
   # Supported PyTorch floor, no upper bound. Rendered from
   # scripts/torch_support.json.
   torch_pin: ">=2.12"

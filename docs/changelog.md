@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.3.3] — 2026-11-20
+
+Final release of 1.3.3rc1, with no code changes. The full wheel matrix was
+built and validated from the candidate:
+- Linux x86_64 and aarch64, and macOS arm64;
+- one `cp311` wheel and one `cp312-abi3` wheel per platform.
+
+The candidate wheel was installed and smoke-tested on PyTorch 2.12.1 and
+2.15.0. See **1.3.3rc1** below for the highlights and behaviour changes: the
+native extension no longer links libtorch, and one wheel serves `torch>=2.12`.
+
 ## [1.3.3rc1] — 2026-11-20
 
 ### Highlights
@@ -2022,7 +2033,8 @@ README, API reference, roadmap, and parity matrix for supported behavior.
 [0.2.1]: https://github.com/astroai/torchfits/releases/tag/v0.2.1
 [0.3.0]: https://github.com/astroai/torchfits/releases/tag/v0.3.0
 [0.3.1]: https://github.com/astroai/torchfits/releases/tag/v0.3.1
-[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.3rc1...HEAD
+[Unreleased]: https://github.com/astroai/torchfits/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/astroai/torchfits/compare/v1.3.2...v1.3.3
 [1.3.3rc1]: https://github.com/astroai/torchfits/compare/v1.3.2...v1.3.3rc1
 [1.3.2]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2
 [1.3.2rc1]: https://github.com/astroai/torchfits/compare/v1.3.1...v1.3.2rc1
