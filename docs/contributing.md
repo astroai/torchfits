@@ -97,6 +97,12 @@ The C++ extension is built by [scikit-build-core](https://scikit-build-core.read
 ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
 ```
 
+The run stamps `extern/cfitsio/.torchfits-vendor-stamp` with the sha256 of
+`extern/VERSIONS.txt`, `extern/vendor.sh` and the applied `extern/patches/`. CMake
+re-checks it on every configure: in a git checkout a missing or stale stamp
+re-vendors, elsewhere it stops the build. `bash extern/vendor.sh --check-stamp`
+reports the same thing without building.
+
 Rebuild after C++ changes (default and test envs do **not** share the
 extension — rebuild each env you will run):
 

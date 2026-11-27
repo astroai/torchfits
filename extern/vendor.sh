@@ -10,11 +10,16 @@ CFITSIO_VERSION=""
 CFITSIO_SPEC_FILE=""
 CFITSIO_SPEC_IS_FILE="0"
 CFITSIO_SHA256=""
+MODE="vendor"
+# Written into extern/cfitsio after a successful pinned vendor run; see
+# vendor_stamp() below and extern/vendor_stamp.cmake.
+STAMP_NAME=".torchfits-vendor-stamp"
 
 usage() {
   cat <<USAGE
 Usage: $(basename "$0") --cfitsio-version <versions-file>
        $(basename "$0") --cfitsio-version <tag>   # preview only, see below
+       $(basename "$0") --print-stamp | --check-stamp
 
 Vendored dependencies are pinned: pass extern/VERSIONS.txt. A sha256 recorded
 in the versions file is enforced against the downloaded tarball, and that file
@@ -27,9 +32,19 @@ named "<tag>-<name>.patch" and are skipped for any other tag, so a bare-tag
 run is a preview of another version, not a way to move the pin: to move it,
 edit extern/VERSIONS.txt deliberately and pass that file.
 
+A pinned run ends by writing extern/cfitsio/${STAMP_NAME}: the sha256 of
+the versions file, this script and every patch it applied. The CMake build
+recomputes it and re-vendors (git checkout) or refuses (anything else) when it
+is missing or differs, so a tree vendored before a patch changed cannot build
+silently without it. A bare-tag preview writes no stamp.
+  --print-stamp   print the stamp the current inputs call for and exit
+  --check-stamp   exit 0 if extern/cfitsio carries that stamp, 1 otherwise
+Both default to extern/VERSIONS.txt and need no network.
+
 Examples:
   $(basename "$0") --cfitsio-version extern/VERSIONS.txt   # what CI runs
   $(basename "$0") --cfitsio-version cfitsio-4.6.2        # preview; prints hash
+  $(basename "$0") --check-stamp || $(basename "$0") --cfitsio-version extern/VERSIONS.txt
 USAGE
 }
 
@@ -45,6 +60,14 @@ while [[ $# -gt 0 ]]; do
       CFITSIO_SPEC_FILE="$2"
       shift 2
       ;;
+    --print-stamp)
+      MODE="print-stamp"
+      shift
+      ;;
+    --check-stamp)
+      MODE="check-stamp"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -57,6 +80,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${MODE}" != "vendor" && -z "${CFITSIO_VERSION}" ]]; then
+  CFITSIO_VERSION="${EXTERN_DIR}/VERSIONS.txt"
+  CFITSIO_SPEC_FILE="${CFITSIO_VERSION}"
+fi
 if [[ -z "${CFITSIO_VERSION}" ]]; then
   echo "--cfitsio-version is required (pass extern/VERSIONS.txt)." >&2
   usage
@@ -98,8 +125,6 @@ resolve_cfitsio_version() {
   echo "${spec}"
 }
 
-require_cmd curl
-require_cmd tar
 # GNU coreutils sha256sum on Linux. macOS runners expose a limited
 # sha256sum shim that rejects --check/--status ("usage: sha256sum
 # [-bctwz]"), which broke the v1.1.0 tag build twice — select by OS,
@@ -131,6 +156,51 @@ sha256_check() {
 }
 
 CFITSIO_VERSION="$(resolve_cfitsio_version "${CFITSIO_VERSION}")"
+
+# The stamp records what extern/cfitsio was built from: one "<sha256>  <label>"
+# line for the versions file, one for this script, and one per patch applied
+# for the vendored tag, in byte order of the file name. extern/vendor_stamp.cmake
+# computes the same lines at configure time and compares them with the stamp,
+# so the two definitions must stay identical (tests/test_vendor_stamp.py runs
+# both). The stamp is the manifest itself, not a digest of it, so a mismatch
+# can name the input that changed.
+vendor_stamp() {
+  local versions_file="$1" tag="$2" p
+  printf '%s  %s\n' "$(sha256_file "${versions_file}")" "VERSIONS.txt"
+  printf '%s  %s\n' "$(sha256_file "${BASH_SOURCE[0]}")" "vendor.sh"
+  while IFS= read -r p; do
+    [[ -f "${p}" ]] || continue
+    printf '%s  %s\n' "$(sha256_file "${p}")" "patches/$(basename "${p}")"
+  done < <(printf '%s\n' "${EXTERN_DIR}/patches/${tag}"-*.patch | LC_ALL=C sort)
+}
+
+if [[ "${MODE}" != "vendor" ]]; then
+  if [[ "${CFITSIO_SPEC_IS_FILE}" != "1" ]]; then
+    echo "--${MODE} needs a versions file, not a bare tag." >&2
+    exit 1
+  fi
+  if [[ "${MODE}" == "print-stamp" ]]; then
+    vendor_stamp "${CFITSIO_SPEC_FILE}" "${CFITSIO_VERSION}"
+    exit 0
+  fi
+  stamp_file="${EXTERN_DIR}/cfitsio/${STAMP_NAME}"
+  if [[ ! -f "${EXTERN_DIR}/cfitsio/CMakeLists.txt" ]]; then
+    echo "${EXTERN_DIR}/cfitsio is not vendored." >&2
+    exit 1
+  fi
+  if [[ ! -f "${stamp_file}" ]]; then
+    echo "${EXTERN_DIR}/cfitsio has no ${STAMP_NAME}: vendored by an older vendor.sh or by hand." >&2
+    exit 1
+  fi
+  if ! diff -u "${stamp_file}" <(vendor_stamp "${CFITSIO_SPEC_FILE}" "${CFITSIO_VERSION}") >&2; then
+    echo "${EXTERN_DIR}/cfitsio is stale: the inputs above changed since it was vendored." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+require_cmd curl
+require_cmd tar
 
 fetch_and_extract() {
   local repo="$1"
@@ -171,6 +241,8 @@ fetch_and_extract() {
   # Replace the existing tree only now that download, verification and
   # extraction all succeeded: removing it first left no vendored sources at
   # all after an offline run or a checksum mismatch.
+  # The new tree carries no stamp until every patch has applied (end of
+  # script), so an interrupted run never looks freshly vendored.
   rm -rf "${dest}"
   mv "${src_dir}" "${dest}"
 }
@@ -236,6 +308,11 @@ cfitsio_tag=${CFITSIO_VERSION}
 cfitsio_sha256=${RECORDED_HASH}
 VERSIONS
   echo "Recorded versions in ${CFITSIO_SPEC_FILE}"
+  # Last step: only a tree whose download, verification and every patch
+  # succeeded is stamped. Hashed after the rewrite above, which is what the
+  # build will see.
+  vendor_stamp "${CFITSIO_SPEC_FILE}" "${CFITSIO_VERSION}" > "${EXTERN_DIR}/cfitsio/${STAMP_NAME}"
+  echo "Stamped ${EXTERN_DIR}/cfitsio/${STAMP_NAME}"
 else
   # Bare tag: report, do not record. Writing here is how a stray
   # `--cfitsio-version cfitsio-X.Y.Z` used to repoint the tracked pin and

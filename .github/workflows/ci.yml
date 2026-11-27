@@ -56,9 +56,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
-        # newest: whatever the uncapped floor resolves to (the newest release).
-        # min: the supported floor itself (scripts/torch_support.json).
-        torch: [newest]
+        # tested: exactly torch_tested (TORCH_TESTED_PIN), the newest minor
+        # the support map claims. It is pinned, not floating, so a new PyTorch
+        # release cannot silently change what CI tests; torch-canary.yml runs
+        # the floating newest release nightly instead.
+        # min: the supported floor itself (TORCH_MIN_PIN).
+        torch: [tested]
         include:
           - os: ubuntu-latest
             python-version: "3.13"
@@ -66,13 +69,11 @@ jobs:
           - os: macos-15
             python-version: "3.13"
             torch: min
-        exclude:
-          # torch 2.14's cp315 macOS wheels were built against CPython 3.15.0b3
-          # and segfault on the first tensor op outside the main thread
-          # (pytorch/pytorch#200779, fixed in torch 2.15). The Linux cp315
-          # wheels are not affected, so py3.15 keeps coverage there.
-          - os: macos-15
-            python-version: "3.15"
+        # macOS + py3.15 needs PyTorch 2.15 or newer: torch 2.12-2.14's cp315 macOS
+        # wheels were built against CPython 3.15.0b3 and segfault on the first
+        # tensor op outside the main thread (pytorch/pytorch#200779). That cell
+        # runs the tested lane only, so torch_tested must stay >= 2.15
+        # (tests/test_release_lane.py checks it).
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -88,7 +89,7 @@ jobs:
           if [ "${{ matrix.torch }}" = "min" ]; then
             pip install "torch$TORCH_MIN_PIN" --index-url https://download.pytorch.org/whl/cpu
           else
-            pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+            pip install "torch$TORCH_TESTED_PIN" --index-url https://download.pytorch.org/whl/cpu
           fi
           pip install numpy pytest nanobind scikit-build-core psutil pyarrow
       - name: Build and install
@@ -129,12 +130,13 @@ jobs:
           /tmp/smoke/bin/python -m pip install "torch$TORCH_MIN_PIN" --index-url https://download.pytorch.org/whl/cpu
           /tmp/smoke/bin/python -m pip install pytest numpy pyarrow dist/*.whl
       - name: Release smoke against the installed wheel
-        # Same command cibuildwheel runs at release time, so a tag-time
-        # surprise is caught here first.
-        run: >-
-          /tmp/smoke/bin/python -m pytest -c /dev/null --noconftest
-          "$GITHUB_WORKSPACE/tests/test_release_smoke.py"
-          "$GITHUB_WORKSPACE/tests/test_bz2.py" -q
+        # Same script cibuildwheel and the release wheel tests run, so a
+        # tag-time surprise is caught here first. Run from outside the
+        # checkout so the installed wheel is what imports.
+        working-directory: ${{ runner.temp }}
+        run: |
+          export PATH="/tmp/smoke/bin:$PATH"
+          TORCHFITS_TEST_TORCH_SPEC="$TORCH_MIN_PIN" bash "$GITHUB_WORKSPACE/scripts/cibw_test.sh" "$GITHUB_WORKSPACE"
 
   docs-contract:
     name: Docs contract
@@ -151,7 +153,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          pip install "torch$TORCH_TESTED_PIN" --index-url https://download.pytorch.org/whl/cpu
           pip install numpy pytest nanobind scikit-build-core psutil pyarrow
           pip install -e . --no-build-isolation
       - name: Docs integrity
@@ -177,7 +179,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          pip install "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          pip install "torch$TORCH_TESTED_PIN" --index-url https://download.pytorch.org/whl/cpu
           pip install numpy pytest nanobind scikit-build-core psutil pyarrow
           pip install "pyarrow>=25" "polars>=1.43.2" "duckdb>=1.5.5" "mypy>=2.3.1"
           pip install -e . --no-build-isolation

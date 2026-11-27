@@ -12,11 +12,20 @@ PyTorch from a floor up, with no upper bound. The range lives in
 | Key | Meaning |
 |---|---|
 | `torchfits_version` | the release being prepared (plain `X.Y.Z`) |
-| `torch_min` | the runtime floor: the oldest PyTorch minor CI tests |
-| `torch_tested` | the newest PyTorch minor CI tests |
+| `torch_min` | the runtime floor: the oldest PyTorch minor CI tests (`TORCH_MIN_PIN`) |
+| `torch_tested` | the newest PyTorch minor CI tests (`TORCH_TESTED_PIN`) |
 
-Raise `torch_min` only when a release needs a newer PyTorch API; raise
-`torch_tested` when CI has run the suite against a newer minor.
+`release_lane.py --print-pins` turns both into exact `==X.Y.*` pins, and CI
+installs those, not whatever PyTorch released last: `ci.yml` runs the suite at
+`torch_tested` on every Python and at `torch_min` on Python 3.13, and the
+release workflow tests the built wheels at both. The nightly
+`.github/workflows/torch-canary.yml` installs the newest PyTorch the uncapped
+floor resolves to and runs the suite against it, and posts a notice when that
+release is newer than `torch_tested`.
+
+Raise `torch_min` only when a release needs a newer PyTorch API. Raise
+`torch_tested` once the canary passes on a newer minor. Bumping it changes
+what every CI lane installs.
 
 ## 1. Version sync
 
@@ -89,8 +98,9 @@ pixi run release-gate
 ```
 
 All must pass. `preflight-push` includes `check-lane` (the version and torch
-floor agree with `scripts/torch_support.json`). CI tests the newest PyTorch on
-every Python and the floor (`TORCH_MIN_PIN`) on Python 3.13.
+floor agree with `scripts/torch_support.json`). CI tests `torch_tested`
+(`TORCH_TESTED_PIN`) on every Python and the floor (`TORCH_MIN_PIN`) on
+Python 3.13.
 
 ## 4. Public-API freeze (SemVer 1.0 / breaking cuts)
 
@@ -198,11 +208,15 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
    `release_lane.py --print-pins`).
 2. Builds wheels without PyTorch: per platform (Linux x86_64 + aarch64, macOS
    arm64) one `cp311` wheel and one `cp312-abi3` wheel, which cibuildwheel
-   tests on every later CPython (macOS skips cp315, because torch 2.14's cp315
-   macOS wheel is ABI-broken —
+   tests on every later CPython (on macOS cp315 against torch 2.15+, because
+   the 2.12–2.14 cp315 macOS wheels are ABI-broken —
    [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). An
    sdist is attached to the GitHub Release only — **not** uploaded to PyPI.
-3. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via
+3. Installs the built Linux x86_64 and macOS arm64 wheels (job `test_wheels`,
+   Python 3.13) with PyTorch pinned to the floor (`TORCH_MIN_PIN`) and to
+   `torch_tested` (`TORCH_TESTED_PIN`) and runs `scripts/cibw_test.sh` on them
+   from outside the checkout. Nothing is published unless every cell passes.
+4. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via
    OIDC trusted publishing (`id-token: write` on the `pypi` Environment).
    There is no `password:` / `PYPI_API_TOKEN` in the workflow.
 

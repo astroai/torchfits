@@ -43,7 +43,8 @@ jobs:
       # The supported PyTorch range is whatever the committed tree declares
       # (scripts/torch_support.json): a floor with no upper bound. The tests
       # below run against the floor; cibuildwheel tests each wheel against the
-      # newest torch for its CPython.
+      # newest torch for its CPython, and test_wheels re-tests the built
+      # wheels at the floor and at torch_tested.
       - name: Resolve supported torch range
         run: |
           python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
@@ -93,6 +94,57 @@ jobs:
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
+
+  # cibuildwheel tests each wheel against the newest torch only. Install the
+  # wheels it built (not a source build) and run the installed-wheel tests at
+  # the supported floor (TORCH_MIN_PIN) and at the newest tested minor
+  # (TORCH_TESTED_PIN), from outside the checkout so the wheel is what imports.
+  # Publishing needs this job.
+  test_wheels:
+    name: Wheel tests (${{ matrix.os }}, torch ${{ matrix.torch }})
+    needs: build_wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        torch: [min, tested]
+        include:
+          - os: ubuntu-latest
+            artifact: cibw-wheels-ubuntu-latest-x86_64
+          - os: macos-15
+            artifact: cibw-wheels-macos-15-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/wheels
+      - name: Install the built wheel
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-index --no-deps --find-links wheels torchfits
+          python -m pip install numpy pyarrow pytest psutil
+      - name: Installed-wheel tests
+        working-directory: ${{ runner.temp }}
+        env:
+          MATRIX_TORCH: ${{ matrix.torch }}
+        run: |
+          if [ "$MATRIX_TORCH" = "min" ]; then
+            export TORCHFITS_TEST_TORCH_SPEC="$TORCH_MIN_PIN"
+          else
+            export TORCHFITS_TEST_TORCH_SPEC="$TORCH_TESTED_PIN"
+          fi
+          python -c 'import pathlib, torchfits; p = pathlib.Path(torchfits.__file__).resolve(); print(p); assert "site-packages" in p.parts, "not the installed wheel"'
+          bash "$GITHUB_WORKSPACE/scripts/cibw_test.sh" "$GITHUB_WORKSPACE"
 
   build_sdist:
     name: Build source distribution
@@ -199,7 +251,7 @@ jobs:
             dist/RELEASE-MANIFEST.sha256
 
   upload_pypi:
-    needs: [release_gate, validate_release]
+    needs: [release_gate, validate_release, test_wheels]
     runs-on: ubuntu-latest
     environment: pypi
     # Trusted publishing is registered for astroai/torchfits only. The same
@@ -230,7 +282,7 @@ jobs:
 
   github_release:
     name: Create GitHub Release
-    needs: [release_gate, validate_release]
+    needs: [release_gate, validate_release, test_wheels]
     runs-on: ubuntu-latest
     if: >-
       ${{ github.repository == 'astroai/torchfits' &&

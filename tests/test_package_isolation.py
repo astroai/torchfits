@@ -78,8 +78,10 @@ def test_torch_support_range_is_consistent() -> None:
         assert "release_lane.py --print-pins" in workflow
         assert "pip install torch " not in workflow
     ci = workflow_paths[0].read_text(encoding="utf-8")
-    assert 'pip install "torch$TORCH_PIN"' in ci
+    # CI pins both ends of the tested range; only the nightly canary floats.
+    assert 'pip install "torch$TORCH_TESTED_PIN"' in ci
     assert 'pip install "torch$TORCH_MIN_PIN"' in ci
+    assert '"torch$TORCH_PIN"' not in ci
 
     wheel_workflow = (
         REPO_ROOT / ".github" / "workflows" / "build_wheels.yml"

@@ -1,0 +1,70 @@
+name: Torch canary
+
+# ci.yml tests exactly two PyTorch minors: the floor (torch_min) and the newest
+# one the support map claims (torch_tested), both pinned. Neither moves when
+# PyTorch ships a release, so on its own CI would never notice one. This
+# workflow installs the newest PyTorch the uncapped floor resolves to and runs
+# the suite against it nightly. It is a separate workflow so a breaking
+# PyTorch release shows up as a failed canary instead of failing every PR.
+# When the newest minor passes here, raise torch_tested in
+# scripts/torch_support.json (docs/release.md, section 0).
+on:
+  schedule:
+    # 04:41 UTC daily, off the hour (docs-drift.yml runs at 06:23).
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: torch-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: 1
+  TORCHFITS_EXAMPLE_FAST: "1"
+
+jobs:
+  newest-torch:
+    name: Newest torch (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        python-version: ["3.13", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Resolve supported torch range
+        run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
+      - name: Vendor CFITSIO
+        run: bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
+      - name: Install dependencies (newest torch)
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install --upgrade "torch$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy pytest nanobind scikit-build-core psutil pyarrow
+      - name: Compare with torch_tested
+        run: |
+          python - <<'PY'
+          import json
+          import torch
+
+          installed = tuple(int(p) for p in torch.__version__.split("+")[0].split(".")[:2])
+          tested = json.load(open("scripts/torch_support.json"))["torch_tested"]
+          print(f"torch {torch.__version__}; torch_tested is {tested}")
+          if installed > tuple(int(p) for p in tested.split(".")):
+              print(
+                  f"::notice::torch {installed[0]}.{installed[1]} is newer than "
+                  f"torch_tested {tested}; raise it once this canary passes"
+              )
+          PY
+      - name: Build and install
+        run: pip install -e . --no-build-isolation
+      - name: Pytest
+        run: pytest tests/ -q -m "not performance"
