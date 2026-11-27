@@ -5,11 +5,12 @@ destinations are Arrow (``read`` / ``read_arrow``), tensor columns
 (``read_torch``), or Polars (``read_polars``).
 
 On the format question: Arrow is the *contract*, not the native representation.
-The C++ engine exposes Python-owned raw column buffers without constructing a
-Python tensor. Arrow builds arrays from those buffers in Python, while explicit
-tensor destinations continue to cross the native ``THPVariable_Wrap`` boundary.
-Importing this namespace and using Arrow metadata/data paths therefore does not
-load PyTorch.
+The C++ engine links no libtorch and exposes Python-owned raw column buffers.
+Arrow builds arrays from those buffers in Python; explicit tensor destinations
+hand the buffers to PyTorch as DLPack capsules
+(``torch.utils.dlpack.from_dlpack``), which is the first point PyTorch is
+imported. Importing this namespace and using Arrow metadata/data paths
+therefore does not load PyTorch.
 """
 
 from __future__ import annotations
