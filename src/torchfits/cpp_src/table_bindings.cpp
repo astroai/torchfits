@@ -605,6 +605,29 @@ namespace torchfits {
 void invalidate_shared_meta(const std::string& filepath);
 }
 
+namespace {
+
+// Drops a path's native caches before a write and again once it is done. The
+// mutation writers run their IO without the GIL, so another thread can read
+// the path meanwhile and re-cache its old metadata under the old stat
+// identity, which the validation window would keep serving.
+struct InvalidateAround {
+    const std::string& path;
+    explicit InvalidateAround(const std::string& p) : path(p) { drop(); }
+    ~InvalidateAround() {
+        try {
+            drop();
+        } catch (...) {
+        }
+    }
+    void drop() const {
+        torchfits::invalidate_shared_meta(path);
+        torchfits::evict_cached_reader(path);
+    }
+};
+
+}  // namespace
+
 void bind_table(nb::module_& m) {
     nb::class_<torchfits::TableReader>(m, "TableReader")
         .def("__init__", [](torchfits::TableReader* self, const std::string& filename, int hdu_num) {
@@ -654,15 +677,15 @@ void bind_table(nb::module_& m) {
 
     m.def("write_fits_table", [](const std::string& filename, nb::dict tensor_dict, nb::dict header, bool overwrite,
                                  nb::object schema, const std::string& table_type) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // Converts the payload with the GIL, writes the file without it.
+        InvalidateAround invalidate_around(filename);
         write_fits_table(filename.c_str(), tensor_dict, header, overwrite, schema, table_type);
     }, nb::arg("filename"), nb::arg("tensor_dict"), nb::arg("header"), nb::arg("overwrite"),
        nb::arg("schema") = nb::none(), nb::arg("table_type") = "binary");
 
     m.def("append_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // The payload is converted with the GIL; the IO runs without it.
+        InvalidateAround invalidate_around(filename);
         append_rows(filename.c_str(), hdu_num, tensor_dict);
     });
 
@@ -729,15 +752,13 @@ void bind_table(nb::module_& m) {
 
     m.def("insert_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict,
                                        long start_row) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        InvalidateAround invalidate_around(filename);
         insert_rows(filename.c_str(), hdu_num, tensor_dict, start_row);
     });
 
     m.def("update_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict,
                                        long start_row, long num_rows) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        InvalidateAround invalidate_around(filename);
         update_rows(filename.c_str(), hdu_num, tensor_dict, start_row, num_rows);
     });
 
@@ -749,15 +770,27 @@ void bind_table(nb::module_& m) {
     });
 
     m.def("rename_fits_table_columns", [](const std::string& filename, int hdu_num, nb::dict mapping) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
-        rename_columns(filename.c_str(), hdu_num, mapping);
+        std::vector<std::pair<std::string, std::string>> renames;
+        renames.reserve(mapping.size());
+        for (auto item : mapping) {
+            renames.emplace_back(nb::cast<std::string>(item.first),
+                                 nb::cast<std::string>(item.second));
+        }
+        nb::gil_scoped_release release;
+        InvalidateAround invalidate_around(filename);
+        rename_columns(filename.c_str(), hdu_num, renames);
     });
 
     m.def("drop_fits_table_columns", [](const std::string& filename, int hdu_num, nb::list columns) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
-        drop_columns(filename.c_str(), hdu_num, columns);
+        std::vector<std::string> names;
+        names.reserve(columns.size());
+        for (auto name : columns) {
+            names.push_back(nb::cast<std::string>(name));
+        }
+        // CFITSIO rewrites every row per dropped column: no GIL for that.
+        nb::gil_scoped_release release;
+        InvalidateAround invalidate_around(filename);
+        drop_columns(filename.c_str(), hdu_num, names);
     });
 
     m.def("delete_fits_table_rows", [](const std::string& filename, int hdu_num, long start_row,
@@ -768,20 +801,7 @@ void bind_table(nb::module_& m) {
         // count under the old stat identity, which the validation window would
         // keep serving: invalidate again once the write is done.
         nb::gil_scoped_release release;
-        struct InvalidateAround {
-            const std::string& path;
-            explicit InvalidateAround(const std::string& p) : path(p) { drop(); }
-            ~InvalidateAround() {
-                try {
-                    drop();
-                } catch (...) {
-                }
-            }
-            void drop() const {
-                torchfits::invalidate_shared_meta(path);
-                torchfits::evict_cached_reader(path);
-            }
-        } invalidate_around(filename);
+        InvalidateAround invalidate_around(filename);
         delete_rows(filename.c_str(), hdu_num, start_row, num_rows);
     });
 
