@@ -2,6 +2,8 @@
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <nanobind/nanobind.h>
@@ -120,6 +122,42 @@ void rollback_inserted_rows(fitsfile* fptr, long start_row, long num_rows) {
 // Do not "fix" this by switching these four to EXACT: the policies would still
 // disagree, only in the other direction. Any new name resolution here has to
 // pick a policy deliberately and say which one it picked.
+
+// fits_get_colnum plus the name the readers give a column with no (or an
+// empty) TTYPE card: TableReader names it "COL<n>", and CFITSIO knows it only
+// by its number. Without this fallback every mutation refused the name a read
+// returned for such a column. The fallback is exact ("COL" + decimal n, no
+// leading zero) and only applies when TTYPEn really is absent or empty.
+// On failure sets *status like fits_get_colnum and returns 0.
+int resolve_column_number(fitsfile* fptr, const std::string& name, int* status) {
+    if (*status != 0) return 0;
+    int colnum = 0;
+    int st = 0;
+    fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(name.c_str()), &colnum, &st);
+    if (st == 0) return colnum;
+    if (name.size() > 3 && name.compare(0, 3, "COL") == 0 && name[3] != '0' &&
+        name.size() <= 3 + 9 &&
+        std::all_of(name.begin() + 3, name.end(),
+                    [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+        const long n = std::strtol(name.c_str() + 3, nullptr, 10);
+        int ncols = 0;
+        int nst = 0;
+        fits_get_num_cols(fptr, &ncols, &nst);
+        if (nst == 0 && n >= 1 && n <= ncols) {
+            char keyname[FLEN_KEYWORD];
+            char value[FLEN_VALUE] = {0};
+            int kst = 0;
+            fits_make_keyn("TTYPE", static_cast<int>(n), keyname, &kst);
+            fits_read_key(fptr, TSTRING, keyname, value, nullptr, &kst);
+            if (kst == KEY_NO_EXIST || (kst == 0 && value[0] == '\0')) {
+                fits_clear_errmsg();
+                return static_cast<int>(n);
+            }
+        }
+    }
+    *status = st;
+    return 0;
+}
 
 }  // namespace
 
@@ -242,7 +280,7 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         std::string col_name = nb::cast<std::string>(item.first);
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(col_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, col_name, &status);
         if (status != 0) {
             rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Column not found for append_rows: " + col_name);
@@ -752,7 +790,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         // mmap writer this function falls back FROM (update_rows_mmap) is
         // exact-match, so the two writers of the same API disagree on a
         // case-mismatched name; the Python layer rejects those first.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(col_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, col_name, &status);
         if (status != 0) {
             throw std::runtime_error("Column not found for update_rows: " + col_name);
         }
@@ -1263,7 +1301,7 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above. Nothing has
         // been written yet, so CFITSIO's cached names are the file's names.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(old_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, old_name, &status);
         if (status != 0 || colnum < 1 || colnum > ncols) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for rename_columns: " + old_name);
@@ -1337,7 +1375,7 @@ void drop_columns(const char* filename, int hdu_num, nb::list columns) {
         std::string name = nb::cast<std::string>(name_obj);
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, name, &status);
         if (status != 0) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for drop_columns: " + name);

@@ -15,12 +15,14 @@ from .._table.utils import (
     _parse_tform,
 )
 from .._table.write import (
+    _column_name_index_map,
     _scaled_columns_as_stored,
     _extract_table_schema_from_header,
     _ordered_dict_for_columns,
     _resolve_table_hdu_index_and_columns,
     _rewrite_table_hdu_with_schema,
     _rewrite_table_header,
+    _unnamed_column_indices,
 )
 
 from ._mutation_coerce import (
@@ -41,6 +43,12 @@ from ._mutation_coerce import (
     _read_table_for_rewrite,
     _replacement_column_layout,
 )
+
+
+def _unnamed_column_names(header_map: dict[str, Any]) -> frozenset[str]:
+    """Read-side ``COL<i>`` names of the columns with no ``TTYPE`` card."""
+    names = _column_name_index_map(header_map)
+    return frozenset(names[i] for i in _unnamed_column_indices(header_map))
 
 
 def insert_column(
@@ -125,6 +133,7 @@ def insert_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        unnamed=_unnamed_column_names(header_map),
     )
     _mutation_cache_barrier(path)
 
@@ -233,6 +242,7 @@ def replace_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        unnamed=_unnamed_column_names(header_map),
     )
     _mutation_cache_barrier(path)
 

@@ -191,8 +191,9 @@ public:
             snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
             fits_read_key(fptr_, TSTRING, keyname, ttype, nullptr, &col_status);
 
-            if (col_status != 0) {
-                // TTYPE is optional? If missing, use default name?
+            if (col_status != 0 || ttype[0] == '\0') {
+                // TTYPE is optional: a column without one (or with an empty
+                // one) is named COL<i>, as fits_schema._default_column_name.
                 col_status = 0; // Reset status
                 snprintf(ttype, FLEN_VALUE, "COL%d", i);
             }

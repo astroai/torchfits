@@ -493,6 +493,12 @@ assert torchfits.read("t.fits", hdu=1)["a"].dtype.is_floating_point is False
 torchfits.table.replace_column("t.fits", "a", u16, format="1J")  # plain int32
 ```
 
+A column with no `TTYPE` card is read as `COL<i>` (its 1-based position),
+and every mutation takes that name too. Column rewrites keep such a column
+without a `TTYPE` card while it stays at position `i`; when `insert_column`
+moves it, it is written with `TTYPE = 'COL<i>'` (its old name) so reads keep
+returning the same name.
+
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
 `None` is written as a blank value, and a value longer than the column width
