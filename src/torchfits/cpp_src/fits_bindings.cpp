@@ -73,6 +73,15 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         return file.read_tensor(hdu_num, use_mmap);
     }
 
+    // Sample the metadata generation before opening: the handle below reads
+    // the file as it is now, and only answers from this same generation may
+    // be read from or published to the shared caches (see meta_is_current).
+    auto meta = d::get_shared_meta_for_path(path);
+    const uint64_t generation = meta->uid.load(std::memory_order_relaxed);
+    auto meta_is_current = [&]() {
+        return meta->uid.load(std::memory_order_relaxed) == generation;
+    };
+
     // Private per-call handle (CFITSIO §4 Option A): never share one fitsfile*
     // across threads. SharedReadMeta + shared raw fd remain the shared caches.
     fitsfile* fptr = nullptr;
@@ -89,8 +98,6 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     if (status != 0) {
         throw std::runtime_error("Could not move to HDU");
     }
-
-    auto meta = d::get_shared_meta_for_path(path);
 
     struct LocalKey {
         uint64_t meta_uid = 0;
@@ -121,7 +128,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     static thread_local std::unordered_map<LocalKey, LocalHduMeta, LocalKeyHash> tl_cache;
     static thread_local std::list<LocalKey> tl_lru;
 
-    LocalKey key{meta->uid, hdu_num};
+    LocalKey key{generation, hdu_num};
     LocalHduMeta* local = nullptr;
     auto cache_it = tl_cache.find(key);
     if (cache_it != tl_cache.end()) {
@@ -144,7 +151,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->image_info_cache.find(hdu_num);
-            if (it != meta->image_info_cache.end()) {
+            if (meta_is_current() && it != meta->image_info_cache.end()) {
                 local->bitpix = std::get<0>(it->second);
                 local->naxis = std::get<1>(it->second);
                 local->naxes_ll = std::get<2>(it->second);
@@ -161,7 +168,10 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         }
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->image_info_cache[hdu_num] = std::make_tuple(local->bitpix, local->naxis, local->naxes_ll);
+            if (meta_is_current()) {
+                meta->image_info_cache[hdu_num] =
+                    std::make_tuple(local->bitpix, local->naxis, local->naxes_ll);
+            }
         }
         local->has_info = true;
     };
@@ -171,7 +181,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->compressed_cache.find(hdu_num);
-            if (it != meta->compressed_cache.end()) {
+            if (meta_is_current() && it != meta->compressed_cache.end()) {
                 local->compressed = it->second;
                 local->has_compressed = true;
                 return local->compressed;
@@ -185,7 +195,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         }
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->compressed_cache[hdu_num] = local->compressed;
+            if (meta_is_current()) meta->compressed_cache[hdu_num] = local->compressed;
         }
         local->has_compressed = true;
         return local->compressed;
@@ -205,7 +215,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->scale_cache.find(hdu_num);
-            if (it != meta->scale_cache.end()) {
+            if (meta_is_current() && it != meta->scale_cache.end()) {
                 local->scaled = std::get<0>(it->second);
                 local->trusted = std::get<1>(it->second);
                 local->bscale = std::get<2>(it->second);
@@ -222,9 +232,11 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
 
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->scale_cache[hdu_num] = std::make_tuple(
-                local->scaled, local->trusted, local->bscale, local->bzero
-            );
+            if (meta_is_current()) {
+                meta->scale_cache[hdu_num] = std::make_tuple(
+                    local->scaled, local->trusted, local->bscale, local->bzero
+                );
+            }
         }
         local->has_scale = true;
     };
@@ -267,6 +279,9 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     // Hold the refcounted fd for the duration of the canonical read so an
     // invalidation cannot close it underneath pread/mmap.
     auto fd_holder = d::get_shared_raw_fd(meta, path);
+    // The shared fd follows the current generation; once that is no longer the
+    // file this handle opened, read through the handle instead.
+    if (!meta_is_current()) fd_holder.reset();
     const int fd = fd_holder ? fd_holder->fd : -1;
     return d::read_tensor_canonical(fptr, path, resolved, use_mmap, fd, /*use_chunking=*/true);
 }
@@ -316,12 +331,16 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     }
 
     auto meta = d::get_shared_meta_for_path(path);
+    // Generation observed before the open; the answer is published only if it
+    // is still current (a replace mid-scan must not pin the old index).
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->hdu_name_cache.find(hdu_name_key);
         if (it != meta->hdu_name_cache.end()) {
             return it->second;
         }
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
 
     fitsfile* fptr = nullptr;
@@ -353,7 +372,9 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     const int resolved = std::max(0, current_hdu - 1);
     if (meta) {
         std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->hdu_name_cache[hdu_name_key] = resolved;
+        if (meta->uid.load(std::memory_order_relaxed) == generation) {
+            meta->hdu_name_cache[hdu_name_key] = resolved;
+        }
     }
     return resolved;
 }
@@ -549,6 +570,15 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
     fitsfile* fptr = nullptr;
     int status = 0;
     auto shared_meta = d::get_shared_meta_for_path(path);
+    // Generation observed before the open. A replace that lands while this
+    // reader scans rotates it; from then on this handle reads the old file, so
+    // it must neither use nor publish the shared answers (they belong to the
+    // replacement).
+    const uint64_t generation =
+        shared_meta ? shared_meta->uid.load(std::memory_order_relaxed) : 0;
+    auto meta_is_current = [&]() {
+        return shared_meta->uid.load(std::memory_order_relaxed) == generation;
+    };
     status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
         throw std::runtime_error(d::open_failure_message(path, status));
@@ -588,7 +618,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->image_info_cache.find(hdu_num);
-            if (it != shared_meta->image_info_cache.end()) {
+            if (meta_is_current() && it != shared_meta->image_info_cache.end()) {
                 bitpix = std::get<0>(it->second);
                 naxis = std::get<1>(it->second);
                 naxes_ll = std::get<2>(it->second);
@@ -604,8 +634,10 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             }
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->image_info_cache[hdu_num] = std::make_tuple(
-                    bitpix, naxis, naxes_ll);
+                if (meta_is_current()) {
+                    shared_meta->image_info_cache[hdu_num] = std::make_tuple(
+                        bitpix, naxis, naxes_ll);
+                }
             }
         }
 
@@ -629,7 +661,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->compressed_cache.find(hdu_num);
-            if (it != shared_meta->compressed_cache.end()) {
+            if (meta_is_current() && it != shared_meta->compressed_cache.end()) {
                 compressed = it->second;
                 compressed_cached = true;
             }
@@ -641,7 +673,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             if (status != 0) status = 0;
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->compressed_cache[hdu_num] = compressed;
+                if (meta_is_current()) shared_meta->compressed_cache[hdu_num] = compressed;
             }
         }
 
@@ -684,7 +716,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->scale_cache.find(hdu_num);
-            if (it != shared_meta->scale_cache.end()) {
+            if (meta_is_current() && it != shared_meta->scale_cache.end()) {
                 scaled = std::get<0>(it->second);
                 scale_trusted = std::get<1>(it->second);
                 bscale = std::get<2>(it->second);
@@ -700,8 +732,10 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             bzero = detected.bzero;
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->scale_cache[hdu_num] = std::make_tuple(
-                    scaled, scale_trusted, bscale, bzero);
+                if (meta_is_current()) {
+                    shared_meta->scale_cache[hdu_num] = std::make_tuple(
+                        scaled, scale_trusted, bscale, bzero);
+                }
             }
         }
 
@@ -719,6 +753,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         std::shared_ptr<d::RawFdHolder> fd_holder;
         if (!resolved.compressed && shared_meta) {
             fd_holder = d::get_shared_raw_fd(shared_meta, path);
+            if (!meta_is_current()) fd_holder.reset();
         }
         const int fd = fd_holder ? fd_holder->fd : -1;
         auto tensor = d::read_tensor_canonical(

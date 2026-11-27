@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <climits>
 #include <fcntl.h>
 #include <list>
 #include <stdexcept>
@@ -31,6 +32,22 @@ namespace detail {
 #ifndef TORCHFITS_CORE_BUILD_ID
 #define TORCHFITS_CORE_BUILD_ID "unknown"
 #endif
+
+namespace {
+
+// CFITSIO makes its global lock (Fitsio_Lock) recursive lazily: the first
+// fits_open_* / fits_create_* runs fits_init_cfitsio(), which calls
+// pthread_mutex_init on it. Every other entry point -- fits_clear_errmsg (which
+// open_fits_readonly calls first), the fptr-table update in fits_close_file --
+// takes that same lock before then as a plain zero-initialised mutex. When a
+// process's first reads start on several threads at once, one thread can
+// re-initialise the mutex while another holds it; the holder's unlock then
+// leaves it locked for good and every later CFITSIO call hangs (all threads
+// parked in ffxmsg / fits_clear_Fptr). Initialise it while this library loads,
+// which is single-threaded and happens before anything can call into it.
+[[maybe_unused]] const int g_cfitsio_init_status = fits_init_cfitsio();
+
+}  // namespace
 
 const char* core_library_build_id() {
     return TORCHFITS_CORE_BUILD_ID;
@@ -194,6 +211,37 @@ std::list<std::string>& shared_meta_lru() {
     return order;
 }
 
+// One registry key per file, whatever spelling the caller used. './x.fits',
+// 'x.fits', '/abs/x.fits' and a symlink to it all name one file, and a writer
+// invalidates by whichever spelling *it* was given: keyed by the raw string, a
+// reader's entry under another spelling kept answering read_nrows/read_shape
+// from the old file until its validation window ran out. The local file is
+// resolved with realpath(); a name that does not resolve (not created yet,
+// dangling link) resolves its directory instead, so an invalidation before a
+// create and a lookup after it agree. Anything else is kept as given.
+std::string resolve_local_path(const std::string& path) {
+    char buf[PATH_MAX];
+    if (::realpath(path.c_str(), buf) != nullptr) return std::string(buf);
+    const size_t slash = path.find_last_of('/');
+    const std::string leaf = slash == std::string::npos ? path : path.substr(slash + 1);
+    if (leaf.empty() || leaf == "." || leaf == "..") return path;
+    const std::string dir = slash == std::string::npos
+        ? std::string(".")
+        : (slash == 0 ? std::string("/") : path.substr(0, slash));
+    if (::realpath(dir.c_str(), buf) == nullptr) return path;
+    std::string out(buf);
+    if (out.empty() || out.back() != '/') out.push_back('/');
+    return out + leaf;
+}
+
+// Registry key for `filename` whose local file is `stat_path` (a prefix of
+// filename, see cfitsio_stat_path): the canonical base file followed by any
+// extended-syntax suffix, so "f.fits[1]" keys as "/abs/f.fits[1]" and an
+// invalidation of the base can find it.
+std::string shared_meta_key(const std::string& filename, const std::string& stat_path) {
+    return resolve_local_path(stat_path) + filename.substr(stat_path.size());
+}
+
 }  // namespace
 
 const bool kValidateSharedMeta = []() {
@@ -249,17 +297,18 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
                         std::memory_order_relaxed);
         return meta;
     }
+    const std::string key = shared_meta_key(filename, stat_path);
     std::shared_ptr<SharedReadMeta> meta;
     {
         std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
         auto& order = shared_meta_lru();
-        auto it = g_shared_meta.find(filename);
+        auto it = g_shared_meta.find(key);
         if (it == g_shared_meta.end()) {
             meta = std::make_shared<SharedReadMeta>();
             meta->uid.store(g_shared_meta_uid.fetch_add(1, std::memory_order_relaxed),
                             std::memory_order_relaxed);
-            meta->lru_pos = order.insert(order.end(), filename);
-            g_shared_meta.emplace(filename, meta);
+            meta->lru_pos = order.insert(order.end(), key);
+            g_shared_meta.emplace(key, meta);
             while (g_shared_meta.size() > kMaxSharedMetaEntries) {
                 g_shared_meta.erase(order.front());
                 order.pop_front();
@@ -516,12 +565,27 @@ bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes) {
     return true;
 }
 
+// Drops every entry that reads the same local file as `filename`, under any
+// spelling: the canonical base and its extended-syntax names ("f.fits[1]",
+// "f.fits(out.fits)[2]"), since a write to f.fits changes what they all read.
 void invalidate_shared_meta_for_path(const std::string& filename) {
+    const std::string stat_path = cfitsio_stat_path(filename);
+    if (stat_path.empty()) return;  // URLs are never registered
+    const std::string base = resolve_local_path(stat_path);
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
-    auto it = g_shared_meta.find(filename);
-    if (it == g_shared_meta.end()) return;
-    shared_meta_lru().erase(it->second->lru_pos);
-    g_shared_meta.erase(it);
+    auto& order = shared_meta_lru();
+    for (auto it = g_shared_meta.begin(); it != g_shared_meta.end();) {
+        const std::string& key = it->first;
+        const bool same_file =
+            key.compare(0, base.size(), base) == 0 &&
+            (key.size() == base.size() || key[base.size()] == '[' || key[base.size()] == '(');
+        if (same_file) {
+            order.erase(it->second->lru_pos);
+            it = g_shared_meta.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void clear_shared_meta_cache() {

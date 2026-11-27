@@ -131,6 +131,14 @@ bool FITSFile::shares_current_file() const {
     return owns_current_generation_locked();
 }
 
+bool FITSFile::path_names_open_file() const {
+    if (mode_ != 0 || !open_identity_valid_) return true;
+    struct stat st {};
+    if (::stat(filename_.c_str(), &st) != 0) return true;
+    return st.st_ino == open_inode_ && st.st_size == open_size_ &&
+           internal::mtime_ns_from_stat(st) == open_mtime_ns_;
+}
+
 void FITSFile::publish_image_info(
     int hdu_num, const std::tuple<int, int, std::array<LONGLONG, 9>>& info) const {
     if (!shared_meta_ || !open_identity_valid_) return;

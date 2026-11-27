@@ -575,6 +575,9 @@ nb::dict table_result_to_python(
     return result_dict;
 }
 
+using TableColumns =
+    std::vector<std::pair<std::string, torchfits::TableReader::ColumnData>>;
+
 // Name stamped on the open_fits_mmap_reader capsule; any other capsule must be
 // refused before its pointer is cast to TableReader*.
 constexpr const char* kTableReaderCapsuleName = "torchfits.TableReader";
@@ -698,8 +701,26 @@ void bind_table(nb::module_& m) {
 
     m.def("delete_fits_table_rows", [](const std::string& filename, int hdu_num, long start_row,
                                        long num_rows) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // Takes no Python input, so the whole rewrite (CFITSIO shifts every
+        // row after the deleted range) runs without the GIL. Other threads can
+        // then read the path while it is rewritten and re-cache its old row
+        // count under the old stat identity, which the validation window would
+        // keep serving: invalidate again once the write is done.
+        nb::gil_scoped_release release;
+        struct InvalidateAround {
+            const std::string& path;
+            explicit InvalidateAround(const std::string& p) : path(p) { drop(); }
+            ~InvalidateAround() {
+                try {
+                    drop();
+                } catch (...) {
+                }
+            }
+            void drop() const {
+                torchfits::invalidate_shared_meta(path);
+                torchfits::evict_cached_reader(path);
+            }
+        } invalidate_around(filename);
         delete_rows(filename.c_str(), hdu_num, start_row, num_rows);
     });
 
@@ -714,25 +735,27 @@ void bind_table(nb::module_& m) {
         return table_result_to_python(result_map, false);
     });
 
+    // The *_from_handle readers drive the caller's shared FITSFile handle, so
+    // they run under its I/O lock (with_locked_fptr_from_python_object): two
+    // threads reading different HDUs through one handle would otherwise move
+    // its single CFITSIO cursor under each other.
     m.def("read_fits_table_from_handle", [](nb::object file_obj, int hdu_num) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns({}, 1, -1, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+            torchfits::TableReader reader(fptr, hdu_num);
+            result_map = reader.read_columns({}, 1, -1, true);
+        });
         return table_result_to_python(result_map, false);
     });
 
     m.def("read_fits_table_rows_from_handle", [](nb::object file_obj, int hdu_num,
                                                  const std::vector<std::string>& column_names,
                                                  long start_row, long num_rows) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+            torchfits::TableReader reader(fptr, hdu_num);
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_python(result_map, false);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
@@ -741,12 +764,11 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_raw_from_handle", [](nb::object file_obj, int hdu_num,
                                                      const std::vector<std::string>& column_names,
                                                      long start_row, long num_rows) -> nb::dict {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+            torchfits::TableReader reader(fptr, hdu_num);
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_raw_python(result_map);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
@@ -846,12 +868,11 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_numpy_from_handle", [](nb::object file_obj, int hdu_num,
                                                        const std::vector<std::string>& column_names,
                                                        long start_row, long num_rows) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+            torchfits::TableReader reader(fptr, hdu_num);
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_python(result_map, true);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),

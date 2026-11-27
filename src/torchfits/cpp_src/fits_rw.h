@@ -87,6 +87,31 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
 // closed; keeps it open while held (see FITSFile::share_fptr).
 std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj);
 
+// Run fn(fitsfile*) on a Python FITSFile's handle with the GIL released and the
+// handle's I/O lock held for the whole call. CFITSIO keeps one current-HDU
+// cursor per fitsfile, so a borrower that drives it (a TableReader moving to
+// its HDU and reading rows) must not interleave with another thread's use of
+// the same handle. fn must not touch Python objects; the caller's `obj`
+// reference keeps the FITSFile alive, and the lock defers a concurrent close().
+//
+// The borrower is a TableReader, which also reads the file by *name* (pread,
+// mmap, extent checks). Once the path has been replaced it would read the new
+// file's bytes with the old handle's geometry and return garbage, so the call
+// is refused -- before fn, and after it in case the replace landed mid-read.
+template <class F>
+void with_locked_fptr_from_python_object(nanobind::object obj, F&& fn) {
+    FITSFile& file = nanobind::cast<FITSFile&>(obj);
+    nanobind::gil_scoped_release release;
+    file.with_open_fptr([&](fitsfile* fptr) {
+        static const char* kReplaced =
+            "FITS file was replaced on disk after this handle was opened; "
+            "reopen it to read the current file";
+        if (!file.path_names_open_file()) throw std::runtime_error(kReplaced);
+        fn(fptr);
+        if (!file.path_names_open_file()) throw std::runtime_error(kReplaced);
+    });
+}
+
 void invalidate_shared_meta(const std::string& filename);
 void clear_shared_read_meta_cache();
 
