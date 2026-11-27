@@ -442,6 +442,12 @@ class FitsTableIterableDataset(IterableDataset[Any]):
         # evaluated over the same row range, so rows keep the exact
         # representation of an unfiltered scan.
         offset = 0 if window is None else window[0]
+        # Absolute row of the next chunk, and the end of the scanned range
+        # (looked up lazily): a zero-column BINTABLE (TFIELDS = 0) yields
+        # ``{}`` chunks that carry no row count, yet holds NAXIS2 rows, which
+        # the map-style FitsTableDataset serves as empty row dicts.
+        scan_pos = offset
+        scan_end = None if window is None else window[1]
         for chunk in torchfits.table.scan_torch(
             self.path,
             hdu=self.hdu,
@@ -452,15 +458,23 @@ class FitsTableIterableDataset(IterableDataset[Any]):
             device=self.device,
         ):
             if not chunk:
-                continue
-            n_rows = next(
-                (
-                    v.shape[0] if isinstance(v, torch.Tensor) else len(v)
-                    for v in chunk.values()
-                    if isinstance(v, (torch.Tensor, list))
-                ),
-                0,
-            )
+                if scan_end is None:
+                    scan_end = int(torchfits.read_nrows(self.path, self.hdu))
+                # scan_torch chunks are ``min(batch_size, remaining)`` rows.
+                n_rows = max(0, min(self.batch_size, scan_end - scan_pos))
+                scan_pos += n_rows
+                if n_rows == 0:
+                    continue
+            else:
+                n_rows = next(
+                    (
+                        v.shape[0] if isinstance(v, torch.Tensor) else len(v)
+                        for v in chunk.values()
+                        if isinstance(v, (torch.Tensor, list))
+                    ),
+                    0,
+                )
+                scan_pos += n_rows
             if self.where is not None:
                 row_mask = _where_row_mask(
                     self.path,
