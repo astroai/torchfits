@@ -11,8 +11,9 @@ Entries verified fixed or moot are moved to
 - CLI trim (`compress` / `decompress` / `arith` vs fpack/numpy) — Waves 1–2
   shipped (`-j`/`-J`, imarith-class `arith`, batch copy/transform/cutout,
   stats std/median, compress `--algorithm`, header wildcards, setkey
-  `--delete`/`@list`). **Wave 3:** fpack tile/dither/`-i2f`;
-  `imexpr`/full STILTS — **not** CFITSIO HTTPS drivers (keep own
+  `--delete`/`@list`). **Wave 3:** fpack tile/dither/`-i2f` shipped
+  (`--tile`, `-q`/`--quantize-method`/`--dither-seed`, `--int-to-float`;
+  `write(tile_shape=, quantize_level=, ...)`); still open: `imexpr`/full STILTS — **not** CFITSIO HTTPS drivers (keep own
   HTTP + SSRF). WCS/catalog cutouts are out of scope: world coordinates stay
   in other packages (`docs/roadmap.md`).
 - `torchfits verify` is checksum verification only and stays self-contained:
