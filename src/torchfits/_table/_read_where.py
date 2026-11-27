@@ -20,6 +20,7 @@ from .._table_engine import (
     choose_where_read_plan,
 )
 from .._table.utils import _require_pyarrow
+from .._string_decode import column_decode_context
 from .._table.arrow_convert import (
     _pa_array,
     _tensor_to_arrow_array,
@@ -389,17 +390,18 @@ def _try_torch_tensor_where_filter(
         if not isinstance(value, torch.Tensor):
             return None
         filtered = value[mask]
-        arrays.append(
-            _tensor_to_arrow_array(
-                pa,
-                filtered,
-                decode_bytes,
-                encoding,
-                strip,
-                null_sentinel=tnull_map.get(name),
-                fits_tform=None,
+        with column_decode_context(name):
+            arrays.append(
+                _tensor_to_arrow_array(
+                    pa,
+                    filtered,
+                    decode_bytes,
+                    encoding,
+                    strip,
+                    null_sentinel=tnull_map.get(name),
+                    fits_tform=None,
+                )
             )
-        )
         names_out.append(name)
 
     if not arrays:
@@ -875,15 +877,18 @@ def _try_cpp_where_pushdown(
                 continue
             val = data_dict[name]
             if isinstance(val, torch.Tensor):
-                arr = _tensor_to_arrow_array(
-                    pa,
-                    val,
-                    decode_bytes,
-                    encoding,
-                    strip,
-                    null_sentinel=tnull_map.get(name),
-                    fits_tform=pushdown_tforms.get(name) if pushdown_tforms else None,
-                )
+                with column_decode_context(name):
+                    arr = _tensor_to_arrow_array(
+                        pa,
+                        val,
+                        decode_bytes,
+                        encoding,
+                        strip,
+                        null_sentinel=tnull_map.get(name),
+                        fits_tform=(
+                            pushdown_tforms.get(name) if pushdown_tforms else None
+                        ),
+                    )
                 arrays.append(arr)
                 names_out.append(name)
 

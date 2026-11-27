@@ -61,6 +61,8 @@ torchfits.table.read(
     include_fits_metadata=False,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
 )
 ```
 
@@ -76,12 +78,27 @@ torchfits.table.read(
 | `mmap` | `bool` | `True` | Memory-mapped reads |
 | `decode_bytes` | `bool` | `True` | Decode byte-string columns |
 | `encoding` | `str` | `"ascii"` | Byte decoding encoding |
+| `decode_errors` | `str` | `"strict"` | `"strict"`, `"replace"` or `"ignore"`; see below |
 | `strip` | `bool` | `True` | Strip trailing spaces on strings |
 | `include_fits_metadata` | `bool` | `False` | Attach FITS column metadata on the Arrow schema |
 | `apply_fits_nulls` | `bool` | `True` | Honor `TNULL` as nulls |
 | `backend` | `str` | `"auto"` | `"auto"`, `"cpp"`, or `"torch"` |
 
 **Returns:** `pyarrow.Table`
+
+String (`A`) columns are decoded with `encoding` (FITS strings are ASCII).
+By default a byte the encoding cannot decode raises `UnicodeDecodeError`
+naming the column, on every read path and in `where=` string comparisons.
+Pass the encoding the file really uses (for example `encoding="latin-1"`),
+or opt into a lossy decode with `decode_errors="replace"` (U+FFFD for each
+bad byte) or `decode_errors="ignore"` (bad bytes dropped). `table.scan`,
+`table.reader`, `table.schema` and `TableHDU.get_string_column` take the same
+`decode_errors=` keyword.
+
+```python
+torchfits.table.read("legacy.fits", encoding="latin-1")
+torchfits.table.read("legacy.fits", decode_errors="replace")
+```
 
 ```python
 df = torchfits.table.read(
@@ -182,6 +199,8 @@ torchfits.table.scan(
     include_fits_metadata=False,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
 )
 ```
 
@@ -248,6 +267,8 @@ torchfits.table.reader(
     include_fits_metadata=True,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
 )
 ```
 
@@ -628,6 +649,8 @@ torchfits.table.schema(
     include_fits_metadata=False,
     apply_fits_nulls=False,
     backend="auto",
+    *,
+    decode_errors="strict",
 )
 ```
 

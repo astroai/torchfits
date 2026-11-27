@@ -299,8 +299,14 @@ class TableHDURef:
         return data[col_name]
 
     def get_string_column(
-        self, name: str, encoding: str = "ascii", strip: bool = True
+        self,
+        name: str,
+        encoding: str = "ascii",
+        strip: bool = True,
+        *,
+        decode_errors: str = "strict",
     ) -> List[str]:
+        """Decode string column *name*; see ``decode_errors`` in ``table.read``."""
         import torch
 
         value = self[name]
@@ -310,9 +316,14 @@ class TableHDURef:
             raise TypeError(
                 f"Column '{name}' is not a uint8 (rows,width) encoded string column"
             )
-        from .._string_decode import decode_byte_tensor
+        from .._string_decode import DecodeSpec, decode_byte_tensor
 
-        return decode_byte_tensor(value, encoding=encoding, strip=strip)
+        return decode_byte_tensor(
+            value,
+            encoding=DecodeSpec(encoding, decode_errors),
+            strip=strip,
+            column=name,
+        )
 
     def get_vla_column(self, name: str) -> List[Tensor]:
         value = self[name]

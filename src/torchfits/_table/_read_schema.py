@@ -525,9 +525,14 @@ def schema(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = False,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
+    from .._string_decode import DecodeSpec
+
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
+    encoding = DecodeSpec(encoding, decode_errors)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
@@ -554,6 +559,7 @@ def schema(
         include_fits_metadata=include_fits_metadata,
         apply_fits_nulls=apply_fits_nulls,
         backend=scan_backend,
+        decode_errors=decode_errors,
     )
     first = next(iterator, None)
     if first is None and where is not None:
@@ -571,6 +577,7 @@ def schema(
             include_fits_metadata=include_fits_metadata,
             apply_fits_nulls=apply_fits_nulls,
             backend=backend,
+            decode_errors=decode_errors,
         ).schema
     if first is None:
         # A table with no rows: the C++ chunk reader still returns typed
