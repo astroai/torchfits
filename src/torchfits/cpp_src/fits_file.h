@@ -57,6 +57,16 @@ public:
         return fn(fptr_);
     }
 
+    // Run fn() under the handle's I/O lock whether or not the handle is still
+    // open. A persistent TableReader keeps the fitsfile alive past close()
+    // (share_fptr) and must keep serializing its cursor use with every other
+    // borrower of the same handle.
+    template <class F>
+    auto with_io_lock(F&& fn) {
+        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        return fn();
+    }
+
     // True while the shared per-path metadata (and its raw fd) still describes
     // the file this handle opened. False after an out-of-band replace: the
     // shared fd then reads the new file, so callers must use the handle.

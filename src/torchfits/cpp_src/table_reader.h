@@ -115,6 +115,25 @@ public:
     // closing the Python FITSFile first cannot free the fitsfile under it.
     void hold_fptr_owner(std::shared_ptr<void> owner) { fptr_owner_ = std::move(owner); }
 
+    // A reader built on a borrowed handle shares that handle's CFITSIO
+    // cursor (and reads its file by name) with every other borrower, so each
+    // read must run under the handle's own guard: its I/O lock plus the
+    // replaced-file check. Path readers own their fitsfile and have none.
+    using IoGuard = std::function<void(const std::function<void()>&)>;
+    void set_io_guard(IoGuard guard) { io_guard_ = std::move(guard); }
+
+    // Run one read of a persistent reader: under its own io_mutex_ and, for a
+    // borrowed handle, under the handle's guard. The GIL must be released.
+    template <class F>
+    void run_io(F&& fn) {
+        std::lock_guard<std::mutex> io_lock(io_mutex_);
+        if (io_guard_) {
+            io_guard_(std::function<void()>(std::forward<F>(fn)));
+        } else {
+            fn();
+        }
+    }
+
     ~TableReader() {
         if (data_fd_cached_ >= 0) {
             ::close(data_fd_cached_);
@@ -3737,6 +3756,7 @@ private:
     int target_hdu_ = 1;
     bool owns_fptr_ = false;
     std::shared_ptr<void> fptr_owner_;
+    IoGuard io_guard_;
     long nrows_;
     int ncols_;
     long row_width_bytes_ = 0;

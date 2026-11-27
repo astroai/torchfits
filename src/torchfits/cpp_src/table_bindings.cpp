@@ -735,40 +735,77 @@ void bind_table(nb::module_& m) {
             new (self) torchfits::TableReader(filename, hdu_num);
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("__init__", [](torchfits::TableReader* self, nb::object file_obj, int hdu_num) {
+            // The reader borrows the handle's fitsfile*, whose single CFITSIO
+            // cursor every other borrower also drives, and reads the file by
+            // name. So construction and every read run under the handle's I/O
+            // lock and are refused once the path names a different file --
+            // the guard with_locked_fptr_from_python_object applies to the
+            // *_from_handle bindings. keep_alive<1, 2> keeps the FITSFile (and
+            // so its lock) alive as long as the reader; the lock does not need
+            // the handle open, so a reader that outlives close() still works.
+            torchfits::FITSFile* file = &nb::cast<torchfits::FITSFile&>(file_obj);
             auto owner = torchfits::share_fptr_from_python_object(file_obj);
-            new (self) torchfits::TableReader(owner.get(), hdu_num);
+            torchfits::TableReader::IoGuard guard =
+                [file](const std::function<void()>& fn) {
+                    file->with_io_lock([&] {
+                        static const char* kReplaced =
+                            "FITS file was replaced on disk after this handle was "
+                            "opened; reopen it to read the current file";
+                        if (!file->path_names_open_file()) {
+                            throw std::runtime_error(kReplaced);
+                        }
+                        fn();
+                        if (!file->path_names_open_file()) {
+                            throw std::runtime_error(kReplaced);
+                        }
+                    });
+                };
+            {
+                nb::gil_scoped_release release;
+                guard([&] { new (self) torchfits::TableReader(owner.get(), hdu_num); });
+            }
             // Keep the fitsfile open for this reader even if the FITSFile is
-            // closed or collected first.
+            // closed first.
             self->hold_fptr_owner(std::move(owner));
-        }, nb::arg("file_obj"), nb::arg("hdu_num") = 1)
+            self->set_io_guard(std::move(guard));
+        }, nb::arg("file_obj"), nb::arg("hdu_num") = 1, nb::keep_alive<1, 2>())
         .def_prop_ro("num_rows", &torchfits::TableReader::get_num_rows)
         .def("read_rows", [](torchfits::TableReader& self,
                              const std::vector<std::string>& column_names,
                              long start_row, long num_rows) -> nb::object {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_python(result_map, false);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
         .def("read_rows_numpy", [](torchfits::TableReader& self,
                                    const std::vector<std::string>& column_names,
                                    long start_row, long num_rows) -> nb::object {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_python(result_map, true);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
         .def("read_rows_raw", [](torchfits::TableReader& self,
                                  const std::vector<std::string>& column_names,
                                  long start_row, long num_rows) -> nb::dict {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_raw_python(result_map);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)

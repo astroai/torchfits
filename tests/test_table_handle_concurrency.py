@@ -277,3 +277,72 @@ def test_handle_reads_during_replacement_never_mix_files(two_table_file) -> None
         np.testing.assert_array_equal(np.asarray(got["B"]), 0.5 * np.arange(final_b))
     finally:
         fresh.close()
+
+
+# Persistent TableReader(handle, hdu) objects borrow the same fitsfile*: each
+# read must take the handle's lock (not only the reader's own mutex) and refuse
+# a file replaced on disk, like the *_from_handle bindings above.
+TABLE_READER_METHODS = {
+    "rows": lambda r: r.read_rows([], 1, -1),
+    "numpy": lambda r: r.read_rows_numpy([], 1, -1),
+    "raw": lambda r: r.read_rows_raw([], 1, -1),
+}
+
+
+@pytest.mark.parametrize("method", sorted(TABLE_READER_METHODS))
+def test_table_readers_on_shared_handle_alternate_hdus(two_table_file, method) -> None:
+    read = TABLE_READER_METHODS[method]
+    handle = cpp.open_fits_file(two_table_file, "r")
+    try:
+        readers = {hdu: cpp.TableReader(handle, hdu) for hdu in (1, 2)}
+
+        def check(hdu: int) -> None:
+            result = read(readers[hdu])
+            _check(_raw_values(result, hdu) if method == "raw" else result, hdu)
+
+        check(1)
+        check(2)
+        errors: list[BaseException] = []
+        start = threading.Barrier(6)
+
+        def worker(idx: int) -> None:
+            try:
+                start.wait()
+                for it in range(40):
+                    hdu = 1 + (idx + it) % 2
+                    if idx % 3 == 2:
+                        # A *_from_handle read moves the same cursor.
+                        _check(
+                            cpp.read_fits_table_rows_from_handle(
+                                handle, hdu, [], 1, -1
+                            ),
+                            hdu,
+                        )
+                    else:
+                        check(hdu)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"{len(errors)} failures, first: {errors[0]!r}"
+    finally:
+        handle.close()
+
+
+def test_table_reader_refuses_replaced_file(two_table_file) -> None:
+    handle = cpp.open_fits_file(two_table_file, "r")
+    reader = cpp.TableReader(handle, 1)
+    _check(reader.read_rows([], 1, -1), 1)
+    _write_two_tables(two_table_file, 2 * N_A, 2 * N_B, a_value=-1)
+    with pytest.raises(RuntimeError, match="replaced"):
+        reader.read_rows([], 1, -1)
+    with pytest.raises(RuntimeError, match="replaced"):
+        reader.read_rows_raw(["A"], 1, 10)
+    handle.close()
+    # Still refused once the handle is closed (the reader keeps it alive).
+    with pytest.raises(RuntimeError, match="replaced"):
+        reader.read_rows_numpy([], 1, -1)
