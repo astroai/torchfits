@@ -85,3 +85,153 @@ def test_arith_div_by_zero_refused(tmp_path):
     )
     assert result.returncode == 2, result.stderr
     assert "division by zero" in result.stderr
+
+
+# -- 64-bit integer images: no wraparound, no float64 rounding ----------------
+
+_I64 = torch.iinfo(torch.int64)
+_U64_MAX = 2**64 - 1
+
+
+def _arith_main(tmp_path, values, dtype, *argv, operand=None):
+    import warnings
+
+    from torchfits.cli.main import main
+
+    a = tmp_path / "a.fits"
+    torchfits.write(str(a), torch.tensor([values], dtype=dtype), overwrite=True)
+    args = ["arith", str(a), *argv]
+    if operand is not None:
+        b = tmp_path / "b.fits"
+        torchfits.write(
+            str(b), torch.tensor([operand[0]], dtype=operand[1]), overwrite=True
+        )
+        args = ["arith", str(a), str(b), *argv]
+    out = tmp_path / "out.fits"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert main([*args, "-o", str(out)]) == 0
+    got = torchfits.read_tensor(str(out), hdu=0)
+    saturated = sum(
+        int(str(w.message).split()[1]) for w in caught if "saturated" in str(w.message)
+    )
+    return got, saturated
+
+
+def test_arith_int64_add_scalar_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.max, 5], torch.int64, "--op", "add", "--value", "1"
+    )
+    assert got.dtype == torch.int64
+    assert got.flatten().tolist() == [_I64.max, 6]
+    assert saturated == 1
+
+
+def test_arith_int64_sub_scalar_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.min, 5], torch.int64, "--op", "sub", "--value", "1"
+    )
+    assert got.flatten().tolist() == [_I64.min, 4]
+    assert saturated == 1
+
+
+def test_arith_int64_mul_scalar_saturates(tmp_path):
+    got, _ = _arith_main(
+        tmp_path, [2**62, -(2**62), 3], torch.int64, "--op", "mul", "--value", "2"
+    )
+    assert got.flatten().tolist() == [_I64.max, _I64.min, 6]
+
+
+def test_arith_int64_mul_image_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [2**62, 3],
+        torch.int64,
+        "--op",
+        "mul",
+        operand=([2, 3], torch.int64),
+    )
+    assert got.flatten().tolist() == [_I64.max, 9]
+    assert saturated == 1
+
+
+def test_arith_int64_exact_large_scalar_literal(tmp_path):
+    # An integer literal is kept exact (not rounded through a float).
+    got, _ = _arith_main(
+        tmp_path, [1, -5], torch.int64, "--op", "add", "--value", str(2**62 + 1)
+    )
+    assert got.flatten().tolist() == [2**62 + 2, 2**62 - 4]
+
+
+def test_arith_int64_huge_float_scalar_saturates_to_max(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.max, 0], torch.int64, "--op", "add", "--value", "1e20"
+    )
+    assert got.flatten().tolist() == [_I64.max, _I64.max]
+    assert saturated == 2
+
+
+def test_arith_uint64_add_scalar(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [1, _U64_MAX], torch.uint64, "--op", "add", "--value", "1"
+    )
+    assert got.dtype == torch.uint64
+    assert got.flatten().tolist() == [2, _U64_MAX]
+    assert saturated == 1
+
+
+def test_arith_uint64_sub_below_zero_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [1, _U64_MAX], torch.uint64, "--op", "sub", "--value", "2"
+    )
+    assert got.flatten().tolist() == [0, _U64_MAX - 2]
+    assert saturated == 1
+
+
+def test_arith_uint64_mul_is_exact_beyond_2_53(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [2**53 + 1, 2**63 + 1], torch.uint64, "--op", "mul", "--value", "1"
+    )
+    assert got.flatten().tolist() == [2**53 + 1, 2**63 + 1]
+    assert saturated == 0
+
+
+def test_arith_uint64_image_operand(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [2**63 + 1, 2],
+        torch.uint64,
+        "--op",
+        "mul",
+        operand=([1, 2**63], torch.uint64),
+    )
+    assert got.flatten().tolist() == [2**63 + 1, _U64_MAX]
+    assert saturated == 1
+
+
+def test_arith_int64_plus_uint64_image(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [5, -5],
+        torch.int64,
+        "--op",
+        "add",
+        operand=([_U64_MAX, 3], torch.uint64),
+    )
+    assert got.dtype == torch.int64
+    assert got.flatten().tolist() == [_I64.max, -2]
+    assert saturated == 1
+
+
+def test_arith_int16_plus_int64_image_saturates_not_wraps(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [1, -1],
+        torch.int16,
+        "--op",
+        "add",
+        operand=([_I64.max, _I64.min], torch.int64),
+    )
+    assert got.dtype == torch.int16
+    assert got.flatten().tolist() == [32767, -32768]
+    assert saturated == 2

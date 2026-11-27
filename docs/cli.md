@@ -356,7 +356,7 @@ processing so it cannot overwrite either input operand.
 
 | Flag | Purpose |
 |---|---|
-| `--value FLOAT` | Scalar operand B |
+| `--value NUMBER` | Scalar operand B; an integer literal (`--value 9223372036854775807`) is kept exact |
 | `--operand2 PATH` | Image operand B; required for several A inputs with `--out-dir`, otherwise an alternative to the second positional path |
 | `--hdu2 N` | HDU of image operand B (default: the same index as each A HDU, else 0) |
 | `--dtype {auto,float32,float64}` | `auto` (default) keeps each A HDU's dtype (`div` on an integer A gives float64); integer results are saturated to the dtype's range and fractional parts truncated, with a warning. `float32` / `float64` cast both operands to that dtype, compute, and store in it |
@@ -374,6 +374,13 @@ torchfits arith science.fits dark.fits --op sub -o dark_subtracted.fits
 # Batch process multiple files against a shared scalar
 torchfits arith *.fits --op mul --value 2.0 --out-dir /tmp/scaled -J 0
 ```
+
+Integer `add` / `sub` / `mul` are exact for every integer width, including
+64-bit (`int64`, `uint64`) images and operands: results outside the output
+dtype saturate to its minimum or maximum with a `RuntimeWarning` naming how
+many pixels were clamped, instead of wrapping or being rounded through
+float64. A fractional scalar or a floating-point image B is applied in
+float64.
 
 ---
 

@@ -43,21 +43,127 @@ _OPS: dict[str, Callable[[torch.Tensor, torch.Tensor | float], torch.Tensor]] = 
 _DTYPE_CHOICES = ("auto", "float32", "float64")
 
 
-# Integral floats up to 2**53 are exact; beyond that a float scalar is not a
-# trustworthy integer and could overflow the int64 accumulator.
-_EXACT_INT_LIMIT = 2**53
+# Integer scalars inside int64 stay exact Python ints (the overflow-safe
+# integer path below handles them); larger ones (``1e20``) stay floats and
+# saturate to the output dtype through the float64 path.
+_EXACT_INT_LIMIT = 2**63
 
 
-def _promote_scalar(value: float) -> float | int:
+def _parse_scalar(raw: str) -> float | int:
+    """``--value``: an integer literal stays an exact int, anything else a float."""
+    text = raw.strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid number: {raw!r}") from exc
+
+
+def _promote_scalar(value: float | int) -> float | int:
     """Keep integer scalars exact so integer adds stay in integer arithmetic.
 
-    Huge integral floats (``1e20``) stay floats: they take the float64 path
+    Huge integral values (``1e20``) become floats: they take the float64 path
     and saturate to the output dtype instead of overflowing int64.
     """
-    if not math.isfinite(value) or abs(value) > _EXACT_INT_LIMIT:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if abs(value) < _EXACT_INT_LIMIT else float(value)
+    if not math.isfinite(value) or abs(value) >= _EXACT_INT_LIMIT:
         return value
     as_int = int(value)
     return as_int if float(as_int) == value else value
+
+
+_INT32_RANGE = (-(2**31), 2**31 - 1)
+
+
+def _needs_exact_int(
+    left: torch.Tensor, right: torch.Tensor | int, out_dtype: torch.dtype
+) -> bool:
+    """True when an int64 accumulator could overflow (64-bit operand or output)."""
+    import torch
+
+    wide = (torch.int64, torch.uint64)
+    if left.dtype in wide or out_dtype in wide:
+        return True
+    if isinstance(right, torch.Tensor):
+        return right.dtype in wide
+    return not _INT32_RANGE[0] <= int(right) <= _INT32_RANGE[1]
+
+
+_PY_OPS: dict[str, Callable[[int, int], int]] = {
+    "add": lambda a, b: a + b,
+    "sub": lambda a, b: a - b,
+    "mul": lambda a, b: a * b,
+}
+
+
+def _exact_int_op(
+    op: str,
+    left: torch.Tensor,
+    right: torch.Tensor | int,
+    out_dtype: torch.dtype,
+) -> tuple[torch.Tensor, int]:
+    """Exact integer add/sub/mul saturated into ``out_dtype``.
+
+    Elements whose result provably fits int64 -- a float64 estimate below
+    2**62 and both operands representable in int64 -- are computed in int64;
+    only the rest (overflowing results, uint64 values >= 2**63) are computed
+    with Python integers. Returns the result and the number of saturated
+    elements.
+    """
+    import numpy as np
+    import torch
+
+    a = left.detach().cpu().contiguous().numpy()
+    b: Any
+    if isinstance(right, torch.Tensor):
+        b = right.detach().cpu().contiguous().numpy()
+        shape = np.broadcast_shapes(a.shape, b.shape)
+    else:
+        b = int(right)
+        shape = a.shape
+    i64 = np.iinfo(np.int64)
+    info = torch.iinfo(out_dtype)
+    lo, hi = int(info.min), int(info.max)
+
+    with np.errstate(all="ignore"):
+        b_f = b.astype(np.float64) if isinstance(b, np.ndarray) else float(b)
+        est = _OPS[op](a.astype(np.float64), b_f)  # type: ignore[arg-type]
+        safe = np.abs(np.broadcast_to(est, shape)) < 2.0**62
+        if a.dtype == np.uint64:
+            safe = safe & (a <= np.uint64(i64.max))
+        if isinstance(b, np.ndarray) and b.dtype == np.uint64:
+            safe = safe & (b <= np.uint64(i64.max))
+        b64 = b.astype(np.int64) if isinstance(b, np.ndarray) else np.int64(b)
+        exact = np.broadcast_to(_OPS[op](a.astype(np.int64), b64), shape)  # type: ignore[arg-type]
+
+    np_out = torch.empty(0, dtype=out_dtype).numpy().dtype
+    lo64, hi64 = max(lo, int(i64.min)), min(hi, int(i64.max))
+    out = np.empty(shape, dtype=np_out)
+    in_range = (exact >= lo64) & (exact <= hi64)
+    n_clipped = int(np.count_nonzero(safe & ~in_range))
+    out[safe] = np.clip(exact[safe], lo64, hi64).astype(np_out)
+
+    unsafe = np.flatnonzero(~safe)
+    if unsafe.size:
+        a_flat = np.broadcast_to(a, shape).reshape(-1)
+        b_flat = (
+            np.broadcast_to(b, shape).reshape(-1) if isinstance(b, np.ndarray) else None
+        )
+        py_op = _PY_OPS[op]
+        values = []
+        for flat_index in unsafe.tolist():
+            rhs = int(b_flat[flat_index]) if b_flat is not None else b
+            value = py_op(int(a_flat[flat_index]), rhs)
+            if value < lo or value > hi:
+                n_clipped += 1
+                value = lo if value < lo else hi
+            values.append(value)
+        out.reshape(-1)[unsafe] = np.array(values, dtype=np_out)
+    return torch.from_numpy(out), n_clipped
 
 
 def _saturate_to(t: torch.Tensor, dtype: torch.dtype) -> tuple[torch.Tensor, int]:
@@ -71,6 +177,8 @@ def _saturate_to(t: torch.Tensor, dtype: torch.dtype) -> tuple[torch.Tensor, int
     if not t.dtype.is_floating_point and dtype.is_floating_point:
         return t.to(dtype), 0
     info = torch.iinfo(dtype)
+    if t.dtype.is_floating_point and dtype in (torch.int64, torch.uint64):
+        return _saturate_float_to_64(t, dtype)
     clipped = torch.clamp(t, info.min, info.max)
     n_clipped = int((clipped != t).sum())
     out = clipped.to(dtype)
@@ -84,6 +192,41 @@ def _saturate_to(t: torch.Tensor, dtype: torch.dtype) -> tuple[torch.Tensor, int
                 stacklevel=3,
             )
     return out, n_clipped
+
+
+def _saturate_float_to_64(
+    t: torch.Tensor, dtype: torch.dtype
+) -> tuple[torch.Tensor, int]:
+    """Float -> int64/uint64 saturation.
+
+    float64 cannot represent the type maximum (``2**63 - 1`` rounds up to
+    ``2**63``), so clamping to it and casting overflows and wraps. Values at
+    or beyond the bound are set to the exact maximum after the cast.
+    """
+    import numpy as np
+    import torch
+
+    info = torch.iinfo(dtype)
+    lo, hi = int(info.min), int(info.max)
+    arr = t.detach().cpu().to(torch.float64).numpy()
+    np_out = torch.empty(0, dtype=dtype).numpy().dtype
+    top = float(hi + 1)  # exactly 2**63 or 2**64
+    over = arr >= top
+    under = arr < float(lo)
+    clipped = np.clip(arr, float(lo), np.nextafter(top, 0.0))
+    out = clipped.astype(np_out)
+    out[over] = hi
+    out[under] = lo
+    in_range = ~(over | under)
+    n_frac = int(np.count_nonzero(in_range & (out.astype(np.float64) != arr)))
+    if n_frac:
+        warnings.warn(
+            f"arith: {n_frac} pixel value(s) lost fractional parts casting "
+            f"to {dtype} (use --dtype float32/float64 to keep full precision)",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+    return torch.from_numpy(out), int(np.count_nonzero(over | under))
 
 
 def _compute(
@@ -119,6 +262,12 @@ def _compute(
         right_t = right if isinstance(right, torch.Tensor) else None
         if right_t is not None and right_t.dtype.is_floating_point:
             result = op_fn(left.to(torch.float64), right_t.to(torch.float64))
+        elif _needs_exact_int(left, right, out_dtype):
+            # 64-bit operands or output: an int64 accumulator would wrap and
+            # float64 would round, so compute exactly and saturate.
+            out, n_clipped = _exact_int_op(op, left, right, out_dtype)
+            _warn_saturated(n_clipped, out_dtype)
+            return out
         elif op == "mul" and out_dtype != torch.int64:
             # Integer mul can overflow even the int64 accumulator (e.g. a
             # uint32 image squared reaches 2**64) and wrap to garbage.
@@ -133,14 +282,18 @@ def _compute(
             acc_r = right_t.to(torch.int64) if right_t is not None else right
             result = op_fn(acc, acc_r)
     out, n_clipped = _saturate_to(result, out_dtype)
+    _warn_saturated(n_clipped, out_dtype)
+    return out
+
+
+def _warn_saturated(n_clipped: int, out_dtype: torch.dtype) -> None:
     if n_clipped:
         warnings.warn(
             f"arith: {n_clipped} pixel value(s) outside {out_dtype} range were "
             "saturated (use --dtype float32/float64 to keep full precision)",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
-    return out
 
 
 def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -166,7 +319,7 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     parser.add_argument(
         "--value",
-        type=float,
+        type=_parse_scalar,
         default=None,
         help="scalar operand B (mutually exclusive with image B)",
     )
@@ -218,7 +371,7 @@ def _parse_hdu2(hdu2: str | None) -> int | None:
 
 def _resolve_operands(
     args: argparse.Namespace,
-) -> tuple[list[str], float | None, str | None]:
+) -> tuple[list[str], float | int | None, str | None]:
     paths = [str(p) for p in args.paths]
     value = args.value
     operand2 = args.operand2
@@ -226,7 +379,7 @@ def _resolve_operands(
         raise UsageError("use either --value or --operand2, not both")
 
     if value is not None:
-        return paths, float(value), None
+        return paths, value, None
 
     if operand2 is not None:
         return paths, None, str(operand2)
@@ -324,7 +477,7 @@ def _arith_one_file(
     *,
     op: str,
     dtype_spec: str = "auto",
-    value: float | None,
+    value: float | int | None,
     operand2: str | None,
     hdu: str | None,
     hdu2: int | None,
