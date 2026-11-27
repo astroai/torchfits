@@ -255,6 +255,9 @@ def reject_same_path(src: str, dst: str) -> None:
     """Refuse OUTPUT that resolves to the same file as INPUT."""
     src_real = os.path.realpath(cfitsio_base_path(src))
     dst_real = os.path.realpath(dst)
+    # Hard links (and other aliases realpath cannot see) share an inode.
+    if _same_existing_file(src_real, dst_real):
+        raise UsageError(f"refusing same-path rewrite in place: {src}")
     if sys.platform == "darwin":
         src_real = unicodedata.normalize("NFC", src_real)
         dst_real = unicodedata.normalize("NFC", dst_real)
@@ -263,6 +266,14 @@ def reject_same_path(src: str, dst: str) -> None:
         dst_real = dst_real.casefold()
     if src_real == dst_real:
         raise UsageError(f"refusing same-path rewrite in place: {src}")
+
+
+def _same_existing_file(src: str, dst: str) -> bool:
+    """True when both paths exist locally and name the same inode (hard links)."""
+    try:
+        return os.path.samefile(src, dst)
+    except (OSError, ValueError):
+        return False
 
 
 def _filesystem_is_case_insensitive(path: str | Path) -> bool:

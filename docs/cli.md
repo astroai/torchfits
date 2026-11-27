@@ -287,6 +287,9 @@ An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
 HDU stays an I/O error (exit `3`).
 
+An OUTPUT that names the same file as an INPUT — the same path, a symlink, or
+a hard link — is refused (exit `2`) before anything is written.
+
 #### RGB PNG Rendering
 ```bash
 # Auto RGB (default): files in blue → red order
@@ -321,7 +324,8 @@ output instead of being silently ignored.
 ### `copy`
 
 Performs an exact byte-for-byte copy of a FITS file (`shutil.copy2` locally).
-CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused.
+CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused
+(exit `2`), including an OUTPUT that is a hard link to INPUT.
 Private/loopback `http`/`https`/`ftp` URLs are blocked; public `http`/`https`
 are fetched with the same redirect checks as `probe`.
 
