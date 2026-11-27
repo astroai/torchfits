@@ -401,7 +401,8 @@ quantization and are lossy for floating-point images (tune it with
 `--quantize-level`, or pass `-q 0` with `GZIP_2` for lossless floats);
 `PLIO_1` rejects floats. Integer images are always compressed losslessly:
 quantization flags on an input file with no floating-point image HDU are a
-usage error (exit `2`), and in a mixed file they apply to its float HDUs only.
+usage error (exit `2`) unless `--int-to-float` is given, and in a mixed file
+they apply to its float HDUs only.
 No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
 `tile compression does not support 64-bit integer images` and exits `3`
 without writing the output.
@@ -414,6 +415,7 @@ without writing the output.
 | `-q`, `--quantize-level Q` | lossless for `GZIP_1`, `4` otherwise | Quantization of floating-point images, like `fpack -q`: `Q > 0` makes the step the tile's noise sigma divided by `Q` (larger = finer, bigger files); `Q < 0` is an absolute step of `abs(Q)`; `0` is lossless and needs `GZIP_1` or `GZIP_2`. |
 | `--quantize-method` | `subtractive_dither_1` | `subtractive_dither_1`, `subtractive_dither_2` (also keeps exact zeros; not with `HCOMPRESS_1`) or `no_dither` (default level `16`). |
 | `--dither-seed N` | picked from the clock | Dither seed `1..10000`; fixes the quantization so repeated runs write identical files. |
+| `--int-to-float` | off | Compress integer images as quantized floats, like `fpack -i2f` (lossy; default level `4` even with `GZIP_1`). Physical values (`BSCALE`/`BZERO` applied, `BLANK` pixels as NaN) are stored, so `decompress` writes them as `BITPIX = -32`. Not with `PLIO_1` or `-q 0`. |
 
 ```bash
 # Compress losslessly with default GZIP_1
@@ -434,6 +436,9 @@ torchfits compress science.fits science.fits.fz --algorithm RICE_1 -q -0.01 --qu
 
 # Lossless floats with the byte-shuffled GZIP_2
 torchfits compress science.fits science.fits.fz --algorithm GZIP_2 -q 0
+
+# fpack -i2f: quantize an integer (e.g. raw counts) image for higher compression
+torchfits compress raw.fits raw.fits.fz --algorithm RICE_1 --int-to-float -q 4
 
 # Split MEF file into individual compressed HDU files
 torchfits compress mef.fits --split hdu --out-dir /tmp/compressed_hdus

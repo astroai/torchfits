@@ -35,7 +35,11 @@ from ._file_ops import (
     _invalidate_written_target,
     _resolve_compression_algorithm,
 )
-from ._tile_compression import CompressionOptions, require_quantizable_image
+from ._tile_compression import (
+    CompressionOptions,
+    integer_image_as_float,
+    require_quantizable_image,
+)
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
     _COMPRESSION_CARD_KEYS,
@@ -363,6 +367,11 @@ def _write_hdus_with_optional_compression(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
         _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
+        converted = (
+            options is not None
+            and options.int_to_float
+            and integer_image_as_float(hdu_dict)
+        )
         replay_header = _payload_replay_header(hdu_dict)
         if replay_header is not None:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(replay_header)
@@ -385,7 +394,9 @@ def _write_hdus_with_optional_compression(
         if options is not None:
             data = hdu_dict["data"]
             any_float = any_float or data.is_floating_point()
-            hdu_dict["_compression"] = options.image_options(data, idx)
+            hdu_dict["_compression"] = options.image_options(
+                data, idx, converted=converted
+            )
         payload.append(hdu_dict)
     require_quantizable_image(options, any_float)
 

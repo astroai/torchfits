@@ -1,10 +1,11 @@
 """Tile-compression controls for ``write(compress=...)``.
 
 fpack-style knobs for CFITSIO tile-compressed image writes: the tile geometry
-(``fpack -t``) and float quantization / dithering (``fpack -q``, ``-qz``,
-``-qn``, CFITSIO ``fits_set_quantize_*`` / ``fits_set_dither_seed``). Options are validated here, before anything is written, and
-resolved per image HDU into the ``_compression`` mapping the native writer
-reads from each image payload dict.
+(``fpack -t``), float quantization / dithering (``fpack -q``; CFITSIO
+``fits_set_quantize_*`` / ``fits_set_dither_seed``) and integer images
+compressed as quantized floats (``fpack -i2f``). Options are validated here,
+before anything is written, and resolved per image HDU into the
+``_compression`` mapping the native writer reads from each payload dict.
 """
 
 from __future__ import annotations
@@ -56,6 +57,11 @@ _LOSSLESS_FLOAT_CODECS = ("GZIP_1", "GZIP_2")
 # than the dithered default of 4 so undithered quantization stays unbiased.
 _NO_DITHER_DEFAULT_LEVEL = 16.0
 
+# fpack's quantize level for -i2f images (and CFITSIO's lossy default).
+_INT_TO_FLOAT_DEFAULT_LEVEL = 4.0
+
+_INTEGER_SCALE_CARDS = frozenset({"BSCALE", "BZERO", "BLANK"})
+
 
 def canonical_algorithm(algorithm: str) -> str:
     """CFITSIO codec name for ``algorithm`` (unknown names pass through)."""
@@ -72,6 +78,7 @@ class CompressionOptions:
     quantize_level: Optional[float] = None
     quantize_method: Optional[int] = None
     dither_seed: Optional[int] = None
+    int_to_float: bool = False
 
     @property
     def quantize_requested(self) -> bool:
@@ -82,8 +89,14 @@ class CompressionOptions:
             or self.dither_seed is not None
         )
 
-    def image_options(self, data: Tensor, idx: int) -> Dict[str, Any]:
-        """Native ``_compression`` mapping for one image payload."""
+    def image_options(
+        self, data: Tensor, idx: int, *, converted: bool = False
+    ) -> Dict[str, Any]:
+        """Native ``_compression`` mapping for one image payload.
+
+        ``converted`` marks an integer image turned into floats by
+        ``int_to_float``: it is quantized even under ``GZIP_1``.
+        """
         out: Dict[str, Any] = {}
         if self.tile_shape is not None:
             out["tile_dims"] = resolve_tile_dims(
@@ -95,6 +108,8 @@ class CompressionOptions:
             level = self.quantize_level
             if level is None and self.quantize_method == _NO_DITHER:
                 level = _NO_DITHER_DEFAULT_LEVEL
+            if level is None and converted:
+                level = _INT_TO_FLOAT_DEFAULT_LEVEL
             if level is not None:
                 out["quantize_level"] = float(level)
             if self.quantize_method is not None:
@@ -215,8 +230,14 @@ def _check_quantize_combination(options: CompressionOptions) -> None:
     method = options.quantize_method
     if algorithm == "PLIO_1":
         raise ValueError(
-            "quantize_level/quantize_method/dither_seed quantize floating-point "
-            "images, which PLIO_1 cannot store; use another compress= codec"
+            "quantize_level/quantize_method/dither_seed/int_to_float quantize "
+            "floating-point images, which PLIO_1 cannot store; use another "
+            "compress= codec"
+        )
+    if options.int_to_float and level == 0:
+        raise ValueError(
+            "int_to_float quantizes integer images, which quantize_level=0 "
+            "(lossless) would not do; drop one of the two"
         )
     if level == 0 and algorithm not in _LOSSLESS_FLOAT_CODECS:
         raise ValueError(
@@ -225,7 +246,9 @@ def _check_quantize_combination(options: CompressionOptions) -> None:
         )
     dither_given = method is not None or options.dither_seed is not None
     # GZIP_1 floats default to lossless: nothing would be quantized.
-    lossless = level == 0 or (level is None and algorithm == "GZIP_1")
+    lossless = level == 0 or (
+        level is None and algorithm == "GZIP_1" and not options.int_to_float
+    )
     if dither_given and lossless:
         why = (
             "quantize_level=0 stores them losslessly"
@@ -252,6 +275,7 @@ def compression_options(
     quantize_level: Any = None,
     quantize_method: Any = None,
     dither_seed: Any = None,
+    int_to_float: Any = False,
 ) -> Optional[CompressionOptions]:
     """Validate the tile-compression keywords of ``write()``.
 
@@ -264,7 +288,11 @@ def compression_options(
         "quantize_method": quantize_method,
         "dither_seed": dither_seed,
     }
+    if not isinstance(int_to_float, bool):
+        raise TypeError(f"int_to_float must be a bool, got {int_to_float!r}")
     names = [name for name, value in given.items() if value is not None]
+    if int_to_float:
+        names.append("int_to_float")
     if not names:
         return None
     from ._file_ops import _resolve_compression_algorithm
@@ -294,8 +322,9 @@ def compression_options(
         dither_seed=None
         if dither_seed is None
         else _normalize_dither_seed(dither_seed),
+        int_to_float=int_to_float,
     )
-    if options.quantize_requested:
+    if options.quantize_requested or options.int_to_float:
         _check_quantize_combination(options)
     return options
 
@@ -308,5 +337,49 @@ def require_quantizable_image(
         raise ValueError(
             "quantize_level/quantize_method/dither_seed apply to floating-point "
             "images, but every image HDU in this write is integer (integer "
-            "images are always compressed losslessly)"
+            "images are compressed losslessly unless int_to_float=True)"
         )
+
+
+def integer_image_as_float(hdu_dict: Dict[str, Any]) -> bool:
+    """Turn an integer image payload into float32 physical values (fpack -i2f).
+
+    The payload holds FITS storage values plus their ``BSCALE``/``BZERO``/
+    ``BLANK`` cards; the float image gets ``raw * BSCALE + BZERO``, NaN for
+    ``BLANK`` pixels, and loses those cards. Returns False (and changes
+    nothing) for a floating-point image.
+    """
+    import torch
+    from torch import Tensor
+
+    from ..hdu import Header
+    from ._write_helpers import _cpp_header_mapping, _filter_header_cards
+
+    data = hdu_dict.get("data")
+    if not isinstance(data, Tensor) or data.is_floating_point() or data.is_complex():
+        return False
+    replay = hdu_dict.get("_replay")
+    cards = replay if replay is not None else Header()
+
+    def _number(key: str, default: float) -> float:
+        value = cards.get(key)
+        return default if value is None else float(value)
+
+    bscale = _number("BSCALE", 1.0)
+    bzero = _number("BZERO", 0.0)
+    raw = data
+    if data.dtype == torch.int8:
+        # Signed-byte convention: CFITSIO stores the int8 tensor's values as
+        # unsigned bytes (value + 128) under BZERO = -128.
+        raw = data.to(torch.int16) + 128
+        if "BZERO" not in cards:
+            bzero = -128.0
+    values = raw.to(torch.float64) * bscale + bzero
+    blank = cards.get("BLANK")
+    if blank is not None:
+        values = values.masked_fill(raw == int(blank), float("nan"))
+    hdu_dict["data"] = values.to(torch.float32)
+    filtered = _filter_header_cards(cards, _INTEGER_SCALE_CARDS)
+    hdu_dict["_replay"] = filtered
+    hdu_dict["header"] = _cpp_header_mapping(filtered)
+    return True

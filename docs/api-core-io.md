@@ -497,6 +497,7 @@ torchfits.write(
     quantize_level=None,
     quantize_method=None,
     dither_seed=None,
+    int_to_float=False,
 )
 ```
 
@@ -512,6 +513,7 @@ torchfits.write(
 | `quantize_level` | `float` or `None` | `None` | How float images are quantized in a tile-compressed write, like `fpack -q`. `> 0`: step = tile noise sigma / level (larger = finer); `< 0`: absolute step `abs(level)`; `0`: lossless (only `GZIP_1`/`GZIP_2`). `None`: lossless for `GZIP_1`, `4.0` for the other codecs. Not the same as `quantize=`. Keyword-only. |
 | `quantize_method` | `str` or `None` | `None` | `"subtractive_dither_1"` (CFITSIO default), `"subtractive_dither_2"` (also keeps exact zeros; not with `HCOMPRESS_1`) or `"no_dither"` (default level `16`). Recorded as `ZQUANTIZ`. Keyword-only. |
 | `dither_seed` | `int` or `None` | `None` | Dither seed `1..10000`, recorded as `ZDITHER0`; fixing it makes repeated writes byte-identical. `None`: CFITSIO picks one from the clock. Keyword-only. |
+| `int_to_float` | `bool` | `False` | Compress integer images as quantized `float32`, like `fpack -i2f`: physical values (`BSCALE`/`BZERO` applied, `BLANK` pixels as NaN) are quantized at `quantize_level` (default `4.0`, even with `GZIP_1`), so the image is stored and read back as `float32` (`ZBITPIX = -32`, no `BSCALE`/`BZERO`/`BLANK`). Lossy. Float images are unaffected. Not with `PLIO_1` or `quantize_level=0`; requires `compress=`. Keyword-only. |
 
 !!! note "`uint16` images and `PLIO_1`"
     CFITSIO stores a `uint16` image compressed with `PLIO_1` as unsigned
@@ -546,8 +548,9 @@ torchfits.write(
     With `compress=`, `tile_shape=` picks the tile geometry (`fpack -t`) and
     `quantize_level=`, `quantize_method=` and `dither_seed=` control how
     floating-point images are quantized (`fpack -q`). Integer images are
-    always compressed losslessly and ignore the quantization options; a write
-    whose image HDUs are all integer refuses them. Validation happens before
+    compressed losslessly and ignore the quantization options (a write whose
+    image HDUs are all integer refuses them) unless `int_to_float=True`
+    turns them into quantized floats (`fpack -i2f`). Validation happens before
     anything is written; a bad value or combination (for example
     `quantize_level=0` with `RICE_1`, which cannot store floats losslessly)
     raises `ValueError` or `TypeError`.
@@ -576,6 +579,19 @@ torchfits.write(
     # Lossless floats with byte-shuffled GZIP_2
     torchfits.write("gz2.fits", x, compress="GZIP_2", quantize_level=0, overwrite=True)
     assert torch.equal(torchfits.read("gz2.fits", hdu=1), x)
+
+    # fpack -i2f: integer counts stored as quantized float32 (step 0.5)
+    counts = (x * 30 + 1000).round().to(torch.int32)
+    torchfits.write(
+        "i2f.fits",
+        counts,
+        compress="RICE_1",
+        int_to_float=True,
+        quantize_level=-0.5,
+        overwrite=True,
+    )
+    restored = torchfits.read("i2f.fits", hdu=1)  # float32
+    assert (restored - counts).abs().max() <= 0.25 + 1e-3
     ```
 
 !!! tip "Skewed float → int16"

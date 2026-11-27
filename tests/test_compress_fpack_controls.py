@@ -392,3 +392,173 @@ def _main_exit(argv) -> int:
         return main(argv)
     except SystemExit as exc:
         return int(exc.code)
+
+
+# --- integer images as quantized floats (fpack -i2f) -------------------------
+
+
+def _int_image(shape, dtype, base=1000, sigma=30.0, seed=1):
+    g = torch.Generator().manual_seed(seed)
+    return (torch.randn(*shape, generator=g) * sigma + base).round().to(dtype)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (torch.int16, 1000),
+        (torch.int32, 100000),
+        (torch.uint16, 40000),
+        (torch.uint8, 120),
+        (torch.int8, 0),
+    ],
+)
+@pytest.mark.parametrize("algorithm", ["GZIP_1", "RICE_1", "HCOMPRESS_1"])
+def test_int_to_float_quantizes_within_step(tmp_path, dtype, base, algorithm):
+    sigma = 3.0 if dtype in (torch.uint8, torch.int8) else 30.0
+    data = _int_image((40, 48), dtype, base=base, sigma=sigma)
+    path = tmp_path / "i2f.fits"
+    torchfits.write(
+        str(path),
+        data,
+        compress=algorithm,
+        int_to_float=True,
+        quantize_level=-0.5,  # absolute step 0.5
+        dither_seed=11,
+    )
+    assert _zcards(path) == {
+        "ZQUANTIZ": "SUBTRACTIVE_DITHER_1",
+        "ZDITHER0": 11,
+        "ZBITPIX": -32,
+    }
+    header = torchfits.read_header(str(path), 1)
+    assert "BZERO" not in header and "BSCALE" not in header
+    got = torchfits.read(str(path), hdu=1)
+    assert got.dtype == torch.float32
+    tolerance = 0.25 + 1e-3 if algorithm != "HCOMPRESS_1" else 0.5
+    assert (got.double() - data.double()).abs().max() <= tolerance
+
+
+def test_int_to_float_default_level_is_fpack_4(tmp_path):
+    data = _int_image((40, 48), torch.int32)
+    default = tmp_path / "default.fits"
+    torchfits.write(str(default), data, compress="GZIP_1", int_to_float=True)
+    cards = _zcards(default)
+    assert cards["ZQUANTIZ"] == "SUBTRACTIVE_DITHER_1"  # quantized even under GZIP_1
+    explicit = tmp_path / "explicit.fits"
+    torchfits.write(
+        str(explicit),
+        data,
+        compress="GZIP_1",
+        int_to_float=True,
+        quantize_level=4.0,
+        dither_seed=int(cards["ZDITHER0"]),
+    )
+    assert explicit.read_bytes() == default.read_bytes()
+    # noise sigma 30 / level 4 -> step ~7.5: error stays well below sigma
+    got = torchfits.read(str(default), hdu=1)
+    assert (got.double() - data.double()).abs().max() < 30
+
+
+def test_int_to_float_applies_scale_and_blank(tmp_path):
+    raw = torch.full((8, 8), 7, dtype=torch.int16)
+    raw[0, 0] = -999
+    path = tmp_path / "scaled.fits"
+    torchfits.write(
+        str(path),
+        raw,
+        header={"BSCALE": 2.0, "BZERO": 10.0, "BLANK": -999, "OBJECT": "M31"},
+        compress="RICE_1",
+        int_to_float=True,
+        quantize_level=-0.01,
+    )
+    header = torchfits.read_header(str(path), 1)
+    assert header.get("OBJECT") == "M31"
+    assert not {"BSCALE", "BZERO", "BLANK"} & set(header.keys())
+    got = torchfits.read(str(path), hdu=1)
+    assert torch.isnan(got[0, 0])
+    assert torch.allclose(got.flatten()[1:], torch.tensor(24.0), atol=0.01)
+
+
+def test_int_to_float_leaves_float_images_alone(tmp_path):
+    floats = _image((16, 16))
+    ints = _int_image((16, 16), torch.int16)
+    path = tmp_path / "mixed.fits"
+    torchfits.write(str(path), [ints, floats], compress="GZIP_1", int_to_float=True)
+    # the float HDU keeps GZIP_1's lossless default; the int HDU is quantized
+    assert _zcards(path, 2)["ZQUANTIZ"] == "NONE"
+    assert torch.equal(torchfits.read(str(path), hdu=2), floats)
+    assert _zcards(path, 1)["ZBITPIX"] == -32
+
+
+def test_quantize_options_with_int_to_float_on_integer_image(tmp_path):
+    path = tmp_path / "i.fits"
+    torchfits.write(
+        str(path),
+        _int_image((16, 16), torch.int16),
+        compress="RICE_1",
+        int_to_float=True,
+        quantize_method="no_dither",
+    )
+    assert _zcards(path)["ZQUANTIZ"] == "NO_DITHER"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({"compress": "PLIO_1", "int_to_float": True}, ValueError, "PLIO_1"),
+        (
+            {"compress": "GZIP_1", "int_to_float": True, "quantize_level": 0},
+            ValueError,
+            "drop one of the two",
+        ),
+        ({"compress": "RICE_1", "int_to_float": 1}, TypeError, "bool"),
+        ({"int_to_float": True}, ValueError, "pass compress="),
+    ],
+)
+def test_int_to_float_validation(tmp_path, kwargs, error, match):
+    path = tmp_path / "bad.fits"
+    with pytest.raises(error, match=match):
+        torchfits.write(str(path), _int_image((8, 8), torch.int16), **kwargs)
+    assert not path.exists()
+
+
+def test_cli_int_to_float(tmp_path):
+    src = tmp_path / "int.fits"
+    data = _int_image((40, 48), torch.int16)
+    torchfits.write(str(src), data, header={"OBJECT": "M31"})
+    out = tmp_path / "out.fits.fz"
+    argv = ["compress", str(src), str(out), "--algorithm", "RICE_1", "--int-to-float"]
+    assert main([*argv, "-q", "-0.5", "--dither-seed", "3"]) == 0
+    assert _zcards(out) == {
+        "ZQUANTIZ": "SUBTRACTIVE_DITHER_1",
+        "ZDITHER0": 3,
+        "ZBITPIX": -32,
+    }
+    assert torchfits.read_header(str(out), 1).get("OBJECT") == "M31"
+    got = torchfits.read(str(out), hdu=1)
+    assert (got.double() - data.double()).abs().max() <= 0.25 + 1e-3
+    restored = tmp_path / "restored.fits"
+    assert main(["decompress", str(out), str(restored)]) == 0
+    assert torchfits.read_header(str(restored), 0).get("BITPIX") == -32
+
+
+def test_cli_int_to_float_split_hdu(tmp_path):
+    src = tmp_path / "mef.fits"
+    torchfits.write(str(src), [_image((16, 20)), _int_image((12, 12), torch.int32)])
+    out_dir = tmp_path / "split"
+    argv = ["compress", str(src), "--split", "hdu", "--out-dir", str(out_dir)]
+    assert main([*argv, "--algorithm", "RICE_1", "--int-to-float", "-q", "8"]) == 0
+    outputs = sorted(out_dir.glob("*.fits"))
+    assert [_zcards(p)["ZBITPIX"] for p in outputs] == [-32, -32]
+
+
+def test_cli_int_to_float_usage_errors(tmp_path, capsys):
+    src = tmp_path / "int.fits"
+    torchfits.write(str(src), _int_image((8, 8), torch.int16))
+    out = tmp_path / "out.fits.fz"
+    argv = ["compress", str(src), str(out), "--int-to-float"]
+    assert main([*argv, "--algorithm", "PLIO_1"]) == 2
+    assert "PLIO_1" in capsys.readouterr().err
+    assert main([*argv, "-q", "0"]) == 2
+    assert "--quantize-level 0" in capsys.readouterr().err
+    assert not out.exists()

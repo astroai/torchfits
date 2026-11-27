@@ -83,6 +83,7 @@ def write(
     quantize_level: Optional[float] = None,
     quantize_method: Optional[str] = None,
     dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Write data to FITS file.
 
@@ -116,6 +117,10 @@ def write(
             ``"no_dither"`` (default level 16).
         dither_seed: Dither seed in 1..10000 for reproducible quantization
             (default: CFITSIO picks one from the clock).
+        int_to_float: Compress integer images as quantized float32, like
+            ``fpack -i2f``: physical values (after ``BSCALE``/``BZERO``,
+            ``BLANK`` -> NaN) are quantized at ``quantize_level`` (default
+            4.0). Lossy; the stored image becomes ``BITPIX = -32``.
 
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
@@ -141,6 +146,7 @@ def write(
         quantize_level=quantize_level,
         quantize_method=quantize_method,
         dither_seed=dither_seed,
+        int_to_float=int_to_float,
     )
 
     # Always write a fresh temp file and publish it afterwards: a failed write

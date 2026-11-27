@@ -125,6 +125,14 @@ def add_compress_parser(
         metavar="N",
         help="dither seed 1..10000 for reproducible output (default: from the clock)",
     )
+    parser.add_argument(
+        "--int-to-float",
+        action="store_true",
+        help=(
+            "compress integer images as quantized floats, like fpack -i2f "
+            "(lossy; output images become BITPIX=-32; default level 4)"
+        ),
+    )
     parser.set_defaults(func=run_compress)
 
 
@@ -192,7 +200,7 @@ _QUANTIZE_OPTIONS = ("quantize_level", "quantize_method", "dither_seed")
 
 def _cli_option_names(message: str) -> str:
     """Spell library keyword names in a validation message as CLI flags."""
-    for key in ("tile_shape", *_QUANTIZE_OPTIONS):
+    for key in ("tile_shape", "int_to_float", *_QUANTIZE_OPTIONS):
         flag = "--tile" if key == "tile_shape" else "--" + key.replace("_", "-")
         message = message.replace(f"{key}=", f"{flag} ").replace(key, flag)
     return message.replace("compress=", "--algorithm ")
@@ -307,10 +315,11 @@ def _rewrite_file(
 def _options_for_image(options: dict[str, Any], tensor: Any) -> dict[str, Any]:
     """Options for one image HDU written on its own (``--split hdu``).
 
-    Integer images are compressed losslessly; the per-file check already
-    made sure the quantize options reach a floating-point image.
+    Integer images are compressed losslessly (unless --int-to-float); the
+    per-file check already made sure the quantize options reach a
+    floating-point image.
     """
-    if tensor.is_floating_point():
+    if tensor.is_floating_point() or options.get("int_to_float"):
         return options
     return {k: v for k, v in options.items() if k not in _QUANTIZE_OPTIONS}
 
@@ -445,6 +454,7 @@ def _validate_compression_inputs(
         raise UsageError("BZIP2_1 is unavailable in this torchfits build")
     tile_shape = options.get("tile_shape")
     quantize = any(key in options for key in _QUANTIZE_OPTIONS)
+    int_to_float = bool(options.get("int_to_float"))
     if algorithm != "PLIO_1" and tile_shape is None and not quantize:
         return
     for path in inputs:
@@ -463,7 +473,10 @@ def _validate_compression_inputs(
                         raise UsageError(
                             f"PLIO_1 does not support floating-point image data: {path}:{index}"
                         )
-                    has_float = has_float or _reads_as_float(header, bitpix)
+                    # --int-to-float makes every image HDU a float one.
+                    has_float = (
+                        has_float or int_to_float or _reads_as_float(header, bitpix)
+                    )
                     if tile_shape is not None:
                         try:
                             resolve_tile_dims(tile_shape, shape, algorithm, index)
@@ -477,7 +490,8 @@ def _validate_compression_inputs(
             raise UsageError(
                 f"{path}: --quantize-level/--quantize-method/--dither-seed apply "
                 "to floating-point images, but every selected image HDU is "
-                "integer (integer images are always compressed losslessly)"
+                "integer (integer images are compressed losslessly unless "
+                "--int-to-float)"
             )
 
 
@@ -531,6 +545,8 @@ def run_compress(args: argparse.Namespace) -> int:
         value = getattr(args, key, None)
         if value is not None:
             options[key] = value
+    if getattr(args, "int_to_float", False):
+        options["int_to_float"] = True
     try:
         compression_options(algo, **options)
     except (TypeError, ValueError) as exc:

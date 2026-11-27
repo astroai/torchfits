@@ -315,6 +315,7 @@ def write(
     quantize_level: float | None = None,
     quantize_method: str | None = None,
     dither_seed: int | None = None,
+    int_to_float: bool = False,
 ) -> None:
     """Write a tensor or numpy array to a FITS file (primary or image extension).
 
@@ -341,6 +342,8 @@ def write(
     ``0`` lossless (``GZIP_1``/``GZIP_2``); ``quantize_method`` is
     ``"subtractive_dither_1"`` (default), ``"subtractive_dither_2"`` or
     ``"no_dither"``; ``dither_seed`` (1..10000) makes the output reproducible.
+    ``int_to_float=True`` compresses integer images as quantized float32
+    (``fpack -i2f``; lossy, the image reads back as ``float32``).
     """
     from ._io_engine.write_api import write as _write_impl
 
@@ -356,6 +359,7 @@ def write(
         quantize_level=quantize_level,
         quantize_method=quantize_method,
         dither_seed=dither_seed,
+        int_to_float=int_to_float,
     )
 
 
