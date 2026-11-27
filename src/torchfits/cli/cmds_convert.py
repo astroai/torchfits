@@ -358,51 +358,64 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     hdu = 1 if args.hdu is None else args.hdu
     columns = _parse_columns(args.columns)
     where = args.where
+    if columns or where:
+        # A bad --columns / --where is a usage error (exit 2), raised before
+        # the output is touched; an unreadable file or HDU stays exit 3.
+        _validate_selection(path, hdu, columns, where)
     if fmt == "fits":
         _convert_table_to_fits(path, args.output, hdu, columns, where)
         return EXIT_OK
-    if where or columns:
-        # Filter / column-select: materialize via table.read.
-        if columns or where:
-            # A bad --columns / --where is a usage error (exit 2). Reading the
-            # schema first keeps an unreadable file or HDU an I/O error (3).
-            tf_table.schema(path, hdu=hdu)
-        try:
-            arrow = tf_table.read(path, hdu=hdu, columns=columns, where=where)
-        except KeyError as exc:
-            if not columns:
-                raise
-            # The schema read fine: an unknown projected column name.
-            raise UsageError(f"--columns: {exc.args[0] if exc.args else exc}") from exc
-        except ValueError as exc:
-            if not where:
-                raise
-            # The schema read fine, so a ValueError here is the predicate's:
-            # unknown column, syntax error, or a type mismatch.
-            raise UsageError(f"--where: {exc}") from exc
+    selection: dict[str, Any] = {"hdu": hdu, "columns": columns, "where": where}
+    try:
+        # Streamed batch by batch: --columns/--where never materialize the
+        # whole table.
         if fmt == "parquet":
-            tf_table.write_parquet(args.output, arrow)
+            tf_table.write_parquet(args.output, path, stream=True, **selection)
         elif fmt == "csv":
-            tf_table.write_csv(args.output, arrow, delimiter=",")
+            tf_table.write_csv(
+                args.output, path, stream=True, delimiter=",", **selection
+            )
         elif fmt == "tsv":
-            tf_table.write_csv(args.output, arrow, delimiter="\t")
+            tf_table.write_csv(
+                args.output, path, stream=True, delimiter="\t", **selection
+            )
         elif fmt == "arrow":
-            tf_table.write_ipc(args.output, arrow)
+            tf_table.write_ipc(args.output, path, stream=True, **selection)
         else:
             raise UsageError(f"unsupported table format: {fmt}")
-        return EXIT_OK
-
-    if fmt == "parquet":
-        tf_table.write_parquet(args.output, path, hdu=hdu, stream=True)
-    elif fmt == "csv":
-        tf_table.write_csv(args.output, path, hdu=hdu, stream=True, delimiter=",")
-    elif fmt == "tsv":
-        tf_table.write_csv(args.output, path, hdu=hdu, stream=True, delimiter="\t")
-    elif fmt == "arrow":
-        tf_table.write_ipc(args.output, path, hdu=hdu, stream=True)
-    else:
-        raise UsageError(f"unsupported table format: {fmt}")
+    except ValueError as exc:
+        if not where:
+            raise
+        # Validated up front, so this is a predicate error only the data
+        # could reveal; the atomic writers left the output untouched.
+        raise UsageError(f"--where: {exc}") from exc
     return EXIT_OK
+
+
+def _validate_selection(
+    path: str, hdu: int, columns: list[str] | None, where: str | None
+) -> None:
+    """Check --columns / --where against the table schema without reading rows."""
+    from torchfits import table as tf_table
+    from torchfits._table._read_where import _where_mask_for_table
+    from torchfits._where import parse_where_expression
+
+    # Reading the schema first keeps an unreadable file or HDU an I/O error.
+    arrow_schema = tf_table.schema(path, hdu=hdu)
+    if columns:
+        try:
+            tf_table.schema(path, hdu=hdu, columns=columns)
+        except KeyError as exc:
+            raise UsageError(f"--columns: {exc.args[0] if exc.args else exc}") from exc
+    if where:
+        try:
+            ast = parse_where_expression(where)
+            # Evaluating on a zero-row table of the same schema surfaces
+            # unknown columns and type mismatches as well as syntax errors.
+            _where_mask_for_table(arrow_schema.empty_table(), where, parsed_ast=ast)
+        except (KeyError, ValueError) as exc:
+            detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+            raise UsageError(f"--where: {detail}") from exc
 
 
 def _read_band(path: str, hdu: int) -> object:

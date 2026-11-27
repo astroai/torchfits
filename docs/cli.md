@@ -288,6 +288,9 @@ column formats (`TFORMn`), `TSCALn`/`TZEROn`, `TNULLn` sentinels, `TDIMn`,
 `TUNITn` and other per-column cards (renumbered for `--columns`), `EXTNAME`,
 and the HDU's other non-structural keywords are kept.
 
+Parquet, CSV/TSV, and Arrow output is streamed batch by batch, with or without
+`--columns`/`--where`; FITS output is built in memory.
+
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
 HDU stays an I/O error (exit `3`).
