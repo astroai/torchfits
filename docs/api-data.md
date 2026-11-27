@@ -482,8 +482,11 @@ table (`TFIELDS = 0`) yields one empty dict per row, or one per chunk with
 Rows and chunks follow the same convention as `FitsTableDataset`: values as
 stored, with or without `where=`. A `TNULL` null is its sentinel value and
 character columns are `uint8` byte tensors; use `TNullToNan` for NaN nulls.
-`where=` accepts the full `table.read` predicate dialect and is evaluated per
-chunk on the predicate columns only.
+`where=` accepts the full `table.read` predicate dialect and is applied through
+`table.scan_torch(where=...)`: each chunk's row window is read once and only its
+matching rows are kept (natively filtered when the predicate is a conjunction of
+numeric comparisons, see [Tables](api-tables.md)); chunks with no match are
+skipped.
 
 !!! info "When to use"
     Use for large catalogs that don't fit in memory. Each worker (and each

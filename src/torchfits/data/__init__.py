@@ -469,15 +469,14 @@ class FitsTableIterableDataset(IterableDataset[Any]):
 
         import torchfits.table
 
-        # where= only selects rows: each chunk is filtered with a row mask
-        # evaluated over the same row range, so rows keep the exact
-        # representation of an unfiltered scan.
-        offset = 0 if window is None else window[0]
+        # where= only selects rows: scan_torch reads each chunk's window once
+        # and yields just its matching rows, in the exact representation of an
+        # unfiltered scan (natively filtered when the predicate allows it).
         # Absolute row of the next chunk, and the end of the scanned range
         # (looked up lazily): a zero-column BINTABLE (TFIELDS = 0) yields
         # ``{}`` chunks that carry no row count, yet holds NAXIS2 rows, which
         # the map-style FitsTableDataset serves as empty row dicts.
-        scan_pos = offset
+        scan_pos = 0 if window is None else window[0]
         scan_end = None if window is None else window[1]
         for chunk in torchfits.table.scan_torch(
             self.path,
@@ -487,6 +486,7 @@ class FitsTableIterableDataset(IterableDataset[Any]):
             batch_size=self.batch_size,
             mmap=_resolve_table_mmap(self.mmap),
             device=self.device,
+            where=self.where,
         ):
             if not chunk:
                 if scan_end is None:
@@ -506,19 +506,6 @@ class FitsTableIterableDataset(IterableDataset[Any]):
                     0,
                 )
                 scan_pos += n_rows
-            if self.where is not None:
-                row_mask = _where_row_mask(
-                    self.path,
-                    self.hdu,
-                    self.where,
-                    mmap=self.mmap,
-                    row_slice=(offset, offset + n_rows),
-                )
-                offset += n_rows
-                if not bool(row_mask.any()):
-                    continue
-                chunk = _select_table_rows(chunk, row_mask)
-                n_rows = int(row_mask.sum())
             if self.as_batches:
                 if skipped:
                     chunk = {k: v for k, v in chunk.items() if k not in skipped}

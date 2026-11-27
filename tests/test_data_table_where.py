@@ -96,3 +96,51 @@ def test_iterable_where_as_batches_matches_unfiltered(catalog: str) -> None:
         got = torch.cat([b[key] for b in batches])
         assert got.dtype == full[key].dtype, key
         assert torch.equal(got, full[key][keep]), key
+
+
+def _count_native_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Spy on every native table read entry point (module functions)."""
+    import torchfits._C as C
+
+    calls: list[str] = []
+    for name in dir(C):
+        if not name.startswith("read_fits_table"):
+            continue
+        real = getattr(C, name)
+
+        def spy(*args, _real=real, _name=name, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(C, name, spy)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "where,native",
+    [("ID >= 2 AND S > 0", True), (WHERE, False)],
+)
+@pytest.mark.parametrize("as_batches", [False, True])
+def test_iterable_where_reads_each_chunk_once(
+    catalog: str,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    native: bool,
+    as_batches: bool,
+) -> None:
+    """One native read per chunk: the predicate columns are not read again."""
+    want = list(FitsTableIterableDataset(catalog, where=where, as_batches=as_batches))
+    calls = _count_native_reads(monkeypatch)
+    got = list(
+        FitsTableIterableDataset(
+            catalog, where=where, batch_size=2, as_batches=as_batches
+        )
+    )
+    n_chunks = 5  # 9 rows in windows of 2
+    assert len(calls) == n_chunks, calls
+    assert all(c == "read_fits_table_filtered" for c in calls) is native
+    if as_batches:
+        got = [{k: torch.cat([b[k] for b in got]) for k in got[0]}]
+    assert len(got) == len(want)
+    for row, src in zip(got, want):
+        _assert_rows_equal(row, src)
