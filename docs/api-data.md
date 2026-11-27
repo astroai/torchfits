@@ -54,7 +54,12 @@ should branch on dict vs tensor if they need mask-aware wiring — see
     `TORCHFITS_HTTP_TOKEN`. Uncompressed 2D HTTP cutouts use Range GETs when
     possible; compressed and vos paths cache the full file first. An HTTP
     body that does not start like a FITS file (or a gzip/bzip2/compress/zip
-    wrapper) raises `OSError` naming the URL and is never cached.
+    wrapper) raises `OSError` naming the URL and is never cached. So does a
+    body that ends before the last HDU its headers declare (a dropped
+    connection-close transfer): plain FITS is checked HDU by HDU, and a
+    gzip/bzip2/zip body sent without `Content-Length` must decompress to the
+    end. An unframed Unix-compress/pack body cannot be checked and is
+    refused. A truncated file already in the cache is fetched again.
 
 ---
 
@@ -470,7 +475,9 @@ Iterating the unfiltered dataset yields exactly as many rows as
 [`FitsTableDataset`](#fitstabledataset) reports `len` for the same file and
 HDU, including when every column is variable-length. A variable-length column
 arrives from `scan_torch` as a Python `list` rather than a tensor, so the
-per-chunk row count is read from tensor *or* list columns.
+per-chunk row count is read from tensor *or* list columns. A zero-column
+table (`TFIELDS = 0`) yields one empty dict per row, or one per chunk with
+`as_batches=True`.
 
 Rows and chunks follow the same convention as `FitsTableDataset`: values as
 stored, with or without `where=`. A `TNULL` null is its sentinel value and
@@ -694,6 +701,10 @@ ds = FitsStagedCutoutIterableDataset(
 | `transform` | `callable` or `None` | `None` | Applied to each cutout tensor or companion dict |
 | `shuffle_files` | `bool` | `False` | Shuffle mosaic order per epoch |
 | `shuffle_buffer_size` | `int` or `None` | `None` | In-flight reservoir shuffle across mosaic stamps |
+
+Every flux band and every `ivar_hdu` / `mask_hdu` companion must have the
+same shape as the first flux band; a misaligned file raises `ValueError` when
+it is reached. Closing an iterator early cancels its look-ahead downloads.
 
 ---
 
