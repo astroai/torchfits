@@ -62,6 +62,14 @@ public:
     // shared fd then reads the new file, so callers must use the handle.
     bool shares_current_file() const;
 
+    // False when this read-only handle's path now names a different file than
+    // the one it opened (an out-of-band replace: new inode, size or mtime).
+    // Borrowers that also read the path directly -- a TableReader's pread/mmap
+    // paths reopen it by name -- would then mix the replacement's bytes with
+    // this handle's geometry. True for write handles, names whose identity was
+    // not captured, and a path that no longer exists (nothing to mix in).
+    bool path_names_open_file() const;
+
     void ensure_hdu(int hdu_num, int* status);
     // Same move, but throws naming the query that needed it. Used by the
     // HDU-keyed cache lookups below, which read the CFITSIO current-HDU cursor:
