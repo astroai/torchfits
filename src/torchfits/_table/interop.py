@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -76,6 +76,19 @@ def _atomic_output(dest: Any) -> Iterator[Any]:
         pass
 
 
+def _column_dict_to_arrow(data: Any) -> Any:
+    """A column mapping (as ``table.write`` accepts) as a ``pyarrow.Table``.
+
+    Anything else is returned unchanged. Iterating a dict would otherwise
+    yield its keys, which Arrow then rejects as record batches.
+    """
+    if isinstance(data, Mapping):
+        from ..interop import to_arrow
+
+        return to_arrow(dict(data))
+    return data
+
+
 def _materialize_arrow_table(data: str | Any | Iterable[Any], **kwargs: Any) -> Any:
     """Normalize path/reader/batches into a single pyarrow.Table.
 
@@ -138,7 +151,8 @@ def write_parquet(
 
     Args:
         dest: Destination parquet file path.
-        data: FITS file path, Arrow Table, RecordBatchReader, or iterable of RecordBatch.
+        data: FITS file path, Arrow Table, RecordBatchReader, iterable of
+            RecordBatch, or a column dict as accepted by ``table.write``.
         stream: Enable streaming parquet writes (bounded memory).
     """
     try:
@@ -156,6 +170,7 @@ def write_parquet(
             data = read(path, **kwargs)
     else:
         _reject_detached_kwargs("write_parquet", kwargs)
+        data = _column_dict_to_arrow(data)
 
     # Normalize to a concrete iterable after the str → reader/read path.
     data_iter: Any = data
@@ -231,7 +246,7 @@ def write_csv(
 
     Args:
         dest: Destination path.
-        data: FITS path, Arrow Table, reader, or batch iterable.
+        data: FITS path, Arrow Table, reader, batch iterable, or column dict.
         delimiter: Field separator (``,`` for CSV, ``\\t`` for TSV).
         stream: Write batches without materializing the full table.
     """
@@ -247,6 +262,7 @@ def write_csv(
         data = reader(path, **kwargs) if stream else read(path, **kwargs)
     else:
         _reject_detached_kwargs("write_csv", kwargs)
+        data = _column_dict_to_arrow(data)
 
     if not stream:
         table = _materialize_arrow_table(data)
@@ -304,7 +320,7 @@ def write_ipc(
 
     Args:
         dest: Destination path (typically ``.arrow`` or ``.feather``).
-        data: FITS path, Arrow Table, reader, or batch iterable.
+        data: FITS path, Arrow Table, reader, batch iterable, or column dict.
         stream: Write batches without materializing the full table.
         compression: Feather/IPC compression (``zstd``, ``lz4``, or ``None``).
     """
@@ -321,6 +337,7 @@ def write_ipc(
         data = reader(path, **kwargs) if stream else read(path, **kwargs)
     else:
         _reject_detached_kwargs("write_ipc", kwargs)
+        data = _column_dict_to_arrow(data)
 
     if not stream:
         table = _materialize_arrow_table(data)
