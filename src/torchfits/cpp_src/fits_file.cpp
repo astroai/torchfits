@@ -819,6 +819,22 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         std::vector<long> naxes(naxis);
         for (int i = 0; i < naxis; ++i) naxes[i] = tensor.shape(i);
         std::reverse(naxes.begin(), naxes.end());
+        // Per-HDU options the Python layer validated and resolved
+        // (write(tile_shape=...)); absent keys keep the defaults below.
+        std::vector<long> requested_tile;
+        if (nb::isinstance<nb::dict>(hdu_obj)) {
+            nb::dict d = nb::cast<nb::dict>(hdu_obj);
+            if (d.contains("_compression") && !d["_compression"].is_none()) {
+                nb::dict opts = nb::cast<nb::dict>(d["_compression"]);
+                if (opts.contains("tile_dims")) {
+                    requested_tile = nb::cast<std::vector<long>>(opts["tile_dims"]);
+                    if (requested_tile.size() != static_cast<size_t>(naxis))
+                        throw std::runtime_error("tile_dims must have one entry per image axis");
+                    for (long t : requested_tile)
+                        if (t <= 0) throw std::runtime_error("tile_dims entries must be positive");
+                }
+            }
+        }
         status = 0;
         fits_set_compression_type(fptr_, compression_type, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression type");
@@ -852,7 +868,9 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         }
         std::vector<long> tilesize(naxis, 1);
         tilesize[0] = naxes[0];
-        if (compression_type == HCOMPRESS_1) {
+        if (!requested_tile.empty()) {
+            tilesize = requested_tile;
+        } else if (compression_type == HCOMPRESS_1) {
             // HCOMPRESS requires 2D tiles; use 16-row bands like fpack's
             // default so output tiles match the reference CLI.
             if (naxis < 2)

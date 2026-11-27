@@ -11,6 +11,7 @@ import atexit
 import logging as _stdlib_logging
 import os
 import sys
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -309,6 +310,8 @@ def write(
     compress: bool | str = False,
     quantize: Any = None,
     checksum: bool = False,
+    *,
+    tile_shape: Sequence[int] | None = None,
 ) -> None:
     """Write a tensor or numpy array to a FITS file (primary or image extension).
 
@@ -324,6 +327,10 @@ def write(
 
     ``checksum=True`` writes CFITSIO DATASUM/CHECKSUM keywords for every HDU
     after the payload lands; verify later with :func:`verify_checksums`.
+
+    ``tile_shape`` sets the compression tile per image axis (tensor axis
+    order, trailing axes; ``-1`` = whole axis), like ``fpack -t``. Default:
+    one row per tile (16 rows for ``HCOMPRESS_1``). Requires ``compress=``.
     """
     from ._io_engine.write_api import write as _write_impl
 
@@ -335,6 +342,7 @@ def write(
         compress=compress,
         quantize=quantize,
         checksum=checksum,
+        tile_shape=tile_shape,
     )
 
 

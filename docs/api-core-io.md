@@ -492,6 +492,8 @@ torchfits.write(
     compress=False,
     quantize=None,
     checksum=False,
+    *,
+    tile_shape=None,
 )
 ```
 
@@ -503,6 +505,7 @@ torchfits.write(
 | `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
 | `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). 64-bit integer images (`int64`, `uint64`) cannot be tile-compressed: `compress=` raises `ValueError`. |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
+| `tile_shape` | sequence of `int` or `None` | `None` | Compression tile size per image axis, in **tensor axis order** (`(rows, cols)` for a 2-D image), like `fpack -t`. It covers the trailing axes; leading axes it leaves out get size 1. `-1` (or a size past the axis length) means the whole axis. Default: one image row per tile (16 rows for `HCOMPRESS_1`). `HCOMPRESS_1` tiles must span exactly two axes of at least 4 pixels. Applies to every image HDU written; requires `compress=`. Keyword-only. |
 
 !!! note "`uint16` images and `PLIO_1`"
     CFITSIO stores a `uint16` image compressed with `PLIO_1` as unsigned
@@ -531,6 +534,22 @@ torchfits.write(
 
     x = torch.arange(16, dtype=torch.int64).reshape(4, 4)
     torchfits.write("i32.fits", x.to(torch.int32), compress="GZIP_1", overwrite=True)
+    ```
+
+!!! note "Tile-compression controls (fpack equivalents)"
+    With `compress=`, `tile_shape=` picks the tile geometry (`fpack -t`).
+    Validation happens before anything is written; a bad combination raises
+    `ValueError`.
+
+    ```python
+    import torch, torchfits
+
+    x = torch.randn(512, 512)
+    # 128x128-pixel tiles (tensor axis order: rows, cols)
+    torchfits.write(
+        "tiled.fits", x, compress="GZIP_1", tile_shape=(128, 128), overwrite=True
+    )
+    assert torch.equal(torchfits.read("tiled.fits", hdu=1), x)
     ```
 
 !!! tip "Skewed float → int16"

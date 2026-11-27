@@ -403,12 +403,21 @@ No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
 without writing the output.
 `--hdu` applies only with `--split hdu`.
 
+| Flag | Default | Description |
+|---|---|---|
+| `--algorithm` | `GZIP_1` | Codec: `GZIP_1`, `GZIP_2`, `RICE_1`, `HCOMPRESS_1`, `PLIO_1` (and `BZIP2_1` when built with bzip2) |
+| `-t`, `--tile N1,N2,...` | one image row per tile (16 rows for `HCOMPRESS_1`) | Tile size per axis in **FITS axis order** (`NAXIS1` first), like `fpack -t`. Axes left out get size 1; `-1` (or a size past the axis length) means the whole axis — write it as `--tile=-1,-1`. `HCOMPRESS_1` tiles must span exactly two axes of at least 4 pixels. A tile with more axes than an image is a usage error (exit `2`). |
+
 ```bash
 # Compress losslessly with default GZIP_1
 torchfits compress science.fits science.fits.fz
 
 # Compress using GZIP algorithm
 torchfits compress science.fits science.fits.fz --algorithm GZIP_1
+
+# 100x100-pixel tiles; one tile for the whole image
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 --tile 100,100
+torchfits compress science.fits science.fits.fz --tile=-1,-1
 
 # Split MEF file into individual compressed HDU files
 torchfits compress mef.fits --split hdu --out-dir /tmp/compressed_hdus

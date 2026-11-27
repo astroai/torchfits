@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 
 from torch import Tensor
@@ -11,6 +11,7 @@ from torch import Tensor
 from ..hdu import HDUList, Header, TensorHDU
 from .paths import guard_write_path
 from .checksum_api import write_checksums as _write_checksums_impl
+from ._tile_compression import CompressionOptions, compression_options
 from ._hdu_rewrite import (
     _write_hdus_uncompressed,
     _write_hdus_with_optional_compression,
@@ -77,6 +78,8 @@ def write(
     compress: Union[bool, str] = False,
     quantize: Any = None,
     checksum: bool = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
 ) -> None:
     """Write data to FITS file.
 
@@ -94,6 +97,11 @@ def write(
         checksum: When True, compute and write CFITSIO DATASUM/CHECKSUM
             keywords for every HDU after the payload lands (archive-ingest
             friendly). Verify later with :func:`torchfits.verify_checksums`.
+        tile_shape: Tile size per image axis for tile-compressed writes, in
+            tensor axis order (``(rows, cols)`` for a 2-D image); it covers the
+            trailing axes and leading axes get tile size 1. ``-1`` (or a size
+            past the axis length) means the whole axis. Default: one image row
+            per tile (16 rows for ``HCOMPRESS_1``). Requires ``compress=``.
 
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
@@ -113,6 +121,7 @@ def write(
         )
     if path_exists and os.path.isdir(path):
         raise IsADirectoryError(path)
+    options = compression_options(compress, tile_shape=tile_shape)
 
     # Always write a fresh temp file and publish it afterwards: a failed write
     # then never creates or deletes anything at ``path`` (the old error path
@@ -127,6 +136,7 @@ def write(
                 compress=compress,
                 quantize=quantize,
                 checksum=checksum,
+                options=options,
             )
         except (ValueError, TypeError):
             # Argument errors (non-ASCII text, bad quantize=, a compress= of
@@ -146,6 +156,7 @@ def _write_new_file(
     compress: Union[bool, str],
     quantize: Any,
     checksum: bool,
+    options: Optional[CompressionOptions] = None,
 ) -> None:
     """write() body: ``path`` is a temp path that does not exist yet."""
     overwrite = False
@@ -222,7 +233,11 @@ def _write_new_file(
             )
 
         _write_hdus_with_optional_compression(
-            path, compressed_hdus, compress=compress, overwrite=overwrite
+            path,
+            compressed_hdus,
+            compress=compress,
+            overwrite=overwrite,
+            options=options,
         )
         if checksum:
             _write_all_checksums(path)

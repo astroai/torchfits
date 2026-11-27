@@ -35,6 +35,7 @@ from ._file_ops import (
     _invalidate_written_target,
     _resolve_compression_algorithm,
 )
+from ._tile_compression import CompressionOptions
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
     _COMPRESSION_CARD_KEYS,
@@ -317,8 +318,11 @@ def _write_hdus_with_optional_compression(
     compress: Union[bool, str] = False,
     *,
     overwrite: bool = True,
+    options: Optional[CompressionOptions] = None,
 ) -> None:
     """Rewrite HDUs, optionally using CFITSIO compressed-image writer.
+
+    ``options`` (tile geometry, ...) apply to every image HDU written.
 
     Like the uncompressed writer, the dict writers get commentary-free header
     mappings and the full card list is replayed once per output HDU (at
@@ -377,6 +381,8 @@ def _write_hdus_with_optional_compression(
                 # PLIO only stores values in [0, 2**24): hand CFITSIO the
                 # physical uint16 pixels instead of the signed -32768 codes.
                 hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
+        if options is not None:
+            hdu_dict["_compression"] = options.image_options(hdu_dict["data"], idx)
         payload.append(hdu_dict)
 
     _invalidate_path_caches(path)

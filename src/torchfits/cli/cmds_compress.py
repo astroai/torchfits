@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torchfits
+from torchfits._io_engine._tile_compression import resolve_tile_dims
 from torchfits._io_engine.paths import cfitsio_base_path, has_bz2_support
 
 from .common import (
@@ -84,6 +85,17 @@ def add_compress_parser(
             "other codecs use CFITSIO float quantization and are lossy"
         ),
     )
+    parser.add_argument(
+        "-t",
+        "--tile",
+        default=None,
+        metavar="N1,N2,...",
+        help=(
+            "tile size per axis in FITS order (NAXIS1 first), like fpack -t; "
+            "omitted axes get 1, -1 = whole axis (write --tile=-1,-1). "
+            "Default: one image row per tile (16 rows for HCOMPRESS_1)"
+        ),
+    )
     parser.set_defaults(func=run_compress)
 
 
@@ -146,16 +158,41 @@ def _refresh_checksums(path: str, hdu: int) -> None:
         torchfits.io._invalidate_path_caches(path)
 
 
-def _compress_file(input_path: str, output_path: str, *, algorithm: str) -> None:
+def _parse_tile(text: str | None) -> tuple[int, ...] | None:
+    """``--tile N1,N2,...`` (FITS axis order) as a tensor-order tile_shape."""
+    if text is None:
+        return None
+    try:
+        dims = [int(part) for part in str(text).split(",")]
+    except ValueError:
+        raise UsageError(
+            f"invalid --tile {text!r}: expected comma-separated integers, "
+            "e.g. --tile 100,100"
+        ) from None
+    if any(size == 0 or size < -1 for size in dims):
+        raise UsageError(
+            f"invalid --tile {text!r}: tile sizes must be positive (-1 = whole axis)"
+        )
+    # FITS order (NAXIS1 = fastest axis first) -> tensor order.
+    return tuple(reversed(dims))
+
+
+def _compress_file(
+    input_path: str, output_path: str, *, algorithm: str, options: dict[str, Any]
+) -> None:
     # Write and post-edit a temp file; publish only once it is complete.
     with staged_output(output_path) as temp_path:
-        _compress_to(input_path, temp_path, algorithm=algorithm)
+        _compress_to(input_path, temp_path, algorithm=algorithm, options=options)
 
 
-def _compress_to(input_path: str, output_path: str, *, algorithm: str) -> None:
+def _compress_to(
+    input_path: str, output_path: str, *, algorithm: str, options: dict[str, Any]
+) -> None:
     with torchfits.open(input_path) as hdul:
         primary_image = len(hdul) > 0 and _naxis_has_data(hdul[0].header)
-        torchfits.write(output_path, hdul, overwrite=True, compress=algorithm)
+        torchfits.write(
+            output_path, hdul, overwrite=True, compress=algorithm, **options
+        )
     if not primary_image:
         return
     # A FITS primary cannot be compressed: the image moves to HDU 1 behind an
@@ -214,10 +251,11 @@ def _rewrite_file(
     output_path: str,
     *,
     compress: bool | str,
+    options: dict[str, Any],
 ) -> None:
     try:
         if isinstance(compress, str):
-            _compress_file(input_path, output_path, algorithm=compress)
+            _compress_file(input_path, output_path, algorithm=compress, options=options)
         else:
             _decompress_file(input_path, output_path)
     except UsageError:
@@ -239,6 +277,7 @@ def _rewrite_one_input_split_hdu(
     hdu: str | None,
     *,
     compress: bool | str,
+    options: dict[str, Any],
     batch_inputs: tuple[str, ...] = (),
 ) -> int:
     """Compress/decompress image HDUs from one input; return count written."""
@@ -279,6 +318,7 @@ def _rewrite_one_input_split_hdu(
                 header=header,
                 overwrite=True,
                 compress=compress,
+                **options,
             )
             written += 1
         except UsageError:
@@ -290,7 +330,9 @@ def _rewrite_one_input_split_hdu(
     return written
 
 
-def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool | str) -> None:
+def _rewrite_split_hdu(
+    args: argparse.Namespace, *, compress: bool | str, options: dict[str, Any]
+) -> None:
     if not args.out_dir:
         raise UsageError("--split hdu requires --out-dir")
     if args.out:
@@ -306,7 +348,12 @@ def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool | str) -> Non
     counts = run_file_jobs(
         inputs,
         lambda path: _rewrite_one_input_split_hdu(
-            path, out_dir, args.hdu, compress=compress, batch_inputs=tuple(inputs)
+            path,
+            out_dir,
+            args.hdu,
+            compress=compress,
+            options=options,
+            batch_inputs=tuple(inputs),
         ),
         file_jobs,
         torch_runtime=True,
@@ -315,55 +362,79 @@ def _rewrite_split_hdu(args: argparse.Namespace, *, compress: bool | str) -> Non
         raise IoError("no image HDUs to process")
 
 
+def _image_shape(header: Any) -> tuple[int, ...]:
+    """Image shape (tensor order) from a plain or tile-compressed header."""
+    prefix = "ZNAXIS" if is_compressed_image_header(header) else "NAXIS"
+    naxis = int(header.get(prefix, 0) or 0)
+    return tuple(
+        int(header.get(f"{prefix}{axis}", 0) or 0) for axis in range(naxis, 0, -1)
+    )
+
+
 def _validate_compression_inputs(
-    inputs: list[str], algorithm: str, hdu: str | None
+    inputs: list[str], algorithm: str, hdu: str | None, options: dict[str, Any]
 ) -> None:
     if algorithm == "BZIP2_1" and not has_bz2_support():
         raise UsageError("BZIP2_1 is unavailable in this torchfits build")
-    if algorithm != "PLIO_1":
+    tile_shape = options.get("tile_shape")
+    if algorithm != "PLIO_1" and tile_shape is None:
         return
     for path in inputs:
         try:
             with torchfits.open(path) as hdul:
                 for index in selected_hdu_indices(len(hdul), hdu, path=path):
-                    if hdu_type_name(hdul[index].header, hdul[index]) != "IMAGE":
+                    header = hdul[index].header
+                    if hdu_type_name(header, hdul[index]) != "IMAGE":
                         continue
-                    bitpix = int(
-                        hdul[index].header.get(
-                            "ZBITPIX", hdul[index].header.get("BITPIX", 0)
-                        )
-                        or 0
-                    )
-                    if bitpix < 0:
+                    shape = _image_shape(header)
+                    if not shape or 0 in shape:
+                        continue  # empty primary: nothing to compress
+                    bitpix = int(header.get("ZBITPIX", header.get("BITPIX", 0)) or 0)
+                    if algorithm == "PLIO_1" and bitpix < 0:
                         raise UsageError(
                             f"PLIO_1 does not support floating-point image data: {path}:{index}"
                         )
+                    if tile_shape is not None:
+                        try:
+                            resolve_tile_dims(tile_shape, shape, algorithm, index)
+                        except ValueError as exc:
+                            raise UsageError(f"--tile: {path}: {exc}") from None
         except UsageError:
             raise
         except Exception as exc:
             raise IoError(f"{path}: {exc}") from exc
 
 
-def _run_rewrite(args: argparse.Namespace, *, compress: bool | str) -> int:
+def _run_rewrite(
+    args: argparse.Namespace,
+    *,
+    compress: bool | str,
+    options: dict[str, Any] | None = None,
+) -> int:
+    options = options or {}
     split = getattr(args, "split", "file")
     if split == "file" and args.hdu is not None:
         raise UsageError("--hdu applies only with --split hdu")
     if split == "hdu":
         if isinstance(compress, str):
             _validate_compression_inputs(
-                [str(path) for path in args.paths], compress, args.hdu
+                [str(path) for path in args.paths], compress, args.hdu, options
             )
-        _rewrite_split_hdu(args, compress=compress)
+        _rewrite_split_hdu(args, compress=compress, options=options)
         return EXIT_OK
 
     pairs = _resolve_file_pairs(args)
     if isinstance(compress, str):
-        _validate_compression_inputs([pair[0] for pair in pairs], compress, None)
+        _validate_compression_inputs(
+            [pair[0] for pair in pairs], compress, None, options
+        )
     file_jobs = resolve_file_jobs(int(args.file_jobs), len(pairs))
     configure_torch_jobs(int(args.jobs))
     run_file_jobs(
         pairs,
-        lambda pair: _rewrite_file(pair[0], pair[1], compress=compress),
+        lambda pair: _rewrite_file(
+            pair[0], pair[1], compress=compress, options=options
+        ),
         file_jobs,
         torch_runtime=True,
     )
@@ -376,7 +447,11 @@ def run_compress(args: argparse.Namespace) -> int:
         raise UsageError(
             f"invalid --algorithm {algo!r}; choose from {', '.join(_available_codecs())}"
         )
-    return _run_rewrite(args, compress=algo)
+    options: dict[str, Any] = {}
+    tile_shape = _parse_tile(getattr(args, "tile", None))
+    if tile_shape is not None:
+        options["tile_shape"] = tile_shape
+    return _run_rewrite(args, compress=algo, options=options)
 
 
 def run_decompress(args: argparse.Namespace) -> int:
