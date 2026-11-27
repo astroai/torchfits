@@ -158,16 +158,24 @@ inline size_t datatype_elem_size(int datatype) {
 // special values), as astropy reads them — so those reads must pass nullptr
 // for Inf / -0 / NaN to survive. A NaN nulval is only for integer storage
 // read as float (BLANK promotion / arbitrary scale), where it marks
-// undefined pixels. `compressed` is accepted for call-site symmetry; the
-// storage BITPIX alone decides (r9b-01).
+// undefined pixels. The storage BITPIX decides (r9b-01), with one
+// exception: a tile-compressed float HDU that declares ZBLANK (a column or
+// keyword; fpack and quantized writes with NaN pixels) stores NaN as that
+// integer code in its quantized tiles, and CFITSIO only maps it back to NaN
+// when a nulval is passed. Without ZBLANK, CFITSIO never null-checks.
+// `compressed` is accepted for call-site symmetry: CFITSIO's own state for
+// the current HDU (`fptr`) decides whether it is a compressed image.
 inline void* cfitsio_float_nulval_ptr(
-    int bitpix, bool /*compressed*/, int datatype, float* fnull, double* dnull
+    int bitpix, bool /*compressed*/, int datatype, float* fnull, double* dnull,
+    fitsfile* fptr = nullptr
 ) {
     if (datatype != TFLOAT && datatype != TDOUBLE) {
         return nullptr;
     }
     if (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG) {
-        return nullptr;
+        const bool declares_zblank = fptr != nullptr && fptr->Fptr != nullptr &&
+            fptr->Fptr->compressimg && fptr->Fptr->cn_zblank != 0;
+        if (!declares_zblank) return nullptr;
     }
     return (datatype == TFLOAT) ? static_cast<void*>(fnull)
                                 : static_cast<void*>(dnull);
@@ -363,7 +371,7 @@ inline native::Tensor read_tensor_canonical(
     float fnullval = NAN;
     double dnullval = NAN;
     void* nullval_ptr = cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
+        bitpix, compressed, datatype, &fnullval, &dnullval, fptr);
 
     int status = 0;
     if (!use_chunking) {

@@ -692,7 +692,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             float fnullval = NAN;
             double dnullval = NAN;
             void* nullval_ptr = d::cfitsio_float_nulval_ptr(
-                bitpix, compressed, datatype, &fnullval, &dnullval);
+                bitpix, compressed, datatype, &fnullval, &dnullval, fptr);
             status = 0;
             fits_read_img(
                 fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
