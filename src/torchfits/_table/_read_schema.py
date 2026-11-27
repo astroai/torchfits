@@ -556,7 +556,23 @@ def schema(
         backend=scan_backend,
     )
     first = next(iterator, None)
-    if first is None and where is None:
+    if first is None and where is not None:
+        # A table with no rows: scan yields no batch at all. Answer with what
+        # read(where=...) returns -- its typed empty table, or its error for a
+        # bad predicate -- instead of the empty schema this used to return.
+        return _read_mod.read(
+            path,
+            hdu=hdu,
+            columns=columns,
+            where=where,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+            backend=backend,
+        ).schema
+    if first is None:
         # A table with no rows: the C++ chunk reader still returns typed
         # (empty) columns, including VLA lists the header cannot type.
         from ._read_scan import _read_cpp_table_chunk
