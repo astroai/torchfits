@@ -24,7 +24,7 @@ import torchfits
 
 SCRIPT = textwrap.dedent(
     """
-    import sys, threading
+    import sys, threading, time
     from torchfits import _core
 
     path = sys.argv[1]
@@ -44,8 +44,9 @@ SCRIPT = textwrap.dedent(
     threads = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(n)]
     for t in threads:
         t.start()
+    deadline = time.monotonic() + 20
     for t in threads:
-        t.join(timeout=20)
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
     if any(t.is_alive() for t in threads):
         print("HANG")
         sys.stdout.flush()
