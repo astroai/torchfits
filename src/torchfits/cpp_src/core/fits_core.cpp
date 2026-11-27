@@ -33,6 +33,22 @@ namespace detail {
 #define TORCHFITS_CORE_BUILD_ID "unknown"
 #endif
 
+namespace {
+
+// CFITSIO makes its global lock (Fitsio_Lock) recursive lazily: the first
+// fits_open_* / fits_create_* runs fits_init_cfitsio(), which calls
+// pthread_mutex_init on it. Every other entry point -- fits_clear_errmsg (which
+// open_fits_readonly calls first), the fptr-table update in fits_close_file --
+// takes that same lock before then as a plain zero-initialised mutex. When a
+// process's first reads start on several threads at once, one thread can
+// re-initialise the mutex while another holds it; the holder's unlock then
+// leaves it locked for good and every later CFITSIO call hangs (all threads
+// parked in ffxmsg / fits_clear_Fptr). Initialise it while this library loads,
+// which is single-threaded and happens before anything can call into it.
+[[maybe_unused]] const int g_cfitsio_init_status = fits_init_cfitsio();
+
+}  // namespace
+
 const char* core_library_build_id() {
     return TORCHFITS_CORE_BUILD_ID;
 }
