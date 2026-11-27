@@ -204,6 +204,153 @@ def _default_table_column_values(
     return np.zeros(shape, dtype=dtype)
 
 
+def _column_scaling_map(
+    header_map: dict[str, Any], unsigned: dict[str, str]
+) -> dict[str, tuple[float, float]]:
+    """``{name: (TSCAL, TZERO)}`` of the scaled, non-unsigned-convention columns."""
+    from ..fits_schema import iter_table_columns
+
+    out: dict[str, tuple[float, float]] = {}
+    for col in iter_table_columns(header_map):
+        if col.name in unsigned:
+            continue
+        tscal = float(col.tscal or 1.0)
+        tzero = float(col.tzero or 0.0)
+        if tscal != 1.0 or tzero != 0.0:
+            out[col.name] = (tscal, tzero)
+    return out
+
+
+# CFITSIO's accepted double range for each stored integer type (fitsio2.h
+# DUCHAR/DSHRT/DINT/DLONGLONG_MIN/MAX). The 64-bit upper bound is 2**63 in
+# float64, which CFITSIO lets through to an overflowing cast; it is refused
+# here (exclusive bound) instead.
+_STORED_DOUBLE_WINDOW: dict[str, tuple[float, float, bool]] = {
+    "B": (-0.49, 255.49, False),
+    "I": (-32768.49, 32767.49, False),
+    "J": (-2147483648.49, 2147483647.49, False),
+    "K": (-9.2233720368547758e18, 2.0**63, True),
+}
+
+
+def _check_numeric_coercion(
+    col_name: str,
+    arr: Any,
+    tform: Any,
+    unsigned_dtype: str | None = None,
+    scaling: tuple[float, float] | None = None,
+    *,
+    stacklevel: int = 3,
+) -> None:
+    """Check *arr* against an integer-TFORM column before anything is written.
+
+    A value the column cannot hold is refused with ValueError: CFITSIO writes
+    the rows before it reports the overflow, which left the file modified
+    behind the error (update_rows) or failed with an opaque RuntimeError
+    (append_rows / insert_rows). Float values (and any value for a scaled
+    column) are checked the way CFITSIO converts them: ``(value - TZERO) /
+    TSCAL`` must fall in the stored type's range, then is truncated toward
+    zero (unscaled column, warned about when it drops a fraction) or rounded
+    half away from zero (TSCAL/TZERO, including the unsigned conventions).
+    """
+    if not tform:
+        return
+    try:
+        is_vla, code, _repeat = _parse_tform(str(tform))
+    except Exception:
+        return
+    if is_vla or code not in {"B", "I", "J", "K"}:
+        return
+    if arr.dtype.kind not in {"f", "i", "u"}:
+        return
+    import numpy as _np
+
+    if arr.dtype.kind == "f" or scaling is not None:
+        if scaling is not None:
+            scale, zero = scaling
+        elif unsigned_dtype is not None:
+            scale, zero = 1.0, float(_UNSIGNED_TZERO[code])
+        else:
+            scale, zero = 1.0, 0.0
+        values = _np.asarray(arr, dtype=_np.float64)
+        finite = values[_np.isfinite(values)]
+        n_nonfinite = int(values.size - finite.size)
+        lo, hi, hi_exclusive = _STORED_DOUBLE_WINDOW[code]
+        truncates = scale == 1.0 and zero == 0.0
+        if code == "K" and scale == 1.0 and zero == 2.0**63:
+            # uint64: CFITSIO truncates the value and flips the sign bit.
+            stored, lo, hi, truncates = finite, -0.49, 2.0**64, True
+        elif truncates:
+            stored = finite
+        else:
+            stored = (finite - zero) / scale
+        too_high = stored >= hi if hi_exclusive or hi == 2.0**64 else stored > hi
+        out_of_range = int(_np.count_nonzero((stored < lo) | too_high))
+        if out_of_range:
+            if unsigned_dtype is not None and scaling is None:
+                bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
+                low, high = (
+                    (-128, 127) if unsigned_dtype == "int8" else (0, (1 << bits) - 1)
+                )
+                where = f"[{low}, {high}] ({unsigned_dtype})"
+            elif scaling is not None:
+                where = (
+                    f"the stored range of '{tform}' once scaled as "
+                    f"(value - {zero!r}) / {scale!r}"
+                )
+            else:
+                bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
+                low, high = (
+                    (0, 255)
+                    if code == "B"
+                    else (-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+                )
+                where = f"[{low}, {high}]"
+            raise ValueError(
+                f"Column '{col_name}' has integer FITS format '{tform}': "
+                f"{out_of_range} value(s) fall outside {where}; nothing was written"
+            )
+        parts = []
+        if arr.dtype.kind == "f" and (truncates or scaling is None):
+            non_integral = int(_np.count_nonzero(finite != _np.trunc(finite)))
+            if non_integral:
+                how = "truncated toward zero" if truncates else "rounded to an integer"
+                parts.append(f"{non_integral} non-integral value(s) will be {how}")
+        if n_nonfinite:
+            parts.append(f"{n_nonfinite} non-finite value(s) will become undefined")
+        if parts:
+            import warnings
+
+            warnings.warn(
+                f"Column '{col_name}' has integer FITS format '{tform}': "
+                + " and ".join(parts)
+                + ". Cast explicitly to silence this warning.",
+                RuntimeWarning,
+                stacklevel=stacklevel,
+            )
+        return
+
+    bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
+    if unsigned_dtype == "int8":
+        # Signed-byte convention: 'B' with TZERO = -128.
+        low, high = -128, 127
+    elif code == "B" or unsigned_dtype is not None:
+        # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
+        low, high = 0, (1 << bits) - 1
+    else:
+        low, high = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+    if arr.dtype.kind == "u":
+        out_of_range = int(_np.count_nonzero(arr > high))
+    else:
+        out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
+    if out_of_range:
+        raise ValueError(
+            f"Column '{col_name}' has integer FITS format '{tform}': "
+            f"{out_of_range} value(s) fall outside [{low}, {high}]; "
+            "nothing was written"
+        )
+
+
 def _normalize_mutation_rows(
     rows: dict[str, Any],
     columns: list[str],
@@ -212,6 +359,7 @@ def _normalize_mutation_rows(
     *,
     allow_partial: bool,
     unsigned_dtypes: Optional[dict[str, str]] = None,
+    scaling: Optional[dict[str, tuple[float, float]]] = None,
 ) -> tuple[dict[str, Any], int]:
     rows_by_name = {str(k): v for k, v in rows.items()}
     input_columns = set(rows_by_name)
@@ -289,6 +437,15 @@ def _normalize_mutation_rows(
             )
             if expected_rows is None:
                 expected_rows = int(arr.shape[0])
+            # user -> append_rows/insert_rows -> here -> check: stacklevel 4.
+            _check_numeric_coercion(
+                col_name,
+                arr,
+                tform_map.get(col_name),
+                (unsigned_dtypes or {}).get(col_name),
+                (scaling or {}).get(col_name),
+                stacklevel=4,
+            )
             normalized[col_name] = arr
 
     if expected_rows is None:

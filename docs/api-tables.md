@@ -437,10 +437,14 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 `row_slice` is a `slice` or `(start, stop)` tuple (0-based Python style for
 update/delete). `insert_rows` requires keyword `row=` (0-based insert index).
 
-`update_rows` raises `ValueError`, before writing anything, when an integer
-value does not fit the column (for example `70000` into a `uint16` column);
-float values written into an integer column only warn that they are
-truncated toward zero.
+`update_rows`, `append_rows` and `insert_rows` raise `ValueError`, before
+writing anything, when a value does not fit an integer column (for example
+`70000` into a `uint16` column, or `2.0**40` into an `int32` one). Float values
+are judged as they will be stored: a plain integer column truncates them
+toward zero (with a `RuntimeWarning` when a fraction is dropped), while a
+`TSCAL` / `TZERO` column (unsigned conventions included) stores
+`(value - TZERO) / TSCAL` rounded half away from zero, and that stored value
+must fit the column's `TFORM`.
 
 Without `format=`, `insert_column` / `replace_column` infer the TFORM from
 the values. As in `table.write`, `uint16` / `uint32` / `uint64` values become
