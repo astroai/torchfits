@@ -66,6 +66,37 @@ class _FakeResp:
         return False
 
 
+def _card(text: str) -> bytes:
+    return text.ljust(80).encode("ascii")
+
+
+def _fits_image_bytes(n: int = 600, *, extension_rows: int | None = None) -> bytes:
+    """A real, complete FITS file: an int16 vector of *n* pixels (+ optional
+    int8 image extension), each HDU padded to 2880 bytes."""
+
+    def hdu(first: str, bitpix: int, axes: list[int], extra: list[str]) -> bytes:
+        cards = [first, f"BITPIX  = {bitpix:20d}", f"NAXIS   = {len(axes):20d}"]
+        cards += [f"NAXIS{i + 1:<3d}= {a:20d}" for i, a in enumerate(axes)]
+        header = b"".join(_card(c) for c in cards + extra + ["END"])
+        header = header.ljust(-(-len(header) // 2880) * 2880, b" ")
+        count = 1
+        for a in axes:
+            count *= a
+        data = bytes(range(256)) * (count * abs(bitpix) // 8 // 256 + 1)
+        data = data[: count * abs(bitpix) // 8]
+        return header + data.ljust(-(-len(data) // 2880) * 2880, b"\0")
+
+    body = hdu("SIMPLE  =                    T", 16, [n], [])
+    if extension_rows is not None:
+        body += hdu(
+            "XTENSION= 'IMAGE   '",
+            8,
+            [100, extension_rows],
+            ["PCOUNT  =                    0", "GCOUNT  =                    1"],
+        )
+    return body
+
+
 def test_416_on_resume_restarts_instead_of_wedging(tmp_path):
     """A complete-but-unpromoted partial must not wedge every later attempt.
 
@@ -74,7 +105,7 @@ def test_416_on_resume_restarts_instead_of_wedging(tmp_path):
     with 416. That is a dead resume offset: drop the partial and fetch
     cleanly instead of retrying the same doomed Range forever.
     """
-    body = b"SIMPLE  =" + b"COMPLETE-PAYLOAD" * 16
+    body = _fits_image_bytes()
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/wedged.fits"
@@ -125,9 +156,9 @@ def test_malformed_content_length_treated_as_unverifiable(tmp_path):
     """A garbage Content-Length must not crash the download.
 
     ``http.client`` treats a malformed length as unknown framing; the cache
-    layer must do the same and warn about unverifiable completeness.
+    layer must do the same and verify the body from its FITS structure.
     """
-    body = b"SIMPLE  =" + b"REAL-FITS-PAYLOAD" * 32
+    body = _fits_image_bytes()
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/badlen.fits"
@@ -135,9 +166,15 @@ def test_malformed_content_length_treated_as_unverifiable(tmp_path):
 
     resp = _FakeResp(200, {"Content-Length": "not-a-number"}, body)
     with mock.patch("torchfits.data.remote.http_open", return_value=resp):
-        with pytest.warns(RuntimeWarning, match="Content-Length"):
-            remote._download_http(url, dest)
+        remote._download_http(url, dest)
     assert dest.read_bytes() == body
+
+    resp = _FakeResp(200, {"Content-Length": "not-a-number"}, body[:4000])
+    dest.unlink()
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp):
+        with pytest.raises(OSError, match="incomplete FITS download"):
+            remote._download_http(url, dest)
+    assert not dest.exists()
 
 
 def test_short_download_is_not_promoted(tmp_path):
@@ -154,9 +191,9 @@ def test_short_download_is_not_promoted(tmp_path):
     assert not dest.exists()
 
 
-def test_body_without_content_length_promotes_with_warning(tmp_path):
-    """Connection-close framing promotes, but the warning must say so."""
-    body = b"SIMPLE  =" + b"UNCHECKED-BUT-USEFUL" * 16
+def test_complete_body_without_content_length_is_promoted(tmp_path):
+    """Connection-close framing promotes a body that holds every HDU."""
+    body = _fits_image_bytes(extension_rows=40)
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/nolen.fits"
@@ -164,9 +201,165 @@ def test_body_without_content_length_promotes_with_warning(tmp_path):
 
     resp = _FakeResp(200, {}, body)
     with mock.patch("torchfits.data.remote.http_open", return_value=resp):
-        with pytest.warns(RuntimeWarning, match="Content-Length"):
-            remote._download_http(url, dest)
+        remote._download_http(url, dest)
     assert dest.read_bytes() == body
+
+
+def test_complete_body_missing_final_padding_is_promoted(tmp_path):
+    """CFITSIO reads a file whose last data unit lacks its 2880 pad."""
+    body = _fits_image_bytes(600)
+    body = body[: 2880 + 1200]
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/nopad.fits"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+
+    with mock.patch(
+        "torchfits.data.remote.http_open", return_value=_FakeResp(200, {}, body)
+    ):
+        remote._download_http(url, dest)
+    assert dest.read_bytes() == body
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [
+        2000,  # inside the primary header record
+        2880 + 1000,  # inside primary pixel data
+        2 * 2880 + 4,  # inside the "XTENSION=" keyword of the extension
+        2 * 2880 + 2880 + 100,  # inside extension pixel data
+    ],
+)
+def test_truncated_body_without_content_length_is_not_cached(tmp_path, cut):
+    """A connection-close body cut short must never reach the permanent cache."""
+    body = _fits_image_bytes(extension_rows=40)
+    assert len(body) > cut
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/cut.fits"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+
+    with mock.patch(
+        "torchfits.data.remote.http_open",
+        return_value=_FakeResp(200, {"ETag": '"v1"'}, body[:cut]),
+    ):
+        with pytest.raises(OSError, match="incomplete FITS download"):
+            remote.resolve_local_path(url, cache_dir=cache)
+    assert not dest.exists()
+    assert list(cache.glob("*.partial*")) == []
+
+
+@pytest.mark.parametrize("codec", ["gzip", "bz2"])
+def test_truncated_compressed_body_without_content_length_is_not_cached(
+    tmp_path, codec
+):
+    import bz2
+    import gzip
+
+    compress = gzip.compress if codec == "gzip" else bz2.compress
+    packed = compress(_fits_image_bytes(4000, extension_rows=200))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = f"https://example.test/img.fits.{'gz' if codec == 'gzip' else 'bz2'}"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+
+    with mock.patch(
+        "torchfits.data.remote.http_open",
+        return_value=_FakeResp(200, {}, packed[: len(packed) - 6]),
+    ):
+        with pytest.raises(OSError, match="incomplete FITS download"):
+            remote.resolve_local_path(url, cache_dir=cache)
+    assert not dest.exists()
+
+    with mock.patch(
+        "torchfits.data.remote.http_open", return_value=_FakeResp(200, {}, packed)
+    ):
+        local = remote.resolve_local_path(url, cache_dir=cache)
+    assert Path(local).read_bytes() == packed
+
+
+def test_unverifiable_compression_without_content_length_is_not_cached(tmp_path):
+    """Unix compress (.Z) has no end-of-stream check: refuse it unframed."""
+    body = b"\x1f\x9d\x90" + b"z" * 200
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/img.fits.Z"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+    with mock.patch(
+        "torchfits.data.remote.http_open", return_value=_FakeResp(200, {}, body)
+    ):
+        with pytest.raises(OSError, match="cannot be verified"):
+            remote.resolve_local_path(url, cache_dir=cache)
+    assert not dest.exists()
+    framed = _FakeResp(200, {"Content-Length": str(len(body))}, body)
+    with mock.patch("torchfits.data.remote.http_open", return_value=framed):
+        assert (
+            Path(remote.resolve_local_path(url, cache_dir=cache)).read_bytes() == body
+        )
+
+
+def test_truncated_cached_copy_is_dropped_and_refetched(tmp_path):
+    """A truncated file cached by an older release heals on the next resolve."""
+    body = _fits_image_bytes(extension_rows=40)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    url = "https://example.test/poisoned-trunc.fits"
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+    dest.write_bytes(body[: 2880 + 1000])
+    resp = _FakeResp(200, {"Content-Length": str(len(body))}, body)
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp) as fetch:
+        local = remote.resolve_local_path(url, cache_dir=cache)
+    assert fetch.call_count == 1
+    assert Path(local).read_bytes() == body
+    # A complete cached copy is served without contacting the server.
+    with mock.patch("torchfits.data.remote.http_open") as fetch:
+        assert remote.resolve_local_path(url, cache_dir=cache) == local
+    assert fetch.call_count == 0
+
+
+def test_truncated_real_fits_from_loopback_server_is_not_cached(tmp_path, monkeypatch):
+    """End to end over a real HTTP/1.0 connection-close response."""
+    import http.server
+
+    import torch
+
+    import torchfits
+    import torchfits.http_util as hu
+
+    src = tmp_path / "full.fits"
+    torchfits.write(str(src), torch.arange(10000.0).reshape(100, 100), overwrite=True)
+    full = src.read_bytes()
+    state = {"body": full[: 2880 + 10000]}
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):  # noqa: N802 - http.server API
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(hu, "_is_blocked_ip", lambda ip: False)
+    url = f"http://127.0.0.1:{server.server_port}/img.fits"
+    cache = tmp_path / "cache"
+    try:
+        with pytest.raises(OSError, match="incomplete FITS download"):
+            remote.resolve_local_path(url, cache_dir=cache)
+        assert not remote.cache_path_for_url(url, cache_dir=cache).exists()
+        state["body"] = full
+        local = remote.resolve_local_path(url, cache_dir=cache)
+        assert torchfits.read(local).shape == (100, 100)
+        assert len(hits) == 2
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_failed_download_leaves_no_temporaries_without_fcntl(tmp_path, monkeypatch):
@@ -290,12 +483,14 @@ def test_error_page_body_is_not_promoted_to_cache(tmp_path):
     assert list(cache.glob("*.partial*")) == []
 
 
-@pytest.mark.parametrize("magic", [b"SIMPLE  =", b"\x1f\x8b\x08", b"BZh9"])
+@pytest.mark.parametrize("magic", [None, b"\x1f\x8b\x08", b"BZh9"])
 def test_fits_and_compressed_bodies_are_cached(tmp_path, magic):
+    # Length-framed compressed bodies are trusted on their Content-Length;
+    # plain FITS is always walked, so it must be a real file.
     cache = tmp_path / "cache"
     cache.mkdir()
     url = "https://example.test/ok.fits"
-    body = magic + b"x" * 64
+    body = _fits_image_bytes() if magic is None else magic + b"x" * 64
     resp = _FakeResp(200, {"Content-Length": str(len(body))}, body)
     with mock.patch("torchfits.data.remote.http_open", return_value=resp):
         local = remote.resolve_local_path(url, cache_dir=cache)
@@ -310,7 +505,7 @@ def test_previously_poisoned_cache_entry_is_refetched(tmp_path):
     dest = remote.cache_path_for_url(url, cache_dir=cache)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(_HTML)
-    body = b"SIMPLE  =" + b"y" * 64
+    body = _fits_image_bytes()
     resp = _FakeResp(200, {"Content-Length": str(len(body))}, body)
     with mock.patch("torchfits.data.remote.http_open", return_value=resp) as fetch:
         local = remote.resolve_local_path(url, cache_dir=cache)

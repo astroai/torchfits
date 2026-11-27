@@ -10,6 +10,8 @@ vos / vault short forms materialize via the optional ``vos`` client.
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import hashlib
 import importlib
 import json
@@ -19,9 +21,11 @@ import os
 import tempfile
 import urllib.error
 import warnings
+import zipfile
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import IO, Iterable, Iterator
 
 try:
     import fcntl as _fcntl
@@ -163,6 +167,195 @@ def _looks_like_fits_payload(path: Path) -> bool:
     return any(head.startswith(magic) for magic in _FITS_PAYLOAD_MAGIC)
 
 
+_FITS_BLOCK = 2880
+_FITS_CARD = 80
+_ByteStream = IO[bytes] | gzip.GzipFile | bz2.BZ2File
+
+
+class _FitsStructureError(ValueError):
+    """A body that does not hold every HDU its own headers declare."""
+
+
+def _header_int(cards: dict[str, bytes], key: str, default: int | None = None) -> int:
+    raw = cards.get(key)
+    if raw is None:
+        if default is None:
+            raise _FitsStructureError(f"header lacks {key}")
+        return default
+    text = raw.split(b"/", 1)[0].strip()
+    try:
+        return int(text)
+    except ValueError:
+        raise _FitsStructureError(f"header {key} is not an integer: {text!r}") from None
+
+
+def _hdu_data_size(cards: dict[str, bytes], primary: bool) -> int:
+    """Data-unit byte count from BITPIX/NAXISn/PCOUNT/GCOUNT (FITS 4.0 §4.4.1)."""
+    bitpix = _header_int(cards, "BITPIX")
+    naxis = _header_int(cards, "NAXIS")
+    if bitpix not in (8, 16, 32, 64, -32, -64) or not 0 <= naxis <= 999:
+        raise _FitsStructureError(f"invalid BITPIX={bitpix} / NAXIS={naxis}")
+    if naxis == 0:
+        return 0
+    axes = [_header_int(cards, f"NAXIS{i}") for i in range(1, naxis + 1)]
+    if any(n < 0 for n in axes):
+        raise _FitsStructureError(f"negative axis length in {axes}")
+    groups = cards.get("GROUPS", b"").split(b"/", 1)[0].strip() == b"T"
+    if primary and groups and axes[0] == 0:
+        axes = axes[1:]  # random groups: NAXIS1 = 0 is not a real axis
+    count = 1
+    for n in axes:
+        count *= n
+    pcount = _header_int(cards, "PCOUNT", 0)
+    gcount = _header_int(cards, "GCOUNT", 1)
+    return abs(bitpix) // 8 * gcount * (pcount + count)
+
+
+def _skip_bytes(handle: _ByteStream, n: int, size: int | None) -> int:
+    """Advance *n* bytes; return how many were actually there."""
+    if n <= 0:
+        return 0
+    if size is not None:
+        pos = handle.tell()
+        got = max(0, min(n, size - pos))
+        handle.seek(pos + got)
+        return got
+    got = 0
+    while got < n:
+        chunk = handle.read(min(n - got, 1 << 20))
+        if not chunk:
+            break
+        got += len(chunk)
+    return got
+
+
+def _walk_fits_hdus(handle: _ByteStream, size: int | None) -> None:
+    """Check that *handle* covers every HDU its headers declare.
+
+    Header blocks are read up to each ``END`` card and each data unit is
+    sized from the header; a body that ends inside a header or a data unit
+    raises :class:`_FitsStructureError`. A missing final 2880-byte pad is
+    tolerated (CFITSIO reads such files), and bytes after the last HDU that
+    do not start an ``XTENSION`` header are ignored as trailing junk.
+    *size* is the byte length for seekable files, ``None`` for streams.
+    """
+    index = 0
+    while True:
+        block = handle.read(_FITS_BLOCK)
+        if index == 0:
+            if not block.startswith(b"SIMPLE  ="):
+                raise _FitsStructureError("no primary header")
+        elif not block or not b"XTENSION=".startswith(block[:9]):
+            return
+        cards: dict[str, bytes] = {}
+        found_end = False
+        while not found_end:
+            for off in range(0, len(block) - _FITS_CARD + 1, _FITS_CARD):
+                card = block[off : off + _FITS_CARD]
+                key = card[:8].rstrip().decode("ascii", "replace")
+                if key == "END":
+                    found_end = True
+                    break
+                if card[8:10] == b"= " and key not in cards:
+                    cards[key] = card[10:]
+            if found_end:
+                break
+            if len(block) < _FITS_BLOCK:
+                raise _FitsStructureError(f"HDU {index}: header ends before END card")
+            block = handle.read(_FITS_BLOCK)
+        if len(block) < _FITS_BLOCK:
+            # CFITSIO refuses a header whose last 2880-byte record is short,
+            # even when the END card itself arrived.
+            raise _FitsStructureError(f"HDU {index}: header record truncated")
+        data_size = _hdu_data_size(cards, index == 0)
+        got = _skip_bytes(handle, data_size, size)
+        if got < data_size:
+            raise _FitsStructureError(
+                f"HDU {index}: data truncated ({got} of {data_size} bytes)"
+            )
+        _skip_bytes(handle, -data_size % _FITS_BLOCK, size)
+        index += 1
+
+
+def _verify_fits_payload(path: Path, *, framed: bool) -> None:
+    """Raise :class:`_FitsStructureError` unless *path* is a complete payload.
+
+    A plain FITS body is always walked (a header-only scan with seeks). A
+    compressed body is decompressed and walked only when the transfer had
+    no length framing (*framed* false): a gzip/bzip2/pkzip stream that ends
+    early fails its end-of-stream / CRC check; Unix ``compress`` and
+    ``pack`` carry no such check and are refused as unverifiable.
+    """
+    with open(path, "rb") as handle:
+        head = handle.read(9)
+        if head.startswith(b"SIMPLE  ="):
+            handle.seek(0)
+            _walk_fits_hdus(handle, os.fstat(handle.fileno()).st_size)
+            return
+    if framed:
+        return
+    try:
+        if head.startswith(b"\x1f\x8b") or head.startswith(b"BZh"):
+            opener = gzip.open if head.startswith(b"\x1f\x8b") else bz2.open
+            with opener(path, "rb") as stream:
+                _walk_fits_hdus(stream, None)
+                while stream.read(1 << 20):
+                    pass
+            return
+        if head.startswith(b"PK\x03\x04"):
+            with zipfile.ZipFile(path) as archive:
+                members = archive.infolist()
+                if not members:
+                    raise _FitsStructureError("empty zip archive")
+                with archive.open(members[0]) as stream:
+                    _walk_fits_hdus(stream, None)
+                    while stream.read(1 << 20):
+                        pass
+            return
+    except (EOFError, OSError, zlib.error, zipfile.BadZipFile) as exc:
+        raise _FitsStructureError(
+            f"compressed stream is incomplete or corrupt ({exc})"
+        ) from exc
+    raise _FitsStructureError(
+        "compression format carries no integrity check, so a body without "
+        "Content-Length cannot be verified"
+    )
+
+
+# Cached files already checked by _cached_copy_is_complete, keyed by path
+# with the (size, mtime_ns) they had then, so the header walk runs once.
+_verified_cache_files: dict[str, tuple[int, int]] = {}
+
+
+def _cached_copy_is_complete(dest: Path) -> bool:
+    """Cheap re-check of an existing cache entry (plain FITS header walk).
+
+    Compressed entries are only checked for their magic: decompressing on
+    every resolve would cost a full read of the file.
+    """
+    try:
+        stat = dest.stat()
+    except OSError:
+        return False
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    key = str(dest)
+    with _prefetch_lock:
+        if _verified_cache_files.get(key) == stamp:
+            return True
+    if not _looks_like_fits_payload(dest):
+        return False
+    try:
+        _verify_fits_payload(dest, framed=True)
+    except _FitsStructureError as exc:
+        _log.warning("cached copy %s is incomplete: %s", dest, exc)
+        return False
+    except OSError:
+        return False
+    with _prefetch_lock:
+        _verified_cache_files[key] = stamp
+    return True
+
+
 def _download_http(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = _partial_path_for(dest)
@@ -238,15 +431,11 @@ def _download_http(url: str, dest: Path) -> Path:
             transfer_encoding = (
                 response.headers.get("Transfer-Encoding") or ""
             ).lower()
-            if expected is None and "chunked" not in transfer_encoding and wrote > 0:
-                # Connection-close framing: clean EOF is indistinguishable
-                # from a dropped connection mid-body. Promote, but say so.
-                warnings.warn(
-                    f"{url}: server sent no usable Content-Length; the cached "
-                    "copy's completeness could not be verified",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            # Connection-close framing (no usable Content-Length, not
+            # chunked): a clean EOF is indistinguishable from a connection
+            # dropped mid-body, so completeness is checked from the payload
+            # itself before promotion below.
+            framed = expected is not None or "chunked" in transfer_encoding
             if expected is not None and wrote != expected:
                 try:
                     tmp.unlink(missing_ok=True)
@@ -286,6 +475,18 @@ def _download_http(url: str, dest: Path) -> Path:
                 f"{url}: response is not a FITS file (no 'SIMPLE  =' header "
                 "or gzip/bzip2 signature); not cached"
             )
+        try:
+            _verify_fits_payload(tmp, framed=framed)
+        except _FitsStructureError as exc:
+            # A truncated body promoted here would be trusted forever and
+            # fail every later read (CFITSIO status 108) without the server
+            # ever being asked again.
+            tmp.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise OSError(
+                f"{url}: incomplete FITS download ({exc}); not cached"
+                + ("" if framed else " (server sent no usable Content-Length)")
+            ) from exc
         tmp.replace(dest)
         try:
             meta_path.unlink(missing_ok=True)
@@ -381,10 +582,15 @@ def resolve_local_path(
     cache_key = normalize_vos_uri(path) if is_vos_path(path) else path
     dest = cache_path_for_url(cache_key, cache_dir=cache_dir)
     if dest.is_file():
-        if is_http_url(path) and not _looks_like_fits_payload(dest):
-            # Poisoned by an earlier release that cached any 200 body: drop
-            # it and fetch again instead of failing on it forever.
-            _log.warning("discarding non-FITS cached copy of %s at %s", path, dest)
+        if is_http_url(path) and not _cached_copy_is_complete(dest):
+            # Poisoned by an earlier release that cached any 200 body, or a
+            # truncated connection-close body: drop it and fetch again
+            # instead of failing on it forever.
+            _log.warning(
+                "discarding non-FITS or incomplete cached copy of %s at %s",
+                path,
+                dest,
+            )
             dest.unlink(missing_ok=True)
         else:
             _cleanup_cache_key(cache_key)
