@@ -365,6 +365,45 @@ _BINTABLE_CELL_BYTES = {
 }
 
 
+def _table_column_spans(
+    header_map: dict[str, Any],
+) -> dict[str, tuple[int, int]] | None:
+    """``{name: (byte offset, byte width)}`` of each column in a stored row.
+
+    Binary-table cells follow one another in TFORM order (a variable-length
+    column holds its descriptor); ASCII-table fields sit at ``TBCOLn``.
+    ``None`` when a column's width cannot be told from its TFORM.
+    """
+    import re
+
+    from .. import fits_schema
+
+    ascii_table = str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+    out: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for col in fits_schema.iter_table_columns(header_map):
+        info = col.tform_info
+        if ascii_table:
+            tbcol = header_map.get(f"TBCOL{col.index}")
+            match = re.match(r"^[A-Z]\s*(\d+)", str(col.tform).strip().upper())
+            if tbcol is None or match is None:
+                return None
+            out[col.name] = (int(tbcol) - 1, int(match.group(1)))
+            continue
+        code = info.code or ""
+        if info.vla:
+            width = _BINTABLE_CELL_BYTES[info.vla_descriptor or "P"]
+        elif code == "X":
+            width = (info.repeat + 7) // 8
+        elif code in _BINTABLE_CELL_BYTES:
+            width = info.repeat * _BINTABLE_CELL_BYTES[code]
+        else:
+            return None
+        out[col.name] = (offset, width)
+        offset += width
+    return out
+
+
 def _scaled_columns_as_stored(
     path: str, hdu: int, header_map: dict[str, Any]
 ) -> dict[str, Any]:

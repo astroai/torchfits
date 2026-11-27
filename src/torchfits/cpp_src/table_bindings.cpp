@@ -29,7 +29,6 @@
 #include "table_types.h"
 #include "table_reader.h"
 #include "table_ops.h"
-#include "nb_ndarray_utils.h"
 
 namespace nb = nanobind;
 namespace native = torchfits::native;
@@ -690,12 +689,17 @@ void bind_table(nb::module_& m) {
             new (self) TableStreamWriter(filename, hdu_num);
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("write_rows", &TableStreamWriter::write_rows, nb::arg("tensor_dict"))
-        .def("write_raw_rows", [](TableStreamWriter& self, nb::ndarray<> rows) {
+        .def("write_raw_rows", [](TableStreamWriter& self, nb::object rows_obj) {
             StreamWriterBusy busy(self);
+            // Read-only input is fine (np.frombuffer views); taking an object
+            // keeps the generated stub a plain annotation.
+            nb::ndarray<nb::ro> rows = nb::cast<nb::ndarray<nb::ro>>(rows_obj);
             const nb::dlpack::dtype dt = rows.dtype();
-            if (rows.device_type() != nb::device::cpu::value || rows.ndim() != 2 ||
-                dt.code != (uint8_t)nb::dlpack::dtype_code::UInt || dt.bits != 8 ||
-                !torchfits::internal::ndarray_is_c_contiguous(rows)) {
+            const bool c_contig = rows.ndim() == 2 &&
+                (rows.shape(0) <= 1 || rows.stride(0) == static_cast<int64_t>(rows.shape(1))) &&
+                (rows.shape(1) <= 1 || rows.stride(1) == 1);
+            if (rows.device_type() != nb::device::cpu::value || !c_contig ||
+                dt.code != (uint8_t)nb::dlpack::dtype_code::UInt || dt.bits != 8) {
                 throw std::invalid_argument(
                     "write_raw_rows expects a C-contiguous 2-D uint8 CPU array");
             }
