@@ -283,6 +283,11 @@ torchfits convert catalog.fits -o catalog.csv -e 1 -c RA,DEC,MAG_G
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "MAG_G < 19.5 AND DEC > 0" -c RA,DEC,MAG_G
 ```
 
+`--to fits` (or a `.fits` OUTPUT) copies the table HDU in its stored form:
+column formats (`TFORMn`), `TSCALn`/`TZEROn`, `TNULLn` sentinels, `TDIMn`,
+`TUNITn` and other per-column cards (renumbered for `--columns`), `EXTNAME`,
+and the HDU's other non-structural keywords are kept.
+
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
 HDU stays an I/O error (exit `3`).

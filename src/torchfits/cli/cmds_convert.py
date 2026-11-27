@@ -9,7 +9,14 @@ from typing import Any
 
 import torchfits
 
-from .common import EXIT_OK, IoError, UsageError, add_hdu_arg, reject_same_path
+from .common import (
+    EXIT_OK,
+    IoError,
+    UsageError,
+    add_hdu_arg,
+    reject_same_path,
+    staged_output,
+)
 
 _TABLE_FORMATS = ("parquet", "csv", "tsv", "arrow", "fits")
 _ALL_FORMATS = (*_TABLE_FORMATS, "png")
@@ -234,18 +241,100 @@ def _ab_zeropoint_from_header(path: str, hdu: int) -> float:
     )
 
 
-def _arrow_to_column_dict(table: Any) -> dict[str, Any]:
-    """Materialize an Arrow table as a dict of NumPy columns for FITS write."""
+def _select_rows(values: Any, rows: Any) -> Any:
+    """Rows ``rows`` (an int index array) of one rewrite column."""
     import numpy as np
 
-    out: dict[str, Any] = {}
-    for name in table.column_names:
-        col = table[name]
+    if isinstance(values, list):
+        return [values[int(i)] for i in rows]
+    return np.ascontiguousarray(np.asarray(values)[rows])
+
+
+def _where_row_indices(path: str, hdu: int, where: str) -> Any:
+    """Indices of the rows ``where`` selects (same predicate as table.read)."""
+    import numpy as np
+
+    from torchfits import table as tf_table
+    from torchfits._table._read_where import _where_mask_for_table
+    from torchfits._where import parse_where_expression, where_columns_from_ast
+
+    ast = parse_where_expression(where)
+    referenced = sorted(set(where_columns_from_ast(ast)))
+    predicate_table = tf_table.read(path, hdu=hdu, columns=referenced or None)
+    mask = _where_mask_for_table(predicate_table, where, parsed_ast=ast)
+    flags: Any = mask
+    return np.flatnonzero(np.asarray(flags.to_numpy(zero_copy_only=False), dtype=bool))
+
+
+def _convert_table_to_fits(
+    path: str, output: str, hdu: int, columns: list[str] | None, where: str | None
+) -> None:
+    """FITS table -> FITS table, keeping the column layout and metadata.
+
+    Columns are copied in their stored form (TFORM, TSCAL/TZERO, TNULL
+    sentinels, TDIM, unsigned conventions) with their TUNIT and other
+    per-column cards renumbered for a ``--columns`` projection; EXTNAME and
+    the other non-structural keywords of the source HDU are carried over.
+    """
+    import numpy as np
+
+    from torchfits.io import _write_header_cards_if_supported
+    from torchfits._table._mutation_coerce import _read_table_for_rewrite
+    from torchfits._table.write import (
+        _extract_table_schema_from_header,
+        _resolve_table_hdu_index_and_columns,
+        _rewrite_table_header,
+        _scaled_columns_as_stored,
+        write,
+    )
+
+    target_hdu, header_map, all_columns, _ = _resolve_table_hdu_index_and_columns(
+        path, hdu
+    )
+    if columns is None:
+        selected = list(all_columns)
+    else:
+        missing = [name for name in columns if name not in all_columns]
+        if missing:
+            raise UsageError(f"--columns: unknown column(s): {', '.join(missing)}")
+        selected = list(dict.fromkeys(columns))
+    rows = None
+    if where:
         try:
-            out[name] = col.to_numpy(zero_copy_only=False)
-        except Exception:
-            out[name] = np.asarray(col.to_pylist(), dtype=object)
-    return out
+            rows = _where_row_indices(path, target_hdu, where)
+        except (KeyError, ValueError) as exc:
+            detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+            raise UsageError(f"--where: {detail}") from exc
+
+    data = _read_table_for_rewrite(path, target_hdu, selected)
+    stored = _scaled_columns_as_stored(path, target_hdu, header_map)
+    data.update({name: stored[name] for name in selected if name in stored})
+    if rows is not None:
+        data = {name: _select_rows(values, rows) for name, values in data.items()}
+    schema = _extract_table_schema_from_header(header_map, selected)
+    for name in selected:
+        if isinstance(data[name], list) and not data[name]:
+            fmt = str(schema.get(name, {}).get("format", "")).upper()
+            if "A" in fmt and "P" not in fmt and "Q" not in fmt:
+                # The native writer cannot type an empty list of strings.
+                data[name] = np.array([], dtype="S1")
+    header = _rewrite_table_header(path, target_hdu, header_map, selected)
+    table_type = (
+        "ascii"
+        if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+        else "binary"
+    )
+    with staged_output(output) as temp_path:
+        write(
+            temp_path,
+            {name: data[name] for name in selected},
+            schema=schema,
+            overwrite=True,
+            table_type=table_type,
+        )
+        # Card by card, as the in-place column rewrites do: keeps every
+        # HISTORY/COMMENT line and typed values.
+        _write_header_cards_if_supported(temp_path, 1, header)
 
 
 def _convert_table(args: argparse.Namespace, fmt: str) -> int:
@@ -269,8 +358,11 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     hdu = 1 if args.hdu is None else args.hdu
     columns = _parse_columns(args.columns)
     where = args.where
-    if where or columns or fmt == "fits":
-        # Filter / column-select / FITS out: materialize via table.read.
+    if fmt == "fits":
+        _convert_table_to_fits(path, args.output, hdu, columns, where)
+        return EXIT_OK
+    if where or columns:
+        # Filter / column-select: materialize via table.read.
         if columns or where:
             # A bad --columns / --where is a usage error (exit 2). Reading the
             # schema first keeps an unreadable file or HDU an I/O error (3).
@@ -296,8 +388,6 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
             tf_table.write_csv(args.output, arrow, delimiter="\t")
         elif fmt == "arrow":
             tf_table.write_ipc(args.output, arrow)
-        elif fmt == "fits":
-            tf_table.write(args.output, _arrow_to_column_dict(arrow), overwrite=True)
         else:
             raise UsageError(f"unsupported table format: {fmt}")
         return EXIT_OK
