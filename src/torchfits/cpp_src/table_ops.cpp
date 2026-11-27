@@ -159,6 +159,32 @@ int resolve_column_number(fitsfile* fptr, const std::string& name, int* status) 
     return 0;
 }
 
+// append_rows / insert_rows pass None for a column the caller omitted that
+// has an undefined value (an integer column with TNULLn, or a float column).
+// fits_write_col_null stores that value as-is: TNULL is a stored value, and
+// writing it as data applied TZERO / TSCAL to it (TZERO = 5, TNULL = 7 stored
+// 2, which reads back as the valid 7.0 instead of null). Returns the number
+// of elements to null, or throws when the column has no undefined value.
+long null_fill_elements(fitsfile* fptr, int colnum, int typecode, long repeat,
+                        long num_rows, const std::string& col_name) {
+    if (typecode < 0 || typecode == TSTRING || typecode == TBIT || typecode == TLOGICAL) {
+        throw std::runtime_error("No undefined value to fill column " + col_name);
+    }
+    if (typecode != TFLOAT && typecode != TDOUBLE && typecode != TCOMPLEX &&
+        typecode != TDBLCOMPLEX) {
+        char keyname[FLEN_KEYWORD];
+        LONGLONG tnull = 0;
+        int kst = 0;
+        fits_make_keyn("TNULL", colnum, keyname, &kst);
+        fits_read_key(fptr, TLONGLONG, keyname, &tnull, nullptr, &kst);
+        if (kst != 0) {
+            fits_clear_errmsg();
+            throw std::runtime_error("No TNULL to fill column " + col_name);
+        }
+    }
+    return num_rows * (repeat > 0 ? repeat : 1);
+}
+
 }  // namespace
 
 
@@ -216,7 +242,18 @@ long infer_num_rows_from_payload(nb::dict tensor_dict) {
         return 0;
     }
 
-    nb::handle first_obj = (*tensor_dict.begin()).second;
+    // None marks an omitted column to fill with its undefined value; the
+    // row count comes from the first real payload.
+    nb::handle first_obj;
+    for (auto item : tensor_dict) {
+        if (!item.second.is_none()) {
+            first_obj = item.second;
+            break;
+        }
+    }
+    if (!first_obj.is_valid()) {
+        return 0;
+    }
     if (nb::isinstance<nb::list>(first_obj)) {
         nb::list lst = nb::cast<nb::list>(first_obj);
         return static_cast<long>(lst.size());
@@ -294,6 +331,18 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         if (col_status != 0) {
             rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Failed to get column type for append_rows: " + col_name);
+        }
+
+        if (item.second.is_none()) {
+            long nnull = 0;
+            try {
+                nnull = null_fill_elements(fptr, colnum, typecode, repeat, num_rows, col_name);
+            } catch (...) {
+                rollback_inserted_rows(fptr, start_row, num_rows);
+                throw;
+            }
+            fits_write_col_null(fptr, colnum, start_row, 1, nnull, &status);
+            continue;
         }
 
         if (typecode < 0) {
@@ -770,6 +819,7 @@ struct PlannedColumn {
     std::vector<nb::ndarray<>> sources;
     std::vector<std::string> strings;
     bool is_string = false;
+    bool is_null = false;  // fill with the column's undefined value
 };
 
 }  // namespace
@@ -802,6 +852,16 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         fits_get_coltype(fptr, colnum, &typecode, &repeat, &width, &col_status);
         if (col_status != 0) {
             throw std::runtime_error("Failed to get column type for update_rows: " + col_name);
+        }
+
+        if (item.second.is_none()) {
+            col.is_null = true;
+            col.writes.push_back({typecode, colnum, start_row,
+                                  null_fill_elements(fptr, colnum, typecode, repeat,
+                                                     num_rows, col_name),
+                                  nullptr});
+            plan.push_back(std::move(col));
+            continue;
         }
 
         if (typecode < 0) {
@@ -1189,6 +1249,12 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             const PlannedWrite& w = col.writes[0];
             torchfits::write_string_rows(fptr, w.colnum, w.first_row, col.strings,
                                          &commit_status);
+            continue;
+        }
+        if (col.is_null) {
+            const PlannedWrite& w = col.writes[0];
+            fits_write_col_null(fptr, w.colnum, w.first_row, 1, w.nelements,
+                                &commit_status);
             continue;
         }
         for (const PlannedWrite& w : col.writes) {

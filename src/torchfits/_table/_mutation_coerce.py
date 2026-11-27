@@ -351,6 +351,25 @@ def _check_numeric_coercion(
         )
 
 
+def _fills_as_undefined(tform: str, tnull: Any) -> bool:
+    """Whether an omitted binary-table column is filled with its undefined value.
+
+    Integer columns have one only with a ``TNULL`` card; floating-point and
+    complex columns use NaN.
+    """
+    if not tform:
+        return False
+    try:
+        is_vla, code, _repeat = _parse_tform(tform)
+    except Exception:
+        return False
+    if is_vla:
+        return False
+    if code in {"E", "D", "C", "M"}:
+        return True
+    return code in {"B", "I", "J", "K"} and tnull is not None
+
+
 def _normalize_mutation_rows(
     rows: dict[str, Any],
     columns: list[str],
@@ -360,6 +379,7 @@ def _normalize_mutation_rows(
     allow_partial: bool,
     unsigned_dtypes: Optional[dict[str, str]] = None,
     scaling: Optional[dict[str, tuple[float, float]]] = None,
+    binary_table: bool = False,
 ) -> tuple[dict[str, Any], int]:
     rows_by_name = {str(k): v for k, v in rows.items()}
     input_columns = set(rows_by_name)
@@ -455,6 +475,12 @@ def _normalize_mutation_rows(
 
     for col_name in deferred_defaults:
         tform = tform_map.get(col_name, "")
+        if binary_table and _fills_as_undefined(tform, tnull_map.get(col_name)):
+            # The native writer stores the column's undefined value as-is
+            # (TNULL for integers, NaN for floats). Handing it TNULL as data
+            # applied TSCAL/TZERO to it, so the row did not read back null.
+            normalized[col_name] = None
+            continue
         default_value = _default_table_column_values(
             col_name,
             tform,

@@ -437,6 +437,12 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 `row_slice` is a `slice` or `(start, stop)` tuple (0-based Python style for
 update/delete). `insert_rows` requires keyword `row=` (0-based insert index).
 
+`append_rows` / `insert_rows` accept a subset of the columns. On a binary
+table an omitted column is filled with its undefined value: `TNULL` for an
+integer column that has one (stored as-is, so it reads back as null whatever
+its `TSCAL` / `TZERO`), NaN for a floating-point or complex column. Other
+omitted columns get zeros (blank strings, empty variable-length arrays).
+
 `update_rows`, `append_rows` and `insert_rows` raise `ValueError`, before
 writing anything, when a value does not fit an integer column (for example
 `70000` into a `uint16` column, or `2.0**40` into an `int32` one). Float values

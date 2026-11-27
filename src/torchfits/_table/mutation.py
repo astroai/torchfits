@@ -52,6 +52,10 @@ def _unnamed_column_names(header_map: dict[str, Any]) -> frozenset[str]:
     return frozenset(names[i] for i in _unnamed_column_indices(header_map))
 
 
+def _is_binary_table(header_map: dict[str, Any]) -> bool:
+    return str(header_map.get("XTENSION", "")).strip().upper() != "TABLE"
+
+
 def insert_column(
     path: str,
     name: str,
@@ -287,6 +291,7 @@ def append_rows(
         allow_partial=True,
         unsigned_dtypes=unsigned,
         scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
@@ -332,6 +337,7 @@ def insert_rows(
         allow_partial=True,
         unsigned_dtypes=unsigned,
         scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
