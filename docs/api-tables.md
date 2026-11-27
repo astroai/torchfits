@@ -222,8 +222,9 @@ for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
 
 ## `table.scan_torch()`
 
-Stream row chunks as `dict[str, torch.Tensor]`. No `where=` — filter with
-`table.scan(..., where=...)` or mask batches yourself.
+Stream row chunks as `dict[str, torch.Tensor]`. With `where=`, each
+`batch_size` window is read once and only its matching rows are yielded;
+windows with no match are skipped.
 
 ```python
 torchfits.table.scan_torch(
@@ -236,10 +237,18 @@ torchfits.table.scan_torch(
     device="cpu",
     non_blocking=True,
     pin_memory=False,
+    *,
+    where=None,
 )
 ```
 
 **Yields:** `dict[str, torch.Tensor]`
+
+`where=` (keyword-only) takes the full `table.read` dialect and its defaults
+(a `TNULL` cell never matches; character columns compare as strict ASCII). It
+only selects rows: a yielded row has exactly the representation an unfiltered
+`scan_torch` gives it (stored `TNULL` sentinels, `uint8` character bytes).
+A malformed predicate raises `ValueError` at the call.
 
 ```python
 for batch in torchfits.table.scan_torch("survey.fits", hdu=1, batch_size=10000):
@@ -336,10 +345,23 @@ Pass `where=` to keep matching rows.
 
 | Call | Dialect | How it filters |
 |---|---|---|
-| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection) and PyTorch is already imported; otherwise read then Arrow filter. `where=` never imports PyTorch itself |
+| `table.read` / `table.scan` / `table.scan_torch` | Full (see operators below) | Native filtered scan when eligible (see below); otherwise read then Arrow filter. Arrow `where=` reads never import PyTorch |
 | `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns, then torch mask. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
 
 Root `torchfits.read()` has no `where=` parameter.
+
+**Native filtered scan.** A predicate that is a conjunction (`AND`,
+`BETWEEN`) of comparisons between a scalar numeric column (`B`/`I`/`J`/`K`/
+`E`/`D`, including the unsigned and signed-byte `TZERO` conventions) and a
+finite number is evaluated by the C++ mmap scan, which returns the selected
+rows as raw NumPy/Arrow-ready buffers without importing PyTorch. It applies
+inside the requested window (`row_slice=`, and each `table.scan` /
+`scan_torch` batch window), so every window is read once and only its
+matching rows are gathered. It needs `mmap=True` (or `backend="cpp"`), an
+uncompressed local binary table, and a projection without VLA or scaled
+(`TSCAL`/`TZERO`) columns. Anything else -- string, logical or vector
+predicates, `OR` / `IN` / `NOT` / `IS NULL`, `rows=`, `mmap=False` -- uses
+the Arrow evaluator; both give the same rows and values.
 
 **Operators on `table.read` / `table.scan`:**
 
@@ -399,7 +421,7 @@ Root `torchfits.read()` has no `where=` parameter.
 
 | Value | Behavior |
 |---|---|
-| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable, the projection has no VLA columns, and PyTorch is already imported; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
+| `"auto"` (default) | With `where=` and `mmap=True`, the native filtered scan when eligible (see Row filters), otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
 | `"cpp"` | Prefer C++ column / pushdown paths when safe |
 | `"torch"` | Chunked path via `table.scan_torch` |
 

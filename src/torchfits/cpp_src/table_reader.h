@@ -1560,10 +1560,14 @@ public:
         return ordered;
     }
 
-    // Filtered reading
+    // Filtered reading over the row window [start_row, start_row + num_rows)
+    // (1-based; num_rows = -1 means through the last row). The predicate is
+    // evaluated only inside the window, so a windowed scan maps and compares
+    // just its own rows; a window past the end clamps to the table.
     std::vector<std::pair<std::string, native::Tensor>> read_columns_mmap_filtered(
         const std::vector<std::string>& column_names,
-        const std::vector<TableFilter>& filters) {
+        const std::vector<TableFilter>& filters,
+        long start_row = 1, long num_rows = -1) {
 
         ensure_table_hdu();
         if (filters.empty()) {
@@ -1604,7 +1608,20 @@ public:
         if (status) throw std::runtime_error("Failed to get HDU address");
 
         uint8_t* data_ptr = base_ptr + data_start;
-        ensure_extent_within_file(sb.st_size, data_start, 0, nrows_);
+        if (start_row < 1) {
+            throw std::runtime_error(
+                "Invalid start row: " + std::to_string(start_row));
+        }
+        if (num_rows < -1) {
+            throw std::runtime_error(
+                "Invalid table row count: " + std::to_string(num_rows));
+        }
+        // Absolute 0-based row range [row_begin, row_end) of the window.
+        const long row_begin = std::min<long>(start_row - 1, nrows_);
+        const long row_end = (num_rows == -1 || num_rows > nrows_ - row_begin)
+            ? nrows_
+            : row_begin + num_rows;
+        ensure_extent_within_file(sb.st_size, data_start, row_begin, row_end - row_begin);
 
         // Resolve filter columns
         struct FilterContext {
@@ -1767,13 +1784,60 @@ public:
             if (!found) throw std::runtime_error("Filter column not found: " + f.col_name);
         }
 
+        // Resolve the output columns before scanning, so an unsupported one
+        // fails before the predicate pass rather than after it.
+        std::vector<int> out_col_indices;
+        if (column_names.empty()) {
+            for(int i=0; i<ncols_; ++i) out_col_indices.push_back(i);
+        } else {
+             for(const auto& name : column_names) {
+                 bool found = false;
+                 for(int i=0; i<ncols_; ++i) {
+                     if(columns_[i].name == name) {
+                         // Repeats resolve once: the assembly loop moves each
+                         // entry out (moved-from tensor on a duplicated index).
+                         if (std::find(out_col_indices.begin(), out_col_indices.end(), i) == out_col_indices.end()) {
+                             out_col_indices.push_back(i);
+                         }
+                         found = true;
+                         break;
+                     }
+                 }
+                 // Unknown output columns fail loudly here too — a silent
+                 // skip returns wrong-shaped data for a non-empty request.
+                 if (!found) throw std::runtime_error("Column not found: " + name);
+             }
+        }
+
+        // Resolve TSCAL/TZERO for gathered columns: the unsigned-int post-pass
+        // below relies on unsigned_offset being populated, and scaled (non-
+        // unsigned) columns cannot be gathered from raw storage bytes.
+        for (int col_idx : out_col_indices) {
+            ensure_column_scale(col_idx);
+            const auto& col = columns_[col_idx];
+            if (col.scaled && !col.is_unsigned_int) {
+                throw std::runtime_error(
+                    "Scaled columns not supported for mmap filtered reads: " + col.name);
+            }
+            // A VLA column has no fixed cell to gather; dropping it from the
+            // result would hand back fewer columns than were asked for.
+            if (col.type == FITSColumnType::VARIABLE) {
+                throw std::runtime_error(
+                    "VLA columns not supported for mmap filtered reads: " + col.name);
+            }
+        }
+
         // Hints: sequential access pattern for kernel prefetch
 #if defined(POSIX_MADV_SEQUENTIAL)
-        {
-            const uint64_t hint_len =
-                static_cast<uint64_t>(nrows_) * static_cast<uint64_t>(row_width_bytes_);
+        if (row_end > row_begin) {
+            const uint64_t hint_len = static_cast<uint64_t>(row_end - row_begin) *
+                                      static_cast<uint64_t>(row_width_bytes_);
             const size_t byte_len = hint_len > SIZE_MAX ? SIZE_MAX : static_cast<size_t>(hint_len);
-            posix_madvise(const_cast<uint8_t*>(data_ptr), byte_len, POSIX_MADV_SEQUENTIAL);
+            posix_madvise(
+                const_cast<uint8_t*>(
+                    data_ptr + static_cast<size_t>(row_begin) *
+                                   static_cast<size_t>(row_width_bytes_)),
+                byte_len, POSIX_MADV_SEQUENTIAL);
         }
 #endif
 
@@ -1808,7 +1872,7 @@ public:
                 return t;
             }();
 
-            valid_indices.reserve(nrows_);
+            valid_indices.reserve(row_end - row_begin);
 
             // Scan body. Called exactly once, sequentially, over the whole row
             // range -- see the call site below for why a parallel chunk + merge
@@ -1997,12 +2061,12 @@ public:
 
             // Sequential scan: parallel chunk + mutex merge + sort loses on
             // typical predicate widths vs a single pass (no N threshold).
-            scan_chunk(0, nrows_, valid_indices);
+            scan_chunk(row_begin, row_end, valid_indices);
         } else {
             // Multi-filter fallback (single-threaded, uncommon case)
             std::vector<long> local;
-            local.reserve(nrows_);
-            for (long i = 0; i < nrows_; i++) {
+            local.reserve(row_end - row_begin);
+            for (long i = row_begin; i < row_end; i++) {
                 uint8_t* row_ptr = data_ptr + i * row_width_bytes_;
                 bool row_match = true;
                 for (const auto& ctx : ctxs) {
@@ -2091,44 +2155,8 @@ public:
         std::unordered_map<int, native::Tensor> result;
         long num_valid = valid_indices.size();
 
-        std::vector<int> out_col_indices;
-        if (column_names.empty()) {
-            for(int i=0; i<ncols_; ++i) out_col_indices.push_back(i);
-        } else {
-             for(const auto& name : column_names) {
-                 bool found = false;
-                 for(int i=0; i<ncols_; ++i) {
-                     if(columns_[i].name == name) {
-                         // Repeats resolve once: the assembly loop moves each
-                         // entry out (moved-from tensor on a duplicated index).
-                         if (std::find(out_col_indices.begin(), out_col_indices.end(), i) == out_col_indices.end()) {
-                             out_col_indices.push_back(i);
-                         }
-                         found = true;
-                         break;
-                     }
-                 }
-                 // Unknown output columns fail loudly here too — a silent
-                 // skip returns wrong-shaped data for a non-empty request.
-                 if (!found) throw std::runtime_error("Column not found: " + name);
-             }
-        }
-
-        // Resolve TSCAL/TZERO for gathered columns: the unsigned-int post-pass
-        // below relies on unsigned_offset being populated, and scaled (non-
-        // unsigned) columns cannot be gathered from raw storage bytes.
-        for (int col_idx : out_col_indices) {
-            ensure_column_scale(col_idx);
-            const auto& col = columns_[col_idx];
-            if (col.scaled && !col.is_unsigned_int) {
-                throw std::runtime_error(
-                    "Scaled columns not supported for mmap filtered reads: " + col.name);
-            }
-        }
-
         for (int col_idx : out_col_indices) {
             const auto& col = columns_[col_idx];
-            if (col.type == FITSColumnType::VARIABLE) continue; // Skip VLA for now
 
             // Allocate output tensor
             std::vector<int64_t> shape;
@@ -2175,13 +2203,18 @@ public:
 
             // LOGICAL: storage is ASCII 'T'/'F' — raw memcpy into a bool tensor
             // would decode both as true (both nonzero).
+            // Every element of a vector cell (rL), as read_columns_mmap does.
             if (col.type == FITSColumnType::LOGICAL) {
                 bool* out_bool = static_cast<bool*>(out_tensor.data_ptr());
+                const long repeat = std::max(1L, (long)col.repeat);
                 native::parallel_for(0, num_valid, 2048, [&](long start, long end) {
                     for (long k = start; k < end; k++) {
                         const uint8_t* src =
                             data_ptr + valid_indices[k] * row_width_bytes_ + col.byte_offset;
-                        out_bool[k] = (src[0] == 'T' || src[0] == '1' || src[0] == 1);
+                        bool* row_out = out_bool + k * repeat;
+                        for (long j = 0; j < repeat; j++) {
+                            row_out[j] = (src[j] == 'T' || src[j] == '1' || src[j] == 1);
+                        }
                     }
                 });
                 result[col_idx] = out_tensor;

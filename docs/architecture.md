@@ -194,19 +194,26 @@ Activated when `mmap=True` and the table layout permits it.
 - **`table.read_torch(..., where=)`:** simple compare / `BETWEEN` / `AND` only.
   Reads projected columns, then applies a torch mask. Unsupported expressions
   raise `ValueError`.
-- **`table.read` / `table.scan` (`where=`):** full dialect. C++ mmap-filtered
-  scans when `choose_where_read_plan` selects pushdown (readable header, no
+- **`table.read` / `table.scan` / `table.scan_torch` (`where=`):** full
+  dialect. When `choose_where_read_plan` selects pushdown (readable header, no
   VLA in the projection, and `backend="cpp"` or `backend="auto"` with
-  `mmap=True`); otherwise Arrow filtering after a wider read. Under
-  `backend="auto"` the torch-tensor pushdown and mask paths run only when
-  torch is already imported, so an Arrow-only `where=` read stays torch-free.
+  `mmap=True`) and the predicate is a conjunction of numeric comparisons the
+  native scan supports (`_native_where_filters`), the C++ mmap-filtered scan
+  runs over the requested row window -- the whole `row_slice=`, or each
+  `scan` / `scan_torch` batch window -- and gathers only the selected rows.
+  Arrow reads take them as torch-free raw buffers
+  (`read_fits_table_filtered_raw`) converted like an unfiltered raw read;
+  `scan_torch` takes tensors. TNULL exclusion is pushed down as an extra
+  `!= TNULL` comparison. Everything else is Arrow filtering after a wider read;
+  the torch mask path for `mmap=False` runs only when torch is already
+  imported, so an Arrow-only `where=` read stays torch-free.
 
 `read_columns_mmap_filtered` (C++ Arrow/mmap path) implements row filtering
 in-process:
 
 1. mmap the file
 2. Pre-byte-swap filter target values to match raw FITS bytes
-3. Scan rows in parallel on the core thread pool
+3. Scan the rows of the requested window (one sequential pass)
 4. For EQ/NE on integers: compare raw bytes directly (zero bswap per row)
 5. For GT/LT/GE/LE: byte-swap per row then compare
 

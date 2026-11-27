@@ -590,6 +590,130 @@ torchfits::TableReader* table_reader_from_capsule(const nb::capsule& cap) {
     return static_cast<torchfits::TableReader*>(cap.data());
 }
 
+// Parse the (column, op, literal) triples of a native filtered read. Literal
+// contract: float/int only (no bool, no string); the Python planner keeps
+// every other predicate on the Arrow evaluator.
+std::vector<torchfits::TableFilter> parse_table_filters(const nb::list& filters_py) {
+    std::vector<torchfits::TableFilter> filters;
+    for (auto handle : filters_py) {
+        nb::tuple item = nb::cast<nb::tuple>(handle);
+        if (item.size() != 3) throw std::runtime_error("Filter must be (col, op, val)");
+
+        torchfits::TableFilter f;
+        f.col_name = nb::cast<std::string>(item[0]);
+        std::string op = nb::cast<std::string>(item[1]);
+
+        if (op == "==" || op == "eq") f.op = torchfits::FilterOp::EQ;
+        else if (op == "!=" || op == "ne") f.op = torchfits::FilterOp::NE;
+        else if (op == ">" || op == "gt") f.op = torchfits::FilterOp::GT;
+        else if (op == "<" || op == "lt") f.op = torchfits::FilterOp::LT;
+        else if (op == ">=" || op == "ge") f.op = torchfits::FilterOp::GE;
+        else if (op == "<=" || op == "le") f.op = torchfits::FilterOp::LE;
+        else throw std::runtime_error("Unknown operator: " + op);
+
+        // Literal contract: float/int. Python bool is an int subclass but
+        // is not a filter value, and older NumPy releases give np.bool_ an
+        // __index__ (NumPy 2 does not), so bool is rejected by type name.
+        // NumPy integer scalars convert through __index__, so this branch
+        // can never truncate a float.
+        nb::handle val = item[2];
+        const std::string type_name = torchfits::internal::python_type_name(val);
+        if (nb::isinstance<bool>(val) ||
+            type_name == "numpy.bool" ||
+            type_name == "numpy.bool_") {
+            throw std::runtime_error("Unsupported filter value type (only float/int)");
+        }
+        if (PyIndex_Check(val.ptr())) {
+            // __index__ is a type-level slot, so a 0-d array also lands
+            // here. Only an int64-convertible value is an integer literal;
+            // anything else (out of range, array) is rejected below.
+            if (nb::try_cast<int64_t>(val, f.val_i)) {
+                f.val_d = (double)f.val_i;
+            } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
+                // [2^63, 2^64): exact for uint64 columns, a constant
+                // predicate for every other integer column.
+                f.has_u64 = true;
+                f.out_of_int64 = 1;
+                f.val_i = std::numeric_limits<int64_t>::max();
+                f.val_d = (double)f.val_u;
+            } else {
+                throw std::runtime_error(
+                    "Unsupported filter value type (only float/int)");
+            }
+            f.type_idx = 1;
+        } else {
+            // NumPy floating scalars are not Python float subclasses
+            // (except float64), so isinstance<float> misses float32/16.
+            const bool numpy_float =
+                type_name == "numpy.float16" ||
+                type_name == "numpy.float32" ||
+                type_name == "numpy.float64" ||
+                type_name == "numpy.longdouble";
+            // PyFloat_Check, not nb::isinstance<float>: nanobind tests
+            // convertibility to C++ float (32-bit) losslessly, so a Python
+            // float such as 0.2 failed it and never reached the scan.
+            if (!PyFloat_Check(val.ptr()) && !numpy_float) {
+                throw std::runtime_error(
+                    "Unsupported filter value type (only float/int)");
+            }
+            f.val_d = nb::cast<double>(val);
+            if (!std::isfinite(f.val_d)) {
+                throw std::runtime_error("Filter float literal must be finite");
+            }
+            // The integer scan branch compares against this proxy; C++
+            // float-to-int conversion is undefined outside int64, so clamp.
+            // Outside int64 the proxy is wrong by design; out_of_int64
+            // (and val_u for [2^63, 2^64)) tells the scan the real bound.
+            constexpr double two63 = 9223372036854775808.0;
+            if (f.val_d >= two63) {
+                f.val_i = std::numeric_limits<int64_t>::max();
+                f.out_of_int64 = 1;
+                if (f.val_d < 2.0 * two63) {
+                    f.has_u64 = true;
+                    f.val_u = static_cast<uint64_t>(f.val_d);
+                }
+            } else if (f.val_d < -two63) {
+                f.val_i = std::numeric_limits<int64_t>::min();
+                f.out_of_int64 = -1;
+            } else {
+                f.val_i = (int64_t)f.val_d;
+            }
+            f.type_idx = 0;
+        }
+        filters.push_back(f);
+    }
+
+    return filters;
+}
+
+// Shared by both filtered bindings: one windowed native predicate scan +
+// gather on a cached reader (the GIL must already be released). A windowed
+// scan calls this once per window, so reusing the open reader keeps it from
+// re-opening the file and re-parsing the header per chunk.
+std::vector<std::pair<std::string, native::Tensor>> read_filtered_columns(
+    const std::string& filename, int hdu_num,
+    const std::vector<std::string>& column_names,
+    const std::vector<torchfits::TableFilter>& filters,
+    long start_row, long num_rows) {
+    ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
+    AcquiredReader handle = g_reader_cache.acquire(key);
+    if (!handle.reader) {
+        handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
+    }
+    std::vector<std::pair<std::string, native::Tensor>> result;
+    try {
+        result = handle.reader->read_columns_mmap_filtered(
+            column_names, filters, start_row, num_rows);
+    } catch (...) {
+        // An unsupported request (scaled column, compressed file) leaves the
+        // reader intact; keep it cached for the fallback read that follows.
+        g_reader_cache.release(key, std::move(handle));
+        throw;
+    }
+    g_reader_cache.release(key, std::move(handle));
+    return result;
+}
+
 } // anonymous namespace
 
 namespace torchfits {
@@ -956,96 +1080,12 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table_filtered", [](const std::string& filename, int hdu_num,
                                          const std::vector<std::string>& column_names,
-                                         nb::list filters_py) -> nb::object {
-        std::vector<torchfits::TableFilter> filters;
-        for (auto handle : filters_py) {
-            nb::tuple item = nb::cast<nb::tuple>(handle);
-            if (item.size() != 3) throw std::runtime_error("Filter must be (col, op, val)");
-
-            torchfits::TableFilter f;
-            f.col_name = nb::cast<std::string>(item[0]);
-            std::string op = nb::cast<std::string>(item[1]);
-
-            if (op == "==" || op == "eq") f.op = torchfits::FilterOp::EQ;
-            else if (op == "!=" || op == "ne") f.op = torchfits::FilterOp::NE;
-            else if (op == ">" || op == "gt") f.op = torchfits::FilterOp::GT;
-            else if (op == "<" || op == "lt") f.op = torchfits::FilterOp::LT;
-            else if (op == ">=" || op == "ge") f.op = torchfits::FilterOp::GE;
-            else if (op == "<=" || op == "le") f.op = torchfits::FilterOp::LE;
-            else throw std::runtime_error("Unknown operator: " + op);
-
-            // Literal contract: float/int. Python bool is an int subclass but
-            // is not a filter value, and older NumPy releases give np.bool_ an
-            // __index__ (NumPy 2 does not), so bool is rejected by type name.
-            // NumPy integer scalars convert through __index__, so this branch
-            // can never truncate a float.
-            nb::handle val = item[2];
-            const std::string type_name = torchfits::internal::python_type_name(val);
-            if (nb::isinstance<bool>(val) ||
-                type_name == "numpy.bool" ||
-                type_name == "numpy.bool_") {
-                throw std::runtime_error("Unsupported filter value type (only float/int)");
-            }
-            if (PyIndex_Check(val.ptr())) {
-                // __index__ is a type-level slot, so a 0-d array also lands
-                // here. Only an int64-convertible value is an integer literal;
-                // anything else (out of range, array) is rejected below.
-                if (nb::try_cast<int64_t>(val, f.val_i)) {
-                    f.val_d = (double)f.val_i;
-                } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
-                    // [2^63, 2^64): exact for uint64 columns, a constant
-                    // predicate for every other integer column.
-                    f.has_u64 = true;
-                    f.out_of_int64 = 1;
-                    f.val_i = std::numeric_limits<int64_t>::max();
-                    f.val_d = (double)f.val_u;
-                } else {
-                    throw std::runtime_error(
-                        "Unsupported filter value type (only float/int)");
-                }
-                f.type_idx = 1;
-            } else {
-                // NumPy floating scalars are not Python float subclasses
-                // (except float64), so isinstance<float> misses float32/16.
-                const bool numpy_float =
-                    type_name == "numpy.float16" ||
-                    type_name == "numpy.float32" ||
-                    type_name == "numpy.float64" ||
-                    type_name == "numpy.longdouble";
-                if (!nb::isinstance<float>(val) && !numpy_float) {
-                    throw std::runtime_error(
-                        "Unsupported filter value type (only float/int)");
-                }
-                f.val_d = nb::cast<double>(val);
-                if (!std::isfinite(f.val_d)) {
-                    throw std::runtime_error("Filter float literal must be finite");
-                }
-                // The integer scan branch compares against this proxy; C++
-                // float-to-int conversion is undefined outside int64, so clamp.
-                // Outside int64 the proxy is wrong by design; out_of_int64
-                // (and val_u for [2^63, 2^64)) tells the scan the real bound.
-                constexpr double two63 = 9223372036854775808.0;
-                if (f.val_d >= two63) {
-                    f.val_i = std::numeric_limits<int64_t>::max();
-                    f.out_of_int64 = 1;
-                    if (f.val_d < 2.0 * two63) {
-                        f.has_u64 = true;
-                        f.val_u = static_cast<uint64_t>(f.val_d);
-                    }
-                } else if (f.val_d < -two63) {
-                    f.val_i = std::numeric_limits<int64_t>::min();
-                    f.out_of_int64 = -1;
-                } else {
-                    f.val_i = (int64_t)f.val_d;
-                }
-                f.type_idx = 0;
-            }
-            filters.push_back(f);
-        }
-
+                                         nb::list filters_py, long start_row,
+                                         long num_rows) -> nb::object {
+        auto filters = parse_table_filters(filters_py);
         nb::gil_scoped_release release;
-        torchfits::TableReader reader(filename, hdu_num);
-        auto result_map = reader.read_columns_mmap_filtered(column_names, filters);
+        auto result_map = read_filtered_columns(
+            filename, hdu_num, column_names, filters, start_row, num_rows);
         nb::gil_scoped_acquire acquire;
 
         nb::dict result;
@@ -1055,5 +1095,22 @@ void bind_table(nb::module_& m) {
         return result;
     }, nb::arg("filename"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
-       nb::arg("filters"));
+       nb::arg("filters"), nb::arg("start_row") = 1, nb::arg("num_rows") = -1);
+
+    // Torch-free twin of read_fits_table_filtered: the same windowed native
+    // predicate scan, returned as raw NumPy/Arrow-ready buffers
+    // (tensor_map_to_raw_python), so an Arrow where= read never loads torch.
+    m.def("read_fits_table_filtered_raw", [](const std::string& filename, int hdu_num,
+                                             const std::vector<std::string>& column_names,
+                                             nb::list filters_py, long start_row,
+                                             long num_rows) -> nb::dict {
+        auto filters = parse_table_filters(filters_py);
+        nb::gil_scoped_release release;
+        auto result_map = read_filtered_columns(
+            filename, hdu_num, column_names, filters, start_row, num_rows);
+        nb::gil_scoped_acquire acquire;
+        return tensor_map_to_raw_python(result_map);
+    }, nb::arg("filename"), nb::arg("hdu_num") = 1,
+       nb::arg("column_names") = std::vector<std::string>(),
+       nb::arg("filters"), nb::arg("start_row") = 1, nb::arg("num_rows") = -1);
 }

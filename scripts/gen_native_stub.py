@@ -100,8 +100,13 @@ C_SIGNATURE_FIXES: dict[str, str] = {
     # both rather than advertise a default nobody can use.
     "read_fits_table_filtered": (
         "def read_fits_table_filtered(filename: str, hdu_num: int, "
-        "column_names: Sequence[str], filters: list) -> "
-        "dict[str, torch.Tensor]: ..."
+        "column_names: Sequence[str], filters: list, start_row: int = 1, "
+        "num_rows: int = -1) -> dict[str, torch.Tensor]: ..."
+    ),
+    "read_fits_table_filtered_raw": (
+        "def read_fits_table_filtered_raw(filename: str, hdu_num: int, "
+        "column_names: Sequence[str], filters: list, start_row: int = 1, "
+        "num_rows: int = -1) -> dict[str, Any]: ..."
     ),
     # The mmap handle is an opaque ``nb::capsule``. nanobind spells its type
     # from the running interpreter, so pinning these two signatures keeps the

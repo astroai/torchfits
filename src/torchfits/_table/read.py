@@ -297,11 +297,17 @@ def scan_torch(
     device: str = "cpu",
     non_blocking: bool = True,
     pin_memory: bool = False,
+    *,
+    where: Optional[str] = None,
 ) -> Iterator[dict[str, Any]]:
     # Eager guard: a generator body would defer this until first next().
     path = coerce_fits_path(path)
     guard_fits_path(path)
     _validate_scan_request(row_slice=row_slice, batch_size=batch_size, device=device)
+    if where is not None:
+        from .._where import parse_where_expression
+
+        parse_where_expression(where)  # a malformed predicate fails here
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
     # Torch dict scans serve complex columns, so only the projection is
@@ -318,6 +324,7 @@ def scan_torch(
         non_blocking=non_blocking,
         pin_memory=pin_memory,
         header=header,
+        where=where,
     )
 
 
