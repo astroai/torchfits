@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import torchfits
-from torchfits._io_engine._tile_compression import resolve_tile_dims
+from torchfits._io_engine._tile_compression import (
+    QUANTIZE_METHODS,
+    compression_options,
+    resolve_tile_dims,
+)
 from torchfits._io_engine.paths import cfitsio_base_path, has_bz2_support
 
 from .common import (
@@ -96,6 +100,31 @@ def add_compress_parser(
             "Default: one image row per tile (16 rows for HCOMPRESS_1)"
         ),
     )
+    parser.add_argument(
+        "-q",
+        "--quantize-level",
+        type=float,
+        default=None,
+        metavar="Q",
+        help=(
+            "float quantization, like fpack -q: Q > 0 = noise sigma / Q step, "
+            "Q < 0 = absolute step |Q|, 0 = lossless (GZIP_1/GZIP_2 only). "
+            "Default: lossless for GZIP_1, 4 otherwise"
+        ),
+    )
+    parser.add_argument(
+        "--quantize-method",
+        choices=sorted(QUANTIZE_METHODS),
+        default=None,
+        help="float quantization dithering (default: subtractive_dither_1)",
+    )
+    parser.add_argument(
+        "--dither-seed",
+        type=int,
+        default=None,
+        metavar="N",
+        help="dither seed 1..10000 for reproducible output (default: from the clock)",
+    )
     parser.set_defaults(func=run_compress)
 
 
@@ -156,6 +185,17 @@ def _refresh_checksums(path: str, hdu: int) -> None:
     if "CHECKSUM" in header or "DATASUM" in header:
         torchfits.write_checksums(path, hdu)
         torchfits.io._invalidate_path_caches(path)
+
+
+_QUANTIZE_OPTIONS = ("quantize_level", "quantize_method", "dither_seed")
+
+
+def _cli_option_names(message: str) -> str:
+    """Spell library keyword names in a validation message as CLI flags."""
+    for key in ("tile_shape", *_QUANTIZE_OPTIONS):
+        flag = "--tile" if key == "tile_shape" else "--" + key.replace("_", "-")
+        message = message.replace(f"{key}=", f"{flag} ").replace(key, flag)
+    return message.replace("compress=", "--algorithm ")
 
 
 def _parse_tile(text: str | None) -> tuple[int, ...] | None:
@@ -264,6 +304,17 @@ def _rewrite_file(
         raise IoError(f"{input_path}: {exc}") from exc
 
 
+def _options_for_image(options: dict[str, Any], tensor: Any) -> dict[str, Any]:
+    """Options for one image HDU written on its own (``--split hdu``).
+
+    Integer images are compressed losslessly; the per-file check already
+    made sure the quantize options reach a floating-point image.
+    """
+    if tensor.is_floating_point():
+        return options
+    return {k: v for k, v in options.items() if k not in _QUANTIZE_OPTIONS}
+
+
 def _hdu_output_path(
     out_dir: Path, input_path: str, hdu_index: int, *, width: int
 ) -> str:
@@ -318,7 +369,7 @@ def _rewrite_one_input_split_hdu(
                 header=header,
                 overwrite=True,
                 compress=compress,
-                **options,
+                **_options_for_image(options, tensor),
             )
             written += 1
         except UsageError:
@@ -371,15 +422,33 @@ def _image_shape(header: Any) -> tuple[int, ...]:
     )
 
 
+# BZERO of the integer conventions torchfits reads as an integer dtype.
+_INTEGER_BZERO = {8: -128.0, 16: 32768.0, 32: 2147483648.0, 64: 9223372036854775808.0}
+
+
+def _reads_as_float(header: Any, bitpix: int) -> bool:
+    """True when the image reads (and so recompresses) as floating point."""
+    if bitpix < 0:
+        return True
+    try:
+        bscale = float(header.get("BSCALE", 1.0))
+        bzero = float(header.get("BZERO", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return bscale != 1.0 or bzero not in (0.0, _INTEGER_BZERO.get(bitpix))
+
+
 def _validate_compression_inputs(
     inputs: list[str], algorithm: str, hdu: str | None, options: dict[str, Any]
 ) -> None:
     if algorithm == "BZIP2_1" and not has_bz2_support():
         raise UsageError("BZIP2_1 is unavailable in this torchfits build")
     tile_shape = options.get("tile_shape")
-    if algorithm != "PLIO_1" and tile_shape is None:
+    quantize = any(key in options for key in _QUANTIZE_OPTIONS)
+    if algorithm != "PLIO_1" and tile_shape is None and not quantize:
         return
     for path in inputs:
+        has_float = False
         try:
             with torchfits.open(path) as hdul:
                 for index in selected_hdu_indices(len(hdul), hdu, path=path):
@@ -394,6 +463,7 @@ def _validate_compression_inputs(
                         raise UsageError(
                             f"PLIO_1 does not support floating-point image data: {path}:{index}"
                         )
+                    has_float = has_float or _reads_as_float(header, bitpix)
                     if tile_shape is not None:
                         try:
                             resolve_tile_dims(tile_shape, shape, algorithm, index)
@@ -403,6 +473,12 @@ def _validate_compression_inputs(
             raise
         except Exception as exc:
             raise IoError(f"{path}: {exc}") from exc
+        if quantize and not has_float:
+            raise UsageError(
+                f"{path}: --quantize-level/--quantize-method/--dither-seed apply "
+                "to floating-point images, but every selected image HDU is "
+                "integer (integer images are always compressed losslessly)"
+            )
 
 
 def _run_rewrite(
@@ -451,6 +527,14 @@ def run_compress(args: argparse.Namespace) -> int:
     tile_shape = _parse_tile(getattr(args, "tile", None))
     if tile_shape is not None:
         options["tile_shape"] = tile_shape
+    for key in _QUANTIZE_OPTIONS:
+        value = getattr(args, key, None)
+        if value is not None:
+            options[key] = value
+    try:
+        compression_options(algo, **options)
+    except (TypeError, ValueError) as exc:
+        raise UsageError(_cli_option_names(str(exc))) from None
     return _run_rewrite(args, compress=algo, options=options)
 
 

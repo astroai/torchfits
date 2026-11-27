@@ -35,7 +35,7 @@ from ._file_ops import (
     _invalidate_written_target,
     _resolve_compression_algorithm,
 )
-from ._tile_compression import CompressionOptions
+from ._tile_compression import CompressionOptions, require_quantizable_image
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
     _COMPRESSION_CARD_KEYS,
@@ -340,6 +340,7 @@ def _write_hdus_with_optional_compression(
 
     payload: list[Any] = []
     primary_header: Any = None
+    any_float = False
     for idx, hdu in enumerate(hdus):  # noqa: B007
         table_proxy = _prepare_table_hdu_for_payload(hdu)
         if table_proxy is not None:
@@ -382,8 +383,11 @@ def _write_hdus_with_optional_compression(
                 # physical uint16 pixels instead of the signed -32768 codes.
                 hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
         if options is not None:
-            hdu_dict["_compression"] = options.image_options(hdu_dict["data"], idx)
+            data = hdu_dict["data"]
+            any_float = any_float or data.is_floating_point()
+            hdu_dict["_compression"] = options.image_options(data, idx)
         payload.append(hdu_dict)
+    require_quantizable_image(options, any_float)
 
     _invalidate_path_caches(path)
     cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)

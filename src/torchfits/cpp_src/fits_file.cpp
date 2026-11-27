@@ -820,8 +820,13 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         for (int i = 0; i < naxis; ++i) naxes[i] = tensor.shape(i);
         std::reverse(naxes.begin(), naxes.end());
         // Per-HDU options the Python layer validated and resolved
-        // (write(tile_shape=...)); absent keys keep the defaults below.
+        // (write(tile_shape=..., quantize_*=..., dither_seed=...)); absent
+        // keys keep the defaults below.
         std::vector<long> requested_tile;
+        bool has_qlevel = false;
+        float requested_qlevel = 0.0f;
+        int quantize_method = 0;  // 0 = CFITSIO default (SUBTRACTIVE_DITHER_1)
+        int dither_seed = 0;      // 0 = CFITSIO picks one from the clock
         if (nb::isinstance<nb::dict>(hdu_obj)) {
             nb::dict d = nb::cast<nb::dict>(hdu_obj);
             if (d.contains("_compression") && !d["_compression"].is_none()) {
@@ -833,6 +838,14 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
                     for (long t : requested_tile)
                         if (t <= 0) throw std::runtime_error("tile_dims entries must be positive");
                 }
+                if (opts.contains("quantize_level")) {
+                    has_qlevel = true;
+                    requested_qlevel = static_cast<float>(nb::cast<double>(opts["quantize_level"]));
+                }
+                if (opts.contains("quantize_method"))
+                    quantize_method = nb::cast<int>(opts["quantize_method"]);
+                if (opts.contains("dither_seed"))
+                    dither_seed = nb::cast<int>(opts["dither_seed"]);
             }
         }
         status = 0;
@@ -857,8 +870,13 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         // lossless integer HDU does not leave a later float HDU at qlevel=0,
         // which float RICE rejects (status 413). 4.0 is CFITSIO's own default
         // for the default SUBTRACTIVE_DITHER_1 method (imcompress.c).
+        // Method and seed are per-file requests too: set them on every HDU
+        // (0 = CFITSIO's own defaults) so one HDU's choice cannot leak on.
         status = 0;
-        fits_set_quantize_level(fptr_, lossless_capable ? 0.0f : 4.0f, &status);
+        fits_set_quantize_level(
+            fptr_, has_qlevel ? requested_qlevel : (lossless_capable ? 0.0f : 4.0f), &status);
+        fits_set_quantize_method(fptr_, quantize_method, &status);
+        fits_set_dither_seed(fptr_, dither_seed, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression quantization");
         if (compression_type == PLIO_1) {
             nb::dlpack::dtype dt_plio = tensor.dtype();

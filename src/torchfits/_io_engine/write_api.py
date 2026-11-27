@@ -80,6 +80,9 @@ def write(
     checksum: bool = False,
     *,
     tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
 ) -> None:
     """Write data to FITS file.
 
@@ -102,6 +105,17 @@ def write(
             trailing axes and leading axes get tile size 1. ``-1`` (or a size
             past the axis length) means the whole axis. Default: one image row
             per tile (16 rows for ``HCOMPRESS_1``). Requires ``compress=``.
+        quantize_level: CFITSIO quantization of floating-point images in a
+            tile-compressed write (``fpack -q``): ``> 0`` sets the step to
+            the tile noise sigma divided by the level, ``< 0`` sets an
+            absolute step of ``abs(level)``, ``0`` stores floats losslessly
+            (``GZIP_1``/``GZIP_2`` only). Default: lossless for ``GZIP_1``,
+            4.0 otherwise. Integer images are never quantized.
+        quantize_method: ``"subtractive_dither_1"`` (CFITSIO default),
+            ``"subtractive_dither_2"`` (also keeps exact zeros) or
+            ``"no_dither"`` (default level 16).
+        dither_seed: Dither seed in 1..10000 for reproducible quantization
+            (default: CFITSIO picks one from the clock).
 
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
@@ -121,7 +135,13 @@ def write(
         )
     if path_exists and os.path.isdir(path):
         raise IsADirectoryError(path)
-    options = compression_options(compress, tile_shape=tile_shape)
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+    )
 
     # Always write a fresh temp file and publish it afterwards: a failed write
     # then never creates or deletes anything at ``path`` (the old error path

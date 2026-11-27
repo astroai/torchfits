@@ -397,7 +397,11 @@ Tile-compresses image HDUs using CFITSIO's compression architecture. Preserves n
 The default `GZIP_1` codec is lossless for integer and floating-point images.
 Also available: `RICE_1`, `GZIP_2`, `HCOMPRESS_1`, and `PLIO_1`; `BZIP2_1` is
 listed when the build includes bzip2. The non-default codecs use CFITSIO float
-quantization and are lossy for floating-point images; `PLIO_1` rejects floats.
+quantization and are lossy for floating-point images (tune it with
+`--quantize-level`, or pass `-q 0` with `GZIP_2` for lossless floats);
+`PLIO_1` rejects floats. Integer images are always compressed losslessly:
+quantization flags on an input file with no floating-point image HDU are a
+usage error (exit `2`), and in a mixed file they apply to its float HDUs only.
 No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
 `tile compression does not support 64-bit integer images` and exits `3`
 without writing the output.
@@ -407,6 +411,9 @@ without writing the output.
 |---|---|---|
 | `--algorithm` | `GZIP_1` | Codec: `GZIP_1`, `GZIP_2`, `RICE_1`, `HCOMPRESS_1`, `PLIO_1` (and `BZIP2_1` when built with bzip2) |
 | `-t`, `--tile N1,N2,...` | one image row per tile (16 rows for `HCOMPRESS_1`) | Tile size per axis in **FITS axis order** (`NAXIS1` first), like `fpack -t`. Axes left out get size 1; `-1` (or a size past the axis length) means the whole axis — write it as `--tile=-1,-1`. `HCOMPRESS_1` tiles must span exactly two axes of at least 4 pixels. A tile with more axes than an image is a usage error (exit `2`). |
+| `-q`, `--quantize-level Q` | lossless for `GZIP_1`, `4` otherwise | Quantization of floating-point images, like `fpack -q`: `Q > 0` makes the step the tile's noise sigma divided by `Q` (larger = finer, bigger files); `Q < 0` is an absolute step of `abs(Q)`; `0` is lossless and needs `GZIP_1` or `GZIP_2`. |
+| `--quantize-method` | `subtractive_dither_1` | `subtractive_dither_1`, `subtractive_dither_2` (also keeps exact zeros; not with `HCOMPRESS_1`) or `no_dither` (default level `16`). |
+| `--dither-seed N` | picked from the clock | Dither seed `1..10000`; fixes the quantization so repeated runs write identical files. |
 
 ```bash
 # Compress losslessly with default GZIP_1
@@ -418,6 +425,15 @@ torchfits compress science.fits science.fits.fz --algorithm GZIP_1
 # 100x100-pixel tiles; one tile for the whole image
 torchfits compress science.fits science.fits.fz --algorithm RICE_1 --tile 100,100
 torchfits compress science.fits science.fits.fz --tile=-1,-1
+
+# fpack-like lossy float compression: finer quantization, reproducible dither
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 -q 16 --dither-seed 42
+
+# Absolute quantization step of 0.01, zeros kept exact
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 -q -0.01 --quantize-method subtractive_dither_2
+
+# Lossless floats with the byte-shuffled GZIP_2
+torchfits compress science.fits science.fits.fz --algorithm GZIP_2 -q 0
 
 # Split MEF file into individual compressed HDU files
 torchfits compress mef.fits --split hdu --out-dir /tmp/compressed_hdus
