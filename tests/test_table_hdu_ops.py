@@ -176,3 +176,25 @@ def test_ref_append_rejects_real_for_complex_column(path):
                 "Z": torch.tensor([1.0]),
             }
         )
+
+
+def test_in_memory_table_slices_numpy_and_tuple_columns():
+    """iter_rows yielded numpy and tuple columns whole in every batch.
+
+    The constructor accepts them (and counts their rows), but iter_rows only
+    sliced tensors and lists, and head()/filter() could not slice a tuple
+    column (head raised "equal row counts"). All three now treat every
+    row-aligned column alike.
+    """
+    t = TableHDU(
+        {"a": torch.arange(5), "b": np.arange(5) * 10, "c": tuple(range(100, 105))}
+    )
+    batches = list(t.iter_rows(batch_size=2))
+    assert [b["a"].tolist() for b in batches] == [[0, 1], [2, 3], [4]]
+    assert [b["b"].tolist() for b in batches] == [[0, 10], [20, 30], [40]]
+    assert [b["c"] for b in batches] == [(100, 101), (102, 103), (104,)]
+
+    assert t.head(2).num_rows == 2
+    assert t.head(2)._raw_data["c"] == (100, 101)
+    assert t.filter("c > 102")._raw_data["c"] == (103, 104)
+    assert t.filter("a > 2")._raw_data["b"].tolist() == [30, 40]
