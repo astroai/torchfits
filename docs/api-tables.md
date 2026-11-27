@@ -25,6 +25,19 @@ file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError`,
 `ValueError` and `RuntimeError`) for an `hdu` index or EXTNAME the file does not have; see
 [Missing files and HDUs](api-core-io.md#missing-files-and-hdus).
 
+### Column names
+
+A column is named by its `TTYPEn` card. Column `n` is named `COL<n>` instead
+when it has no `TTYPEn`, an empty one, or one that repeats the name of an
+earlier column. With `TTYPE1 = TTYPE2 = 'AA'`, every reader, `schema()`,
+`columns=` / `where=` and the mutation helpers see `AA` (column 1) and
+`COL2` (column 2), so no column is dropped and each has one name:
+
+```python
+torchfits.table.read("dup.fits").column_names  # ['AA', 'COL2', ...]
+torchfits.table.read("dup.fits", columns=["COL2"])  # the second 'AA'
+```
+
 ---
 
 ## `table.read()`
@@ -503,11 +516,11 @@ assert torchfits.read("t.fits", hdu=1)["a"].dtype.is_floating_point is False
 torchfits.table.replace_column("t.fits", "a", u16, format="1J")  # plain int32
 ```
 
-A column with no `TTYPE` card is read as `COL<i>` (its 1-based position),
-and every mutation takes that name too. Column rewrites keep such a column
-without a `TTYPE` card while it stays at position `i`; when `insert_column`
-moves it, it is written with `TTYPE = 'COL<i>'` (its old name) so reads keep
-returning the same name.
+Every mutation takes the `COL<i>` name of a column with no (or a repeated)
+`TTYPE` card (see [Column names](#column-names)). Column rewrites keep such a
+column's original `TTYPE` card (or its absence) while it stays at position
+`i`; when `insert_column` moves it, it is written with `TTYPE = 'COL<i>'` (its
+old name) so reads keep returning the same name.
 
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),

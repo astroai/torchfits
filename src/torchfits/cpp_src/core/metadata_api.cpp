@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -275,15 +276,19 @@ std::vector<std::string> table_colnames(fitsfile* fptr) {
     if (status != 0) throw_fits_error(status, "read_colnames (HDU must be a table)");
     std::vector<std::string> names;
     names.reserve(static_cast<size_t>(ncols));
+    std::unordered_set<std::string> seen;
     for (int i = 1; i <= ncols; ++i) {
         char keyname[FLEN_KEYWORD];
         std::snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
         std::string name = read_tstring_card(fptr, keyname);
-        if (name.empty()) {
+        // Missing, empty or repeated TTYPE: COL<i>, as the table readers
+        // name it (fits_schema._reader_column_name).
+        if (name.empty() || seen.count(name) != 0) {
             char fallback[FLEN_VALUE];
             std::snprintf(fallback, FLEN_VALUE, "COL%d", i);
             name = fallback;
         }
+        seen.insert(name);
         names.emplace_back(std::move(name));
     }
     return names;
@@ -298,15 +303,19 @@ TableInfo table_info(fitsfile* fptr) {
     if (status != 0) throw_fits_error(status, "read_table_info (HDU must be a table)");
     info.colnames.reserve(static_cast<size_t>(ncols));
     info.tforms.reserve(static_cast<size_t>(ncols));
+    std::unordered_set<std::string> seen;
     for (int i = 1; i <= ncols; ++i) {
         char keyname[FLEN_KEYWORD];
         std::snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
         std::string name = read_tstring_card(fptr, keyname);
-        if (name.empty()) {
+        // Missing, empty or repeated TTYPE: COL<i>, as the table readers
+        // name it (fits_schema._reader_column_name).
+        if (name.empty() || seen.count(name) != 0) {
             char fallback[FLEN_VALUE];
             std::snprintf(fallback, FLEN_VALUE, "COL%d", i);
             name = fallback;
         }
+        seen.insert(name);
         info.colnames.emplace_back(std::move(name));
         std::snprintf(keyname, FLEN_KEYWORD, "TFORM%d", i);
         info.tforms.emplace_back(read_tstring_card(fptr, keyname));

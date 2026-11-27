@@ -13,6 +13,7 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/unordered_map.h>
 #include <functional>
+#include <unordered_set>
 #include <memory>
 #include <new>
 #include <mutex>
@@ -172,6 +173,10 @@ public:
         // Analyze columns
         columns_.clear();
         columns_.reserve(ncols_);
+        // Names already given to earlier columns: a repeated TTYPE is named
+        // COL<i> like a missing one (fits_schema._reader_column_name), since
+        // every result is keyed by name and the repeat used to be dropped.
+        std::unordered_set<std::string> seen_names;
 
         for (int i = 1; i <= ncols_; i++) {
             ColumnInfo col;
@@ -191,12 +196,14 @@ public:
             snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
             fits_read_key(fptr_, TSTRING, keyname, ttype, nullptr, &col_status);
 
-            if (col_status != 0 || ttype[0] == '\0') {
+            if (col_status != 0 || ttype[0] == '\0' || seen_names.count(ttype) != 0) {
                 // TTYPE is optional: a column without one (or with an empty
-                // one) is named COL<i>, as fits_schema._default_column_name.
+                // or repeated one) is named COL<i>, as
+                // fits_schema._reader_column_name.
                 col_status = 0; // Reset status
                 snprintf(ttype, FLEN_VALUE, "COL%d", i);
             }
+            seen_names.insert(ttype);
 
             snprintf(keyname, FLEN_KEYWORD, "TFORM%d", i);
             fits_read_key(fptr_, TSTRING, keyname, tform, nullptr, &col_status);

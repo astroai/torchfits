@@ -141,14 +141,13 @@ class TableHDURef:
             raise
         except (TypeError, ValueError):
             n = 0
-        out: list[str] = []
-        for i in range(1, n + 1):
-            name = self.header.get(f"TTYPE{i}")
-            if isinstance(name, str) and name:
-                out.append(name)
-            else:
-                out.append(f"COL{i}")
-        return out
+        from ..fits_schema import _reader_column_name
+
+        seen: set[str] = set()
+        return [
+            _reader_column_name(self.header.get(f"TTYPE{i}"), i, seen)
+            for i in range(1, n + 1)
+        ]
 
     @property
     def string_columns(self) -> List[str]:

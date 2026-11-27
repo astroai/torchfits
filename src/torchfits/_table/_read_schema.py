@@ -292,13 +292,14 @@ def _can_use_full_read_path(
     selected = set(columns) if columns else None
     any_selected = False
 
+    from ..fits_schema import _reader_column_name
+
+    seen: set[str] = set()
     for i in range(1, tf_count + 1):
         si = str(i)
-        name = header.get("TTYPE" + si)
-        if not isinstance(name, str) or not name:
-            # TTYPE-less columns surface in the readers as COL<i> and still
-            # constrain the scalar-only fast paths (r5a-04).
-            name = f"COL{si}"
+        # TTYPE-less (and repeated-name) columns surface in the readers as
+        # COL<i> and still constrain the scalar-only fast paths (r5a-04).
+        name = _reader_column_name(header.get("TTYPE" + si), i, seen)
         if selected is not None and name not in selected:
             continue
         any_selected = True
@@ -416,15 +417,15 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
 
 def _reader_column_names(header: Any) -> set[str]:
     """All column names a reader can serve for this header (incl. ``COL<i>``)."""
+    from ..fits_schema import _reader_column_name
+
     names: set[str] = set()
     try:
         tf_count = int(header.get("TFIELDS", 0))
     except (TypeError, ValueError):
         tf_count = 0
     for i in range(1, tf_count + 1):
-        si = str(i)
-        name = header.get("TTYPE" + si)
-        names.add(name if isinstance(name, str) and name else f"COL{si}")
+        _reader_column_name(header.get("TTYPE" + str(i)), i, names)
     return names
 
 
