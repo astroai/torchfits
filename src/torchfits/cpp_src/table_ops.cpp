@@ -20,6 +20,7 @@
 #include "table_reader.h"
 #include "security.h"
 #include "fits_rw.h"
+#include "table_ops.h"
 
 namespace nb = nanobind;
 
@@ -836,12 +837,13 @@ struct PlannedColumn {
     bool is_null = false;  // fill with the column's undefined value
 };
 
-}  // namespace
-
-void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long num_rows) {
-    // Write every column of tensor_dict into rows [start_row, start_row+num_rows)
-    // of an already-open table HDU. The caller owns the handle and its
-    // open/close; errors propagate as exceptions (the caller closes).
+std::vector<PlannedColumn> plan_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row,
+                                     long num_rows, const std::string& op) {
+    // Plan pass of populate_rows: resolve, convert and validate every column
+    // of tensor_dict for rows [start_row, start_row+num_rows) of the open
+    // table HDU, writing nothing. Needs the GIL (it reads the Python payload);
+    // the plan it returns can then be committed without it. The plan holds
+    // ndarray references, so it must also be destroyed with the GIL held.
     int status = 0;
     std::vector<PlannedColumn> plan;
     plan.reserve(static_cast<size_t>(tensor_dict.size()));
@@ -857,7 +859,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         // case-mismatched name; the Python layer rejects those first.
         colnum = resolve_column_number(fptr, reader_names, col_name, &status);
         if (status != 0) {
-            throw std::runtime_error("Column not found for update_rows: " + col_name);
+            throw std::runtime_error("Column not found for " + op + ": " + col_name);
         }
 
         int col_status = 0;
@@ -866,7 +868,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         long width = 0;
         fits_get_coltype(fptr, colnum, &typecode, &repeat, &width, &col_status);
         if (col_status != 0) {
-            throw std::runtime_error("Failed to get column type for update_rows: " + col_name);
+            throw std::runtime_error("Failed to get column type for " + op + ": " + col_name);
         }
 
         if (item.second.is_none()) {
@@ -883,13 +885,13 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             int base_type = -typecode;
             nb::handle obj = item.second;
             if (!(nb::isinstance<nb::list>(obj) || nb::isinstance<nb::tuple>(obj))) {
-                throw std::runtime_error("update_rows VLA column expects list/tuple for " + col_name);
+                throw std::runtime_error(op + " VLA column expects list/tuple for " + col_name);
             }
 
             nb::sequence seq = nb::cast<nb::sequence>(obj);
             long seq_len = static_cast<long>(nb::len(seq));
             if (seq_len != num_rows) {
-                throw std::runtime_error("update_rows column length mismatch for " + col_name);
+                throw std::runtime_error(op + " column length mismatch for " + col_name);
             }
 
             for (long row = 0; row < num_rows; ++row) {
@@ -900,10 +902,10 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 nb::ndarray<> arr = nb::cast<nb::ndarray<>>(seq[row]);
                 require_cpu_ndarray(arr, "column " + col_name);
                 if (arr.ndim() > 1) {
-                    throw std::runtime_error("update_rows VLA rows must be 1D for " + col_name);
+                    throw std::runtime_error(op + " VLA rows must be 1D for " + col_name);
                 }
                 if (arr.size() > static_cast<size_t>(std::numeric_limits<long>::max())) {
-                    throw std::runtime_error("update_rows VLA row too large for " + col_name);
+                    throw std::runtime_error(op + " VLA row too large for " + col_name);
                 }
                 long nelements = static_cast<long>(arr.size());
                 std::vector<uint8_t> contig_buf;
@@ -947,7 +949,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     write_type = vla_payload_fits_type(arr.dtype(), base_type);
                     if (write_type == 0) {
                         throw std::runtime_error(
-                            "update_rows unsupported VLA row dtype for " + col_name);
+                            op + " unsupported VLA row dtype for " + col_name);
                     }
                 }
                 col.writes.push_back({write_type, colnum, start_row + row, nelements, planned_ptr});
@@ -989,7 +991,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                       dt_str.bits == 8)
                 ) {
                     throw std::runtime_error(
-                        "update_rows string ndarray must be uint8 for " + col_name
+                        op + " string ndarray must be uint8 for " + col_name
                     );
                 }
                 int ndim_str = t_str.ndim();
@@ -1006,18 +1008,18 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                     user_repeat_str = static_cast<long>(t_str.shape(1));
                 } else {
                     throw std::runtime_error(
-                        "update_rows string ndarray must be 1D/2D for " + col_name
+                        op + " string ndarray must be 1D/2D for " + col_name
                     );
                 }
                 if (rows_str != num_rows) {
                     throw std::runtime_error(
-                        "update_rows column length mismatch for " + col_name
+                        op + " column length mismatch for " + col_name
                     );
                 }
                 long width_chars_str = repeat > 1 ? repeat : width;
                 if (user_repeat_str > width_chars_str) {
                     throw std::runtime_error(
-                        "update_rows string width " +
+                        op + " string width " +
                         std::to_string(user_repeat_str) + " exceeds column " +
                         std::to_string(width_chars_str) + " for " + col_name
                     );
@@ -1045,11 +1047,11 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 plan.push_back(std::move(col));
                 continue;
             } else {
-                throw std::runtime_error("update_rows string column expects list/tuple/str for " + col_name);
+                throw std::runtime_error(op + " string column expects list/tuple/str for " + col_name);
             }
 
             if (static_cast<long>(values.size()) != num_rows) {
-                throw std::runtime_error("update_rows column length mismatch for " + col_name);
+                throw std::runtime_error(op + " column length mismatch for " + col_name);
             }
 
             // ASCII tables report repeat=1 with the field width in `width`
@@ -1092,23 +1094,23 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 user_repeat = static_cast<long>(t.shape(1));
             } else {
                 throw std::runtime_error(
-                    "update_rows BIT only supports 1D/2D columns for " + col_name
+                    op + " BIT only supports 1D/2D columns for " + col_name
                 );
             }
             if (rows_t != num_rows) {
                 throw std::runtime_error(
-                    "update_rows column length mismatch for " + col_name
+                    op + " column length mismatch for " + col_name
                 );
             }
             if (repeat > 0 && user_repeat != repeat) {
                 throw std::runtime_error(
-                    "update_rows repeat mismatch for " + col_name +
+                    op + " repeat mismatch for " + col_name +
                     ": column repeat=" + std::to_string(repeat) +
                     " payload width=" + std::to_string(user_repeat));
             }
             if (user_repeat <= 0 || user_repeat > repeat) {
                 throw std::runtime_error(
-                    "update_rows BIT repeat must be 1.." + std::to_string(repeat) +
+                    op + " BIT repeat must be 1.." + std::to_string(repeat) +
                     " for " + col_name
                 );
             }
@@ -1120,7 +1122,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                 dt_b.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt_b.bits == 8;
             if (!is_bool && !is_u8) {
                 throw std::runtime_error(
-                    "update_rows BIT dtype must be bool or uint8 for " + col_name
+                    op + " BIT dtype must be bool or uint8 for " + col_name
                 );
             }
             const bool* src_bool_b = static_cast<const bool*>(t.data());
@@ -1178,11 +1180,11 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             rows = static_cast<long>(tensor.shape(0));
             repeat_vals = static_cast<long>(tensor.shape(1));
         } else {
-            throw std::runtime_error("update_rows only supports 1D/2D columns for " + col_name);
+            throw std::runtime_error(op + " only supports 1D/2D columns for " + col_name);
         }
 
         if (rows != num_rows) {
-            throw std::runtime_error("update_rows column length mismatch for " + col_name);
+            throw std::runtime_error(op + " column length mismatch for " + col_name);
         }
 
         // The 2D payload width must match the column repeat: writing a
@@ -1190,14 +1192,14 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         // every following row.
         if (repeat > 0 && repeat_vals != repeat) {
             throw std::runtime_error(
-                "update_rows repeat mismatch for " + col_name + ": column repeat=" +
+                op + " repeat mismatch for " + col_name + ": column repeat=" +
                 std::to_string(repeat) + " payload width=" + std::to_string(repeat_vals));
         }
 
         if (num_rows > 0 && repeat_vals > 0 &&
             static_cast<uint64_t>(num_rows) >
                 static_cast<uint64_t>(std::numeric_limits<long>::max()) / static_cast<uint64_t>(repeat_vals)) {
-            throw std::runtime_error("update_rows element count overflows long for " + col_name);
+            throw std::runtime_error(op + " element count overflows long for " + col_name);
         }
         long nelements = num_rows * repeat_vals;
         std::vector<uint8_t> contig_buf;
@@ -1240,7 +1242,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         } else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Complex && dt.bits == 128) {
             fits_type = TDBLCOMPLEX;
         } else {
-            throw std::runtime_error("Unsupported dtype for update_rows");
+            throw std::runtime_error("Unsupported dtype for " + op);
         }
 
         void* planned_ptr = data_ptr;
@@ -1255,11 +1257,25 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         col.writes.push_back({fits_type, colnum, start_row, nelements, planned_ptr});
         plan.push_back(std::move(col));
     }
+    return plan;
+}
 
+void commit_planned_rows(fitsfile* fptr, const std::vector<PlannedColumn>& plan,
+                         const std::string& op, bool stored) {
     // Commit. Every column is resolved and converted by now, so nothing below
     // can reject the payload: a non-zero status here is a CFITSIO I/O failure.
+    // Touches no Python object, so callers run it with the GIL released.
+    //
+    // ``stored`` writes the payload as stored values: TSCALn/TZEROn are
+    // switched off for the handle first, so CFITSIO copies the numbers as
+    // given instead of inverting the column's scaling (the convention
+    // write_table_hdu's payload follows, since it writes before the scaling
+    // cards exist).
     int commit_status = 0;
     for (const PlannedColumn& col : plan) {
+        if (stored && !col.is_string && !col.writes.empty()) {
+            fits_set_tscale(fptr, col.writes[0].colnum, 1.0, 0.0, &commit_status);
+        }
         if (col.is_string) {
             const PlannedWrite& w = col.writes[0];
             torchfits::write_string_rows(fptr, w.colnum, w.first_row, col.strings,
@@ -1276,14 +1292,25 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
             fits_write_col(fptr, w.typecode, w.colnum, w.first_row, 1,
                            w.nelements, w.data, &commit_status);
             if (commit_status != 0 && w.typecode == TBIT) {
-                throw std::runtime_error("Failed to update BIT column rows");
+                throw std::runtime_error("Failed to " + op + " BIT column rows");
             }
         }
     }
 
     if (commit_status != 0) {
-        throw std::runtime_error("Failed to update rows in FITS table");
+        throw std::runtime_error("Failed to " + op + " rows in FITS table");
     }
+}
+
+}  // namespace
+
+void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long num_rows) {
+    // Write every column of tensor_dict into rows [start_row, start_row+num_rows)
+    // of an already-open table HDU. The caller owns the handle and its
+    // open/close; errors propagate as exceptions (the caller closes).
+    std::vector<PlannedColumn> plan =
+        plan_rows(fptr, tensor_dict, start_row, num_rows, "update_rows");
+    commit_planned_rows(fptr, plan, "update", false);
 }
 
 void update_rows(const char* filename, int hdu_num, nb::dict tensor_dict, long start_row, long num_rows) {
@@ -1481,5 +1508,132 @@ void drop_columns(const char* filename, int hdu_num, nb::list columns) {
 
     if (status != 0) {
         throw std::runtime_error("Failed to drop FITS table columns");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TableStreamWriter: rows appended batch by batch on one open handle
+// ---------------------------------------------------------------------------
+
+TableStreamWriter::TableStreamWriter(const std::string& filename, int hdu_num)
+    : filename_(filename) {
+    torchfits::check_fits_filename_security(filename_);
+    int status = torchfits::open_fits_for_write(&fptr_, filename_);
+    if (status != 0 || fptr_ == nullptr) {
+        char err_msg[FLEN_STATUS];
+        fits_get_errstatus(status, err_msg);
+        fptr_ = nullptr;
+        throw std::runtime_error(
+            std::string("Failed to open FITS file for writing: ") + err_msg);
+    }
+    int hdu_type = 0;
+    fits_movabs_hdu(fptr_, hdu_num + 1, &hdu_type, &status);
+    if (status == 0 && hdu_type != BINARY_TBL && hdu_type != ASCII_TBL) {
+        close_file_ignore_status(fptr_);
+        fptr_ = nullptr;
+        throw std::runtime_error("TableStreamWriter: HDU " + std::to_string(hdu_num) +
+                                 " is not a table");
+    }
+    long nrows = 0;
+    long row_bytes = 0;
+    fits_get_num_rows(fptr_, &nrows, &status);
+    fits_read_key(fptr_, TLONG, "NAXIS1", &row_bytes, nullptr, &status);
+    if (status != 0) {
+        close_file_ignore_status(fptr_);
+        fptr_ = nullptr;
+        throw std::runtime_error("TableStreamWriter: failed to open table HDU " +
+                                 std::to_string(hdu_num));
+    }
+    num_rows_ = nrows;
+    row_bytes_ = row_bytes;
+}
+
+TableStreamWriter::~TableStreamWriter() {
+    // An unclosed writer is an abandoned stream: its file is discarded by the
+    // caller, so the close status does not matter.
+    close_file_ignore_status(fptr_);
+    fptr_ = nullptr;
+}
+
+namespace {
+
+// Marks the writer busy for one call. Calls arrive with the GIL held, so the
+// check-and-set is atomic; the IO then runs without the GIL and a second
+// thread reaching the same writer meanwhile is refused instead of interleaving
+// CFITSIO calls on one handle.
+struct StreamWriterCall {
+    bool& busy;
+    explicit StreamWriterCall(bool& flag, fitsfile* fptr) : busy(flag) {
+        if (fptr == nullptr) {
+            throw std::runtime_error("TableStreamWriter is closed");
+        }
+        if (busy) {
+            throw std::runtime_error("TableStreamWriter is in use by another thread");
+        }
+        busy = true;
+    }
+    ~StreamWriterCall() { busy = false; }
+};
+
+}  // namespace
+
+void TableStreamWriter::write_rows(nb::dict tensor_dict) {
+    StreamWriterCall call(busy_, fptr_);
+    const long nrows = infer_num_rows_from_payload(tensor_dict);
+    if (nrows <= 0) {
+        return;
+    }
+    // Plan with the GIL (reads the Python payload), write without it. The
+    // plan owns references to the payload arrays, so it outlives the
+    // released region and is destroyed with the GIL held again.
+    std::vector<PlannedColumn> plan =
+        plan_rows(fptr_, tensor_dict, num_rows_ + 1, nrows, "write_rows");
+    {
+        nb::gil_scoped_release release;
+        // Writing past the last row extends the table (CFITSIO updates
+        // NAXIS2 on close); the payload is in stored form, like the first
+        // batch write_table_hdu wrote before the scaling cards existed.
+        commit_planned_rows(fptr_, plan, "write", true);
+    }
+    num_rows_ += nrows;
+}
+
+void TableStreamWriter::write_raw_rows(const uint8_t* data, long nrows) {
+    // Called with the GIL released: ``data`` is nrows * row_bytes() stored
+    // bytes in FITS (big-endian, padded) row layout.
+    if (fptr_ == nullptr) {
+        throw std::runtime_error("TableStreamWriter is closed");
+    }
+    if (nrows <= 0) {
+        return;
+    }
+    if (row_bytes_ <= 0) {
+        throw std::runtime_error("TableStreamWriter: table has zero-width rows");
+    }
+    int status = 0;
+    const LONGLONG nchars = static_cast<LONGLONG>(nrows) * static_cast<LONGLONG>(row_bytes_);
+    fits_write_tblbytes(fptr_, static_cast<LONGLONG>(num_rows_) + 1, 1, nchars,
+                        const_cast<unsigned char*>(data), &status);
+    if (status != 0) {
+        throw std::runtime_error("Failed to write raw table rows");
+    }
+    num_rows_ += nrows;
+}
+
+void TableStreamWriter::close() {
+    // Called with the GIL released. The close writes the final NAXIS2 (and
+    // PCOUNT/TFORM maxima for variable-length columns) and flushes.
+    if (fptr_ == nullptr) {
+        return;
+    }
+    int status = 0;
+    fits_close_file(fptr_, &status);
+    fptr_ = nullptr;
+    if (status != 0) {
+        char err_msg[FLEN_STATUS];
+        fits_get_errstatus(status, err_msg);
+        throw std::runtime_error(
+            std::string("Failed to close FITS table stream (data may be incomplete): ") +
+            err_msg);
     }
 }

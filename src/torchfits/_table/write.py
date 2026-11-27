@@ -20,7 +20,7 @@ _log = logging.getLogger(__name__)
 
 def write(
     path: str,
-    data: dict[str, Any],
+    data: Any,
     *,
     schema: dict[str, dict[str, Any]] | None = None,
     header: dict[str, Any] | None = None,
@@ -28,19 +28,44 @@ def write(
     extname: str | None = None,
     table_type: str = "binary",
     quantize: Any = None,
+    checksum: bool = False,
 ) -> None:
-    """Write a columnar dict as a FITS table.
+    """Write a columnar dict, table/dataframe, or stream of batches as a FITS table.
+
+    ``data`` is a column dict, an Arrow/pandas/polars/astropy table, or a
+    stream of batches -- a ``pyarrow.RecordBatchReader`` or an iterable of
+    record batches / tables / column dicts -- which is written incrementally
+    with memory bounded by the batch size (see :func:`writer`).
 
     ``quantize=\"robust\"`` packs all float columns to ``TFORM=I`` with
     ``TSCAL``/``TZERO``. Pass ``{\"col\": \"robust\"}`` (or per-column option
     dicts) to select columns. Default keeps native float ``TFORM``.  When
     ``quantize`` is set but no column qualifies (e.g. an integer-only table),
     a ``QuantizeError`` is raised rather than silently writing unpacked.
+    ``quantize`` is not supported for streams. ``checksum=True`` stamps
+    DATASUM/CHECKSUM on every HDU of the new file.
     """
     from .._io_engine._write_helpers import _normalize_table_input
     from .._io_engine.paths import guard_write_path
+    from .write_stream import is_batch_stream, write_batches
 
     guard_write_path(path)
+    if is_batch_stream(data):
+        if quantize is not None:
+            raise ValueError(
+                "quantize= is not supported when writing a stream of batches"
+            )
+        write_batches(
+            path,
+            data,
+            schema=schema,
+            header=header,
+            extname=extname,
+            overwrite=overwrite,
+            checksum=checksum,
+            table_type=table_type,
+        )
+        return
     if str(path).lower().endswith(".bz2"):
         # CFITSIO would create a plain, uncompressed FITS under this name.
         raise ValueError(
@@ -108,6 +133,10 @@ def write(
             )
             if hdr:
                 _write_header_cards_if_supported(write_path, 1, hdr)
+            if checksum:
+                from .._io_engine.write_api import _write_all_checksums
+
+                _write_all_checksums(write_path)
         _invalidate_path_caches(path)
         return
 
@@ -117,6 +146,38 @@ def write(
         header=hdr if hdr else None,
         overwrite=overwrite,
         quantize=quantize,
+        checksum=checksum,
+    )
+
+
+def writer(
+    path: str,
+    *,
+    schema: dict[str, dict[str, Any]] | None = None,
+    header: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    extname: str | None = None,
+    table_type: str = "binary",
+    checksum: bool = False,
+) -> Any:
+    """Open an incremental FITS table writer (the write-side ``reader()``).
+
+    Returns a :class:`~torchfits._table.write_stream.TableWriter`; call its
+    ``write(batch)`` per batch and ``close()``, or use it as a context
+    manager. The table is built in a temp file next to ``path`` and published
+    atomically on a clean close; an exception or ``abort()`` leaves ``path``
+    untouched. The first batch with rows (or ``schema=``) fixes the layout.
+    """
+    from .write_stream import TableWriter
+
+    return TableWriter(
+        path,
+        schema=schema,
+        header=header,
+        extname=extname,
+        overwrite=overwrite,
+        checksum=checksum,
+        table_type=table_type,
     )
 
 

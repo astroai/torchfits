@@ -417,6 +417,45 @@ def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
     return tensor.contiguous()
 
 
+def _arrow_column_values(column: Any) -> Any:
+    """One Arrow column as the writer's column value.
+
+    A fixed-size list of numbers or booleans with no nulls -- how every
+    torchfits reader returns a vector column (TFORM ``rX``) -- becomes a 2-D
+    array, so it is written back as a fixed-width vector column instead of a
+    variable-length one. Anything else goes through ``to_numpy`` (nullable
+    integers widen to float with NaN, string nulls are blank) or, failing
+    that, ``to_pylist``.
+    """
+    try:
+        import pyarrow as pa
+
+        typ = column.type
+        if (
+            pa.types.is_fixed_size_list(typ)
+            and column.null_count == 0
+            and (
+                pa.types.is_integer(typ.value_type)
+                or pa.types.is_floating(typ.value_type)
+                or pa.types.is_boolean(typ.value_type)
+            )
+        ):
+            arr = (
+                column.combine_chunks() if hasattr(column, "combine_chunks") else column
+            )
+            flat = arr.flatten()
+            if flat.null_count == 0:
+                return flat.to_numpy(zero_copy_only=False).reshape(
+                    len(arr), typ.list_size
+                )
+    except Exception:
+        pass
+    try:
+        return column.to_numpy(zero_copy_only=False)
+    except Exception:
+        return column.to_pylist()
+
+
 def _normalize_table_input(data: Any) -> Any:
     """Normalize Table/DataFrame inputs (Astropy, Arrow, Polars, Pandas) into a columnar dict."""
     if isinstance(data, dict):
@@ -426,14 +465,7 @@ def _normalize_table_input(data: Any) -> Any:
         return {str(col): data[col] for col in data.colnames}
     # PyArrow Table / RecordBatch
     if hasattr(data, "column_names") and hasattr(data, "column"):
-        cols: dict[str, Any] = {}
-        for name in data.column_names:
-            c = data[name]
-            try:
-                cols[name] = c.to_numpy(zero_copy_only=False)
-            except Exception:
-                cols[name] = c.to_pylist()
-        return cols
+        return {name: _arrow_column_values(data[name]) for name in data.column_names}
     # Polars DataFrame
     if hasattr(data, "columns") and hasattr(data, "to_dict"):
         try:

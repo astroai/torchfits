@@ -29,6 +29,7 @@
 #include "table_types.h"
 #include "table_reader.h"
 #include "table_ops.h"
+#include "nb_ndarray_utils.h"
 
 namespace nb = nanobind;
 namespace native = torchfits::native;
@@ -665,6 +666,62 @@ void bind_table(nb::module_& m) {
         torchfits::evict_cached_reader(filename);
         append_rows(filename.c_str(), hdu_num, tensor_dict);
     });
+
+    // Incremental writer behind torchfits.table.writer(): one open handle per
+    // stream, so a batch costs its column writes rather than an open/close.
+    struct StreamWriterBusy {
+        TableStreamWriter& writer;
+        explicit StreamWriterBusy(TableStreamWriter& w) : writer(w) {
+            if (writer.closed()) {
+                throw std::runtime_error("TableStreamWriter is closed");
+            }
+            if (writer.busy()) {
+                throw std::runtime_error("TableStreamWriter is in use by another thread");
+            }
+            writer.set_busy(true);
+        }
+        ~StreamWriterBusy() { writer.set_busy(false); }
+    };
+    nb::class_<TableStreamWriter>(m, "TableStreamWriter")
+        .def("__init__", [](TableStreamWriter* self, const std::string& filename, int hdu_num) {
+            torchfits::invalidate_shared_meta(filename);
+            torchfits::evict_cached_reader(filename);
+            nb::gil_scoped_release release;
+            new (self) TableStreamWriter(filename, hdu_num);
+        }, nb::arg("filename"), nb::arg("hdu_num") = 1)
+        .def("write_rows", &TableStreamWriter::write_rows, nb::arg("tensor_dict"))
+        .def("write_raw_rows", [](TableStreamWriter& self, nb::ndarray<> rows) {
+            StreamWriterBusy busy(self);
+            const nb::dlpack::dtype dt = rows.dtype();
+            if (rows.device_type() != nb::device::cpu::value || rows.ndim() != 2 ||
+                dt.code != (uint8_t)nb::dlpack::dtype_code::UInt || dt.bits != 8 ||
+                !torchfits::internal::ndarray_is_c_contiguous(rows)) {
+                throw std::invalid_argument(
+                    "write_raw_rows expects a C-contiguous 2-D uint8 CPU array");
+            }
+            if (rows.shape(0) > 0 && static_cast<long>(rows.shape(1)) != self.row_bytes()) {
+                throw std::invalid_argument(
+                    "write_raw_rows: rows are " + std::to_string(rows.shape(1)) +
+                    " bytes wide, the table's are " + std::to_string(self.row_bytes()));
+            }
+            const uint8_t* data = static_cast<const uint8_t*>(rows.data());
+            const long nrows = static_cast<long>(rows.shape(0));
+            nb::gil_scoped_release release;
+            self.write_raw_rows(data, nrows);
+        }, nb::arg("rows"))
+        .def("close", [](TableStreamWriter& self) {
+            if (self.closed()) {
+                return;
+            }
+            {
+                StreamWriterBusy busy(self);
+                nb::gil_scoped_release release;
+                self.close();
+            }
+        })
+        .def_prop_ro("num_rows", &TableStreamWriter::num_rows)
+        .def_prop_ro("row_bytes", &TableStreamWriter::row_bytes)
+        .def_prop_ro("closed", &TableStreamWriter::closed);
 
     m.def("insert_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict,
                                        long start_row) {

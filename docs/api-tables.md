@@ -278,24 +278,26 @@ torchfits.table.reader(
 
 ## `table.write()`
 
-Write a columnar dictionary as a FITS binary or ASCII table.
+Write a columnar dictionary, a table, or a stream of batches as a FITS
+binary or ASCII table.
 
 ```python
 torchfits.table.write(path, data, *, schema=None, header=None,
                       overwrite=False, extname=None, table_type="binary",
-                      quantize=None)
+                      quantize=None, checksum=False)
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | Output path |
-| `data` | `dict`, `Table`, or DataFrame | *(required)* | Column dictionary, Astropy Table, PyArrow Table, or DataFrame |
+| `data` | `dict`, `Table`, DataFrame, or batch stream | *(required)* | Column dictionary, Astropy Table, PyArrow Table/RecordBatch, or DataFrame; or a stream of batches -- a `pyarrow.RecordBatchReader`, or an iterable / generator of `RecordBatch`, `pyarrow.Table` or column dicts -- written incrementally (see [`table.writer()`](#tablewriter)) |
 | `schema` | `dict[str, dict[str, Any]]` or `None` | `None` | Per-column FITS layout overrides: `format`/`tform` (e.g. `{"bits": {"format": "4X"}}`), `unit`/`tunit`, `null`/`tnull`, `bscale`, `bzero`, `dim`/`tdim` |
 | `header` | `dict` or `None` | `None` | FITS header key-value pairs |
 | `extname` | `str` or `None` | `None` | `EXTNAME` for the written table HDU (merged into `header`) |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
-| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. |
+| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. Not supported for batch streams (`ValueError`). |
+| `checksum` | `bool` | `False` | Stamp `DATASUM`/`CHECKSUM` on every HDU of the new file (as `torchfits.write(..., checksum=True)`) |
 
 `schema` scaling and nulls describe **stored** values:
 
@@ -326,7 +328,70 @@ torchfits.table.write(
     quantize={"FLUX": "robust"},
     overwrite=True,
 )
+# Out-of-core: filter a large table into a new one, one batch at a time.
+torchfits.table.write(
+    "bright.fits", torchfits.table.reader("big.fits", where="MAG < 18")
+)
 ```
+
+An Arrow table or batch converts its columns as follows: a fixed-size list of
+numbers or booleans with no nulls (how the readers return a vector column)
+is written as a fixed-width vector column (`TFORM rX`); float nulls are
+written as NaN and string nulls as blanks.
+
+---
+
+## `table.writer()`
+
+Open an incremental writer: the write-side counterpart of `table.reader()`.
+`table.write()` uses it for batch streams.
+
+```python
+torchfits.table.writer(path, *, schema=None, header=None, overwrite=False,
+                       extname=None, table_type="binary", checksum=False)
+```
+
+**Returns:** a `TableWriter` with `write(batch)`, `close()`, `abort()`,
+`num_rows` and `closed`; it is a context manager (`close()` on a clean exit,
+`abort()` on an exception). A batch is anything `table.write()` accepts as a
+single table: a `pyarrow.RecordBatch` or `Table`, a column dict, or a
+pandas/polars/astropy table.
+
+```python
+with torchfits.table.writer("out.fits", extname="CAT", checksum=True) as w:
+    for batch in torchfits.table.scan("big.fits", columns=["ID", "FLUX"]):
+        w.write(batch)
+```
+
+- **Atomic.** Rows go to a temp file next to `path`, published only when
+  `close()` succeeds. An exception in the producer, a batch that fails to
+  write (which abandons the stream), or `abort()` leaves an existing `path`
+  byte-identical and no partial file behind. `overwrite=False` refuses an
+  existing `path` up front, before any batch is consumed.
+- **Bounded memory.** One batch is converted and written at a time on a
+  single open file handle (the native writes run without the GIL); `NAXIS2`
+  is fixed up when the stream closes, and `checksum=True` stamps
+  `DATASUM`/`CHECKSUM` then.
+- **Layout.** The first batch with rows fixes the FITS layout exactly as
+  `table.write()` would lay out that batch (`schema=` overrides it the same
+  way); zero-row batches before it are skipped. Every later batch must have
+  the same column names in the same order (`ValueError`), values whose dtype
+  casts safely to the first batch's (`TypeError`; e.g. `int16` into an
+  `int64` column is accepted, `float64` into it is not) and the same cell
+  shape. String widths are fixed too: a longer string raises `ValueError`
+  naming the column -- pass `schema={"NAME": {"format": "32A"}}` to size it
+  up front.
+- **Nulls.** As `table.write()`: float nulls become NaN, string nulls
+  blanks. An integer column cannot widen to float mid-stream the way the
+  one-shot writer widens a nullable integer column, so nulls in an integer
+  column need a sentinel: `schema={"ID": {"tnull": -1}}` (else `ValueError`).
+  Boolean nulls raise `ValueError`.
+- **Empty streams.** A stream with no rows writes a zero-row table when a
+  schema is known (a `RecordBatchReader`'s, or a zero-row batch); with no
+  batches at all `close()` raises `ValueError` and nothing is written.
+- Streams always create a new file (`overwrite=` as for `write()`); appending
+  a table HDU to an existing file is not supported -- use
+  `torchfits.insert_hdu` -- and `quantize=` is not available.
 
 ---
 
