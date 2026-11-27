@@ -426,11 +426,11 @@ def _read_image(path: str, index: int) -> tuple[torch.Tensor, Any]:
     return tensor, header
 
 
-def _b_tensor(
+def _b_image(
     operand2: str,
     a_index: int,
     hdu2: int | None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, Any]:
     if hdu2 is not None:
         b_index = hdu2
     else:
@@ -439,8 +439,42 @@ def _b_tensor(
                 b_index = a_index if 0 <= a_index < len(hdul) else 0
         except Exception as exc:
             raise IoError(f"{operand2}: {exc}") from exc
-    tensor, _ = _read_image(operand2, b_index)
-    return tensor
+    return _read_image(operand2, b_index)
+
+
+def _bunit(header: Any) -> str:
+    value = header.get("BUNIT") if header is not None else None
+    return "" if value is None else str(value).strip()
+
+
+def _result_header_units(
+    op: str,
+    header: Any,
+    *,
+    scalar: float | int | None,
+    b_header: Any,
+    where: str,
+) -> None:
+    """Keep BUNIT only where the result is still in it (no unit algebra).
+
+    ``add`` / ``sub`` keep the unit; two images with different non-empty
+    BUNIT cannot be added or subtracted (usage error). ``mul`` / ``div``
+    by an image, or by a scalar other than 1, give a product unit
+    torchfits does not derive, so BUNIT is dropped.
+    """
+    if op in ("add", "sub"):
+        if b_header is not None:
+            unit_a, unit_b = _bunit(header), _bunit(b_header)
+            if unit_a and unit_b and unit_a != unit_b:
+                raise UsageError(
+                    f"{where}: cannot {op} images with different BUNIT "
+                    f"({unit_a!r} vs {unit_b!r})"
+                )
+        return
+    if b_header is None and scalar == 1:
+        return
+    if "BUNIT" in header:
+        del header["BUNIT"]
 
 
 def _resolve_out_dtype(spec: str, left: torch.Tensor) -> torch.dtype:
@@ -501,6 +535,7 @@ def _arith_one_file(
         headers.append(header)
 
     rights: list[torch.Tensor | float]
+    b_headers: list[Any] = [None] * len(tensors)
     if value is not None:
         scalar_b: torch.Tensor | float = _promote_scalar(value)
         rights = [scalar_b] * len(tensors)
@@ -508,10 +543,13 @@ def _arith_one_file(
         assert operand2 is not None
         if hdu2 is not None:
             # --hdu2 pins operand B to one HDU: read it once, reuse per A HDU.
-            b_fixed = _b_tensor(operand2, indices[0], hdu2)
+            b_fixed, b_header = _b_image(operand2, indices[0], hdu2)
             rights = [b_fixed] * len(tensors)
+            b_headers = [b_header] * len(tensors)
         else:
-            rights = [_b_tensor(operand2, index, hdu2) for index in indices]
+            b_images = [_b_image(operand2, index, hdu2) for index in indices]
+            rights = [tensor for tensor, _ in b_images]
+            b_headers = [header for _, header in b_images]
         for index, left, right in zip(indices, tensors, rights, strict=True):
             if not isinstance(right, torch.Tensor):
                 continue
@@ -520,6 +558,16 @@ def _arith_one_file(
                     f"shape mismatch at HDU {index}: {tuple(left.shape)} vs "
                     f"{tuple(right.shape)}"
                 )
+
+    for index, header, b_header in zip(indices, headers, b_headers, strict=True):
+        drop_data_range_cards(header)
+        _result_header_units(
+            op,
+            header,
+            scalar=value,
+            b_header=b_header,
+            where=f"{path_a}:{index}",
+        )
 
     shapes = {tuple(t.shape) for t in tensors}
     # Stacking is only an execution shortcut: HDUs of different dtypes would
@@ -556,9 +604,6 @@ def _arith_one_file(
             _apply_op(op, left, right, dtype_spec)
             for left, right in zip(tensors, rights, strict=True)
         ]
-
-    for header in headers:
-        drop_data_range_cards(header)
 
     if split == "hdu":
         if out_dir is None:

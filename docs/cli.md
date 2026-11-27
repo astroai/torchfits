@@ -355,6 +355,10 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 processing so it cannot overwrite either input operand.
 The output keeps operand A's header except `DATAMIN` / `DATAMAX`, which no
 longer describe the result and are dropped (as `transform` does).
+`BUNIT` is handled conservatively (torchfits does no unit algebra): `add` /
+`sub` keep it, and adding or subtracting two images whose `BUNIT` values are
+both set and differ is a usage error (exit `2`); `mul` / `div` by an image, or
+by a scalar other than 1, drop it.
 
 | Flag | Purpose |
 |---|---|
@@ -461,6 +465,12 @@ torchfits transform science.fits --name ArcsinhStretch:a=0.05 -o custom_arcsinh.
 # Batch transform multiple files
 torchfits transform *.fits --name LogStretch --out-dir /tmp/log_images -J 0
 ```
+
+The output keeps the source header except storage and range cards (`BSCALE`,
+`BZERO`, `BLANK`, `DATAMIN`, `DATAMAX`, checksums). `BUNIT` is kept only by
+transforms whose output stays in the input unit — `BackgroundSubtract`,
+`MeshBackgroundSubtract`, `SigmaClip`, `AsymmetricSigmaClip`, and
+`AffineTransform` with `scale=1`; every normalization or stretch drops it.
 
 ---
 

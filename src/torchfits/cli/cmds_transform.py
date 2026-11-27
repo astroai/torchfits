@@ -43,6 +43,21 @@ CLI_TRANSFORM_NAMES = (
 )
 
 
+# Transforms whose output is in the input's physical unit (an offset or a
+# replacement of outliers by a statistic of the same data). Every other CLI
+# transform rescales or stretches the data, so its output has no BUNIT.
+_BUNIT_PRESERVING = frozenset(
+    {"BackgroundSubtract", "MeshBackgroundSubtract", "SigmaClip", "AsymmetricSigmaClip"}
+)
+
+
+def _keeps_bunit(name: str, transform: Any) -> bool:
+    if name == "AffineTransform":
+        # flux * scale + offset keeps the unit only for scale == 1.
+        return float(getattr(transform, "scale", 0.0)) == 1.0
+    return name in _BUNIT_PRESERVING
+
+
 def _coerce_transform_kwarg_value(raw: str) -> bool | int | float | str:
     """Coerce a ``key=val`` string value to bool/int/float, else leave as str."""
     lowered = raw.lower()
@@ -176,6 +191,10 @@ def _transform_one(
                     del preserved[stale_key]
             preserved = _strip_compression_cards(preserved)
             header = preserved
+        if not _keeps_bunit(name, transform) and "BUNIT" in header:
+            # Normalized or stretched values are no longer in BUNIT.
+            header = Header(header)
+            del header["BUNIT"]
         torchfits.write_tensor(output_path, result, header=header, overwrite=True)
     except UsageError:
         raise
