@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 - roadmap: 1.3.3 shipped the DLPack/stable-ABI change; plan 1.4
+- data: Document remote completeness checks and dataset edge cases
+
+### Fixed
+- io: Keep the failing path's own error in read_batch(strict=True)
+- hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
+- **Breaking:** table: Decode string columns strictly, add decode_errors= opt-in
+- table: Type schema(where=...) on a zero-row table
+- cli: Drop or check BUNIT when arith/transform change the unit
+- cli: Drop stale DATAMIN/DATAMAX in arith and cutout
+- cli: Make 64-bit integer arith exact and saturating
+- table: Accept a column dict in write_parquet/write_csv/write_ipc
+- cli: Keep table layout and metadata on FITS-to-FITS convert
+- cli: Publish every non-FITS and multi-step output atomically
+- table: Name repeated TTYPE columns COL<i> on every read path
+- native: Initialize CFITSIO's global lock when the core library loads
+- data: Narrow the native table-read fallbacks
+- data: Stream the rows of zero-column tables
+- table: Store omitted columns' TNULL as-is in append/insert_rows
+- native: Serialize table reads on a borrowed FITSFile handle
+- data: Reject misaligned staged cutout bands and companions
+- remote: Key prefetch state by destination and retire staged prefetches
+- table: Range-check float payloads before row mutations write
+- remote: Never cache a truncated HTTP body
+- native: Publish image metadata only under the reader's generation
+- table: Keep TTYPE-less columns through mutations
+- native: Key shared read metadata by canonical path
+- cli: Refuse hard-linked output aliases of the input
+### Performance
+- native: Release the GIL while deleting table rows
+- cli: Stream convert --columns/--where for non-FITS output
 
 ## [1.3.3] — 2026-11-20
 
