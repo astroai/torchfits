@@ -131,3 +131,22 @@ def test_negative_num_rows_other_than_minus_one_still_raises(fixed):
         table.read_torch(full, hdu=1, num_rows=-2)
     with pytest.raises(ValueError, match="num_rows"):
         torchfits.read(full, hdu=1, num_rows=-2)
+
+
+def test_schema_with_where_on_zero_row_table_is_typed(tmp_path):
+    """schema(where=...) on NAXIS2 = 0 used to return an empty schema.
+
+    The scan it reads yields no batch for a table with no rows, and only the
+    where=None case fell back to a typed read; read(where=...) and schema()
+    both return the typed columns.
+    """
+    path = str(tmp_path / "empty.fits")
+    table.write(path, {"AA": np.zeros(0, np.int32), "BB": np.zeros(0)})
+    expected = table.schema(path)
+    assert [f.name for f in expected] == ["AA", "BB"]
+    assert table.schema(path, where="AA > 1") == expected
+    assert table.schema(path, where="AA > 1") == table.read(path, where="AA > 1").schema
+    assert table.schema(path, columns=["BB"], where="AA > 1").names == ["BB"]
+    # A bad predicate fails the same way as the read it describes.
+    with pytest.raises(ValueError, match="unknown column"):
+        table.schema(path, where="NOPE > 1")

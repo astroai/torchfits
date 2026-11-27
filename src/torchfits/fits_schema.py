@@ -138,6 +138,27 @@ def _default_column_name(index: int) -> str:
     return f"COL{index}"
 
 
+def _reader_column_name(raw: Any, index: int, seen: set[str]) -> str:
+    """The name every reader gives column ``index`` whose ``TTYPE`` is ``raw``.
+
+    ``COL<i>`` replaces a missing or empty ``TTYPE``, and also one that repeats
+    an earlier column's name (exact match): readers key columns by name, so a
+    second ``AA`` used to be dropped from ``read()`` while the header-only
+    ``schema()`` listed it. ``seen`` carries the names of the earlier columns
+    (updated here); the native readers apply the same rule.
+    """
+    name = "" if raw is None else str(raw)
+    if not name or name in seen:
+        name = _default_column_name(index)
+    seen.add(name)
+    return name
+
+
+def table_column_names(header: Mapping[str, Any]) -> list[str]:
+    """Reader column names in file order (``COL<i>`` fallbacks included)."""
+    return [name for _idx, name, _tform, _tdim in _iter_tfields_indexed(header)]
+
+
 def _iter_tfields_indexed(
     header: Mapping[str, Any],
 ) -> Iterator[tuple[int, str, str, str | None]]:
@@ -146,8 +167,10 @@ def _iter_tfields_indexed(
     A column without a usable ``TTYPE`` card is still yielded, with the same
     ``COL<i>`` fallback the readers use.  Dropping it shifted every later
     column's index, so ``schema`` addressed the wrong ``TFORM``/``TNULL`` cards.
+    A repeated name gets the same fallback (see ``_reader_column_name``).
     """
     tfields = _tfields_count(header)
+    seen: set[str] = set()
     if tfields > 0:
         get = _kw_lookup(header)
         for i in range(1, tfields + 1):
@@ -155,10 +178,9 @@ def _iter_tfields_indexed(
             name = get("TTYPE" + si)
             tform = get("TFORM" + si)
             tdim = get("TDIM" + si)
-            resolved = "" if name is None else str(name)
             yield (
                 i,
-                resolved if resolved else _default_column_name(i),
+                _reader_column_name(name, i, seen),
                 str(tform) if tform is not None else "",
                 (str(tdim) if tdim is not None else None),
             )
@@ -188,10 +210,9 @@ def _iter_tfields_indexed(
         set(name_by_idx.keys()) | set(tform_by_idx.keys()) | set(tdim_by_idx.keys())
     )
     for idx in sorted(all_indices):
-        name = name_by_idx.get(idx, "")
         yield (
             idx,
-            name if name else _default_column_name(idx),
+            _reader_column_name(name_by_idx.get(idx), idx, seen),
             tform_by_idx.get(idx, ""),
             tdim_by_idx.get(idx),
         )

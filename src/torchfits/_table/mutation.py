@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any, Optional
 
 from .._io_engine._write_helpers import _validate_schema_numerics
@@ -21,10 +20,13 @@ from .._table.write import (
     _resolve_table_hdu_index_and_columns,
     _rewrite_table_hdu_with_schema,
     _rewrite_table_header,
+    _synthesized_column_ttypes,
 )
 
 from ._mutation_coerce import (
     _COMPLEX_TFORM_CODES,
+    _check_numeric_coercion,
+    _column_scaling_map,
     _clip_strings_to_width,
     _coerce_rows_from_arrow,
     _coerce_table_column_array,
@@ -41,6 +43,10 @@ from ._mutation_coerce import (
     _read_table_for_rewrite,
     _replacement_column_layout,
 )
+
+
+def _is_binary_table(header_map: dict[str, Any]) -> bool:
+    return str(header_map.get("XTENSION", "")).strip().upper() != "TABLE"
 
 
 def insert_column(
@@ -125,6 +131,7 @@ def insert_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        source_ttypes=_synthesized_column_ttypes(header_map),
     )
     _mutation_cache_barrier(path)
 
@@ -233,6 +240,7 @@ def replace_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        source_ttypes=_synthesized_column_ttypes(header_map),
     )
     _mutation_cache_barrier(path)
 
@@ -267,13 +275,16 @@ def append_rows(
         path, hdu
     )
     tnull_map = _column_tnull_map(header_map)
+    unsigned = unsigned_column_dtype_names_from_header(header_map)
     normalized, expected_rows = _normalize_mutation_rows(
         rows,
         columns,
         tform_map,
         tnull_map,
         allow_partial=True,
-        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
+        unsigned_dtypes=unsigned,
+        scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
@@ -310,13 +321,16 @@ def insert_rows(
         )
 
     tnull_map = _column_tnull_map(header_map)
+    unsigned = unsigned_column_dtype_names_from_header(header_map)
     normalized, expected_rows = _normalize_mutation_rows(
         rows,
         columns,
         tform_map,
         tnull_map,
         allow_partial=True,
-        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
+        unsigned_dtypes=unsigned,
+        scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
@@ -373,73 +387,6 @@ def delete_rows(
     _restamp_checksums(path, target_hdu, header_map)
 
 
-def _check_numeric_coercion(
-    col_name: str,
-    arr: Any,
-    tform: Any,
-    unsigned_dtype: str | None = None,
-    scaled: bool = False,
-) -> None:
-    """Check *arr* against an integer-TFORM column before anything is written.
-
-    CFITSIO truncates floats toward zero (warned here). An out-of-range
-    integer is refused with ValueError: CFITSIO writes the rows before it
-    reports the overflow, which used to leave the file modified behind the
-    error. Scaled (TSCAL/TZERO) columns take physical values and are not
-    range-checked against the stored type here.
-    """
-    if not tform:
-        return
-    try:
-        is_vla, code, _repeat = _parse_tform(str(tform))
-    except Exception:
-        return
-    if is_vla or code not in {"B", "I", "J", "K"}:
-        return
-    import numpy as _np
-
-    if arr.dtype.kind == "f":
-        finite = arr[_np.isfinite(arr)]
-        non_integral = (
-            int(_np.count_nonzero(finite != _np.floor(finite))) if finite.size else 0
-        )
-        n_nonfinite = int(arr.size - finite.size)
-        if not (non_integral or n_nonfinite):
-            return
-        message = (
-            f"Column '{col_name}' has integer FITS format '{tform}': "
-            f"{non_integral} non-integral value(s) will be truncated toward zero"
-        )
-        if n_nonfinite:
-            message += f" and {n_nonfinite} non-finite value(s) will become undefined"
-        warnings.warn(
-            message + ". Cast explicitly to silence this warning.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        return
-    if arr.dtype.kind in {"i", "u"} and not scaled:
-        bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
-        if unsigned_dtype == "int8":
-            # Signed-byte convention: 'B' with TZERO = -128.
-            low, high = -128, 127
-        elif code == "B" or unsigned_dtype is not None:
-            # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
-            low, high = 0, (1 << bits) - 1
-        else:
-            low, high = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
-        if arr.dtype.kind == "u":
-            out_of_range = int(_np.count_nonzero(arr > high))
-        else:
-            out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
-        if out_of_range:
-            raise ValueError(
-                f"Column '{col_name}' has integer FITS format '{tform}': "
-                f"{out_of_range} value(s) fall outside [{low}, {high}]; "
-                "nothing was written"
-            )
-
-
 def update_rows(
     path: str,
     rows: dict[str, Any],
@@ -464,14 +411,7 @@ def update_rows(
     from ..fits_schema import unsigned_column_dtype_names_from_header
 
     unsigned_names = unsigned_column_dtype_names_from_header(header_map)
-    from ..fits_schema import iter_table_columns
-
-    scaled_names = {
-        col.name
-        for col in iter_table_columns(header_map)
-        if col.name not in unsigned_names
-        and ((col.tscal or 1.0) != 1.0 or (col.tzero or 0.0) != 0.0)
-    }
+    scaling = _column_scaling_map(header_map, unsigned_names)
 
     string_widths: dict[str, int] = {}
     vla_codes: dict[str, str] = {}
@@ -545,7 +485,7 @@ def update_rows(
                 arr,
                 tform_map.get(col_name),
                 unsigned_names.get(col_name),
-                scaled=col_name in scaled_names,
+                scaling.get(col_name),
             )
             if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
                 # Physical uint64 values (negatives refused above): send them

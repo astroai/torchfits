@@ -341,26 +341,25 @@ def test_column_is_vla_answers_for_one_named_column():
     assert fits_schema.column_is_vla(header, "NOPE") is False
 
 
-def test_column_is_vla_and_selected_includes_vla_differ_on_duplicate_names():
-    """The two per-column forms scan differently, and the difference is real.
+def test_column_is_vla_and_selected_includes_vla_agree_on_duplicate_names():
+    """A repeated TTYPE is its own column, named COL<i>, for both forms.
 
-    ``column_is_vla`` answers about the *first* card carrying the name and
-    returns; ``selected_includes_vla`` keeps scanning and answers whether *any*
-    card with a wanted name is a VLA. On a duplicated TTYPE -- which
-    ``test_bug_table_duplicate_names.py`` shows this library really does see --
-    the two disagree. Both are intentional; neither was pinned, so a future
-    "simplify one into the other" would have looked free.
+    ``column_is_vla`` stops at the first column with the name while
+    ``selected_includes_vla`` scans every wanted column. They used to disagree
+    on a duplicated TTYPE because both scanned *names*, and two columns shared
+    one. The second column is now named ``COL2`` (as the readers name it), so
+    ``DUP`` means column 1 for both and ``COL2`` reaches column 2.
     """
     header = _vla_header([("DUP", "1J"), ("DUP", "1PJ")])
     assert fits_schema.column_is_vla(header, "DUP") is False
-    assert fits_schema.selected_includes_vla(header, ["DUP"]) is True
+    assert fits_schema.selected_includes_vla(header, ["DUP"]) is False
+    assert fits_schema.column_is_vla(header, "COL2") is True
+    assert fits_schema.selected_includes_vla(header, ["COL2"]) is True
 
-    # Reversed order: the per-column form now reports True, and so does the
-    # projection form, so the disagreement is genuinely about scanning, not
-    # about which card is "the" column.
     reversed_header = _vla_header([("DUP", "1PJ"), ("DUP", "1J")])
     assert fits_schema.column_is_vla(reversed_header, "DUP") is True
     assert fits_schema.selected_includes_vla(reversed_header, ["DUP"]) is True
+    assert fits_schema.column_is_vla(reversed_header, "COL2") is False
 
 
 def test_selected_includes_vla_none_delegates_to_table_has_vla():

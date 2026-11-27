@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <unordered_set>
 #include <limits>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -96,9 +97,11 @@ void rollback_inserted_rows(fitsfile* fptr, long start_row, long num_rows) {
 // ---------------------------------------------------------------------------
 //
 // append_rows, populate_rows (update_rows/insert_rows), rename_columns and
-// drop_columns all resolve a caller-supplied name with
-// fits_get_colnum(..., CASEINSEN, ...) -- CFITSIO's case-INsensitive match,
-// which is what the FITS standard asks of a TTYPE reference.
+// drop_columns all resolve a caller-supplied name with resolve_column_number:
+// the exact name a reader gives the column first (so COL<n> reaches a column
+// with no or a repeated TTYPE), then fits_get_colnum(..., CASEINSEN, ...) --
+// CFITSIO's case-INsensitive match, which is what the FITS standard asks of a
+// TTYPE reference.
 //
 // Every torchfits READ path is exact-match instead: TableReader::read_columns
 // compares `columns_[i].name == name`, and TableReader::update_rows_mmap
@@ -120,6 +123,80 @@ void rollback_inserted_rows(fitsfile* fptr, long start_row, long num_rows) {
 // Do not "fix" this by switching these four to EXACT: the policies would still
 // disagree, only in the other direction. Any new name resolution here has to
 // pick a policy deliberately and say which one it picked.
+
+// The names the readers give the columns of the current table HDU: TTYPEn,
+// or COL<n> when TTYPEn is missing, empty or repeats an earlier column's name
+// (TableReader / fits_schema._reader_column_name).
+std::vector<std::string> reader_column_names(fitsfile* fptr) {
+    std::vector<std::string> names;
+    int ncols = 0;
+    int nst = 0;
+    fits_get_num_cols(fptr, &ncols, &nst);
+    if (nst != 0 || ncols <= 0) return names;
+    names.reserve(static_cast<size_t>(ncols));
+    std::unordered_set<std::string> seen;
+    for (int c = 1; c <= ncols; ++c) {
+        char keyname[FLEN_KEYWORD];
+        char value[FLEN_VALUE] = {0};
+        int kst = 0;
+        fits_make_keyn("TTYPE", c, keyname, &kst);
+        fits_read_key(fptr, TSTRING, keyname, value, nullptr, &kst);
+        std::string effective = kst == 0 ? std::string(value) : std::string();
+        if (effective.empty() || seen.count(effective) != 0) {
+            effective = "COL" + std::to_string(c);
+        }
+        seen.insert(effective);
+        names.push_back(std::move(effective));
+    }
+    fits_clear_errmsg();
+    return names;
+}
+
+// Resolve a caller-supplied column name to its 1-based number: the reader
+// name (reader_column_names, exact match) first, then fits_get_colnum
+// (CASEINSEN) as before. CFITSIO knows a TTYPE-less column only by its number
+// and reports a repeated name as not unique, so without the first step every
+// mutation refused the name a read returned for such a column.
+// On failure sets *status like fits_get_colnum and returns 0.
+int resolve_column_number(fitsfile* fptr, const std::vector<std::string>& reader_names,
+                          const std::string& name, int* status) {
+    if (*status != 0) return 0;
+    for (size_t i = 0; i < reader_names.size(); ++i) {
+        if (reader_names[i] == name) return static_cast<int>(i + 1);
+    }
+    int colnum = 0;
+    int st = 0;
+    fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(name.c_str()), &colnum, &st);
+    if (st == 0) return colnum;
+    *status = st;
+    return 0;
+}
+
+// append_rows / insert_rows pass None for a column the caller omitted that
+// has an undefined value (an integer column with TNULLn, or a float column).
+// fits_write_col_null stores that value as-is: TNULL is a stored value, and
+// writing it as data applied TZERO / TSCAL to it (TZERO = 5, TNULL = 7 stored
+// 2, which reads back as the valid 7.0 instead of null). Returns the number
+// of elements to null, or throws when the column has no undefined value.
+long null_fill_elements(fitsfile* fptr, int colnum, int typecode, long repeat,
+                        long num_rows, const std::string& col_name) {
+    if (typecode < 0 || typecode == TSTRING || typecode == TBIT || typecode == TLOGICAL) {
+        throw std::runtime_error("No undefined value to fill column " + col_name);
+    }
+    if (typecode != TFLOAT && typecode != TDOUBLE && typecode != TCOMPLEX &&
+        typecode != TDBLCOMPLEX) {
+        char keyname[FLEN_KEYWORD];
+        LONGLONG tnull = 0;
+        int kst = 0;
+        fits_make_keyn("TNULL", colnum, keyname, &kst);
+        fits_read_key(fptr, TLONGLONG, keyname, &tnull, nullptr, &kst);
+        if (kst != 0) {
+            fits_clear_errmsg();
+            throw std::runtime_error("No TNULL to fill column " + col_name);
+        }
+    }
+    return num_rows * (repeat > 0 ? repeat : 1);
+}
 
 }  // namespace
 
@@ -178,7 +255,18 @@ long infer_num_rows_from_payload(nb::dict tensor_dict) {
         return 0;
     }
 
-    nb::handle first_obj = (*tensor_dict.begin()).second;
+    // None marks an omitted column to fill with its undefined value; the
+    // row count comes from the first real payload.
+    nb::handle first_obj;
+    for (auto item : tensor_dict) {
+        if (!item.second.is_none()) {
+            first_obj = item.second;
+            break;
+        }
+    }
+    if (!first_obj.is_valid()) {
+        return 0;
+    }
     if (nb::isinstance<nb::list>(first_obj)) {
         nb::list lst = nb::cast<nb::list>(first_obj);
         return static_cast<long>(lst.size());
@@ -238,11 +326,12 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         throw std::runtime_error("Failed to insert rows for append_rows");
     }
 
+    const std::vector<std::string> reader_names = reader_column_names(fptr);
     for (auto item : tensor_dict) {
         std::string col_name = nb::cast<std::string>(item.first);
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(col_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, reader_names, col_name, &status);
         if (status != 0) {
             rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Column not found for append_rows: " + col_name);
@@ -256,6 +345,18 @@ void append_rows(const char* filename, int hdu_num, nb::dict tensor_dict) {
         if (col_status != 0) {
             rollback_inserted_rows(fptr, start_row, num_rows);
             throw std::runtime_error("Failed to get column type for append_rows: " + col_name);
+        }
+
+        if (item.second.is_none()) {
+            long nnull = 0;
+            try {
+                nnull = null_fill_elements(fptr, colnum, typecode, repeat, num_rows, col_name);
+            } catch (...) {
+                rollback_inserted_rows(fptr, start_row, num_rows);
+                throw;
+            }
+            fits_write_col_null(fptr, colnum, start_row, 1, nnull, &status);
+            continue;
         }
 
         if (typecode < 0) {
@@ -732,6 +833,7 @@ struct PlannedColumn {
     std::vector<nb::ndarray<>> sources;
     std::vector<std::string> strings;
     bool is_string = false;
+    bool is_null = false;  // fill with the column's undefined value
 };
 
 }  // namespace
@@ -744,6 +846,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
     std::vector<PlannedColumn> plan;
     plan.reserve(static_cast<size_t>(tensor_dict.size()));
 
+    const std::vector<std::string> reader_names = reader_column_names(fptr);
     for (auto item : tensor_dict) {
         PlannedColumn col;
         std::string col_name = nb::cast<std::string>(item.first);
@@ -752,7 +855,7 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         // mmap writer this function falls back FROM (update_rows_mmap) is
         // exact-match, so the two writers of the same API disagree on a
         // case-mismatched name; the Python layer rejects those first.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(col_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, reader_names, col_name, &status);
         if (status != 0) {
             throw std::runtime_error("Column not found for update_rows: " + col_name);
         }
@@ -764,6 +867,16 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
         fits_get_coltype(fptr, colnum, &typecode, &repeat, &width, &col_status);
         if (col_status != 0) {
             throw std::runtime_error("Failed to get column type for update_rows: " + col_name);
+        }
+
+        if (item.second.is_none()) {
+            col.is_null = true;
+            col.writes.push_back({typecode, colnum, start_row,
+                                  null_fill_elements(fptr, colnum, typecode, repeat,
+                                                     num_rows, col_name),
+                                  nullptr});
+            plan.push_back(std::move(col));
+            continue;
         }
 
         if (typecode < 0) {
@@ -1153,6 +1266,12 @@ void populate_rows(fitsfile* fptr, nb::dict tensor_dict, long start_row, long nu
                                          &commit_status);
             continue;
         }
+        if (col.is_null) {
+            const PlannedWrite& w = col.writes[0];
+            fits_write_col_null(fptr, w.colnum, w.first_row, 1, w.nelements,
+                                &commit_status);
+            continue;
+        }
         for (const PlannedWrite& w : col.writes) {
             fits_write_col(fptr, w.typecode, w.colnum, w.first_row, 1,
                            w.nelements, w.data, &commit_status);
@@ -1253,6 +1372,7 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
 
     std::vector<std::pair<int, std::string>> renames;
     std::vector<bool> renamed(static_cast<size_t>(ncols), false);
+    const std::vector<std::string> reader_names = reader_column_names(fptr);
     for (auto item : mapping) {
         std::string old_name = nb::cast<std::string>(item.first);
         std::string new_name = nb::cast<std::string>(item.second);
@@ -1263,7 +1383,7 @@ void rename_columns(const char* filename, int hdu_num, nb::dict mapping) {
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above. Nothing has
         // been written yet, so CFITSIO's cached names are the file's names.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(old_name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, reader_names, old_name, &status);
         if (status != 0 || colnum < 1 || colnum > ncols) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for rename_columns: " + old_name);
@@ -1333,11 +1453,12 @@ void drop_columns(const char* filename, int hdu_num, nb::list columns) {
 
     std::vector<int> colnums;
     colnums.reserve(static_cast<size_t>(columns.size()));
+    const std::vector<std::string> reader_names = reader_column_names(fptr);
     for (auto name_obj : columns) {
         std::string name = nb::cast<std::string>(name_obj);
         int colnum = 0;
         // CASEINSEN: see the name-resolution policy note above.
-        fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(name.c_str()), &colnum, &status);
+        colnum = resolve_column_number(fptr, reader_names, name, &status);
         if (status != 0) {
             close_file_ignore_status(fptr);
             throw std::runtime_error("Column not found for drop_columns: " + name);

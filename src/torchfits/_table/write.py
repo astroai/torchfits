@@ -152,27 +152,30 @@ def _column_tform_map(header_map: dict[str, Any]) -> dict[str, str]:
 
 
 def _column_name_index_map(header_map: dict[str, Any]) -> dict[int, str]:
-    out: dict[int, str] = {}
+    """Column index -> name, as every reader names the columns.
 
-    try:
-        tfields = int(header_map.get("TFIELDS", 0))
-    except (ValueError, TypeError):
-        tfields = 0
+    A column with no (or an empty) ``TTYPE`` card is named ``COL<i>`` like the
+    readers do; skipping it here made the column rewrites (insert/replace
+    column) silently drop it and the row mutations refuse its name.
+    """
+    from ..fits_schema import _iter_tfields_indexed
 
-    if tfields > 0:
-        for i in range(1, tfields + 1):
-            val = header_map.get(f"TTYPE{i}")
-            if val is not None:
-                out[i] = str(val)
-        return out
+    return {idx: name for idx, name, _tform, _tdim in _iter_tfields_indexed(header_map)}
 
-    for key, value in header_map.items():
-        key_u = str(key).upper()
-        if not key_u.startswith("TTYPE"):
-            continue
-        suffix = key_u[5:]
-        if suffix.isdigit():
-            out[int(suffix)] = str(value)
+
+def _synthesized_column_ttypes(header_map: dict[str, Any]) -> dict[str, str | None]:
+    """``{read name: original TTYPE}`` of the columns readers call ``COL<i>``.
+
+    That is a column with no (``None``), an empty, or a repeated ``TTYPE``.
+    """
+    from ..fits_schema import _iter_tfields_indexed, _kw_lookup
+
+    get = _kw_lookup(header_map)
+    out: dict[str, str | None] = {}
+    for idx, name, _tform, _tdim in _iter_tfields_indexed(header_map):
+        ttype = get(f"TTYPE{idx}")
+        if ttype is None or str(ttype) != name:
+            out[name] = None if ttype is None or not str(ttype) else str(ttype)
     return out
 
 
@@ -395,8 +398,19 @@ def _rewrite_table_hdu_with_schema(
     table_type: str,
     *,
     restamp_checksums: bool = False,
+    source_ttypes: dict[str, str | None] | None = None,
 ) -> None:
+    """Splice a rewritten table over HDU ``target_hdu`` of ``path``.
+
+    ``source_ttypes`` maps the ``COL<i>`` read names of columns with no, an
+    empty or a repeated ``TTYPE`` to that original card value (``None`` when
+    absent); see ``_synthesized_column_ttypes``. Such a column keeps its
+    original card while it keeps its position; a column that moved is written
+    with its old read name as ``TTYPE`` so the name a read returns does not
+    change under the caller.
+    """
     from .._io_engine._hdu_splice import Piece, hdu_byte_spans, publish_spliced
+    from .._io_engine._write_helpers import _delete_header_key_if_supported
 
     # Stage the single-HDU file in a temp path so building it never races with
     # CFITSIO's internal file-locking on the real file when another handle
@@ -418,6 +432,14 @@ def _rewrite_table_hdu_with_schema(
         # Replayed card by card: the mapping write path re-emits HISTORY and
         # COMMENT as valued cards and collapses repeated lines.
         _write_header_cards_if_supported(tmp_path, 1, header)
+        for pos, col_name in enumerate(data, start=1):
+            if col_name not in (source_ttypes or {}) or col_name != f"COL{pos}":
+                continue
+            original = (source_ttypes or {})[col_name]
+            if original is None:
+                _delete_header_key_if_supported(tmp_path, 1, f"TTYPE{pos}")
+            else:
+                _write_header_cards_if_supported(tmp_path, 1, {f"TTYPE{pos}": original})
         new_start, _new_data, new_end = hdu_byte_spans(tmp_path)[1]
         spans = hdu_byte_spans(path)
         old_start, _old_data, old_end = spans[target_hdu]

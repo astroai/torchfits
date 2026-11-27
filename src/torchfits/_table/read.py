@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from typing import Any, Optional
 
 from .._io_engine.paths import coerce_fits_path, guard_fits_path
+from .._string_decode import DecodeSpec
 from .._table.utils import _require_pyarrow
 from .._table.write import _resolve_table_hdu_index_and_columns
 from .._table_engine import should_skip_cpp_for_where, validate_table_backend
@@ -118,11 +119,14 @@ def scan(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = True,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Iterator[Any]:
     # Eager guard: a generator body would defer this until first next().
     path = coerce_fits_path(path)
     guard_fits_path(path)
     _validate_scan_request(row_slice=row_slice, batch_size=batch_size, backend=backend)
+    encoding = DecodeSpec(encoding, decode_errors)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
     header, columns = _read_prelude(path, hdu, columns, where)
@@ -159,10 +163,13 @@ def read(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = True,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
     path = coerce_fits_path(path)
     guard_fits_path(path)
     backend = validate_table_backend(backend)
+    encoding = DecodeSpec(encoding, decode_errors)
     pa = _require_pyarrow()
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
@@ -328,6 +335,8 @@ def reader(
     include_fits_metadata: bool = True,
     apply_fits_nulls: bool = True,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
@@ -350,6 +359,7 @@ def reader(
         include_fits_metadata=include_fits_metadata,
         apply_fits_nulls=apply_fits_nulls,
         backend=scan_backend,
+        decode_errors=decode_errors,
     )
     it = iter(batches)
     first = next(it, None)

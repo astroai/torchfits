@@ -310,9 +310,13 @@ def padded_string_table(tmp_path):
 @pytest.mark.parametrize(
     ("expr", "kwargs", "expected"),
     [
-        ("S == 'ab'", {"strip": False}, []),
-        ("S == 'ab  '", {"strip": False}, [0]),
-        ("S == 'ab'", {}, [0]),
+        # The table holds a latin-1 cell, which the default strict ASCII
+        # decode refuses (test_strict_decode_refuses_the_latin1_cell).
+        ("S == 'ab'", {"strip": False, "encoding": "latin-1"}, []),
+        ("S == 'ab  '", {"strip": False, "encoding": "latin-1"}, [0]),
+        ("S == 'ab'", {"encoding": "latin-1"}, [0]),
+        ("S == 'ab'", {"decode_errors": "replace"}, [0]),
+        ("S == 'caf'", {"decode_errors": "ignore"}, [1]),
         ("S == 'café'", {"encoding": "latin-1"}, [1]),
         ("S == 'caf'", {"encoding": "latin-1"}, []),
     ],
@@ -331,6 +335,14 @@ def test_string_predicate_uses_callers_decoding(
                 **kwargs,
             )
             assert got["ID"].to_pylist() == expected, (backend, mmap)
+
+
+def test_strict_decode_refuses_the_latin1_cell(padded_string_table):
+    for backend in ("auto", "cpp", "torch"):
+        with pytest.raises(UnicodeDecodeError, match="column 'S'"):
+            torchfits.table.read(
+                padded_string_table, where="S == 'ab'", backend=backend
+            )
 
 
 def test_vector_column_predicate_is_refused_on_every_backend(tmp_path):

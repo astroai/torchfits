@@ -28,7 +28,7 @@ def _row_aligned_count(value: Any) -> Optional[int]:
         if value.ndim > 0:
             return int(value.shape[0])
         return None
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return len(value)
     return None
 
@@ -49,7 +49,7 @@ def _predicate_array(value: Any) -> Any:
     """
     import numpy as np
 
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         if any(_is_sequence_cell(item) for item in value):
             return None
         return np.asarray(value, dtype=object)
@@ -247,8 +247,14 @@ class TableHDU:
         return out
 
     def get_string_column(
-        self, name: str, encoding: str = "ascii", strip: bool = True
+        self,
+        name: str,
+        encoding: str = "ascii",
+        strip: bool = True,
+        *,
+        decode_errors: str = "strict",
     ) -> List[str]:
+        """Decode string column *name*; see ``decode_errors`` in ``table.read``."""
         value = self._raw_data.get(name)
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -258,9 +264,14 @@ class TableHDU:
             raise ValueError(f"Column '{name}' must be 2D (rows, width)")
 
         # Numpy-free decode via shared helper.
-        from .._string_decode import decode_byte_tensor
+        from .._string_decode import DecodeSpec, decode_byte_tensor
 
-        return decode_byte_tensor(value, encoding=encoding, strip=strip)
+        return decode_byte_tensor(
+            value,
+            encoding=DecodeSpec(encoding, decode_errors),
+            strip=strip,
+            column=name,
+        )
 
     # ⚡ Bolt: Cache row count extraction to prevent scanning all column tensors
     # and re-evaluating shapes on every length check.
@@ -402,8 +413,10 @@ class TableHDU:
         for name, value in data_map.items():
             if str(name) not in row_aligned:
                 filtered[name] = value
-            elif isinstance(value, list):
-                filtered[name] = [item for item, keep in zip(value, mask) if keep]
+            elif isinstance(value, (list, tuple)):
+                filtered[name] = type(value)(
+                    item for item, keep in zip(value, mask) if keep
+                )
             elif isinstance(value, torch.Tensor):
                 filtered[name] = value[
                     mask_t if value.device.type == "cpu" else mask_t.to(value.device)
@@ -677,9 +690,10 @@ class TableHDU:
             for start in range(0, total_rows, batch_size):
                 batch: Dict[str, Any] = {}
                 for k, v in self._raw_data.items():
-                    if isinstance(v, torch.Tensor):
-                        batch[str(k)] = v[start : start + batch_size]
-                    elif isinstance(v, list):
+                    # Same row-aligned test as head()/filter(): tensors, numpy
+                    # arrays, lists and tuples are sliced (numpy and tuple
+                    # columns used to be yielded whole in every batch).
+                    if _row_aligned_count(v) is not None:
                         batch[str(k)] = v[start : start + batch_size]
                     else:
                         batch[str(k)] = v
@@ -754,7 +768,9 @@ class TableHDU:
             ):
                 from .._string_decode import decode_byte_tensor
 
-                payload[name] = decode_byte_tensor(value, encoding="ascii", strip=True)
+                payload[name] = decode_byte_tensor(
+                    value, encoding="ascii", strip=True, column=name
+                )
 
         header = self.header if self.header is not None else Header()
         from ..fits_schema import iter_table_columns, remap_table_column_cards

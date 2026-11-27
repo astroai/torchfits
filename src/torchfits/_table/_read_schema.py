@@ -292,13 +292,14 @@ def _can_use_full_read_path(
     selected = set(columns) if columns else None
     any_selected = False
 
+    from ..fits_schema import _reader_column_name
+
+    seen: set[str] = set()
     for i in range(1, tf_count + 1):
         si = str(i)
-        name = header.get("TTYPE" + si)
-        if not isinstance(name, str) or not name:
-            # TTYPE-less columns surface in the readers as COL<i> and still
-            # constrain the scalar-only fast paths (r5a-04).
-            name = f"COL{si}"
+        # TTYPE-less (and repeated-name) columns surface in the readers as
+        # COL<i> and still constrain the scalar-only fast paths (r5a-04).
+        name = _reader_column_name(header.get("TTYPE" + si), i, seen)
         if selected is not None and name not in selected:
             continue
         any_selected = True
@@ -416,15 +417,15 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
 
 def _reader_column_names(header: Any) -> set[str]:
     """All column names a reader can serve for this header (incl. ``COL<i>``)."""
+    from ..fits_schema import _reader_column_name
+
     names: set[str] = set()
     try:
         tf_count = int(header.get("TFIELDS", 0))
     except (TypeError, ValueError):
         tf_count = 0
     for i in range(1, tf_count + 1):
-        si = str(i)
-        name = header.get("TTYPE" + si)
-        names.add(name if isinstance(name, str) and name else f"COL{si}")
+        _reader_column_name(header.get("TTYPE" + str(i)), i, names)
     return names
 
 
@@ -524,9 +525,14 @@ def schema(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = False,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
+    from .._string_decode import DecodeSpec
+
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
+    encoding = DecodeSpec(encoding, decode_errors)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
@@ -553,9 +559,27 @@ def schema(
         include_fits_metadata=include_fits_metadata,
         apply_fits_nulls=apply_fits_nulls,
         backend=scan_backend,
+        decode_errors=decode_errors,
     )
     first = next(iterator, None)
-    if first is None and where is None:
+    if first is None and where is not None:
+        # A table with no rows: scan yields no batch at all. Answer with what
+        # read(where=...) returns -- its typed empty table, or its error for a
+        # bad predicate -- instead of the empty schema this used to return.
+        return _read_mod.read(
+            path,
+            hdu=hdu,
+            columns=columns,
+            where=where,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+            backend=backend,
+            decode_errors=decode_errors,
+        ).schema
+    if first is None:
         # A table with no rows: the C++ chunk reader still returns typed
         # (empty) columns, including VLA lists the header cannot type.
         from ._read_scan import _read_cpp_table_chunk
