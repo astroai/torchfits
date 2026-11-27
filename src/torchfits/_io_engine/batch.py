@@ -7,7 +7,6 @@ import os
 from typing import TYPE_CHECKING, Any, Callable
 
 from .._errors import HDUNotFoundError
-from ._hdu_lookup import raise_lookup_failure
 from .device import batch_to_device, validate_device
 from .paths import coerce_fits_path
 
@@ -63,12 +62,13 @@ def read_batch(
                 tensors = batch_to_device(tensors, device)
             return tensors
     except read_exc_types as exc:
-        if strict:
-            # The batch reader reports a missing file or HDU as RuntimeError;
-            # surface it with the type a single read() raises.
-            for path in file_paths:
-                raise_lookup_failure(path, hdu, exc)
-            raise
+        # The batch error names neither the failing path reliably nor its
+        # type (a missing file or HDU is a RuntimeError there), and the
+        # batch reader serves images only. Re-read per file in both modes:
+        # the first path that fails raises what a single read() of it raises
+        # (strict=True) and a table HDU reads as it does with strict=False.
+        # strict=True used to translate the batch error against *every* path,
+        # so a missing file later in the list replaced the real failure.
         log.debug("read_batch: C++ batch path failed, falling back per file: %s", exc)
 
     results = []

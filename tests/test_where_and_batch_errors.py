@@ -267,3 +267,43 @@ def test_read_batch_propagates_fatal_errors_unwrapped():
         batch_mod.read_batch(
             read_func, io._READ_EXC_TYPES, log, ["a.fits"], strict=False
         )
+
+
+def test_read_batch_strict_reports_the_path_that_failed(tmp_path):
+    """strict=True raised FITSFileNotFoundError for a *later* missing file.
+
+    After the native batch read failed, strict=True translated that error
+    against every path in turn, so with [good, corrupt, missing] the missing
+    file's lookup error replaced the corrupt file's real failure. The first
+    failing path now raises exactly what a single read() of it raises.
+    """
+    good = str(tmp_path / "good.fits")
+    torchfits.write(good, torch.ones(4, 4), overwrite=True)
+    bad = tmp_path / "bad.fits"
+    bad.write_bytes(b"not a fits file" * 200)
+    missing = str(tmp_path / "missing.fits")
+
+    with pytest.raises(RuntimeError) as single:
+        torchfits.read(str(bad))
+    with pytest.raises(RuntimeError) as batch:
+        io.read_batch([good, str(bad), missing], strict=True)
+    assert not isinstance(batch.value, FileNotFoundError)
+    assert type(batch.value) is type(single.value)
+    assert str(batch.value) == str(single.value)
+
+    with pytest.raises(FileNotFoundError, match="missing.fits"):
+        io.read_batch([good, missing, str(bad)], strict=True)
+
+
+def test_read_batch_strict_reads_table_hdus_like_non_strict(tmp_path):
+    """strict=True raised on table HDUs that strict=False reads."""
+    import numpy as np
+
+    tab = str(tmp_path / "tab.fits")
+    torchfits.table.write(tab, {"a": np.arange(3, dtype=np.int32)})
+    loose = io.read_batch([tab, tab], hdu=1)
+    strict = io.read_batch([tab, tab], hdu=1, strict=True)
+    assert len(strict) == len(loose) == 2
+    for a, b in zip(loose, strict):
+        assert type(a) is type(b)
+        assert a["a"].tolist() == b["a"].tolist() == [0, 1, 2]
