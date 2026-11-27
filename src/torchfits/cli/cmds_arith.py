@@ -23,6 +23,7 @@ from .common import (
     add_jobs_arg,
     add_split_arg,
     configure_torch_jobs,
+    drop_data_range_cards,
     ensure_unique_basenames,
     _hdu_width,
     ensure_unique_split_stems,
@@ -555,6 +556,9 @@ def _arith_one_file(
             _apply_op(op, left, right, dtype_spec)
             for left, right in zip(tensors, rights, strict=True)
         ]
+
+    for header in headers:
+        drop_data_range_cards(header)
 
     if split == "hdu":
         if out_dir is None:

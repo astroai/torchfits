@@ -252,6 +252,18 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def drop_data_range_cards(header: Any) -> None:
+    """Delete ``DATAMIN``/``DATAMAX`` from a header whose pixels changed.
+
+    They describe the source array's values; after arithmetic or a cutout
+    they are stale and would mislead display scaling (``transform`` drops
+    them for the same reason).
+    """
+    for key in ("DATAMIN", "DATAMAX"):
+        if key in header:
+            del header[key]
+
+
 def reject_same_path(src: str, dst: str) -> None:
     """Refuse OUTPUT that resolves to the same file as INPUT."""
     src_real = os.path.realpath(cfitsio_base_path(src))

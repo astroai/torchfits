@@ -242,7 +242,7 @@ torchfits table catalog.fits -e 1 -n 0
 
 ### `cutout`
 
-Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged.
+Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged. `DATAMIN` / `DATAMAX` describe the full source image and are dropped.
 
 Supports two coordinate formats:
 
@@ -353,6 +353,8 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 `--hdu2` is valid only with an image operand B. `--split hdu` requires
 `--out-dir` and rejects `--out`. Every generated destination is checked before
 processing so it cannot overwrite either input operand.
+The output keeps operand A's header except `DATAMIN` / `DATAMAX`, which no
+longer describe the result and are dropped (as `transform` does).
 
 | Flag | Purpose |
 |---|---|
