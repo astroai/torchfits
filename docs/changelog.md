@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- io: Keep the failing path's own error in read_batch(strict=True)
+- hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
+- **Breaking:** table: Decode string columns strictly, add decode_errors= opt-in
+- table: Type schema(where=...) on a zero-row table
+- table: Name repeated TTYPE columns COL<i> on every read path
+- table: Store omitted columns' TNULL as-is in append/insert_rows
+- table: Range-check float payloads before row mutations write
+- table: Keep TTYPE-less columns through mutations
+
 ## [1.3.3] — 2026-11-20
 
 Final release of 1.3.3rc1, with no code changes. The full wheel matrix was
