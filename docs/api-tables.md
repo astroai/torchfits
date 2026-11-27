@@ -624,6 +624,7 @@ torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
 torchfits.table.write_parquet("bright.parquet", "catalog.fits", where="MAG < 20")
 torchfits.table.write_csv("bright.csv", "catalog.fits", where="MAG < 20")
 torchfits.table.write_ipc("bright.arrow", "catalog.fits", where="MAG < 20")
+torchfits.table.write_parquet("cols.parquet", {"RA": [10.0, 11.0], "ID": [1, 2]})
 
 # Cache cleanup
 torchfits.table.clear_cache()
@@ -634,7 +635,13 @@ backend names for callers that select an explicit backend.
 
 `torchfits.table.write_ipc(dest, data, *, stream=False, compression="zstd",
 **read_kwargs)` writes Arrow IPC/Feather V2. `data` may be a FITS path, Arrow
-table, record-batch reader, or batch iterable. For a FITS path, read keywords
+table, record-batch reader, batch iterable, or a column dict as accepted by
+`table.write` (same for `write_parquet` and `write_csv`). For a FITS path, read keywords
 such as `hdu`, `columns`, and `where` are forwarded to `table.read` or
 `table.reader`; keywords are rejected for already-materialized input. Set
 `stream=True` to write batches without materializing the full table.
+
+`write_parquet`, `write_csv`, and `write_ipc` write a local `dest` to a
+hidden temp file beside it and rename it into place only once the write
+finishes, so a failed export leaves an existing `dest` unchanged. The bytes
+are published as written (a `.gz` name is not gzip-wrapped).

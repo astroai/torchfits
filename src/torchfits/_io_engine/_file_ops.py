@@ -29,7 +29,7 @@ def _invalidate_path_caches(path: str) -> None:
 
 
 @contextlib.contextmanager
-def _atomic_replace_target(path: str) -> Iterator[str]:
+def _atomic_replace_target(path: str, *, gzip_gz: bool = True) -> Iterator[str]:
     """Yield a temp path that is ``os.replace``d over ``path`` on clean exit.
 
     Every whole-file writer here reaches CFITSIO's ``fits_create_file("!path")``,
@@ -44,10 +44,12 @@ def _atomic_replace_target(path: str) -> Iterator[str]:
     caller that may be creating a new file should yield ``path`` directly. The
     temp file is created in the realpath's directory and renamed onto the
     realpath, so a symlinked target keeps its symlink and only the file it
-    points to is replaced; the target's mode is carried over.
+    points to is replaced; the target's mode is carried over. A '.gz' target
+    gets the temp gzip-compressed (FITS writers); ``gzip_gz=False`` publishes
+    the bytes as written, for writers of other formats.
 
     This is the single copy of the recipe:
-    ``write_api.atomic_write_target``, ``_hdu_rewrite._write_hdus_uncompressed``
+    ``atomic_write_target`` (below), ``_hdu_rewrite._write_hdus_uncompressed``
     and ``_hdu_splice.publish_spliced`` all route through it, so a fix to
     the window cannot reach one site and miss the others.
 
@@ -62,7 +64,7 @@ def _atomic_replace_target(path: str) -> Iterator[str]:
     publish = temp_path
     try:
         yield temp_path
-        publish = _publishable_temp(temp_path, target)
+        publish = _publishable_temp(temp_path, target) if gzip_gz else temp_path
         os.chmod(publish, original_mode)
         os.replace(publish, target)
     finally:
@@ -106,7 +108,9 @@ def _publishable_temp(temp_path: str, target: str) -> str:
 
 
 @contextlib.contextmanager
-def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
+def _atomic_create_target(
+    path: str, *, replace: bool, gzip_gz: bool = True
+) -> Iterator[str]:
     """Yield a temp path published at ``path`` on clean exit, for a new file.
 
     The payload is written to a sibling temp file, so a failed write never
@@ -121,7 +125,7 @@ def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
     publish = temp_path
     try:
         yield temp_path
-        publish = _publishable_temp(temp_path, target)
+        publish = _publishable_temp(temp_path, target) if gzip_gz else temp_path
         if replace:
             os.replace(publish, target)
         else:
@@ -144,6 +148,35 @@ def _atomic_create_target(path: str, *, replace: bool) -> Iterator[str]:
         for leftover in {temp_path, publish}:
             if os.path.exists(leftover):
                 os.unlink(leftover)
+
+
+@contextlib.contextmanager
+def atomic_write_target(
+    path: str, overwrite: bool, *, gzip_gz: bool = True
+) -> Iterator[str]:
+    """Yield a temp path to write to, published at ``path`` only on clean exit.
+
+    An existing file is replaced (``overwrite=True``) by
+    ``_atomic_replace_target``; a new file is published by
+    ``_atomic_create_target``, which never clobbers a file another writer
+    created meanwhile when ``overwrite=False``. Either way a failed write
+    leaves ``path`` untouched.
+
+    ``gzip_gz=False`` publishes the temp file's bytes verbatim even for a
+    '.gz' target -- for non-FITS writers (Parquet, CSV, Arrow IPC, PNG) that
+    must not be wrapped in gzip.
+
+    Callers must invalidate the path caches *after* the block, not inside it;
+    ``_atomic_replace_target`` documents why, and ``_table/write.py`` and
+    ``write_api.write()`` both follow it.
+    """
+    if overwrite and os.path.exists(path):
+        with _atomic_replace_target(path, gzip_gz=gzip_gz) as temp_path:
+            yield temp_path
+        return
+
+    with _atomic_create_target(path, replace=overwrite, gzip_gz=gzip_gz) as temp_path:
+        yield temp_path
 
 
 def _invalidate_written_target(path: str) -> None:

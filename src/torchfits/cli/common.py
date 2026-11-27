@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -251,10 +252,25 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def drop_data_range_cards(header: Any) -> None:
+    """Delete ``DATAMIN``/``DATAMAX`` from a header whose pixels changed.
+
+    They describe the source array's values; after arithmetic or a cutout
+    they are stale and would mislead display scaling (``transform`` drops
+    them for the same reason).
+    """
+    for key in ("DATAMIN", "DATAMAX"):
+        if key in header:
+            del header[key]
+
+
 def reject_same_path(src: str, dst: str) -> None:
     """Refuse OUTPUT that resolves to the same file as INPUT."""
     src_real = os.path.realpath(cfitsio_base_path(src))
     dst_real = os.path.realpath(dst)
+    # Hard links (and other aliases realpath cannot see) share an inode.
+    if _same_existing_file(src_real, dst_real):
+        raise UsageError(f"refusing same-path rewrite in place: {src}")
     if sys.platform == "darwin":
         src_real = unicodedata.normalize("NFC", src_real)
         dst_real = unicodedata.normalize("NFC", dst_real)
@@ -263,6 +279,40 @@ def reject_same_path(src: str, dst: str) -> None:
         dst_real = dst_real.casefold()
     if src_real == dst_real:
         raise UsageError(f"refusing same-path rewrite in place: {src}")
+
+
+@contextlib.contextmanager
+def staged_output(path: str, *, gzip_gz: bool = True) -> Iterator[str]:
+    """Yield a temp path that is published at ``path`` only on clean exit.
+
+    For commands that build an output in several steps (write, then edit
+    cards, then refresh checksums): every step runs on the temp file, so a
+    failure at any point leaves an existing ``path`` byte-identical and no
+    partial file behind. ``gzip_gz=False`` publishes the bytes verbatim even
+    for a '.gz' name (byte copies); otherwise a '.gz' target is gzip-wrapped.
+    """
+    from torchfits._io_engine._file_ops import (
+        _invalidate_path_caches,
+        _invalidate_written_target,
+        atomic_write_target,
+    )
+
+    temp_path: str | None = None
+    try:
+        with atomic_write_target(path, True, gzip_gz=gzip_gz) as temp_path:
+            yield temp_path
+    finally:
+        if temp_path is not None:
+            _invalidate_path_caches(temp_path)
+    _invalidate_written_target(path)
+
+
+def _same_existing_file(src: str, dst: str) -> bool:
+    """True when both paths exist locally and name the same inode (hard links)."""
+    try:
+        return os.path.samefile(src, dst)
+    except (OSError, ValueError):
+        return False
 
 
 def _filesystem_is_case_insensitive(path: str | Path) -> bool:

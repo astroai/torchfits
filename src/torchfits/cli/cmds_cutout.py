@@ -16,6 +16,7 @@ from .common import (
     UsageError,
     add_file_jobs_arg,
     compressed_image_geometry,
+    drop_data_range_cards,
     add_hdu_arg,
     resolve_batch_io_pairs,
     resolve_file_jobs,
@@ -183,6 +184,7 @@ def _cutout_one(
             tensor = torchfits.read_subset(input_path, hdu, x1, y1, x2, y2)
             # Keep the stamp on the sky, as CFITSIO does for a section.
             _shift_crpix(header, x1, y1)
+        drop_data_range_cards(header)
         torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
     except UsageError:
         raise

@@ -242,7 +242,7 @@ torchfits table catalog.fits -e 1 -n 0
 
 ### `cutout`
 
-Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged.
+Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged. `DATAMIN` / `DATAMAX` describe the full source image and are dropped.
 
 Supports two coordinate formats:
 
@@ -283,9 +283,20 @@ torchfits convert catalog.fits -o catalog.csv -e 1 -c RA,DEC,MAG_G
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "MAG_G < 19.5 AND DEC > 0" -c RA,DEC,MAG_G
 ```
 
+`--to fits` (or a `.fits` OUTPUT) copies the table HDU in its stored form:
+column formats (`TFORMn`), `TSCALn`/`TZEROn`, `TNULLn` sentinels, `TDIMn`,
+`TUNITn` and other per-column cards (renumbered for `--columns`), `EXTNAME`,
+and the HDU's other non-structural keywords are kept.
+
+Parquet, CSV/TSV, and Arrow output is streamed batch by batch, with or without
+`--columns`/`--where`; FITS output is built in memory.
+
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
 HDU stays an I/O error (exit `3`).
+
+An OUTPUT that names the same file as an INPUT — the same path, a symlink, or
+a hard link — is refused (exit `2`) before anything is written.
 
 #### RGB PNG Rendering
 ```bash
@@ -321,7 +332,8 @@ output instead of being silently ignored.
 ### `copy`
 
 Performs an exact byte-for-byte copy of a FITS file (`shutil.copy2` locally).
-CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused.
+CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused
+(exit `2`), including an OUTPUT that is a hard link to INPUT.
 Private/loopback `http`/`https`/`ftp` URLs are blocked; public `http`/`https`
 are fetched with the same redirect checks as `probe`.
 
@@ -341,10 +353,16 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 `--hdu2` is valid only with an image operand B. `--split hdu` requires
 `--out-dir` and rejects `--out`. Every generated destination is checked before
 processing so it cannot overwrite either input operand.
+The output keeps operand A's header except `DATAMIN` / `DATAMAX`, which no
+longer describe the result and are dropped (as `transform` does).
+`BUNIT` is handled conservatively (torchfits does no unit algebra): `add` /
+`sub` keep it, and adding or subtracting two images whose `BUNIT` values are
+both set and differ is a usage error (exit `2`); `mul` / `div` by an image, or
+by a scalar other than 1, drop it.
 
 | Flag | Purpose |
 |---|---|
-| `--value FLOAT` | Scalar operand B |
+| `--value NUMBER` | Scalar operand B; an integer literal (`--value 9223372036854775807`) is kept exact |
 | `--operand2 PATH` | Image operand B; required for several A inputs with `--out-dir`, otherwise an alternative to the second positional path |
 | `--hdu2 N` | HDU of image operand B (default: the same index as each A HDU, else 0) |
 | `--dtype {auto,float32,float64}` | `auto` (default) keeps each A HDU's dtype (`div` on an integer A gives float64); integer results are saturated to the dtype's range and fractional parts truncated, with a warning. `float32` / `float64` cast both operands to that dtype, compute, and store in it |
@@ -362,6 +380,13 @@ torchfits arith science.fits dark.fits --op sub -o dark_subtracted.fits
 # Batch process multiple files against a shared scalar
 torchfits arith *.fits --op mul --value 2.0 --out-dir /tmp/scaled -J 0
 ```
+
+Integer `add` / `sub` / `mul` are exact for every integer width, including
+64-bit (`int64`, `uint64`) images and operands: results outside the output
+dtype saturate to its minimum or maximum with a `RuntimeWarning` naming how
+many pixels were clamped, instead of wrapping or being rounded through
+float64. A fractional scalar or a floating-point image B is applied in
+float64.
 
 ---
 
@@ -440,6 +465,12 @@ torchfits transform science.fits --name ArcsinhStretch:a=0.05 -o custom_arcsinh.
 # Batch transform multiple files
 torchfits transform *.fits --name LogStretch --out-dir /tmp/log_images -J 0
 ```
+
+The output keeps the source header except storage and range cards (`BSCALE`,
+`BZERO`, `BLANK`, `DATAMIN`, `DATAMAX`, checksums). `BUNIT` is kept only by
+transforms whose output stays in the input unit — `BackgroundSubtract`,
+`MeshBackgroundSubtract`, `SigmaClip`, `AsymmetricSigmaClip`, and
+`AffineTransform` with `scale=1`; every normalization or stretch drops it.
 
 ---
 
@@ -546,6 +577,10 @@ For practical examples, see [CLI recipes](cli-recipes.md).
 ## Scripting notes
 
 - No prompts; stable exit codes.
+- Every output file (FITS, Parquet, CSV/TSV, Arrow, PNG, `copy`, `setkey -o`) is
+  written to a hidden temp file beside it and renamed into place only when
+  complete, so a failed command leaves an existing OUTPUT unchanged and no
+  partial file behind.
 - Prefer `-f json` / `jsonl` (or `--json` / `--jsonl`) for automation.
 - GPU tensors are staged through host memory before any FITS write (same as the
   Python API — not GPUDirect).

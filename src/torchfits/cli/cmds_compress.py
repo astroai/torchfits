@@ -25,6 +25,7 @@ from .common import (
     hdu_type_name,
     is_compressed_image_header,
     reject_same_path,
+    staged_output,
     resolve_batch_io_pairs,
     resolve_file_jobs,
     run_file_jobs,
@@ -146,6 +147,12 @@ def _refresh_checksums(path: str, hdu: int) -> None:
 
 
 def _compress_file(input_path: str, output_path: str, *, algorithm: str) -> None:
+    # Write and post-edit a temp file; publish only once it is complete.
+    with staged_output(output_path) as temp_path:
+        _compress_to(input_path, temp_path, algorithm=algorithm)
+
+
+def _compress_to(input_path: str, output_path: str, *, algorithm: str) -> None:
     with torchfits.open(input_path) as hdul:
         primary_image = len(hdul) > 0 and _naxis_has_data(hdul[0].header)
         torchfits.write(output_path, hdul, overwrite=True, compress=algorithm)
@@ -168,6 +175,12 @@ def _compress_file(input_path: str, output_path: str, *, algorithm: str) -> None
 
 
 def _decompress_file(input_path: str, output_path: str) -> None:
+    # Write and post-edit a temp file; publish only once it is complete.
+    with staged_output(output_path) as temp_path:
+        _decompress_to(input_path, temp_path)
+
+
+def _decompress_to(input_path: str, output_path: str) -> None:
     with torchfits.open(input_path) as hdul:
         hdus = [hdul[index] for index in range(len(hdul))]
         compressed = [is_compressed_image_header(hdu.header) for hdu in hdus]
