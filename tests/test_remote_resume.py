@@ -32,6 +32,7 @@ def _clean_prefetch_state():
     with remote._prefetch_lock:
         remote._prefetch_threads.clear()
         remote._prefetch_errors.clear()
+        remote._prefetch_scopes.clear()
     yield
     with remote._prefetch_lock:
         threads = list(remote._prefetch_threads.values())
@@ -40,6 +41,7 @@ def _clean_prefetch_state():
     with remote._prefetch_lock:
         remote._prefetch_threads.clear()
         remote._prefetch_errors.clear()
+        remote._prefetch_scopes.clear()
 
 
 class _FakeResp:

@@ -8,6 +8,7 @@ import os
 import random
 import shutil
 import tempfile
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,10 @@ from .remote import (
     cleanup_downloaded_file,
     ephemeral_scratch_dir,
     is_remote_url,
+    PrefetchScope,
     prefetch_urls,
     resolve_local_path,
+    retire_prefetches,
 )
 
 HduRef = int | str
@@ -290,9 +293,10 @@ def _local_read_path(
     *,
     prefetch_ahead: Sequence[str] | None = None,
     cache_dir: Path | None = None,
+    scope: PrefetchScope | None = None,
 ) -> str:
     if prefetch_ahead:
-        prefetch_urls(prefetch_ahead, cache_dir=cache_dir)
+        prefetch_urls(prefetch_ahead, cache_dir=cache_dir, scope=scope)
     return resolve_local_path(path, cache_dir=cache_dir)
 
 
@@ -1548,6 +1552,12 @@ class FitsSpectrumIterableDataset(IterableDataset[Any]):
         )
 
 
+def _reap_stage_dir(stage_root: Path, threads: list[threading.Thread]) -> None:
+    for thread in threads:
+        thread.join()
+    shutil.rmtree(stage_root, ignore_errors=True)
+
+
 class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
     """Streaming cutouts from large remote or local FITS mosaics with ephemeral staging."""
 
@@ -1643,13 +1653,28 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
 
     def _generate(self) -> Iterator[Any]:
         root, stage_root = self._stage_root()
+        scope = PrefetchScope()
         try:
-            yield from self._cutout_stream(stage_root)
+            yield from self._cutout_stream(stage_root, scope)
         finally:
+            # Look-ahead prefetches belong to this iterator: cancel them so
+            # they neither recreate the removed stage directory nor leave
+            # their (staging-gone) errors behind for the next iterator.
+            still_running = retire_prefetches(scope)
             if self.cleanup and stage_root != root:
                 shutil.rmtree(stage_root, ignore_errors=True)
+                if still_running:
+                    # A transfer blocked in a network read stops at its next
+                    # check; sweep again once it has, in case it created a
+                    # file while the tree was being removed.
+                    threading.Thread(
+                        target=_reap_stage_dir,
+                        args=(stage_root, still_running),
+                        name="torchfits-stage-reaper",
+                        daemon=True,
+                    ).start()
 
-    def _cutout_stream(self, stage_root: Path) -> Iterator[Any]:
+    def _cutout_stream(self, stage_root: Path, scope: PrefetchScope) -> Iterator[Any]:
         from torchfits.io import open_subset_reader
 
         sharded_files, indices, worker_seed, _, _ = _shard_work_plan(
@@ -1667,7 +1692,7 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                 for j in range(i + 1, min(i + 3, len(indices)))
             ]
             local_path = _local_read_path(
-                file_ref, prefetch_ahead=ahead, cache_dir=stage_root
+                file_ref, prefetch_ahead=ahead, cache_dir=stage_root, scope=scope
             )
 
             try:
