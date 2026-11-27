@@ -22,6 +22,10 @@ REQUIRED = {
     "SDIST-README.txt",
     "extern/VERSIONS.txt",
     "extern/cfitsio/CMakeLists.txt",
+    # Without .git the build never re-vendors, so it refuses an sdist whose
+    # extern/cfitsio carries no stamp of the inputs it was vendored from.
+    "extern/cfitsio/.torchfits-vendor-stamp",
+    "extern/vendor_stamp.cmake",
     "extern/licenses/CFITSIO-LICENSE.txt",
     "pyproject.toml",
     "src/torchfits/__init__.py",

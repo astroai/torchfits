@@ -128,9 +128,19 @@ def test_sdist_rejects_duplicate_member(tmp_path: Path) -> None:
     )
 
 
-def test_sdist_rejects_missing_required_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "extern/cfitsio/CMakeLists.txt",
+        # An sdist build has no .git, so CMake refuses (never re-vendors) a
+        # tree without the vendor stamp: the sdist must carry it.
+        "extern/cfitsio/.torchfits-vendor-stamp",
+        "extern/vendor_stamp.cmake",
+    ],
+)
+def test_sdist_rejects_missing_required_file(tmp_path: Path, name: str) -> None:
     entries = _entries()
-    del entries["extern/cfitsio/CMakeLists.txt"]
+    del entries[name]
     assert any(
         "missing required files" in problem
         for problem in sdist_validator.validate(
