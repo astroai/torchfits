@@ -550,6 +550,10 @@ For practical examples, see [CLI recipes](cli-recipes.md).
 ## Scripting notes
 
 - No prompts; stable exit codes.
+- Every output file (FITS, Parquet, CSV/TSV, Arrow, PNG, `copy`, `setkey -o`) is
+  written to a hidden temp file beside it and renamed into place only when
+  complete, so a failed command leaves an existing OUTPUT unchanged and no
+  partial file behind.
 - Prefer `-f json` / `jsonl` (or `--json` / `--jsonl`) for automation.
 - GPU tensors are staged through host memory before any FITS write (same as the
   Python API — not GPUDirect).

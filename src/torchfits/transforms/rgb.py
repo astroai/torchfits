@@ -14,6 +14,7 @@ from __future__ import annotations
 import binascii
 import ctypes
 import math
+import os
 import struct
 import zlib
 from typing import Any, Final, Sequence
@@ -461,5 +462,9 @@ def write_rgb_image(path: str, rgb: torch.Tensor) -> None:
         + _png_chunk(b"IDAT", zlib.compress(_tensor_bytes(scanlines), level=6))
         + _png_chunk(b"IEND", b"")
     )
-    with open(path, "wb") as handle:
-        handle.write(png)
+    from .._io_engine._file_ops import atomic_write_target
+
+    # Temp-then-rename: a failed write never truncates an existing PNG.
+    with atomic_write_target(os.fspath(path), True, gzip_gz=False) as temp_path:
+        with open(temp_path, "wb") as handle:
+            handle.write(png)

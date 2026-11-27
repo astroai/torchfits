@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
-from collections.abc import Iterator
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -18,11 +16,12 @@ from ._hdu_rewrite import (
     _write_hdus_with_optional_compression,
 )
 from ._file_ops import (
-    _atomic_create_target,
-    _atomic_replace_target,
     _invalidate_path_caches,
     _invalidate_written_target,
 )
+
+# Re-exported: _table/write.py imports the atomic publish helper from here.
+from ._file_ops import atomic_write_target as atomic_write_target
 from ._write_helpers import (
     QuantizeError,
     _TableHDUWriteProxy,
@@ -68,29 +67,6 @@ def _write_all_checksums(path: str) -> None:
     n_hdus = int(cpp.read_num_hdus(str(path)))
     for hdu in range(n_hdus):
         _write_checksums_impl(str(path), hdu=hdu)
-
-
-@contextlib.contextmanager
-def atomic_write_target(path: str, overwrite: bool) -> Iterator[str]:
-    """Yield a temp path to write to, published at ``path`` only on clean exit.
-
-    An existing file is replaced (``overwrite=True``) by
-    ``_atomic_replace_target``; a new file is published by
-    ``_atomic_create_target``, which never clobbers a file another writer
-    created meanwhile when ``overwrite=False``. Either way a failed write
-    leaves ``path`` untouched.
-
-    Callers must invalidate the path caches *after* the block, not inside it;
-    ``_atomic_replace_target`` documents why, and ``_table/write.py`` and
-    ``write()`` here both follow it.
-    """
-    if overwrite and os.path.exists(path):
-        with _atomic_replace_target(path) as temp_path:
-            yield temp_path
-        return
-
-    with _atomic_create_target(path, replace=overwrite) as temp_path:
-        yield temp_path
 
 
 def write(

@@ -18,6 +18,7 @@ from .common import (
     resolve_batch_io_pairs,
     resolve_file_jobs,
     run_file_jobs,
+    staged_output,
 )
 
 
@@ -59,10 +60,13 @@ def _copy_one(pair: tuple[str, str]) -> None:
     src = cfitsio_base_path(input_path)
     try:
         guard_fits_path(src)
-        if is_remote_path(src):
-            _copy_remote(src, output_path)
-        else:
-            shutil.copy2(src, output_path)
+        # Byte copy into a temp file published only when complete, so a failed
+        # (e.g. interrupted remote) copy never truncates or half-writes OUTPUT.
+        with staged_output(output_path, gzip_gz=False) as temp_path:
+            if is_remote_path(src):
+                _copy_remote(src, temp_path)
+            else:
+                shutil.copy2(src, temp_path)
     except (UsageError, IoError):
         raise
     except HttpBlockedError as exc:

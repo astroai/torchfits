@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -266,6 +267,32 @@ def reject_same_path(src: str, dst: str) -> None:
         dst_real = dst_real.casefold()
     if src_real == dst_real:
         raise UsageError(f"refusing same-path rewrite in place: {src}")
+
+
+@contextlib.contextmanager
+def staged_output(path: str, *, gzip_gz: bool = True) -> Iterator[str]:
+    """Yield a temp path that is published at ``path`` only on clean exit.
+
+    For commands that build an output in several steps (write, then edit
+    cards, then refresh checksums): every step runs on the temp file, so a
+    failure at any point leaves an existing ``path`` byte-identical and no
+    partial file behind. ``gzip_gz=False`` publishes the bytes verbatim even
+    for a '.gz' name (byte copies); otherwise a '.gz' target is gzip-wrapped.
+    """
+    from torchfits._io_engine._file_ops import (
+        _invalidate_path_caches,
+        _invalidate_written_target,
+        atomic_write_target,
+    )
+
+    temp_path: str | None = None
+    try:
+        with atomic_write_target(path, True, gzip_gz=gzip_gz) as temp_path:
+            yield temp_path
+    finally:
+        if temp_path is not None:
+            _invalidate_path_caches(temp_path)
+    _invalidate_written_target(path)
 
 
 def _same_existing_file(src: str, dst: str) -> bool:

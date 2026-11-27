@@ -638,3 +638,8 @@ table, record-batch reader, or batch iterable. For a FITS path, read keywords
 such as `hdu`, `columns`, and `where` are forwarded to `table.read` or
 `table.reader`; keywords are rejected for already-materialized input. Set
 `stream=True` to write batches without materializing the full table.
+
+`write_parquet`, `write_csv`, and `write_ipc` write a local `dest` to a
+hidden temp file beside it and rename it into place only once the write
+finishes, so a failed export leaves an existing `dest` unchanged. The bytes
+are published as written (a `.gz` name is not gzip-wrapped).

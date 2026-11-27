@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -43,6 +44,36 @@ def _reject_detached_kwargs(fn: str, kwargs: dict[str, Any]) -> None:
             f"{fn}() got keyword arguments that require a file path: "
             f"{', '.join(sorted(kwargs))}"
         )
+
+
+class _NoOutput(Exception):
+    """Internal: the writer produced no file, so there is nothing to publish."""
+
+
+@contextlib.contextmanager
+def _atomic_output(dest: Any) -> Iterator[Any]:
+    """Yield where a whole-file writer should write ``dest``.
+
+    A local path gets a sibling temp file that is renamed onto ``dest`` only
+    after the writer returns, so a failed export leaves any existing file
+    byte-identical and never leaves a partial file behind. File objects,
+    Arrow streams and filesystem URIs are passed through unchanged.
+    """
+    path = _as_input_path(dest)
+    if path is None or "://" in path:
+        yield dest
+        return
+    from .._io_engine._file_ops import atomic_write_target
+
+    try:
+        with atomic_write_target(path, True, gzip_gz=False) as temp_path:
+            yield temp_path
+            if not os.path.exists(temp_path):
+                # Nothing was written (an empty, schema-less batch stream):
+                # keep the historical no-op instead of publishing nothing.
+                raise _NoOutput
+    except _NoOutput:
+        pass
 
 
 def _materialize_arrow_table(data: str | Any | Iterable[Any], **kwargs: Any) -> Any:
@@ -138,11 +169,23 @@ def write_parquet(
             table = data_iter
         else:
             table = pa.Table.from_batches(list(data_iter))
-        pq.write_table(
-            table, dest, compression=compression, row_group_size=row_group_size
-        )
+        with _atomic_output(dest) as out:
+            pq.write_table(
+                table, out, compression=compression, row_group_size=row_group_size
+            )
         return
 
+    with _atomic_output(dest) as out:
+        _stream_parquet(out, data, pq, compression, row_group_size)
+
+
+def _stream_parquet(
+    dest: Any,
+    data: Any,
+    pq: Any,
+    compression: str,
+    row_group_size: Optional[int],
+) -> None:
     # The schema comes from the original input (a Table and a RecordBatch both
     # expose one) so an empty source still produces a valid file, while the
     # loop below iterates normalized record batches rather than columns.
@@ -207,9 +250,15 @@ def write_csv(
 
     if not stream:
         table = _materialize_arrow_table(data)
-        pacsv.write_csv(table, dest, write_options=write_options)
+        with _atomic_output(dest) as out:
+            pacsv.write_csv(table, out, write_options=write_options)
         return
 
+    with _atomic_output(dest) as out:
+        _stream_csv(out, data, pacsv, write_options)
+
+
+def _stream_csv(dest: Any, data: Any, pacsv: Any, write_options: Any) -> None:
     # The schema comes from the original input (a Table and a RecordBatch both
     # expose one) so an empty source still produces a valid file, while the
     # loop below iterates normalized record batches rather than columns.
@@ -275,11 +324,16 @@ def write_ipc(
 
     if not stream:
         table = _materialize_arrow_table(data)
-        feather.write_feather(table, dest, compression=compression)
+        with _atomic_output(dest) as out:
+            feather.write_feather(table, out, compression=compression)
         return
 
     write_options = ipc.IpcWriteOptions(compression=compression)
+    with _atomic_output(dest) as out:
+        _stream_ipc(out, data, ipc, write_options)
 
+
+def _stream_ipc(dest: Any, data: Any, ipc: Any, write_options: Any) -> None:
     # The schema comes from the original input (a Table and a RecordBatch both
     # expose one) so an empty source still produces a valid file, while the
     # loop below iterates normalized record batches rather than columns.
