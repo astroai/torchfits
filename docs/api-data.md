@@ -411,7 +411,10 @@ omitted. `return_label=False` returns the row dict alone.
 Rows hold the values as stored, whether or not `where=` is set: `where=`
 only selects rows. Integer columns keep their dtype and a `TNULL` null comes
 back as its sentinel value; character columns are `uint8` byte tensors
-(space padded). Convert nulls to NaN with `TNullToNan`:
+(space padded). A variable-length column gives each row its own 1-D tensor,
+as `FitsTableIterableDataset` does. If the native reader rejects a table
+layout, the load falls back to pyarrow and logs a WARNING; character columns
+then come back as `str`. Convert nulls to NaN with `TNullToNan`:
 
 ```python
 import torchfits

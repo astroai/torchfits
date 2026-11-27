@@ -75,3 +75,103 @@ def test_zero_column_table_shards_cover_every_row(zero_column_table):
         for r in range(4)
     ]
     assert [len(rows) for rows in per_rank] == [2, 2, 1, 1]
+
+
+@pytest.fixture
+def vla_and_string_table(tmp_path):
+    import numpy as np
+
+    import torchfits.table
+
+    path = tmp_path / "vla.fits"
+    torchfits.table.write(
+        str(path),
+        {
+            "V": [
+                np.array([1], np.int32),
+                np.array([2, 3], np.int32),
+                np.array([4], np.int32),
+            ],
+            "S": np.array(["ab", "cd", "ef"]),
+            "X": np.arange(3, dtype=np.int32),
+        },
+        schema={"V": {"format": "1PJ"}},
+        overwrite=True,
+    )
+    return str(path)
+
+
+def test_vla_rows_have_the_same_types_in_both_datasets(vla_and_string_table, caplog):
+    import torch
+
+    with caplog.at_level("WARNING", logger="torchfits.data"):
+        mapped = FitsTableDataset(vla_and_string_table, return_label=False)
+    # The mmap reader refuses VLA; the handle reader serves it natively, so
+    # no pyarrow fallback (which would turn "S" into str).
+    assert not [r for r in caplog.records if "pyarrow" in r.getMessage()]
+    streamed = list(FitsTableIterableDataset(vla_and_string_table))
+    assert len(mapped) == len(streamed) == 3
+    for i, row in enumerate(streamed):
+        ref = mapped[i]
+        assert ref.keys() == row.keys()
+        for key in row:
+            assert isinstance(ref[key], torch.Tensor), key
+            assert ref[key].dtype == row[key].dtype
+            assert torch.equal(ref[key], row[key])
+    assert mapped[1]["V"].tolist() == [2, 3]
+    assert mapped[0]["S"].dtype == torch.uint8
+
+
+@pytest.mark.parametrize(
+    "error", [MemoryError("oom"), TypeError("binding bug"), KeyError("bug")]
+)
+def test_unexpected_native_errors_are_not_swallowed(
+    vla_and_string_table, monkeypatch, error
+):
+    import torchfits._C as cpp
+
+    def boom(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cpp, "read_fits_table", boom)
+    with pytest.raises(type(error)):
+        FitsTableDataset(vla_and_string_table, return_label=False)
+
+
+def test_native_read_failure_falls_back_with_warning(
+    vla_and_string_table, monkeypatch, caplog
+):
+    import torchfits._C as cpp
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("layout not supported")
+
+    monkeypatch.setattr(cpp, "read_fits_table", refuse)
+    with caplog.at_level("WARNING", logger="torchfits.data"):
+        mapped = FitsTableDataset(vla_and_string_table, return_label=False)
+    assert len(mapped) == 3
+    assert any("falling back to pyarrow" in r.getMessage() for r in caplog.records)
+
+
+def test_column_format_lookup_only_tolerates_native_errors(
+    vla_and_string_table, monkeypatch, caplog
+):
+    import torchfits
+
+    ds = FitsTableIterableDataset(vla_and_string_table, as_batches=True)
+    assert ds._non_numeric_columns() == {"S"}
+
+    def bug(*args, **kwargs):
+        raise TypeError("binding bug")
+
+    monkeypatch.setattr(torchfits, "read_table_info", bug)
+    with pytest.raises(TypeError):
+        ds._non_numeric_columns()
+
+    def unreadable(*args, **kwargs):
+        raise OSError("unreadable header")
+
+    monkeypatch.setattr(torchfits, "read_table_info", unreadable)
+    with caplog.at_level("WARNING", logger="torchfits.data"):
+        assert ds._non_numeric_columns() == set()
+    assert any("column formats" in r.getMessage() for r in caplog.records)

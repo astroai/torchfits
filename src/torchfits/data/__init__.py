@@ -202,26 +202,50 @@ def _eager_table_columns(
 
     ``where=`` selects rows but never changes the representation: the
     selected rows come back exactly as an unfiltered read returns them
-    (stored TNULL sentinels, raw ``uint8`` character bytes).
+    (stored TNULL sentinels, raw ``uint8`` character bytes, VLA columns as
+    lists of tensors -- the representation ``FitsTableIterableDataset``
+    yields). Only when the native reader rejects the table does it fall back
+    to pyarrow (logged at WARNING), where character columns become ``str``.
     """
+    import torchfits._C as cpp
+    from torchfits._table._read_scan import _reraise_invalid_geometry
+
     row_mask = None
     if where is not None:
         row_mask = _where_row_mask(path, hdu, where, mmap=mmap)
+    col_list = list(columns) if columns else []
+    use_mmap = _resolve_table_mmap(mmap)
+    chunk = None
+    # Only the native reader's own failures (RuntimeError / OSError, the
+    # family _read_scan catches) select a fallback; anything else -- a
+    # MemoryError, a binding TypeError -- is a bug and must surface.
     try:
-        import torchfits._C as cpp
-
-        col_list = list(columns) if columns else []
-        chunk = cpp.read_fits_table(path, hdu, col_list, _resolve_table_mmap(mmap))
-        if chunk:
-            if row_mask is not None:
-                chunk = _select_table_rows(chunk, row_mask)
-            return _move_table_chunk(chunk, device)
-    except Exception:
-        _log.debug(
-            "C++ table read failed for %r, falling back to pyarrow",
-            path,
-            exc_info=True,
-        )
+        chunk = cpp.read_fits_table(path, hdu, col_list, use_mmap)
+    except (RuntimeError, OSError) as exc:
+        _reraise_invalid_geometry(exc)
+        failure: BaseException | None = exc
+        if use_mmap:
+            # The mmap reader refuses some layouts (e.g. VLA columns); the
+            # handle reader serves them in the same representation the
+            # iterable dataset's scan_torch uses (VLA -> list of tensors).
+            _log.debug("mmap table read failed for %r, retrying: %s", path, exc)
+            try:
+                chunk = cpp.read_fits_table(path, hdu, col_list, False)
+                failure = None
+            except (RuntimeError, OSError) as retry_exc:
+                _reraise_invalid_geometry(retry_exc)
+                failure = retry_exc
+        if failure is not None:
+            _log.warning(
+                "native table read failed for %r (%s); falling back to pyarrow, "
+                "which returns character columns as str instead of uint8 bytes",
+                path,
+                failure,
+            )
+    if chunk:
+        if row_mask is not None:
+            chunk = _select_table_rows(chunk, row_mask)
+        return _move_table_chunk(chunk, device)
 
     import torchfits.table
     import pyarrow.types as pt
@@ -400,7 +424,14 @@ class FitsTableIterableDataset(IterableDataset[Any]):
             import torchfits
 
             info = torchfits.read_table_info(self.path, self.hdu)
-        except Exception:
+        except (RuntimeError, OSError, ValueError) as exc:
+            _log.warning(
+                "could not read the column formats of %r hdu %r (%s); "
+                "character columns stay in as_batches chunks as uint8 bytes",
+                self.path,
+                self.hdu,
+                exc,
+            )
             return set()
         names = list(info.get("colnames") or [])
         tforms = list(info.get("tforms") or [])
