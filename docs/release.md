@@ -12,11 +12,20 @@ PyTorch from a floor up, with no upper bound. The range lives in
 | Key | Meaning |
 |---|---|
 | `torchfits_version` | the release being prepared (plain `X.Y.Z`) |
-| `torch_min` | the runtime floor: the oldest PyTorch minor CI tests |
-| `torch_tested` | the newest PyTorch minor CI tests |
+| `torch_min` | the runtime floor: the oldest PyTorch minor CI tests (`TORCH_MIN_PIN`) |
+| `torch_tested` | the newest PyTorch minor CI tests (`TORCH_TESTED_PIN`) |
 
-Raise `torch_min` only when a release needs a newer PyTorch API; raise
-`torch_tested` when CI has run the suite against a newer minor.
+`release_lane.py --print-pins` turns both into exact `==X.Y.*` pins, and CI
+installs those, not whatever PyTorch released last: `ci.yml` runs the suite at
+`torch_tested` on every Python and at `torch_min` on Python 3.13, and the
+release workflow tests the built wheels at both. The nightly
+`.github/workflows/torch-canary.yml` installs the newest PyTorch the uncapped
+floor resolves to and runs the suite against it, and posts a notice when that
+release is newer than `torch_tested`.
+
+Raise `torch_min` only when a release needs a newer PyTorch API. Raise
+`torch_tested` once the canary passes on a newer minor. Bumping it changes
+what every CI lane installs.
 
 ## 1. Version sync
 
@@ -89,8 +98,9 @@ pixi run release-gate
 ```
 
 All must pass. `preflight-push` includes `check-lane` (the version and torch
-floor agree with `scripts/torch_support.json`). CI tests the newest PyTorch on
-every Python and the floor (`TORCH_MIN_PIN`) on Python 3.13.
+floor agree with `scripts/torch_support.json`). CI tests `torch_tested`
+(`TORCH_TESTED_PIN`) on every Python and the floor (`TORCH_MIN_PIN`) on
+Python 3.13.
 
 ## 4. Public-API freeze (SemVer 1.0 / breaking cuts)
 

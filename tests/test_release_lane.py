@@ -98,12 +98,35 @@ def test_check_reports_a_drifted_floor(tmp_path: Path, monkeypatch, capsys) -> N
 
 def test_workflows_do_not_hard_code_torch_pins() -> None:
     assert lane.workflow_problems() == []
-    for name in ("ci.yml", "build_wheels.yml", "docs-drift.yml"):
+    for name in ("ci.yml", "build_wheels.yml", "docs-drift.yml", "torch-canary.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         assert "release_lane.py --print-pins" in text, name
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-    assert 'pip install "torch$TORCH_PIN"' in ci
+    assert 'pip install "torch$TORCH_TESTED_PIN"' in ci
     assert 'pip install "torch$TORCH_MIN_PIN"' in ci
+
+
+def test_ci_tests_exactly_torch_tested_and_a_canary_floats() -> None:
+    """torch_tested is what CI installs, not a hand-edited claim beside it.
+
+    ci.yml's "newest" lane installed `torch>=<floor>`, i.e. whatever PyTorch
+    had last released, while scripts/torch_support.json said torch_tested was
+    2.15: nothing tied the two together, and a new PyTorch release silently
+    changed what every PR was tested against. The lane is now pinned to
+    TORCH_TESTED_PIN and a separate scheduled canary owns the floating newest.
+    """
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert '"torch$TORCH_PIN"' not in ci, "a ci.yml job installs floating torch"
+    test_job = _job("ci.yml", "test")
+    assert "torch: [tested]" in test_job
+    assert 'pip install "torch$TORCH_TESTED_PIN"' in test_job
+    assert 'pip install "torch$TORCH_MIN_PIN"' in test_job
+
+    canary = (WORKFLOWS / "torch-canary.yml").read_text(encoding="utf-8")
+    assert "schedule:" in canary and "workflow_dispatch:" in canary
+    assert "push:" not in canary and "pull_request:" not in canary
+    assert 'pip install --upgrade "torch$TORCH_PIN"' in canary
+    assert "pytest tests/" in canary
 
 
 def test_workflow_pin_scan_flags_a_hard_coded_pin(tmp_path: Path, monkeypatch) -> None:

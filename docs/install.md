@@ -50,7 +50,8 @@ torchfits supports **PyTorch 2.12 and newer** (`torch>=2.12`, no upper bound).
 The native extension does not link libtorch: decoded buffers are handed to
 PyTorch through DLPack, its public zero-copy exchange protocol, so a torchfits
 wheel keeps working when you upgrade PyTorch. CI tests the floor (2.12) and the
-newest release (2.15); `scripts/torch_support.json` records both.
+newest tested minor (2.15), which `scripts/torch_support.json` records, and a
+nightly job runs the suite against the newest PyTorch release.
 
 The extension also targets the CPython stable ABI: one `cp312-abi3` wheel per
 platform serves Python 3.12 and every later CPython, and Python 3.11 has its
