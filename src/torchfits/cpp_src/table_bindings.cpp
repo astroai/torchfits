@@ -701,8 +701,26 @@ void bind_table(nb::module_& m) {
 
     m.def("delete_fits_table_rows", [](const std::string& filename, int hdu_num, long start_row,
                                        long num_rows) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // Takes no Python input, so the whole rewrite (CFITSIO shifts every
+        // row after the deleted range) runs without the GIL. Other threads can
+        // then read the path while it is rewritten and re-cache its old row
+        // count under the old stat identity, which the validation window would
+        // keep serving: invalidate again once the write is done.
+        nb::gil_scoped_release release;
+        struct InvalidateAround {
+            const std::string& path;
+            explicit InvalidateAround(const std::string& p) : path(p) { drop(); }
+            ~InvalidateAround() {
+                try {
+                    drop();
+                } catch (...) {
+                }
+            }
+            void drop() const {
+                torchfits::invalidate_shared_meta(path);
+                torchfits::evict_cached_reader(path);
+            }
+        } invalidate_around(filename);
         delete_rows(filename.c_str(), hdu_num, start_row, num_rows);
     });
 
