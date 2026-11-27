@@ -205,3 +205,34 @@ def test_release_wheels_are_tested_at_the_floor_and_torch_tested() -> None:
     assert "TORCHFITS_TEST_TORCH_SPEC" in script
     for test in ("test_release_smoke.py", "test_bz2.py", "test_dlpack_boundary.py"):
         assert f"/tests/{test}" in script, test
+
+
+def test_macos_py315_is_tested_with_torch_2_15_or_newer() -> None:
+    """macOS + Python 3.15 is covered, but only with torch >= 2.15.
+
+    The macOS py3.15 CI cell and cibuildwheel's macOS cp315 test were removed
+    because torch 2.14's cp315 macOS wheels segfault (pytorch/pytorch#200779).
+    torch 2.15 fixed that, so the cells are back: CI runs the macOS py3.15 cell
+    on the tested lane only, which is safe while torch_tested >= 2.15, and
+    cibw_test.sh adds a >=2.15 bound for that cell.
+    """
+    test_job = _job("ci.yml", "test")
+    assert '"3.15"' in test_job and "macos-15" in test_job
+    assert "exclude:" not in test_job
+    # The floor lane (torch: min) must not reach macOS py3.15.
+    for entry in re.findall(
+        r"- os: (\S+)\n\s+python-version: \"([\d.]+)\"\n\s+torch: min", test_job
+    ):
+        assert entry != ("macos-15", "3.15"), entry
+    tested = lane.load_support()["torch_tested"]
+    assert lane.minor_key(tested) >= lane.minor_key("2.15"), (
+        "torch_tested < 2.15 would put a broken torch on the macOS py3.15 cell"
+    )
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    macos = pyproject.split("[tool.cibuildwheel.macos]", 1)[1].split("\n[", 1)[0]
+    skip = re.search(r'^skip = "([^"]*)"', macos, re.MULTILINE)
+    assert skip is not None and "cp315" not in skip.group(1)
+    assert "cp31?t-*" in skip.group(1)
+    script = (ROOT / "scripts" / "cibw_test.sh").read_text(encoding="utf-8")
+    assert 'TORCH_SPEC="${TORCH_SPEC},>=2.15"' in script

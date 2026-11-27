@@ -69,13 +69,11 @@ jobs:
           - os: macos-15
             python-version: "3.13"
             torch: min
-        exclude:
-          # torch 2.14's cp315 macOS wheels were built against CPython 3.15.0b3
-          # and segfault on the first tensor op outside the main thread
-          # (pytorch/pytorch#200779, fixed in torch 2.15). The Linux cp315
-          # wheels are not affected, so py3.15 keeps coverage there.
-          - os: macos-15
-            python-version: "3.15"
+        # macOS + py3.15 needs PyTorch 2.15 or newer: torch 2.12-2.14's cp315 macOS
+        # wheels were built against CPython 3.15.0b3 and segfault on the first
+        # tensor op outside the main thread (pytorch/pytorch#200779). That cell
+        # runs the tested lane only, so torch_tested must stay >= 2.15
+        # (tests/test_release_lane.py checks it).
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

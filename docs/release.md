@@ -208,8 +208,8 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
    `release_lane.py --print-pins`).
 2. Builds wheels without PyTorch: per platform (Linux x86_64 + aarch64, macOS
    arm64) one `cp311` wheel and one `cp312-abi3` wheel, which cibuildwheel
-   tests on every later CPython (macOS skips cp315, because torch 2.14's cp315
-   macOS wheel is ABI-broken —
+   tests on every later CPython (on macOS cp315 against torch 2.15+, because
+   the 2.12–2.14 cp315 macOS wheels are ABI-broken —
    [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). An
    sdist is attached to the GitHub Release only — **not** uploaded to PyPI.
 3. Installs the built Linux x86_64 and macOS arm64 wheels (job `test_wheels`,

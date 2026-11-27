@@ -13,6 +13,13 @@ FLOOR="$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["torch_
   "${PROJECT}/scripts/torch_support.json")"
 test -n "${FLOOR}"
 TORCH_SPEC="${TORCHFITS_TEST_TORCH_SPEC:->=${FLOOR}}"
+# torch 2.12-2.14's cp315 macOS wheels were built against CPython 3.15.0b3
+# headers and segfault on the first tensor op outside the main thread
+# (pytorch/pytorch#200779, fixed in 2.15): test that cell against 2.15+.
+if [[ "$(uname -s)" == "Darwin" ]] &&
+  python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)'; then
+  TORCH_SPEC="${TORCH_SPEC},>=2.15"
+fi
 
 python -m pip install "torch${TORCH_SPEC}" --extra-index-url https://download.pytorch.org/whl/cpu
 # The spec must have held: pip leaves an already-installed torch alone only if
