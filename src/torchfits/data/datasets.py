@@ -1552,6 +1552,34 @@ class FitsSpectrumIterableDataset(IterableDataset[Any]):
         )
 
 
+def _check_staged_geometry(
+    flux_readers: Sequence[Any],
+    companions: Sequence[tuple[str, list[Any] | None, Sequence[Any]]],
+) -> None:
+    """Refuse flux bands / companions that are not pixel-aligned.
+
+    Cutout windows are drawn from the first flux band's geometry; a band or
+    companion of another shape would be cut at the same coordinates and
+    silently stacked (or clipped to an empty window), so mirror the
+    map-style checks (``_stack_flux`` / ``_check_companion_shape``).
+    """
+    shapes = [tuple(r.shape) for r in flux_readers]
+    if len(set(shapes)) != 1:
+        raise ValueError(
+            f"multi-HDU flux channels require identical shapes; got {sorted(set(shapes))}"
+        )
+    flux_shape = shapes[0]
+    for kind, hdus, readers in companions:
+        for hdu, reader in zip(hdus or [], readers):
+            shape = tuple(reader.shape)
+            if shape != flux_shape:
+                raise ValueError(
+                    f"{kind} companion {[hdu]} has shape {shape} but the flux has "
+                    f"{flux_shape}; a companion must be pixel-aligned with its flux "
+                    "image (the same shape)"
+                )
+
+
 def _reap_stage_dir(stage_root: Path, threads: list[threading.Thread]) -> None:
     for thread in threads:
         thread.join()
@@ -1728,6 +1756,13 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                         else []
                     )
 
+                    _check_staged_geometry(
+                        flux_readers,
+                        [
+                            ("ivar", self.ivar_hdus, ivar_readers),
+                            ("mask", self.mask_hdus, mask_readers),
+                        ],
+                    )
                     height, width = flux_readers[0].shape
                     for _ in range(self.cutouts_per_file):
                         if self.cutout_generator is not None:
