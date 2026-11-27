@@ -202,7 +202,11 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
    macOS wheel is ABI-broken —
    [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). An
    sdist is attached to the GitHub Release only — **not** uploaded to PyPI.
-3. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via
+3. Installs the built Linux x86_64 and macOS arm64 wheels (job `test_wheels`,
+   Python 3.13) with PyTorch pinned to the floor (`TORCH_MIN_PIN`) and to
+   `torch_tested` (`TORCH_TESTED_PIN`) and runs `scripts/cibw_test.sh` on them
+   from outside the checkout. Nothing is published unless every cell passes.
+4. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via
    OIDC trusted publishing (`id-token: write` on the `pypi` Environment).
    There is no `password:` / `PYPI_API_TOKEN` in the workflow.
 

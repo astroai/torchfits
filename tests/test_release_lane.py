@@ -141,3 +141,44 @@ def test_print_pins_fails_loudly_when_the_tree_drifts(
     monkeypatch.setattr(sys, "argv", ["release_lane.py", "--print-pins"])
     assert lane.main() == 1
     assert "TORCH_PIN" not in capsys.readouterr().out
+
+
+def _job(workflow: str, name: str) -> str:
+    """The text of one top-level job in a workflow file (2-space job keys)."""
+    text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"{workflow} has no job {name!r}"
+    return match.group(1)
+
+
+def test_release_wheels_are_tested_at_the_floor_and_torch_tested() -> None:
+    """The published wheels must be the ones tested at both ends of the range.
+
+    Before 1.3.4 the release workflow ran its floor tests on an editable
+    *source* build, and cibuildwheel tested each built wheel only against the
+    newest torch for its CPython, so no published wheel ever ran at the floor
+    or at the pinned torch_tested minor (TORCH_TESTED_PIN was unused).
+    """
+    job = _job("build_wheels.yml", "test_wheels")
+    assert "needs: build_wheels" in job
+    assert "torch: [min, tested]" in job
+    for artifact in ("cibw-wheels-ubuntu-latest-x86_64", "cibw-wheels-macos-15-arm64"):
+        assert f"artifact: {artifact}" in job
+    assert "--no-index --no-deps --find-links wheels torchfits" in job
+    assert '"$TORCH_MIN_PIN"' in job and '"$TORCH_TESTED_PIN"' in job
+    assert "TORCHFITS_TEST_TORCH_SPEC" in job
+    assert "working-directory: ${{ runner.temp }}" in job
+    assert 'bash "$GITHUB_WORKSPACE/scripts/cibw_test.sh"' in job
+    # Publishing is gated on it.
+    for publisher in ("upload_pypi", "github_release"):
+        needs = re.search(r"needs: \[([^\]]*)\]", _job("build_wheels.yml", publisher))
+        assert needs is not None and "test_wheels" in needs.group(1), publisher
+
+    script = (ROOT / "scripts" / "cibw_test.sh").read_text(encoding="utf-8")
+    assert "TORCHFITS_TEST_TORCH_SPEC" in script
+    for test in ("test_release_smoke.py", "test_bz2.py", "test_dlpack_boundary.py"):
+        assert f"/tests/{test}" in script, test

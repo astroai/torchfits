@@ -129,12 +129,13 @@ jobs:
           /tmp/smoke/bin/python -m pip install "torch$TORCH_MIN_PIN" --index-url https://download.pytorch.org/whl/cpu
           /tmp/smoke/bin/python -m pip install pytest numpy pyarrow dist/*.whl
       - name: Release smoke against the installed wheel
-        # Same command cibuildwheel runs at release time, so a tag-time
-        # surprise is caught here first.
-        run: >-
-          /tmp/smoke/bin/python -m pytest -c /dev/null --noconftest
-          "$GITHUB_WORKSPACE/tests/test_release_smoke.py"
-          "$GITHUB_WORKSPACE/tests/test_bz2.py" -q
+        # Same script cibuildwheel and the release wheel tests run, so a
+        # tag-time surprise is caught here first. Run from outside the
+        # checkout so the installed wheel is what imports.
+        working-directory: ${{ runner.temp }}
+        run: |
+          export PATH="/tmp/smoke/bin:$PATH"
+          TORCHFITS_TEST_TORCH_SPEC="$TORCH_MIN_PIN" bash "$GITHUB_WORKSPACE/scripts/cibw_test.sh" "$GITHUB_WORKSPACE"
 
   docs-contract:
     name: Docs contract
