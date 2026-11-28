@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -204,6 +205,12 @@ std::unordered_map<std::string, std::shared_ptr<SharedReadMeta>> g_shared_meta;
 std::atomic<uint64_t> g_shared_meta_uid{1};
 
 namespace {
+// Bumped by every invalidate_shared_meta_for_path() and
+// clear_shared_meta_cache(); see OpenedVersion.
+std::atomic<uint64_t> g_shared_meta_epoch{0};
+}  // namespace
+
+namespace {
 
 // g_shared_meta gained one entry per distinct path and never shed any, so a
 // process scanning a large tree held every path it had ever touched. Cap it and
@@ -226,17 +233,52 @@ std::list<std::string>& shared_meta_lru() {
 // resolved with realpath(); a name that does not resolve (not created yet,
 // dangling link) resolves its directory instead, so an invalidation before a
 // create and a lookup after it agree. Anything else is kept as given.
-std::string resolve_local_path(const std::string& path) {
+//
+// canonical_path() is realpath() for an existing name. glibc's realpath()
+// readlink()s every path component, so a file twelve directories deep costs
+// twelve syscalls each time a name is first seen (or after clear_file_cache).
+// On Linux the kernel has already resolved the name when it opens it, and
+// /proc/self/fd/<n> reads back that canonical path: three syscalls at any
+// depth. Anything unusual (no /proc, an unreachable or deleted path, a name
+// too long) falls back to realpath().
+bool canonical_path(const std::string& path, std::string* out) {
+#if defined(__linux__) && defined(O_PATH)
+    const int fd = ::open(path.c_str(), O_PATH | O_CLOEXEC);
+    if (fd >= 0) {
+        char link[48];
+        std::snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+        char buf[PATH_MAX];
+        const ssize_t n = ::readlink(link, buf, sizeof(buf));
+        ::close(fd);
+        static constexpr char kDeleted[] = " (deleted)";
+        constexpr size_t kDeletedLen = sizeof(kDeleted) - 1;
+        if (n > 0 && static_cast<size_t>(n) < sizeof(buf) && buf[0] == '/' &&
+            !(static_cast<size_t>(n) >= kDeletedLen &&
+              std::memcmp(buf + n - kDeletedLen, kDeleted, kDeletedLen) == 0)) {
+            out->assign(buf, static_cast<size_t>(n));
+            return true;
+        }
+    } else if (errno == ENOENT || errno == ENOTDIR) {
+        return false;  // realpath() would fail the same way
+    }
+#endif
     char buf[PATH_MAX];
-    if (::realpath(path.c_str(), buf) != nullptr) return std::string(buf);
+    if (::realpath(path.c_str(), buf) == nullptr) return false;
+    out->assign(buf);
+    return true;
+}
+
+std::string resolve_local_path(const std::string& path) {
+    std::string resolved;
+    if (canonical_path(path, &resolved)) return resolved;
     const size_t slash = path.find_last_of('/');
     const std::string leaf = slash == std::string::npos ? path : path.substr(slash + 1);
     if (leaf.empty() || leaf == "." || leaf == "..") return path;
     const std::string dir = slash == std::string::npos
         ? std::string(".")
         : (slash == 0 ? std::string("/") : path.substr(0, slash));
-    if (::realpath(dir.c_str(), buf) == nullptr) return path;
-    std::string out(buf);
+    std::string out;
+    if (!canonical_path(dir, &out)) return path;
     if (out.empty() || out.back() != '/') out.push_back('/');
     return out + leaf;
 }
@@ -298,9 +340,7 @@ std::string absolute_spelling(const std::string& path) {
 
 ResolvedName resolve_name_uncached(const std::string& path, int64_t now_ns) {
     ResolvedName out;
-    char buf[PATH_MAX];
-    if (::realpath(path.c_str(), buf) != nullptr) {
-        out.base = buf;
+    if (canonical_path(path, &out.base)) {
         out.exists = true;
     } else {
         out.base = resolve_local_path(path);
@@ -692,11 +732,16 @@ bool hdu_offsets_cacheable(const std::string& path) {
 // settled at `open_wall_ns` -- the age rule applied at the moment of the open,
 // which is exactly the version an open-time capture would have recorded: any
 // write after the open stamps a ctime later than open_wall_ns - min_age.
+//
+// `meta_uid` is the generation of the path's SharedReadMeta at open, or 0 when
+// none was registered; then `epoch` (bumped by every invalidation and clear)
+// must be unchanged at close instead.
 struct OpenedVersion {
     FileVersion version;
     bool version_known = false;
     int64_t open_wall_ns = 0;
     uint64_t meta_uid = 0;
+    uint64_t epoch = 0;
 };
 
 // Keyed by handle address. Every open_fits_readonly() of a cacheable path
@@ -825,6 +870,22 @@ bool opened_version(fitsfile* fptr, const std::string& path, const struct stat* 
     return true;
 }
 
+// The registered entry for `path`, or null: no creation, no validation stat.
+// An open only needs an existing entry's offset table (seeding is checked
+// against the descriptor's exact version anyway); creating and stat-ing one
+// for every open cost a header-only read (read_header after
+// clear_file_cache) a name resolution and a stat it never used.
+std::shared_ptr<SharedReadMeta> peek_shared_meta(const std::string& path) {
+    {
+        std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+        if (g_shared_meta.empty()) return nullptr;
+    }
+    const std::string base = resolve_name(path, torchfits::internal::monotonic_now_ns()).base;
+    std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+    auto it = g_shared_meta.find(base);
+    return it == g_shared_meta.end() ? nullptr : it->second;
+}
+
 // After a successful open of a cacheable path: record what the handle opened
 // and seed it from a table recorded for that version.
 void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat* before) {
@@ -832,12 +893,11 @@ void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct 
     int64_t open_wall_ns = 0;
     if (!trusted_wall_clock_now(&open_wall_ns)) return;
     if (fptr->Fptr == nullptr) return;
-    auto meta = get_shared_meta_for_path(path);
-    if (!meta) return;
     OpenedVersion opened;
     opened.open_wall_ns = open_wall_ns;
+    opened.epoch = g_shared_meta_epoch.load(std::memory_order_acquire);
     std::shared_ptr<const HduOffsetTable> table;
-    {
+    if (auto meta = peek_shared_meta(path)) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         opened.meta_uid = meta->uid.load(std::memory_order_relaxed);
         table = meta->hdu_offsets;
@@ -934,6 +994,16 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
             return meta->hdu_offsets && meta->hdu_offsets->version == opened.version &&
                    meta->hdu_offsets->headstart.size() >= count;
         };
+        // Same generation the handle started in: an in-process writer's
+        // invalidation (or a validation that saw the file change) rotates it.
+        // With no entry at open, no invalidation or clear may have happened
+        // since; the entry created just now is then the one to fill.
+        const bool had_entry = opened.meta_uid != 0;
+        if (!had_entry) {
+            if (g_shared_meta_epoch.load(std::memory_order_acquire) != opened.epoch) return;
+            std::shared_lock<std::shared_mutex> lock(meta->mutex);
+            opened.meta_uid = meta->uid.load(std::memory_order_relaxed);
+        }
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             if (meta->uid.load(std::memory_order_relaxed) != opened.meta_uid || already_known()) {
@@ -949,8 +1019,9 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
         auto table = make_offset_table(opened.version, file->headstart, count);
         if (!table) return;
         std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        // Same generation the handle started in: an in-process writer's
-        // invalidation (or a validation that saw the file change) rotates it.
+        if (!had_entry && g_shared_meta_epoch.load(std::memory_order_acquire) != opened.epoch) {
+            return;
+        }
         if (meta->uid.load(std::memory_order_relaxed) != opened.meta_uid || already_known()) {
             return;
         }
@@ -1171,6 +1242,7 @@ void invalidate_shared_meta_for_path(const std::string& filename) {
     const std::string base = resolve_local_path(spelled.empty() ? stat_path : spelled);
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
     forget_resolved_names();
+    g_shared_meta_epoch.fetch_add(1, std::memory_order_acq_rel);
     auto& order = shared_meta_lru();
     for (auto it = g_shared_meta.begin(); it != g_shared_meta.end();) {
         const std::string& key = it->first;
@@ -1191,6 +1263,7 @@ void clear_shared_meta_cache() {
     g_shared_meta.clear();
     shared_meta_lru().clear();
     forget_resolved_names();
+    g_shared_meta_epoch.fetch_add(1, std::memory_order_acq_rel);
 }
 
 std::string sanitize_fits_string(const std::string& input) {

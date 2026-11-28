@@ -9,7 +9,7 @@ a handle that never reaches a third HDU has nothing to publish.
 
 An ``LD_PRELOAD`` shim counts the libc calls torchfits makes directly
 (``realpath``/``__realpath_chk``, ``statfs``/``fstatfs``) over a loop of warm
-reads. Name resolution is remembered for the shared-metadata validation
+reads, and over reads that follow ``clear_file_cache()``. Name resolution is remembered for the shared-metadata validation
 window (set to a minute here, so the count does not depend on timing), and a
 single-HDU read never asks which filesystem it is on.
 """
@@ -98,6 +98,20 @@ _SCRIPT = textwrap.dedent(
     print("resolutions", resolutions, "fs_probes", fs_probes)
     assert resolutions <= 4, resolutions
     assert fs_probes == 0, fs_probes
+
+    # A first sight of a name (here forced by clearing the caches) resolves it
+    # through /proc/self/fd, three syscalls at any depth, not realpath()'s
+    # readlink per component -- and a header-only read registers nothing.
+    import torchfits._core as core
+
+    shim.tf_reset()
+    for _ in range(20):
+        torchfits.clear_file_cache()
+        torchfits.read_header(image, 0)
+        assert core.shared_meta_entry_count() == 0
+        torchfits.read(image)
+    if os.path.isdir("/proc/self/fd"):
+        assert shim.tf_count(0) == 0, shim.tf_count(0)
     print("ok")
     """
 )

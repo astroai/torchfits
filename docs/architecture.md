@@ -285,7 +285,8 @@ of a walk over the *n*-1 headers before it). Keyed by the canonical
 resolves to is remembered for the same validation interval as the `stat()`
 snapshot (a retargeted symlink is noticed when the interval runs out, an
 in-process write at once), so a cached probe costs a hash lookup rather than a
-`readlink()` per path component. Validated via `stat()`. The HDU
+`readlink()` per path component (a first sight of a name is resolved through
+`/proc/self/fd` on Linux, three syscalls at any depth). Validated via `stat()`. The HDU
 offsets are tied to the exact file version they were read from (device, inode,
 size, mtime and ctime of the file the handle opened: `fstat()` of the
 descriptor CFITSIO reads through, or with an environment CFITSIO a `stat()` of
