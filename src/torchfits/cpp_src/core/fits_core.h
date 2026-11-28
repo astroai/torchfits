@@ -123,6 +123,10 @@ struct TORCHFITS_CORE_API SharedReadMeta {
     // Position in the bounded registry's recency list; guarded by
     // g_shared_meta_mutex and meaningful only while the entry is registered.
     std::list<std::string>::iterator lru_pos;
+    // Position in the raw-fd recency list (fits_core.cpp); guarded by that
+    // list's mutex and meaningful only while raw_fd_lru_listed is true.
+    std::list<std::weak_ptr<SharedReadMeta>>::iterator raw_fd_lru_pos;
+    bool raw_fd_lru_listed = false;
 };
 
 extern TORCHFITS_CORE_API std::mutex g_shared_meta_mutex;

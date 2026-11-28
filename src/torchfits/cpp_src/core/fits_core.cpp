@@ -1044,28 +1044,46 @@ std::list<std::weak_ptr<SharedReadMeta>>& raw_fd_lru() {
 // Called with meta->mutex NOT held. It takes the LRU lock and then the victims'
 // meta locks, so calling it under a meta lock would invert the order against
 // another thread trimming a different path.
+//
+// A repeat read only moves its own entry to the back (O(1), via the position
+// the meta keeps). Walking the whole list on every read -- locking every
+// entry's weak_ptr -- cost a cache miss per cached descriptor, which showed
+// as several microseconds per small read once other work had evicted them.
+// Entries whose meta has died are swept only when the list is over its cap.
 void touch_raw_fd_cache(const std::shared_ptr<SharedReadMeta>& meta) {
     if (kMaxCachedRawFds == 0) return;
-    std::lock_guard<std::mutex> guard(raw_fd_lru_mutex());
-    auto& order = raw_fd_lru();
-    // Drop dead entries and any earlier sighting of this meta, then re-insert
-    // it as most recently used.
-    for (auto it = order.begin(); it != order.end();) {
-        const std::shared_ptr<SharedReadMeta> held = it->lock();
-        if (!held || held == meta) {
-            it = order.erase(it);
-        } else {
-            ++it;
+    // Victims are released after the LRU lock is dropped: the last reference
+    // to a meta must not be destroyed while holding it.
+    std::vector<std::shared_ptr<SharedReadMeta>> victims;
+    {
+        std::lock_guard<std::mutex> guard(raw_fd_lru_mutex());
+        auto& order = raw_fd_lru();
+        if (meta->raw_fd_lru_listed) {
+            order.splice(order.end(), order, meta->raw_fd_lru_pos);
+            return;
+        }
+        meta->raw_fd_lru_pos = order.insert(order.end(), meta);
+        meta->raw_fd_lru_listed = true;
+        if (order.size() <= kMaxCachedRawFds) return;
+        for (auto it = order.begin(); it != order.end();) {
+            if (it->expired()) {
+                it = order.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (order.size() > kMaxCachedRawFds) {
+            std::shared_ptr<SharedReadMeta> held = order.front().lock();
+            order.pop_front();
+            if (held) {
+                held->raw_fd_lru_listed = false;
+                victims.push_back(std::move(held));
+            }
         }
     }
-    order.push_back(meta);
-    while (order.size() > kMaxCachedRawFds) {
-        const std::weak_ptr<SharedReadMeta> victim = order.front();
-        order.pop_front();
-        if (const std::shared_ptr<SharedReadMeta> held = victim.lock()) {
-            std::unique_lock<std::shared_mutex> lock(held->mutex);
-            held->raw_fd.reset();
-        }
+    for (const auto& held : victims) {
+        std::unique_lock<std::shared_mutex> lock(held->mutex);
+        held->raw_fd.reset();
     }
 }
 
