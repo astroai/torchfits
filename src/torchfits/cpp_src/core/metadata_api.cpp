@@ -51,9 +51,13 @@ std::string read_tstring_card(fitsfile* fptr, const char* keyname) {
     int status = 0;
     fits_read_key(fptr, TSTRING, keyname, value, nullptr, &status);
     if (status != 0) return std::string();
-    size_t len = strnlen(value, FLEN_VALUE);
-    while (len > 0 && value[len - 1] == ' ') --len;
-    return std::string(value, len);
+    // Drop stray non-printable bytes as every header read does: one byte
+    // >= 0x80 in a TTYPE/TFORM card made read_colnames / read_table_info
+    // raise UnicodeDecodeError while read_header and the readers named the
+    // same column without it.
+    std::string text = d::sanitize_fits_string(std::string(value, strnlen(value, FLEN_VALUE)));
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    return text;
 }
 
 // Open for reading, run `body`, always close. Path-level metadata must not leak
