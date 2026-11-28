@@ -1202,7 +1202,12 @@ void bind_table(nb::module_& m) {
         // Persistent TableReader for batch mmap scans: opens + parses the
         // header once; each read_rows call maps/unmaps per batch but never
         // re-opens the file.
-        torchfits::TableReader* reader = new torchfits::TableReader(path, hdu_num);
+        torchfits::TableReader* reader = nullptr;
+        {
+            // Opening inflates a .gz file / fetches a URL: no GIL needed.
+            nb::gil_scoped_release release;
+            reader = new torchfits::TableReader(path, hdu_num);
+        }
         return nb::capsule(reader, kTableReaderCapsuleName, [](void* p) noexcept {
             delete static_cast<torchfits::TableReader*>(p);
         });

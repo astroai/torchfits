@@ -2130,7 +2130,14 @@ void bind_fits(nb::module_& m) {
 
     m.def("open_fits_file", [](const std::string& path, const std::string& mode) {
         int mode_int = (mode == "w" || mode == "w+") ? 1 : 0;
-        return new FITSFile(path.c_str(), mode_int);
+        // An open can be slow (CFITSIO inflates a .gz file into memory, a URL
+        // is downloaded) and the constructor touches no Python object.
+        FITSFile* file = nullptr;
+        {
+            nb::gil_scoped_release release;
+            file = new FITSFile(path.c_str(), mode_int);
+        }
+        return file;
     }, nb::rv_policy::take_ownership);
 
     m.def("read_header", [](FITSFile& file, int hdu_num) {

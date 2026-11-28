@@ -1,8 +1,9 @@
-"""Checksum write/verify run their whole-HDU pass without holding the GIL.
+"""Long native file passes run without holding the GIL.
 
-``ffpcks`` / ``ffvcks`` read every byte of the HDU: ~2 s on a 4.5 GB image,
-during which every other Python thread used to stall. Neither binding touches
-a Python object, so both now release the GIL for the call.
+``ffpcks`` / ``ffvcks`` read every byte of the HDU (~2 s on a 4.5 GB image),
+and opening a ``.gz`` file inflates all of it into memory; every other Python
+thread used to stall meanwhile. None of these touches a Python object, so the
+bindings release the GIL for the call.
 """
 
 from __future__ import annotations
@@ -59,3 +60,24 @@ def test_checksum_write_and_verify_let_other_threads_run(tmp_path) -> None:
     assert ran, f"no other thread ran during a {duration * 1e3:.1f} ms checksum verify"
     assert tuple(result[0]) == (1, 1)
     assert torchfits.verify_checksums(path, 0)["ok"] is True
+
+
+def test_opening_a_gzip_file_lets_other_threads_run(tmp_path) -> None:
+    """CFITSIO inflates a whole .gz file into memory when it opens it."""
+    import gzip
+    import shutil
+
+    plain = tmp_path / "big.fits"
+    torchfits.write(
+        str(plain), torch.arange(4096 * 4096, dtype=torch.float32).reshape(4096, 4096)
+    )
+    packed = tmp_path / "big.fits.gz"
+    with open(plain, "rb") as src, gzip.open(packed, "wb", compresslevel=1) as dst:
+        shutil.copyfileobj(src, dst)
+
+    handles: list[object] = []
+    ran, duration = _other_thread_ran_during(
+        lambda: handles.append(cpp.open_fits_file(str(packed), "r"))
+    )
+    assert ran, f"no other thread ran during a {duration * 1e3:.1f} ms .gz open"
+    handles[0].close()
