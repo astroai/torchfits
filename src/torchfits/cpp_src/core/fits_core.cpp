@@ -21,6 +21,12 @@
 #include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#if defined(__APPLE__)
+#include <sys/mount.h>
+#include <sys/param.h>
+#else
+#include <sys/vfs.h>
+#endif
 #include <unistd.h>
 
 #include "core/parallel.h"
@@ -410,8 +416,16 @@ int open_readonly_fd(const std::string& filename) {
 //     changed what the handle read), the path still names it, and the
 //     generation is still current (no in-process writer invalidated it).
 //
+// Two mitigations below narrow what the version can miss: files on FUSE,
+// FAT and exFAT mounts are never cached (timestamps_trustworthy), and a
+// backwards wall-clock step seen by the process turns the cache off
+// (trusted_wall_clock_now).
+//
 // Residual cases the version cannot see, all needing the writer to defeat
-// ctime: a filesystem that does not maintain ctime at all (some FUSE mounts);
+// ctime: a filesystem that does not maintain ctime at all (other than the
+// FUSE/FAT mounts recognised above, e.g. some network filesystems);
+// a backwards clock step before the process started, on a coarse-timestamp
+// filesystem;
 // a network filesystem whose server clock runs behind the client's by more
 // than the age margin; a single write() call, or writes through a shared
 // mapping, that keep modifying the file for longer than the margin while a
@@ -436,6 +450,77 @@ const size_t kHduOffsetCacheMaxBytes = static_cast<size_t>(torchfits::internal::
     "TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES", 64LL << 20));
 
 std::atomic<size_t> g_hdu_offset_bytes{0};
+
+// The age rule trusts CLOCK_REALTIME to move forward. A backwards step (an
+// NTP step, a manual date change) can bring a rewrite back into the very
+// tick of a recorded version on a coarse-timestamp filesystem, reproducing
+// its (dev, ino, size, mtime, ctime). The process watches the offset between
+// CLOCK_REALTIME and an elapsed-time clock that never steps: forward steps
+// only raise it, NTP slewing moves it by at most ~0.5 ms/s, so a drop of more
+// than kWallClockStepToleranceNs below the largest offset seen means the wall
+// clock went back, and the offset cache stays off for the rest of the
+// process (offsets already learned are not used either). A step before the
+// process started is not visible; see docs/architecture.md.
+#if defined(__linux__)
+constexpr clockid_t kElapsedClock = CLOCK_BOOTTIME;
+#else
+constexpr clockid_t kElapsedClock = CLOCK_MONOTONIC;
+#endif
+constexpr int64_t kWallClockStepToleranceNs = 1000000000LL;
+std::atomic<int64_t> g_max_wall_offset_ns{INT64_MIN};
+std::atomic<bool> g_wall_clock_stepped_back{false};
+
+// CLOCK_REALTIME now, or false once (or as soon as) a backwards step is seen.
+bool trusted_wall_clock_now(int64_t* now_ns) {
+    if (g_wall_clock_stepped_back.load(std::memory_order_relaxed)) return false;
+    struct timespec real {};
+    struct timespec elapsed {};
+    if (clock_gettime(CLOCK_REALTIME, &real) != 0 ||
+        clock_gettime(kElapsedClock, &elapsed) != 0) {
+        return false;
+    }
+    const int64_t real_ns =
+        static_cast<int64_t>(real.tv_sec) * 1000000000LL + static_cast<int64_t>(real.tv_nsec);
+    const int64_t offset = real_ns - (static_cast<int64_t>(elapsed.tv_sec) * 1000000000LL +
+                                      static_cast<int64_t>(elapsed.tv_nsec));
+    int64_t seen = g_max_wall_offset_ns.load(std::memory_order_relaxed);
+    while (offset > seen &&
+           !g_max_wall_offset_ns.compare_exchange_weak(seen, offset, std::memory_order_relaxed)) {
+    }
+    if (seen != INT64_MIN && offset < seen - kWallClockStepToleranceNs) {
+        g_wall_clock_stepped_back.store(true, std::memory_order_relaxed);
+        return false;
+    }
+    if (now_ns != nullptr) *now_ns = real_ns;
+    return true;
+}
+
+// Take the first reading when the library loads, so a step any time after
+// that is caught even before the first open.
+[[maybe_unused]] const bool g_wall_clock_baseline = trusted_wall_clock_now(nullptr);
+
+// Filesystems whose timestamps cannot carry the version argument: FUSE mounts
+// (sshfs and others report ctime = mtime, so `rsync --inplace -t` can restore
+// a version exactly) and FAT/exFAT (no ctime at all, 2 s mtime). Their files
+// are read with the plain header walk.
+bool timestamps_trustworthy(int fd, const std::string& path) {
+#if defined(__APPLE__)
+    struct statfs fs {};
+    const int rc = fd >= 0 ? ::fstatfs(fd, &fs) : ::statfs(path.c_str(), &fs);
+    if (rc != 0) return false;
+    const std::string type(fs.f_fstypename);
+    return !(type == "msdos" || type == "exfat" || type.find("fuse") != std::string::npos);
+#else
+    struct statfs fs {};
+    const int rc = fd >= 0 ? ::fstatfs(fd, &fs) : ::statfs(path.c_str(), &fs);
+    if (rc != 0) return false;
+    const auto type = static_cast<unsigned long>(fs.f_type);
+    constexpr unsigned long kFuseMagic = 0x65735546UL;
+    constexpr unsigned long kMsdosMagic = 0x4d44UL;
+    constexpr unsigned long kExfatMagic = 0x2011BAB0UL;
+    return type != kFuseMagic && type != kMsdosMagic && type != kExfatMagic;
+#endif
+}
 
 }  // namespace
 
@@ -470,10 +555,8 @@ struct FileVersion {
     // See the age rule above. A timestamp in the future (clock skew) is not
     // old enough either.
     bool settled() const {
-        struct timespec now {};
-        if (clock_gettime(CLOCK_REALTIME, &now) != 0) return false;
-        const int64_t now_ns =
-            static_cast<int64_t>(now.tv_sec) * 1000000000LL + static_cast<int64_t>(now.tv_nsec);
+        int64_t now_ns = 0;
+        if (!trusted_wall_clock_now(&now_ns)) return false;
         return now_ns - ctime_ns >= kHduOffsetMinAgeNs && now_ns - mtime_ns >= kHduOffsetMinAgeNs;
     }
 };
@@ -638,8 +721,15 @@ bool opened_version(fitsfile* fptr, const std::string& path, const struct stat* 
 // and seed it from a table recorded for that version.
 void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat* before) {
     track_open_handle(fptr, nullptr);
+    if (!trusted_wall_clock_now(nullptr)) return;
     FileVersion version;
     if (fptr->Fptr == nullptr || !opened_version(fptr, path, before, &version)) return;
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+    const int fd = fits_get_diskfile_fd(fptr);
+#else
+    const int fd = -1;
+#endif
+    if (!timestamps_trustworthy(fd, path)) return;
     auto meta = get_shared_meta_for_path(path);
     if (!meta) return;
     OpenedVersion opened;
@@ -691,6 +781,7 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
         if (!hdu_offsets_cacheable(path)) return;
         OpenedVersion opened;
         if (!take_open_handle(fptr, &opened)) return;
+        if (!trusted_wall_clock_now(nullptr)) return;
         FITSfile* file = fptr->Fptr;
         // Fewer than three known HDUs is nothing a fresh open does not
         // already learn from its first header.

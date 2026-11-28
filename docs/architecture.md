@@ -290,11 +290,17 @@ records them if the path still names that version when it closes and no
 in-process writer invalidated the path meanwhile. A version is recorded only
 once it is `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` old, so a rewrite within the
 filesystem's timestamp granularity cannot keep its ctime; a file younger than
-that is read with the plain header walk. Not covered: filesystems that do not
-maintain ctime (some FUSE mounts), a network filesystem whose server clock runs
-behind the client by more than the age threshold, and a single `write()` (or a
-shared mapping) still modifying the file longer than that threshold while it is
-opened. Set `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES=0` to turn the offset cache off. Lives in a global map protected
+that is read with the plain header walk. Files on FUSE mounts (sshfs and
+others report ctime = mtime, so `rsync --inplace -t` can restore a version)
+and on FAT/exFAT (no ctime, 2 s mtime) are never cached, and a backwards
+wall-clock step (an NTP step or a manual date change, seen as `CLOCK_REALTIME`
+falling more than 1 s behind `CLOCK_BOOTTIME`) turns the cache off for the rest
+of the process. Not covered: a backwards clock step that happened before the
+process started, on a filesystem with coarse (1–2 s) timestamps; other
+filesystems that do not maintain ctime (some network filesystems); a network
+filesystem whose server clock runs behind the client by more than the age
+threshold; and a single `write()` (or a shared mapping) still modifying the
+file longer than that threshold while it is opened. Set `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES=0` to turn the offset cache off. Lives in a global map protected
 by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
 and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
 repeated header probing for hot files without sharing CFITSIO CHDU state.

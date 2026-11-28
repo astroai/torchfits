@@ -307,3 +307,94 @@ def test_offset_tables_share_a_bounded_budget(aged):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.strip().endswith("ok")
+
+
+# A CLOCK_REALTIME that jumps back STEP_NS once the marker file exists.
+_CLOCK_SHIM = r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+
+int clock_gettime(clockid_t id, struct timespec* ts) {
+    static int (*real)(clockid_t, struct timespec*) = 0;
+    if (!real) real = (int (*)(clockid_t, struct timespec*))dlsym(RTLD_NEXT, "clock_gettime");
+    int rc = real(id, ts);
+    const char* marker = getenv("TF_TEST_CLOCK_STEP_MARKER");
+    if (rc == 0 && id == CLOCK_REALTIME && marker && access(marker, F_OK) == 0) {
+        ts->tv_sec -= 2;
+    }
+    return rc;
+}
+"""
+
+_STEP_SCRIPT = textwrap.dedent(
+    """
+    import os, sys, time
+    import torchfits
+
+    BLOCK = 2880
+
+    def rchar():
+        with open("/proc/self/io") as fh:
+            return next(int(l.split()[1]) for l in fh if l.startswith("rchar:"))
+
+    def walks(path):
+        torchfits.clear_all_caches()  # the first read below learns afresh
+        assert int(torchfits.read(path, hdu=200)[0, 0]) == 200
+        before = rchar()
+        assert int(torchfits.read(path, hdu=200)[0, 0]) == 200
+        return rchar() - before > 150 * BLOCK
+
+    path, marker = sys.argv[1:3]
+    assert not walks(path)  # the cache works under the shim
+    open(marker, "w").close()  # the wall clock steps back 2 s
+    # The file is still old enough after the step (written > 2.5 s ago with a
+    # 0.5 s threshold), so only the step detection turns the cache off.
+    assert walks(path)
+    os.unlink(marker)
+    assert walks(path)  # stays off for the rest of the process
+    print("ok")
+    """
+)
+
+
+@needs_proc_io
+def test_backwards_wall_clock_step_turns_the_offset_cache_off(tmp_path):
+    # A backwards step can bring a same-size rewrite back into the tick of a
+    # recorded version on a coarse-timestamp filesystem; the process notices
+    # the step (CLOCK_REALTIME against CLOCK_BOOTTIME) and stops seeding.
+    shim_src = tmp_path / "clock_shim.c"
+    shim_src.write_text(_CLOCK_SHIM)
+    shim = tmp_path / "clock_shim.so"
+    try:
+        built = subprocess.run(
+            ["cc", "-shared", "-fPIC", "-O1", str(shim_src), "-o", str(shim), "-ldl"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"no C compiler: {exc}")
+    if built.returncode != 0:
+        pytest.skip(f"cannot build the clock shim: {built.stderr[-300:]}")
+    path = str(tmp_path / "mef.fits")
+    _write_mef(path, 200)
+    time.sleep(3.0)
+    marker = str(tmp_path / "stepped")
+    env = dict(
+        os.environ,
+        LD_PRELOAD=str(shim),
+        TF_TEST_CLOCK_STEP_MARKER=marker,
+        TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS="500",
+        KMP_DUPLICATE_LIB_OK="TRUE",
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", _STEP_SCRIPT, path, marker],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip().endswith("ok")
