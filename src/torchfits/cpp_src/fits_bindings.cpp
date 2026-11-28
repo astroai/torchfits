@@ -1549,6 +1549,9 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                     data_ptr = logical.data();
                 }
                 fits_write_col(fptr, col.datatype, i + 1, row + 1, 1, nelements, data_ptr, &status);
+                if (status != 0) {
+                    break;
+                }
             }
         } else if (col.is_string) {
             long width_chars = col.width > 0 ? col.width : 1;
@@ -1598,7 +1601,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                     // ground truth for 8X/12X/16X), silently shifting every
                     // row after the first. Write one row per call so the
                     // element count stays within the row.
-                    for (long r = 0; r < num_rows; ++r) {
+                    for (long r = 0; r < num_rows && status == 0; ++r) {
                         fits_write_col(fptr, TBIT, i + 1, 1 + r, 1, col.repeat,
                                        logical.data() + static_cast<size_t>(r * col.repeat),
                                        &status);
@@ -1612,6 +1615,15 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 void* data_ptr = ensure_c_contiguous_ndarray(tensor, nelements, contig_buf);
                 fits_write_col(fptr, col.datatype, i + 1, 1, 1, nelements, data_ptr, &status);
             }
+        }
+        if (status != 0) {
+            // Stop at the first failed column: every later CFITSIO call
+            // would return at once on the poisoned status, and the error
+            // must name the column that failed (r8b-09).
+            char err_msg[FLEN_STATUS];
+            fits_get_errstatus(status, err_msg);
+            throw std::runtime_error("Failed to write table column '" + col.name +
+                                     "': " + err_msg);
         }
     }
 

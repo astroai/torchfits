@@ -790,6 +790,12 @@ void commit_planned_rows(fitsfile* fptr, const std::vector<PlannedColumn>& plan,
     // cards exist).
     int commit_status = 0;
     for (const PlannedColumn& col : plan) {
+        if (commit_status != 0) {
+            // Stop at the first failure: CFITSIO returns at once on a
+            // poisoned status, so later columns would only be skipped
+            // silently (r8b-09).
+            break;
+        }
         if (stored && !col.is_string && !col.writes.empty()) {
             fits_set_tscale(fptr, col.writes[0].colnum, 1.0, 0.0, &commit_status);
         }
@@ -811,11 +817,17 @@ void commit_planned_rows(fitsfile* fptr, const std::vector<PlannedColumn>& plan,
             if (commit_status != 0 && w.typecode == TBIT) {
                 throw std::runtime_error("Failed to " + op + " BIT column rows");
             }
+            if (commit_status != 0) {
+                break;
+            }
         }
     }
 
     if (commit_status != 0) {
-        throw std::runtime_error("Failed to " + op + " rows in FITS table");
+        char err_msg[FLEN_STATUS];
+        fits_get_errstatus(commit_status, err_msg);
+        throw std::runtime_error("Failed to " + op + " rows in FITS table: " +
+                                 std::string(err_msg));
     }
 }
 
