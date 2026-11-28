@@ -222,3 +222,38 @@ def test_convert_complex_table_bad_selection_is_usage_error(
     out.write_bytes(b"keep")
     assert main(["convert", str(complex_table), str(out), *extra]) == 2
     assert out.read_bytes() == b"keep"
+
+
+def test_convert_fits_where_selecting_no_rows_keeps_vla_column(tmp_path):
+    # The native writer typed a VLA column from its first element; a filter
+    # that kept no row left it nothing to type, and the convert exited 3.
+    # The source TFORM now types the empty column.
+    src = tmp_path / "vla.fits"
+    torchfits.table.write(
+        str(src),
+        {
+            "a": np.arange(3, dtype=np.float64),
+            "v": [np.arange(i + 1, dtype=np.int32) for i in range(3)],
+        },
+        overwrite=True,
+    )
+    out = tmp_path / "out.fits"
+    assert main(["convert", str(src), str(out), "-w", "a > 10"]) == 0
+    hdr = _header(out)
+    assert hdr["NAXIS2"] == 0
+    assert "PJ" in hdr["TFORM2"]
+    got = torchfits.table.read(str(out))
+    assert got.num_rows == 0
+    assert str(got.schema.field("v").type) == "list<item: int32>"
+
+
+def test_table_write_empty_vla_column_with_schema_tform(tmp_path):
+    out = str(tmp_path / "e.fits")
+    torchfits.table.write(
+        out,
+        {"a": np.zeros(0), "v": []},
+        schema={"v": {"format": "1PE"}},
+        overwrite=True,
+    )
+    assert torchfits.read_header(out, 1)["TFORM2"].startswith("1PE")
+    assert torchfits.table.read(out).num_rows == 0

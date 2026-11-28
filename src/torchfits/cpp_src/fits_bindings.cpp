@@ -1277,20 +1277,38 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 }
                 col.vla_rows.push_back(arr);
             }
-            if (!dtype_set) {
-                if (col.vla_rows.empty()) {
+            if (!dtype_set && col.vla_rows.empty() && has_schema_tform) {
+                // A zero-row VLA column (e.g. a filter that kept no row) has
+                // no element to type it, but its schema TFORM does; no row is
+                // written, so the datatype only has to be valid.
+                static const std::pair<char, int> kVlaTypes[] = {
+                    {'L', TLOGICAL}, {'X', TBIT},  {'B', TBYTE},     {'I', TSHORT},
+                    {'J', TINT},     {'K', TLONGLONG}, {'E', TFLOAT}, {'D', TDOUBLE},
+                    {'C', TCOMPLEX}, {'M', TDBLCOMPLEX}, {'A', TSTRING}};
+                col.datatype = 0;
+                for (const auto& [letter, type] : kVlaTypes) {
+                    if (schema_info.code == letter) col.datatype = type;
+                }
+                if (col.datatype == 0) {
                     throw std::runtime_error("VLA column has no data to infer dtype");
                 }
-                // All rows are empty but typed (e.g. explicit empty arrays or
-                // None-normalized rows): any row's dtype names the column type.
-                dt = col.vla_rows[0].dtype();
-            }
-            auto code = dtype_to_code(dt);
-            col.datatype = code.second;
-            if (has_schema_tform) {
                 col.tform = schema_tform;
             } else {
-                col.tform = "1P" + code.first;
+                if (!dtype_set) {
+                    if (col.vla_rows.empty()) {
+                        throw std::runtime_error("VLA column has no data to infer dtype");
+                    }
+                    // All rows are empty but typed (e.g. explicit empty arrays or
+                    // None-normalized rows): any row's dtype names the column type.
+                    dt = col.vla_rows[0].dtype();
+                }
+                auto code = dtype_to_code(dt);
+                col.datatype = code.second;
+                if (has_schema_tform) {
+                    col.tform = schema_tform;
+                } else {
+                    col.tform = "1P" + code.first;
+                }
             }
 
             long rows = static_cast<long>(col.vla_rows.size());
