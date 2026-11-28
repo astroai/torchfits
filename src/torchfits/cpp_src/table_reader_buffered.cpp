@@ -15,8 +15,13 @@
 #include "fits_detail.h"
 #include "hardware.h"
 #include "core/parallel.h"
+#include "table_gather.h"
 
 namespace torchfits {
+
+using table_gather::ColumnGather;
+using table_gather::plan_column_gather;
+using table_gather::run_column_gather;
 
 namespace {
 
@@ -162,23 +167,25 @@ void TableReader::read_columns_pread_tiled(
     // Destination bases resolved on the calling thread: the workers only
     // see raw pointers, never the result map.
     struct Target {
-        const ColumnInfo* col;
+        ColumnGather gather;
         uint8_t* base;
-        size_t row_bytes;  // output bytes per row
     };
     std::vector<Target> targets;
     targets.reserve(col_indices.size());
     for (int col_idx : col_indices) {
         const auto& col = columns_[col_idx];
         native::Tensor tensor = result[col_idx].fixed_data;
-        targets.push_back(Target{
-            &col,
-            static_cast<uint8_t*>(get_tensor_data_ptr(tensor, 0)),
-            internal::checked_nonnegative_multiply<size_t>(
-                internal::checked_nonnegative_cast<size_t>(
-                    col.repeat, "Invalid table geometry for column " + col.name),
-                tensor.element_size(),
-                "Invalid table geometry for column " + col.name + " destination")});
+        Target target{plan_column_gather(col, row_width_bytes_),
+                      static_cast<uint8_t*>(get_tensor_data_ptr(tensor, 0))};
+        // The destination holds num_rows cells of the source cell's size.
+        if (internal::checked_nonnegative_multiply<size_t>(
+                static_cast<size_t>(num_rows), target.gather.cell_bytes,
+                "Invalid table geometry for column " + col.name + " destination") !=
+            tensor.nbytes()) {
+            throw std::runtime_error(
+                "Invalid table geometry for column " + col.name + " destination");
+        }
+        targets.push_back(target);
     }
     // Absolute file offset of the window's first row, checked once; each
     // tile's offset below stays inside [first, first + window bytes).
@@ -227,9 +234,9 @@ void TableReader::read_columns_pread_tiled(
                 got += static_cast<size_t>(n);
             }
             for (const Target& target : targets) {
-                extract_column_data(tile.data(), rows, *target.col,
-                                    target.base + static_cast<size_t>(first) * target.row_bytes,
-                                    /*allow_parallel=*/false);
+                run_column_gather(
+                    target.gather, tile.data(), 0, rows,
+                    target.base + static_cast<size_t>(first) * target.gather.cell_bytes);
             }
         }
     };
@@ -249,117 +256,23 @@ void TableReader::read_columns_pread_tiled(
 
 void TableReader::extract_column_data(const uint8_t* buffer, long num_rows, const ColumnInfo& col, uint8_t* dest,
                                       bool allow_parallel) {
-    // int→size_t: width/repeat come from TFORM cards and must be positive;
-    // a negative would wrap huge and drive wild memcpy lengths below.
-    if (col.width <= 0 || col.repeat <= 0 || row_width_bytes_ <= 0) {
-        throw std::runtime_error("extract_column_data: invalid column geometry");
-    }
-    const size_t col_width = internal::checked_nonnegative_cast<size_t>(
-        col.width, "extract_column_data: invalid column width");  // bytes per element
-    const size_t total_width = internal::checked_nonnegative_cast<size_t>(
-        col.storage_bytes, "extract_column_data: invalid column storage");  // bytes per cell
-    const size_t row_stride = internal::checked_nonnegative_cast<size_t>(
-        row_width_bytes_, "extract_column_data: invalid row width");
-    const size_t col_offset = internal::checked_nonnegative_cast<size_t>(
-        col.byte_offset, "extract_column_data: invalid column offset");
+    const ColumnGather gather = plan_column_gather(col, row_width_bytes_);
     internal::checked_nonnegative_multiply<size_t>(
         internal::checked_nonnegative_cast<size_t>(
             num_rows, "extract_column_data: invalid row count"),
-        total_width, "extract_column_data: invalid output size");
-
-    // Optimized loops for common types.
-    // FITS binary tables are big-endian; swap on little-endian hosts only.
-    //
-    // Each row writes to a non-overlapping region of dest
-    // (dest + i * total_width), so parallelizing across rows is
-    // thread-safe.  This matches the mmap path's native::parallel_for
-    // with grain size 2048, bringing the buffered read path to
-    // parity with the mmap path for multi-core systems.
-    const bool swap_endian = host_is_little_endian();
-    // Tiny windows: avoid parallel_for scheduling overhead (scorecard small-N).
-    const long grain = (num_rows < 512) ? num_rows : 2048;
-    auto for_rows = [&](auto&& body) {
-        if (num_rows <= 0) {
-            return;
-        }
-        if (num_rows < 512 || !allow_parallel) {
-            body(0L, num_rows);
-        } else {
-            native::parallel_for(0, num_rows, grain, body);
-        }
-    };
-
-    if (col.type == FITSColumnType::LOGICAL) {
-         // Convert 'T'/'F' (or '1'/'0') to bool
-         bool* out = reinterpret_cast<bool*>(dest);
-         const int repeat = col.repeat;
-         for_rows([&](long start, long end) {
-             for (long i = start; i < end; i++) {
-                 const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                 for (int j = 0; j < repeat; j++) {
-                     const uint8_t v = src_cell[j];
-                     out[i * repeat + j] = (v == 'T' || v == '1' || v == 1);
-                 }
-             }
-         });
-    } else if (col.type == FITSColumnType::STRING || col.type == FITSColumnType::BYTE) {
-         // No swapping needed for bytes/strings
-         for_rows([&](long start, long end) {
-             for (long i = start; i < end; i++) {
-                 std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
-             }
-         });
-         if (col.type == FITSColumnType::BYTE && col.fits_typecode == TSBYTE) {
-             detail::xor_sign_bit_u8(
-                 dest,
-                 static_cast<size_t>(num_rows) * static_cast<size_t>(total_width));
-         }
-    } else if (col_width == 2) {
-        const int repeat = col.repeat;
-        for_rows([&](long start, long end) {
-            for (long i = start; i < end; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint16_t* dest_cell = (uint16_t*)(dest + i * total_width);
-                for (int j = 0; j < repeat; j++) {
-                    uint16_t val;
-                    std::memcpy(&val, src_cell + j * 2, 2);
-                    dest_cell[j] = swap_endian ? bswap_16(val) : val;
-                }
-            }
-        });
-    } else if (col_width == 4) {
-        const int repeat = col.repeat;
-        for_rows([&](long start, long end) {
-            for (long i = start; i < end; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint32_t* dest_cell = (uint32_t*)(dest + i * total_width);
-                for (int j = 0; j < repeat; j++) {
-                    uint32_t val;
-                    std::memcpy(&val, src_cell + j * 4, 4);
-                    dest_cell[j] = swap_endian ? bswap_32(val) : val;
-                }
-            }
-        });
-    } else if (col_width == 8) {
-        const int repeat = col.repeat;
-        for_rows([&](long start, long end) {
-            for (long i = start; i < end; i++) {
-                const uint8_t* src_cell = buffer + i * row_stride + col_offset;
-                uint64_t* dest_cell = (uint64_t*)(dest + i * total_width);
-                for (int j = 0; j < repeat; j++) {
-                    uint64_t val;
-                    std::memcpy(&val, src_cell + j * 8, 8);
-                    dest_cell[j] = swap_endian ? bswap_64(val) : val;
-                }
-            }
-        });
+        gather.cell_bytes, "extract_column_data: invalid output size");
+    if (num_rows <= 0) {
+        return;
+    }
+    // Each row writes to a non-overlapping region of dest, so rows split
+    // across threads safely. Tiny windows (and callers already running on a
+    // pool thread, such as the tiled pread) stay on the calling thread.
+    if (num_rows < 512 || !allow_parallel) {
+        run_column_gather(gather, buffer, 0, num_rows, dest);
     } else {
-        // Fallback memcpy (should not happen for standard types needing swap)
-         for_rows([&](long start, long end) {
-             for (long i = start; i < end; i++) {
-                 std::memcpy(dest + i * total_width, buffer + i * row_stride + col_offset, total_width);
-             }
-         });
+        native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
+            run_column_gather(gather, buffer, start, end, dest);
+        });
     }
 }
 

@@ -234,6 +234,19 @@ public:
         return t;
     }
 
+    // A tensor over bytes of an existing allocation: data must point inside
+    // storage's buffer with room for the shape. Every such view keeps the
+    // whole buffer alive, so several tensors can share one allocation.
+    static Tensor view_of(std::shared_ptr<void> storage, void* data,
+                          std::vector<int64_t> shape, ScalarType dtype) {
+        Tensor t;
+        t.shape_ = std::move(shape);
+        t.dtype_ = dtype;
+        t.storage_ = std::move(storage);
+        t.data_ = static_cast<std::byte*>(data);
+        return t;
+    }
+
     bool defined() const { return storage_ != nullptr; }
     ScalarType scalar_type() const { return dtype_; }
     ScalarType dtype() const { return dtype_; }

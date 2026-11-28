@@ -156,6 +156,11 @@ private:
     void close_data_fd() noexcept;
     void ensure_table_hdu();
 
+    // --- read_columns helpers (table_reader_read.cpp) ---
+    void allocate_fixed_columns(
+        const std::vector<std::pair<int, std::vector<int64_t>>>& shapes, bool shared,
+        std::unordered_map<int, ColumnData>& result) const;
+
     // --- value conventions (table_reader_read.cpp) ---
     static void scale_complex_inplace(native::Tensor& tensor, double tscale, double tzero);
     native::Tensor apply_scale_and_nulls(const ColumnInfo& col, native::Tensor raw);

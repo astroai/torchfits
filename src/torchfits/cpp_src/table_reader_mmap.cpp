@@ -15,77 +15,11 @@
 #include "table_reader.h"
 #include "fits_detail.h"
 #include "hardware.h"
+#include "table_gather.h"
 
 namespace torchfits {
 
 namespace {
-
-// Template helper for reading typed columns from mmap with byte-swapping.
-// OutT is the output tensor element type; RawT is the integer type used for
-// raw reads and byte-swapping (same size as OutT, verified by static_assert).
-// bswap_fn is the byte-swap function (bswap_16 / bswap_32 / bswap_64).
-template <typename OutT, typename RawT, RawT (*bswap_fn)(RawT)>
-void read_typed_mmap_column(
-    const uint8_t* col_ptr,
-    OutT* out,
-    long num_rows,
-    long repeat,
-    long row_width_bytes)
-{
-    constexpr size_t elem_size = sizeof(RawT);
-    static_assert(sizeof(OutT) == sizeof(RawT));
-
-    // Contiguous layout (single-column table or tightly packed repeat):
-    // one SIMD bulk byte-swap instead of per-element memcpy + scalar
-    // swap through a function pointer (which blocks vectorization).
-    if (num_rows > 0 && repeat > 0 &&
-        static_cast<uint64_t>(num_rows) <= SIZE_MAX / static_cast<uint64_t>(repeat)) {
-        const size_t total = static_cast<size_t>(num_rows) * static_cast<size_t>(repeat);
-        const bool contiguous =
-            (repeat == 1 && row_width_bytes == static_cast<long>(elem_size)) ||
-            (repeat > 1 && row_width_bytes == static_cast<long>(elem_size * static_cast<size_t>(repeat)));
-        if (contiguous && total > 0) {
-            const auto* src = reinterpret_cast<const RawT*>(col_ptr);
-            auto* dst = reinterpret_cast<RawT*>(out);
-            if constexpr (sizeof(RawT) == 2) {
-                internal::bswap16_copy(reinterpret_cast<const uint16_t*>(src),
-                                       reinterpret_cast<uint16_t*>(dst), total);
-            } else if constexpr (sizeof(RawT) == 4) {
-                internal::bswap32_copy(reinterpret_cast<const uint32_t*>(src),
-                                       reinterpret_cast<uint32_t*>(dst), total);
-            } else if constexpr (sizeof(RawT) == 8) {
-                internal::bswap64_copy(reinterpret_cast<const uint64_t*>(src),
-                                       reinterpret_cast<uint64_t*>(dst), total);
-            } else {
-                for (size_t k = 0; k < total; ++k) dst[k] = bswap_fn(src[k]);
-            }
-            return;
-        }
-    }
-
-    if (repeat == 1) {
-        native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-            for (long i = start; i < end; i++) {
-                RawT raw_val;
-                memcpy(&raw_val, col_ptr + i * row_width_bytes, elem_size);
-                RawT val = bswap_fn(raw_val);
-                memcpy(&out[i], &val, elem_size);
-            }
-        });
-    } else {
-        native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-            for (long i = start; i < end; i++) {
-                OutT* row_out = out + i * repeat;
-                for (long j = 0; j < repeat; j++) {
-                    RawT raw_val;
-                    memcpy(&raw_val, col_ptr + i * row_width_bytes + j * elem_size, elem_size);
-                    RawT val = bswap_fn(raw_val);
-                    memcpy(&row_out[j], &val, elem_size);
-                }
-            }
-        });
-    }
-}
 
 // The dtype policy update_rows_mmap accepts, in one place so the up-front
 // validation and the write dispatch cannot disagree: each case below mirrors
@@ -277,21 +211,46 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
     posix_madvise(const_cast<uint8_t*>(base_ptr + row_start_offset), byte_len, POSIX_MADV_SEQUENTIAL);
 #endif
 
+    // One output per fixed-width column, in request order. Their dtypes:
+    // BIT unpacks to bool here (read_columns reads it as uint8 and coerces
+    // after scaling); everything else is the column's own dtype.
+    auto mmap_dtype = [](const ColumnInfo& col) -> native::ScalarType {
+        switch (col.type) {
+            case FITSColumnType::FLOAT: return native::kFloat32;
+            case FITSColumnType::DOUBLE: return native::kFloat64;
+            case FITSColumnType::INT: return native::kInt32;
+            case FITSColumnType::SHORT: return native::kInt16;
+            case FITSColumnType::LONG: return native::kInt64;
+            case FITSColumnType::BYTE: return col.torch_type;  // kUInt8, or kInt8 for TSBYTE
+            case FITSColumnType::BIT: return native::kBool;
+            case FITSColumnType::LOGICAL: return native::kBool;
+            case FITSColumnType::STRING: return native::kUInt8;
+            case FITSColumnType::COMPLEX_FLOAT: return native::kComplexFloat;
+            case FITSColumnType::COMPLEX_DOUBLE: return native::kComplexDouble;
+            default: return native::kFloat32;
+        }
+    };
+    struct MmapCopy {
+        int col_idx;
+        const ColumnInfo* col;
+        const uint8_t* col_ptr;  // the column's cell in the window's first row
+        long repeat;
+        bool gathered;           // copied by table_gather (else BIT / complex below)
+        table_gather::ColumnGather gather;
+        native::Tensor tensor;
+    };
+    std::vector<MmapCopy> copies;
+    std::vector<std::pair<std::vector<int64_t>, native::ScalarType>> specs;
+    copies.reserve(col_indices.size());
+    specs.reserve(col_indices.size());
     for (int col_idx : col_indices) {
         const auto& col = columns_[col_idx];
-
         if (col.type == FITSColumnType::VARIABLE) {
             continue;
         }
-        // Complex columns are supported for mmap reads below (byte-swap path).
-
-        // Pointer to start of column data for the first requested row
-        const uint8_t* col_ptr = base_ptr + row_start_offset + col.byte_offset;
-
         // Determine shape
         std::vector<int64_t> shape;
         shape.push_back(num_rows);
-
         if (col.type == FITSColumnType::STRING) {
             // For strings, we return a ByteTensor of shape (num_rows, width)
             // width is the string length (col.width)
@@ -299,146 +258,132 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
         } else if (col.repeat > 1) {
             shape.push_back(col.repeat);
         }
-
+        MmapCopy copy;
+        copy.col_idx = col_idx;
+        copy.col = &col;
+        // Pointer to start of column data for the first requested row
+        copy.col_ptr = base_ptr + row_start_offset + col.byte_offset;
+        copy.repeat = (col.repeat > 1) ? col.repeat : 1;
+        if (col.type == FITSColumnType::STRING) {
+            copy.repeat = is_ascii_ ? col.width : col.repeat; // String length
+        }
+        copy.gathered = col.type != FITSColumnType::BIT &&
+                        col.type != FITSColumnType::COMPLEX_FLOAT &&
+                        col.type != FITSColumnType::COMPLEX_DOUBLE;
+        if (copy.gathered) {
+            try {
+                copy.gather = table_gather::plan_column_gather(col, row_width_bytes_);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Failed to mmap column " + col.name + ": " + e.what());
+            }
+        }
+        copies.push_back(std::move(copy));
+        specs.emplace_back(std::move(shape), mmap_dtype(col));
+    }
+    {
+        std::vector<native::Tensor> tensors;
         try {
-            // Create Torch Tensor and copy/swap
-            native::ScalarType dtype;
-            switch (col.type) {
-                case FITSColumnType::FLOAT: dtype = native::kFloat32; break;
-                case FITSColumnType::DOUBLE: dtype = native::kFloat64; break;
-                case FITSColumnType::INT: dtype = native::kInt32; break;
-                case FITSColumnType::SHORT: dtype = native::kInt16; break;
-                case FITSColumnType::LONG: dtype = native::kInt64; break;
-                case FITSColumnType::BYTE: dtype = col.torch_type; break;  // kUInt8, or kInt8 for TSBYTE
-                case FITSColumnType::BIT: dtype = native::kBool; break;
-                case FITSColumnType::LOGICAL: dtype = native::kBool; break;
-                case FITSColumnType::STRING: dtype = native::kUInt8; break;
-                case FITSColumnType::COMPLEX_FLOAT: dtype = native::kComplexFloat; break;
-                case FITSColumnType::COMPLEX_DOUBLE: dtype = native::kComplexDouble; break;
-                default: dtype = native::kFloat32;
+            tensors = table_gather::allocate_outputs(specs);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "Failed to mmap column " + copies.front().col->name + ": " + e.what());
+        }
+        for (size_t k = 0; k < copies.size(); ++k) {
+            copies[k].tensor = std::move(tensors[k]);
+        }
+    }
+
+    // Copy and byte-swap every column one block of rows at a time: the
+    // block's mapped pages are read once for all columns (a pass per column
+    // re-read the whole window), and the blocks spread across the pool.
+    const uint8_t* window = base_ptr + row_start_offset;
+    const long rows_per_block = row_width_bytes_ > 0
+        ? std::max<long>(
+              2048, static_cast<long>((size_t{64} << 10) / static_cast<size_t>(row_width_bytes_)))
+        : num_rows;
+    native::parallel_for(0, copies.empty() ? 0 : num_rows, rows_per_block, [&](long start, long end) {
+        for (const MmapCopy& copy : copies) {
+            const ColumnInfo& col = *copy.col;
+            if (copy.gathered) {
+                table_gather::run_column_gather(
+                    copy.gather, window, start, end,
+                    static_cast<uint8_t*>(copy.tensor.data_ptr()));
+                continue;
             }
-
-            auto options = native::TensorOptions().dtype(dtype);
-            native::Tensor tensor = native::empty(shape, options);
-
-            // Parallel copy and swap
-            long repeat = (col.repeat > 1) ? col.repeat : 1;
-            if (col.type == FITSColumnType::STRING) {
-                repeat = is_ascii_ ? col.width : col.repeat; // String length
-            }
-
-            if (col.type == FITSColumnType::FLOAT) {
-                read_typed_mmap_column<float, int32_t, bswap_32>(
-                    col_ptr, tensor.data_ptr<float>(), num_rows, repeat, row_width_bytes_);
-            } else if (col.type == FITSColumnType::DOUBLE) {
-                read_typed_mmap_column<double, int64_t, bswap_64>(
-                    col_ptr, tensor.data_ptr<double>(), num_rows, repeat, row_width_bytes_);
-            } else if (col.type == FITSColumnType::INT) {
-                read_typed_mmap_column<int32_t, int32_t, bswap_32>(
-                    col_ptr, tensor.data_ptr<int32_t>(), num_rows, repeat, row_width_bytes_);
-            } else if (col.type == FITSColumnType::SHORT) {
-                read_typed_mmap_column<int16_t, int16_t, bswap_16>(
-                    col_ptr, tensor.data_ptr<int16_t>(), num_rows, repeat, row_width_bytes_);
-            } else if (col.type == FITSColumnType::LONG) {
-                read_typed_mmap_column<int64_t, int64_t, bswap_64>(
-                    col_ptr, tensor.data_ptr<int64_t>(), num_rows, repeat, row_width_bytes_);
-            } else if (col.type == FITSColumnType::BYTE || col.type == FITSColumnType::STRING) {
-                uint8_t* out = tensor.data_ptr<uint8_t>();
-                native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                    for (long i = start; i < end; i++) {
-                        const uint8_t* in = (const uint8_t*)(col_ptr + i * row_width_bytes_);
-                        uint8_t* row_out = out + i * repeat;
-                        memcpy(row_out, in, repeat);
+            const uint8_t* col_ptr = copy.col_ptr;
+            const long repeat = copy.repeat;
+            if (col.type == FITSColumnType::BIT) {
+                bool* out = static_cast<bool*>(copy.tensor.data_ptr());
+                for (long i = start; i < end; i++) {
+                    const uint8_t* row_in =
+                        col_ptr + i * row_width_bytes_;
+                    bool* row_out = out + i * repeat;
+                    for (long j = 0; j < repeat; j++) {
+                        const uint8_t packed = row_in[j / 8];
+                        row_out[j] =
+                            ((packed >> (7 - (j % 8))) & 0x1U) != 0;
                     }
-                });
-                if (col.type == FITSColumnType::BYTE && col.fits_typecode == TSBYTE) {
-                    detail::xor_sign_bit_u8(
-                        out,
-                        static_cast<size_t>(num_rows) * static_cast<size_t>(repeat));
                 }
-            } else if (col.type == FITSColumnType::BIT) {
-                bool* out = tensor.data_ptr<bool>();
-                native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                    for (long i = start; i < end; i++) {
-                        const uint8_t* row_in =
-                            col_ptr + i * row_width_bytes_;
-                        bool* row_out = out + i * repeat;
-                        for (long j = 0; j < repeat; j++) {
-                            const uint8_t packed = row_in[j / 8];
-                            row_out[j] =
-                                ((packed >> (7 - (j % 8))) & 0x1U) != 0;
-                        }
-                    }
-                });
             } else if (col.type == FITSColumnType::COMPLEX_FLOAT) {
-                std::complex<float>* out = tensor.data_ptr<std::complex<float>>();
-                native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                    for (long i = start; i < end; i++) {
-                        const uint8_t* row_in =
-                            col_ptr + i * row_width_bytes_;
-                        std::complex<float>* row_out = out + i * repeat;
-                        for (long j = 0; j < repeat; j++) {
-                            int32_t re_bits, im_bits;
-                            std::memcpy(
-                                &re_bits,
-                                row_in + j * 2 * sizeof(int32_t),
-                                sizeof(int32_t)
-                            );
-                            std::memcpy(
-                                &im_bits,
-                                row_in + (j * 2 + 1) * sizeof(int32_t),
-                                sizeof(int32_t)
-                            );
-                            float re, im;
-                            re_bits = bswap_32(re_bits);
-                            im_bits = bswap_32(im_bits);
-                            std::memcpy(&re, &re_bits, sizeof(float));
-                            std::memcpy(&im, &im_bits, sizeof(float));
-                            row_out[j] = std::complex<float>(re, im);
-                        }
+                auto* out = static_cast<std::complex<float>*>(copy.tensor.data_ptr());
+                for (long i = start; i < end; i++) {
+                    const uint8_t* row_in =
+                        col_ptr + i * row_width_bytes_;
+                    std::complex<float>* row_out = out + i * repeat;
+                    for (long j = 0; j < repeat; j++) {
+                        int32_t re_bits, im_bits;
+                        std::memcpy(
+                            &re_bits,
+                            row_in + j * 2 * sizeof(int32_t),
+                            sizeof(int32_t)
+                        );
+                        std::memcpy(
+                            &im_bits,
+                            row_in + (j * 2 + 1) * sizeof(int32_t),
+                            sizeof(int32_t)
+                        );
+                        float re, im;
+                        re_bits = bswap_32(re_bits);
+                        im_bits = bswap_32(im_bits);
+                        std::memcpy(&re, &re_bits, sizeof(float));
+                        std::memcpy(&im, &im_bits, sizeof(float));
+                        row_out[j] = std::complex<float>(re, im);
                     }
-                });
+                }
             } else if (col.type == FITSColumnType::COMPLEX_DOUBLE) {
-                std::complex<double>* out = tensor.data_ptr<std::complex<double>>();
-                native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                    for (long i = start; i < end; i++) {
-                        const uint8_t* row_in =
-                            col_ptr + i * row_width_bytes_;
-                        std::complex<double>* row_out = out + i * repeat;
-                        for (long j = 0; j < repeat; j++) {
-                            int64_t re_bits, im_bits;
-                            std::memcpy(
-                                &re_bits,
-                                row_in + j * 2 * sizeof(int64_t),
-                                sizeof(int64_t)
-                            );
-                            std::memcpy(
-                                &im_bits,
-                                row_in + (j * 2 + 1) * sizeof(int64_t),
-                                sizeof(int64_t)
-                            );
-                            double re, im;
-                            re_bits = bswap_64(re_bits);
-                            im_bits = bswap_64(im_bits);
-                            std::memcpy(&re, &re_bits, sizeof(double));
-                            std::memcpy(&im, &im_bits, sizeof(double));
-                            row_out[j] = std::complex<double>(re, im);
-                        }
+                auto* out = static_cast<std::complex<double>*>(copy.tensor.data_ptr());
+                for (long i = start; i < end; i++) {
+                    const uint8_t* row_in =
+                        col_ptr + i * row_width_bytes_;
+                    std::complex<double>* row_out = out + i * repeat;
+                    for (long j = 0; j < repeat; j++) {
+                        int64_t re_bits, im_bits;
+                        std::memcpy(
+                            &re_bits,
+                            row_in + j * 2 * sizeof(int64_t),
+                            sizeof(int64_t)
+                        );
+                        std::memcpy(
+                            &im_bits,
+                            row_in + (j * 2 + 1) * sizeof(int64_t),
+                            sizeof(int64_t)
+                        );
+                        double re, im;
+                        re_bits = bswap_64(re_bits);
+                        im_bits = bswap_64(im_bits);
+                        std::memcpy(&re, &re_bits, sizeof(double));
+                        std::memcpy(&im, &im_bits, sizeof(double));
+                        row_out[j] = std::complex<double>(re, im);
                     }
-                });
-            } else if (col.type == FITSColumnType::LOGICAL) {
-                bool* out = tensor.data_ptr<bool>();
-                native::parallel_for(0, num_rows, 2048, [&](long start, long end) {
-                    for (long i = start; i < end; i++) {
-                        const char* in = (const char*)(col_ptr + i * row_width_bytes_);
-                        bool* row_out = out + i * repeat; // repeat is usually 1 for logical
-                        for (long j = 0; j < repeat; j++) {
-                            row_out[j] = (in[j] == 'T' || in[j] == '1' || in[j] == 1);
-                        }
-                    }
-                });
+                }
             }
+        }
+    });
 
+    for (MmapCopy& copy : copies) {
+        const ColumnInfo& col = *copy.col;
+        native::Tensor tensor = std::move(copy.tensor);
+        try {
             if (col.scaled &&
                 (col.type == FITSColumnType::COMPLEX_FLOAT ||
                  col.type == FITSColumnType::COMPLEX_DOUBLE)) {
@@ -449,13 +394,12 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
                 tensor = apply_unsigned_offset(
                     std::move(tensor), col.unsigned_target_type);
             }
-            result[col_idx] = std::move(tensor);
-
         } catch (const std::exception& e) {
             // Never swallow: a failed column must surface as an error, not
             // as a silently missing column in the result dict.
             throw std::runtime_error("Failed to mmap column " + col.name + ": " + e.what());
         }
+        result[copy.col_idx] = std::move(tensor);
     }
 
     // Order by file/request column index (see signature comment).

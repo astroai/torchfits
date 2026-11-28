@@ -11,6 +11,7 @@
 
 #include "table_reader.h"
 #include "checked_arithmetic.h"
+#include "table_gather.h"
 
 namespace torchfits {
 
@@ -114,6 +115,31 @@ native::Tensor TableReader::apply_unsigned_offset(native::Tensor raw, native::Sc
     throw std::logic_error(
         std::string("unsigned-offset convention has no target ") +
         native::dtype_name(target));
+}
+
+// Output tensors of a read's fixed-width columns. A buffered read gathers
+// every column out of the same rows, so its outputs may share one allocation
+// (table_gather::allocate_outputs); the CFITSIO column path allocates one
+// buffer per column, as it always did.
+void TableReader::allocate_fixed_columns(
+    const std::vector<std::pair<int, std::vector<int64_t>>>& shapes, bool shared,
+    std::unordered_map<int, ColumnData>& result) const {
+    if (!shared) {
+        for (const auto& [col_idx, shape] : shapes) {
+            result[col_idx] = ColumnData(
+                native::empty(shape, native::TensorOptions().dtype(columns_[col_idx].torch_type)));
+        }
+        return;
+    }
+    std::vector<std::pair<std::vector<int64_t>, native::ScalarType>> specs;
+    specs.reserve(shapes.size());
+    for (const auto& [col_idx, shape] : shapes) {
+        specs.emplace_back(shape, columns_[col_idx].torch_type);
+    }
+    std::vector<native::Tensor> tensors = table_gather::allocate_outputs(specs);
+    for (size_t k = 0; k < shapes.size(); ++k) {
+        result[shapes[k].first] = ColumnData(std::move(tensors[k]));
+    }
 }
 
 // Read columns from the table
@@ -223,7 +249,10 @@ std::vector<std::pair<std::string, TableReader::ColumnData>> TableReader::read_c
     };
 
 
-    // Allocate tensors for all requested columns (except VLA)
+    // Shapes of the fixed-width (non-VLA) output columns; allocated below,
+    // once the read path is known.
+    std::vector<std::pair<int, std::vector<int64_t>>> fixed_shapes;
+    fixed_shapes.reserve(col_indices.size());
     for (int col_idx : col_indices) {
         const auto& col = columns_[col_idx];
 
@@ -268,12 +297,7 @@ std::vector<std::pair<std::string, TableReader::ColumnData>> TableReader::read_c
             allocation_element_bytes,
             "Invalid table geometry for column " + col.name + " allocation");
 
-        // Create tensor
-        native::Tensor tensor = native::empty(shape, native::TensorOptions().dtype(col.torch_type));
-
-        // Store in result map as ColumnData
-
-        result[col_idx] = ColumnData(tensor);
+        fixed_shapes.emplace_back(col_idx, std::move(shape));
     }
 
     // Row-buffered reads (tiled pread, else fits_read_tblbytes) for every
@@ -308,6 +332,8 @@ std::vector<std::pair<std::string, TableReader::ColumnData>> TableReader::read_c
         !is_ascii_ && !has_vla && !has_bit && !has_complex && row_width_bytes_ > 0) {
         use_buffered = requested_bytes > 0;
     }
+
+    allocate_fixed_columns(fixed_shapes, use_buffered && num_rows > 0, result);
 
     auto read_column_by_column = [&]() {
         // Read column by column
