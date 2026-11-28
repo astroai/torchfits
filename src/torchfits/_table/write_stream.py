@@ -373,6 +373,7 @@ class TableWriter:
             _cpp_header_mapping,
             _normalize_cpp_table_data,
             _prepare_unsigned_table_data_for_write,
+            _warn_clipped_string_columns,
             _write_header_cards_if_supported,
         )
         from .write import _resolve_table_hdu_index_and_columns
@@ -387,6 +388,7 @@ class TableWriter:
                 "object/structure columns should be converted before writing."
             )
         data = _normalize_cpp_table_data(prepared)
+        _warn_clipped_string_columns(data, schema, stacklevel=5)
         header = self._header
         cpp.write_fits_table(
             self._temp,

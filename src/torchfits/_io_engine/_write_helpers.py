@@ -1170,6 +1170,48 @@ def _string_column_width(value: Any) -> Optional[int]:
     return max(1, chars)
 
 
+def _warn_clipped_string_columns(
+    data: Dict[str, Any], schema: Optional[Dict[str, Any]], *, stacklevel: int = 3
+) -> None:
+    """Warn when a string value is longer than its column's schema width.
+
+    CFITSIO clips such a value to the ``TFORM`` width (``'3A'`` binary,
+    ``'A3'`` ASCII). The row mutations already warn when they clip; the
+    whole-table writers (``table.write`` with ``schema=``, ``insert_column`` /
+    ``replace_column`` with ``format=``, the first streamed batch) clipped
+    silently (r5b-06). ``data`` is the normalized payload (string columns are
+    lists of ``str``).
+    """
+    import warnings
+
+    from ..fits_schema import parse_tform
+
+    if not schema:
+        return
+    for name, value in data.items():
+        if not isinstance(value, list) or not value:
+            continue
+        meta = schema.get(name) or {}
+        tform = meta.get("format") or meta.get("tform")
+        if not tform:
+            continue
+        info = parse_tform(str(tform))
+        if info.vla or info.code != "A":
+            continue
+        width = info.repeat
+        clipped = sum(
+            1 for text in value if isinstance(text, str) and len(text) > width
+        )
+        if clipped:
+            warnings.warn(
+                f"Column '{name}' has width {width}: "
+                f"{clipped} value(s) were silently clipped to fit. "
+                "Shorten values or widen the column to silence.",
+                RuntimeWarning,
+                stacklevel=stacklevel,
+            )
+
+
 def _prepare_unsigned_table_data_for_write(
     table_dict: Dict[str, Any],
     schema: Optional[Dict[str, Dict[str, Any]]] = None,

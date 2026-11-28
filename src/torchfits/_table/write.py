@@ -115,6 +115,9 @@ def write(
 
         _invalidate_path_caches(path)
         data = _normalize_cpp_table_data(data)
+        from .._io_engine._write_helpers import _warn_clipped_string_columns
+
+        _warn_clipped_string_columns(data, schema)
         # This branch talks to cpp.write_fits_table directly, so it never passes
         # through write()'s temp-file-and-rename wrapper -- and the C++ writer
         # reaches fits_create_file("!path"), which unlinks the target before the

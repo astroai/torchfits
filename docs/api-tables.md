@@ -337,6 +337,10 @@ torchfits.table.write(path, data, *, schema=None, header=None,
   so do the `tnull=` / `tscal=` / `tzero=` arguments of `insert_column` and
   `replace_column`.
 
+A string value longer than the width `schema` gives its column (`"8A"`, or
+`"A8"` in an ASCII table) is clipped to that width with a `RuntimeWarning`,
+as in the row mutations; without a `format`, the width fits the longest value.
+
 `quantize` applies to binary tables only (`ValueError` when `table_type="ascii"`).
 If it is set and no floating-point column qualifies, `QuantizeError` is raised
 instead of writing those columns unpacked.
