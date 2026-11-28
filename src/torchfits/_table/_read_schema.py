@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .. import fits_schema
+from .._errors import UnknownColumnError
 from .._table.utils import _require_pyarrow
 from .._table.write import _resolve_table_hdu_index_and_columns
 from .._table_engine import validate_table_backend
@@ -443,7 +444,7 @@ def _validate_projection_columns(
     known = _reader_column_names(header)
     for name in columns:
         if name not in known:
-            raise KeyError(f"Column '{name}' not found")
+            raise UnknownColumnError(f"Column '{name}' not found")
     return list(columns)
 
 

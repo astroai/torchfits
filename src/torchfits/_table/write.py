@@ -561,7 +561,9 @@ def _rewrite_table_hdu_with_schema(
         except OSError as exc:
             # The rewrite itself succeeded (or its error is propagating);
             # a stray temp file is worth a warning, not a failure.
-            _log.warning("table rewrite: could not remove temp file %r: %s", tmp_path, exc)
+            _log.warning(
+                "table rewrite: could not remove temp file %r: %s", tmp_path, exc
+            )
 
 
 def _resolve_table_hdu_index_and_columns(

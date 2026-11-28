@@ -72,10 +72,25 @@ class FITSFileNotFoundError(FileNotFoundError, RuntimeError):
     """
 
 
+class UnknownColumnError(KeyError, ValueError):
+    """A column name the table does not have.
+
+    Raised by the table readers (``columns=``), the file mutation helpers
+    (``torchfits.table.update_rows`` and friends) and the ``TableHDU`` /
+    ``TableHDURef`` column accessors. It subclasses both ``KeyError`` and
+    ``ValueError``: earlier releases raised one or the other depending on the
+    call, and code written against either keeps catching it.
+    """
+
+    def __str__(self) -> str:
+        # KeyError.__str__ repr-quotes its argument; this is a sentence.
+        return str(self.args[0]) if self.args else ""
+
+
 def _rebuild_hdu_not_found(
     message: str, hdu: Any, path: str | None, n_hdus: int | None
 ) -> HDUNotFoundError:
     return HDUNotFoundError(message, hdu=hdu, path=path, n_hdus=n_hdus)
 
 
-__all__ = ["HDUNotFoundError"]
+__all__ = ["HDUNotFoundError", "UnknownColumnError"]

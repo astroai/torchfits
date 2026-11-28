@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 
-from .._errors import FITSFileNotFoundError
+from .._errors import FITSFileNotFoundError, UnknownColumnError
 from ._repr import render_html_table
 from .header import Header
 
@@ -106,7 +106,7 @@ class TableDataAccessor:
             ):
                 return value.reshape(-1)
             return value
-        raise KeyError(f"Column '{key}' not found")
+        raise UnknownColumnError(f"Column '{key}' not found")
 
     def __contains__(self, key: str) -> bool:
         return key in self._table._raw_data
@@ -336,7 +336,7 @@ class TableHDU:
         wanted = {str(c) for c in cols}
         missing = sorted(name for name in wanted if name not in self._raw_data)
         if missing:
-            raise KeyError(f"Columns not found: {missing}")
+            raise UnknownColumnError(f"Columns not found: {missing}")
         selected_dict = {k: v for k, v in self._raw_data.items() if str(k) in wanted}
         return TableHDU(
             selected_dict,
@@ -570,7 +570,7 @@ class TableHDU:
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         missing = [name for name in to_drop if name not in raw]
         if missing:
-            raise KeyError(f"Columns not found: {missing}")
+            raise UnknownColumnError(f"Columns not found: {missing}")
         kept = {k: v for k, v in raw.items() if k not in to_drop}
         return TableHDU(
             kept,
@@ -589,7 +589,7 @@ class TableHDU:
 
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         if old_name not in raw:
-            raise KeyError(f"Column '{old_name}' not found")
+            raise UnknownColumnError(f"Column '{old_name}' not found")
         if new_name in raw:
             raise KeyError(f"Column '{new_name}' already exists")
 
@@ -629,9 +629,13 @@ class TableHDU:
         if incoming_cols != current_cols:
             missing = sorted(current_cols - incoming_cols)
             extra = sorted(incoming_cols - current_cols)
-            raise ValueError(
-                f"append_rows requires exactly matching columns; missing={missing}, extra={extra}"
+            message = (
+                "append_rows requires exactly matching columns; "
+                f"missing={missing}, extra={extra}"
             )
+            if extra:
+                raise UnknownColumnError(message)
+            raise ValueError(message)
 
         appended: Dict[str, Any] = {}
         append_rows_count: Optional[int] = None
@@ -665,7 +669,7 @@ class TableHDU:
                 # (see _io_engine.table_api._squeeze_scalar_columns).
                 return value.reshape(-1)
             return value
-        raise KeyError(f"Column '{col_name}' not found")
+        raise UnknownColumnError(f"Column '{col_name}' not found")
 
     def materialize(self) -> "TableHDU":
         return self

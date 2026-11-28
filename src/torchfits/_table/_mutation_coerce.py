@@ -9,6 +9,7 @@ import torch
 if TYPE_CHECKING:
     import numpy as np
 
+from .._errors import UnknownColumnError
 from .._io_engine.caches import invalidate_path_caches as _invalidate_path_caches
 from .._table.utils import (
     _arrow_column_to_python,
@@ -380,7 +381,7 @@ def _normalize_mutation_rows(
     expected_columns = set(columns)
     extra = sorted(input_columns - expected_columns)
     if extra:
-        raise KeyError(f"Unknown columns for table mutation: extra={extra}")
+        raise UnknownColumnError(f"Unknown columns for table mutation: extra={extra}")
     if not input_columns:
         raise ValueError("rows must include at least one column")
 

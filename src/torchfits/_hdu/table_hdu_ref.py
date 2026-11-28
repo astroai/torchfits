@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
-from .._errors import HDUNotFoundError
+from .._errors import HDUNotFoundError, UnknownColumnError
 from ._repr import render_html_table
 from .header import Header
 
@@ -293,9 +293,12 @@ class TableHDURef:
             yield chunk
 
     def __getitem__(self, col_name: str) -> Any:
+        known = self._file_columns()
+        if known and col_name not in known:
+            raise UnknownColumnError(f"Column '{col_name}' not found")
         data = self.read(columns=[col_name])
         if col_name not in data:
-            raise KeyError(f"Column '{col_name}' not found")
+            raise UnknownColumnError(f"Column '{col_name}' not found")
         return data[col_name]
 
     def get_string_column(

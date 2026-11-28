@@ -25,6 +25,18 @@ file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError`,
 `ValueError` and `RuntimeError`) for an `hdu` index or EXTNAME the file does not have; see
 [Missing files and HDUs](api-core-io.md#missing-files-and-hdus).
 
+A column name the table does not have raises `torchfits.UnknownColumnError`
+(a `KeyError` and a `ValueError`) from every reader's `columns=`, every
+mutation helper, and the `TableHDU` / `TableHDURef` column accessors
+(`hdu[name]`, `select`, `drop_columns`, `rename_column`, `append_rows`):
+
+```python
+try:
+    torchfits.table.drop_columns("catalog.fits", ["NOPE"])
+except torchfits.UnknownColumnError as exc:
+    print(exc)  # Column(s) not found for drop_columns: ['NOPE']
+```
+
 ### Column names
 
 A column is named by its `TTYPEn` card. Column `n` is named `COL<n>` instead

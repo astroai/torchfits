@@ -101,6 +101,7 @@ _ROOT_OBJECTS: dict[str, tuple[str, str]] = {
     "TableHDU": ("torchfits.hdu", "TableHDU"),
     "TableHDURef": ("torchfits.hdu", "TableHDURef"),
     "HDUNotFoundError": ("torchfits._errors", "HDUNotFoundError"),
+    "UnknownColumnError": ("torchfits._errors", "UnknownColumnError"),
 }
 
 __all__ = tuple(
@@ -129,6 +130,7 @@ __all__ = tuple(
         "TableHDU",
         "TableHDURef",
         "HDUNotFoundError",
+        "UnknownColumnError",
         "read_batch",
         "read_batch_info",
         "get_cache_performance",
@@ -243,6 +245,7 @@ if TYPE_CHECKING:
     from .hdu import TableHDURef as TableHDURef
     from .hdu import TensorHDU as TensorHDU
     from ._errors import HDUNotFoundError as HDUNotFoundError
+    from ._errors import UnknownColumnError as UnknownColumnError
     from .cache import clear_all_caches as clear_all_caches
     from .io import clear_file_cache as clear_file_cache
     from .io import delete_hdu as delete_hdu

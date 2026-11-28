@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from .._errors import UnknownColumnError
 from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
 from ..fits_schema import unsigned_column_dtype_names_from_header
@@ -158,7 +159,7 @@ def replace_column(
         path, hdu
     )
     if name not in columns:
-        raise KeyError(f"Column '{name}' not found")
+        raise UnknownColumnError(f"Column '{name}' not found")
 
     num_rows = _naxis2_row_count(header_map, path)
 
@@ -407,7 +408,7 @@ def update_rows(
     )
     unknown = sorted({str(name) for name in rows} - set(columns))
     if unknown:
-        raise KeyError(f"Unknown columns for table mutation: extra={unknown}")
+        raise UnknownColumnError(f"Unknown columns for table mutation: extra={unknown}")
     from ..fits_schema import unsigned_column_dtype_names_from_header
 
     unsigned_names = unsigned_column_dtype_names_from_header(header_map)
@@ -603,7 +604,7 @@ def rename_columns(
     existing = set(columns)
     missing = sorted(set(normalized) - existing)
     if missing:
-        raise KeyError(f"Column(s) not found for rename_columns: {missing}")
+        raise UnknownColumnError(f"Column(s) not found for rename_columns: {missing}")
     conflicts = sorted(set(normalized.values()) & (existing - set(normalized)))
     if conflicts:
         raise ValueError(
@@ -639,7 +640,7 @@ def drop_columns(
     )
     missing = sorted(set(normalized) - set(existing_columns))
     if missing:
-        raise KeyError(f"Column(s) not found for drop_columns: {missing}")
+        raise UnknownColumnError(f"Column(s) not found for drop_columns: {missing}")
 
     import torchfits._C as cpp
 
