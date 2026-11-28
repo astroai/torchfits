@@ -200,14 +200,15 @@ same way:
 import pyarrow.parquet as pq
 import torchfits
 
-# Parquet -> FITS without loading the Parquet file
-batches = pq.ParquetFile("huge.parquet").iter_batches(batch_size=100_000)
-torchfits.table.write("huge.fits", batches, overwrite=True)
-
 # Filter one FITS table into another, batch by batch
-with torchfits.table.writer("bright.fits", extname="BRIGHT") as w:
-    for batch in torchfits.table.scan("huge.fits", where="MAG < 18"):
+with torchfits.table.writer("bright.fits", extname="BRIGHT", overwrite=True) as w:
+    for batch in torchfits.table.scan("huge_catalog.fits", where="MAG_G < 18"):
         w.write(batch)
+
+# Parquet -> FITS without loading the Parquet file
+torchfits.table.write_parquet("huge_catalog.parquet", "huge_catalog.fits")
+batches = pq.ParquetFile("huge_catalog.parquet").iter_batches(batch_size=100_000)
+torchfits.table.write("from_parquet.fits", batches, overwrite=True)
 ```
 
 See [`table.writer()`](api-tables.md#tablewriter) for the layout and null

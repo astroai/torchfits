@@ -699,9 +699,15 @@ torchfits.write_tensor("checked.fits", tensor, checksum=True, overwrite=True)
 torchfits.insert_hdu(path, data, index=1, header=None, compress=False, *,
                      tile_shape=None, quantize_level=None, quantize_method=None,
                      dither_seed=None, int_to_float=False)
+```
+
+```python
 torchfits.replace_hdu(path, hdu, data, header=None, compress=False, *,
                       tile_shape=None, quantize_level=None, quantize_method=None,
                       dither_seed=None, int_to_float=False)
+```
+
+```python
 torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
