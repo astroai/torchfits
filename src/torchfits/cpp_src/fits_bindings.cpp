@@ -1452,6 +1452,15 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         } else {
             col.repeat = 1;
         }
+        if (ndim > 1 && col.repeat == 0) {
+            // A '0E' column is valid FITS, but CFITSIO rejects writing it
+            // ("bad first element number") and torchfits' readers reject
+            // a repeat of 0, so it could not round-trip either way.
+            throw std::invalid_argument(
+                "Column '" + col.name + "' has zero elements per row (shape (" +
+                std::to_string(num_rows) + ", 0)); zero-width vector columns " +
+                "are not supported: drop the column or give it at least one element");
+        }
         if (has_schema_tform) {
             col.tform = schema_tform;
             if (schema_info.code == 'X') {
