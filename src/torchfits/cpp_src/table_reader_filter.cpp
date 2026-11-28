@@ -16,6 +16,17 @@
 
 namespace torchfits {
 
+namespace {
+
+// Initial capacity of the matched-row index vector: the window up to 1 Mi
+// rows (8 MiB), after which the vector grows with the matches it holds.
+size_t initial_match_capacity(long window_rows) {
+    constexpr long kMaxInitial = 1L << 20;
+    return static_cast<size_t>(std::max(0L, std::min(window_rows, kMaxInitial)));
+}
+
+}  // namespace
+
 // Filtered reading over the row window [start_row, start_row + num_rows)
 // (1-based; num_rows = -1 means through the last row). The predicate is
 // evaluated only inside the window, so a windowed scan maps and compares
@@ -329,7 +340,10 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
             return t;
         }();
 
-        valid_indices.reserve(row_end - row_begin);
+        // Reserve for the matches, not the window: a full-window reserve is
+        // 8 bytes per scanned row, so where= on a 2^31-row table asked for
+        // 17 GB up front (std::bad_alloc) however few rows matched.
+        valid_indices.reserve(initial_match_capacity(row_end - row_begin));
 
         // Scan body. Called exactly once, sequentially, over the whole row
         // range -- see the call site below for why a parallel chunk + merge
@@ -522,7 +536,7 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
     } else {
         // Multi-filter fallback (single-threaded, uncommon case)
         std::vector<long> local;
-        local.reserve(row_end - row_begin);
+        local.reserve(initial_match_capacity(row_end - row_begin));
         for (long i = row_begin; i < row_end; i++) {
             uint8_t* row_ptr = data_ptr + i * row_width_bytes_;
             bool row_match = true;
