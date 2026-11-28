@@ -184,6 +184,20 @@ struct ThreadLocalReaderCache {
         }
     }
 
+    // Drop every idle cached reader (and its two descriptors) in this cache.
+    void evict_all() {
+        std::lock_guard<std::mutex> l(mu_);
+        map_.clear();
+        lru_.clear();
+    }
+
+    static void evict_all_everywhere() {
+        std::lock_guard<std::mutex> g(g_registry_mu);
+        for (ThreadLocalReaderCache* cache : g_registry) {
+            cache->evict_all();
+        }
+    }
+
     static void evict_everywhere(const std::string& filename) {
         const std::string canonical = canonical_reader_path(filename);
         std::lock_guard<std::mutex> g(g_registry_mu);
@@ -722,6 +736,10 @@ namespace torchfits {
 
 void evict_cached_reader(const std::string& filename) {
     ThreadLocalReaderCache::evict_everywhere(filename);
+}
+
+void evict_all_cached_readers() {
+    ThreadLocalReaderCache::evict_all_everywhere();
 }
 
 }  // namespace torchfits

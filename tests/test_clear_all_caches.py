@@ -186,3 +186,36 @@ def test_clear_cache_is_the_engine_clear_once(
     assert len(calls) == 1
     assert torchfits.cache.get_cache_stats() == torchfits.get_cache_performance()
     assert torchfits.get_cache_performance()["total_requests"] == 0
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc/self/fd")
+def test_clear_all_caches_releases_cached_table_readers(tmp_path: Path) -> None:
+    """Cached native table readers keep a CFITSIO handle and a pinned data
+    descriptor open per file; a cache clear must close them, or a deleted
+    file's disk space stays allocated until the process exits."""
+    import os
+
+    import numpy as np
+    import torchfits.table as tf_table
+
+    paths = []
+    for i in range(4):
+        path = tmp_path / f"t{i}.fits"
+        tf_table.write(str(path), {"a": np.arange(10, dtype=np.int32)}, overwrite=True)
+        paths.append(path)
+        assert tf_table.read(str(path)).num_rows == 10
+
+    def _open_fits_fds() -> int:
+        count = 0
+        for fd in os.listdir("/proc/self/fd"):
+            try:
+                target = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                continue
+            count += target.startswith(str(tmp_path))
+        return count
+
+    assert _open_fits_fds() > 0  # the reader cache is holding the files
+    torchfits.clear_all_caches()
+    assert _open_fits_fds() == 0
+    assert tf_table.read(str(paths[0])).num_rows == 10

@@ -60,6 +60,9 @@ void invalidate_shared_meta(const std::string& filename) {
 
 void clear_shared_read_meta_cache() {
     d::clear_shared_meta_cache();
+    // The per-thread table readers hold a CFITSIO handle and a pinned data
+    // descriptor each; a cache clear must let go of the files too.
+    evict_all_cached_readers();
 }
 
 // ---------------------------------------------------------------------------
