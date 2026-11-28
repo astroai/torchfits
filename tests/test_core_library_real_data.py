@@ -274,13 +274,18 @@ def test_real_corpus_is_readable_with_neither_torch_nor_numpy() -> None:
     computed the same answers with the torch-linked extension before the child
     ran, so this is also a cross-process parity check.
     """
+    import torchfits
+
     expected: dict[str, Any] = {}
     for path in CORPUS:
         num_hdus = core.read_num_hdus(str(path))
         expected[path.name] = {
             "num_hdus": num_hdus,
             "types": [core.read_hdu_type(str(path), h) for h in range(num_hdus)],
-            "nrows_hdu1": _try(core.read_nrows, str(path), 1),
+            # The public reader, as in the child: a missing HDU 1 (the
+            # single-HDU MegaPipe mosaics) raises HDUNotFoundError there, with
+            # its own message, where the raw core raises a bare RuntimeError.
+            "nrows_hdu1": _try(torchfits.read_nrows, str(path), 1),
             "shape_hdu0": _try(core.read_shape, str(path), 0),
             # The public read_header() returns a dict-like Header, so it has one
             # entry per *unique* keyword; the core returns the raw card list,
@@ -369,7 +374,12 @@ print(json.dumps({
         assert got["entries_hdu0"] == record["entries_hdu0"]
         # The public API and the raw core module must agree in the child too.
         assert got["core_num_hdus"] == got["num_hdus"]
-        assert got["core_colnames_hdu1"] == got["colnames_hdu1"]
+        # Except for a missing HDU: the public API raises HDUNotFoundError
+        # naming it, the raw core reports CFITSIO's failure as RuntimeError.
+        if str(got["colnames_hdu1"]).startswith("HDUNotFoundError: "):
+            assert str(got["core_colnames_hdu1"]).startswith("RuntimeError: ")
+        else:
+            assert got["core_colnames_hdu1"] == got["colnames_hdu1"]
     # Real values, not just parity: the child read real observations correctly.
     mega = files[MEGACAM[0].name]
     assert mega["colnames_hdu1"] == ["COMPRESSED_DATA"]
