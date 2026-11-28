@@ -130,6 +130,16 @@ public:
     std::string read_header_to_string(int hdu_num);
 
 private:
+    // Write paths: the open handle's owner, or throw "FITSFile is closed".
+    // io_mutex_ is recursive and the writers run Python code with the GIL
+    // (to_tensor(), header values, GC finalizers), so that code can close()
+    // this handle on the writing thread itself. The writer holds the returned
+    // owner (close() then only flushes and the fitsfile stays valid) and
+    // calls this again after every point where Python could have run.
+    std::shared_ptr<fitsfile> require_open_for_write() const {
+        if (!fptr_ || !fptr_owner_) throw std::runtime_error("FITSFile is closed");
+        return fptr_owner_;
+    }
     bool ensure_raw_fd(size_t required_end);
     void close_raw_fd();
     // Identity of the file this handle opened, captured in the constructor.
