@@ -1,0 +1,36 @@
+# torchfits: backport of upstream CFITSIO develop commit
+#   568a4e3fbdc2cfd4db2362781a44ef150f511f33 (2026-11-19)
+#   "Moved NAXIS check in fits_copy_image_section to an earlier point, to
+#    prevent possible out-of-bounds in fits_get_img_size."
+#
+# fits_copy_image_section read NAXISn into its 9-element naxes[] before
+# rejecting NAXIS outside 1..4, so an image with NAXIS > 9 overflowed that
+# stack array (NAXIS=100 smashes the stack). torchfits reaches it through
+# the extended filename syntax: read("f.fits[1:10,1:10]") makes CFITSIO copy
+# the image section while opening the file.
+#
+# Drop this patch when extern/VERSIONS.txt moves to a CFITSIO release that
+# contains the commit.
+
+--- a/cfileio.c
++++ b/cfileio.c
+@@ -3455,9 +3455,6 @@ int fits_copy_image_section(
+     /* get the size of the input image */
+     fits_get_img_type(fptr, &bitpix, status);
+     fits_get_img_dim(fptr, &naxis, status);
+-    if (fits_get_img_size(fptr, naxis, naxes, status) > 0)
+-        return(*status);
+-
+     if (naxis < 1 || naxis > 4)
+     {
+         ffpmsg(
+@@ -3465,6 +3462,9 @@ int fits_copy_image_section(
+         return(*status = BAD_NAXIS);
+     }
+ 
++    if (fits_get_img_size(fptr, naxis, naxes, status) > 0)
++        return(*status);
++
+     /* create output image with same size and type as the input image */
+     /*  Will update the size later */
+     fits_create_img(newptr, bitpix, naxis, naxes, status);

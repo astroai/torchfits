@@ -1,0 +1,50 @@
+# torchfits: fixes in the IRAF converter (iraffits.c), not (yet) upstream.
+# Both crash cfitsio-4.7.0 and upstream develop as of 2026-11-23 (6b69524).
+#
+# 1. hputcom() places a keyword comment after the quoted value. When the
+#    value reaches column 78 or 79 (hputs truncates strings to 67
+#    characters), the comment start is past the end of the card and
+#    `lcom = v2 - c1` goes negative, so strncpy() runs with a huge size_t
+#    length. iraftofits() stores the .imh path in IMHFILE and the .pix path
+#    in PIXFILE this way, so opening any IRAF image whose path is 66
+#    characters or longer crashed the process (SIGSEGV). hputcom() now
+#    leaves the comment out when the card has no room for it.
+#
+# 2. iraftofits() finds the end of the converted header with
+#    ksearch(fitsheader, "END"), but ksearch() only scans the first 57600
+#    bytes (720 cards). An IRAF user area of more than ~700 lines put END
+#    past them, ksearch() returned NULL and NULL + 80 was used as the end of
+#    the header (SIGSEGV). The END card iraftofits() has just written is
+#    used instead.
+#
+# torchfits reaches the converter when a name that goes through CFITSIO's
+# extended filename syntax ends in ".imh", e.g. torchfits.read("x.imh[0]").
+
+--- a/iraffits.c
++++ b/iraffits.c
+@@ -960,7 +960,11 @@ static int iraftofits (
+     (void)strncpy (fhead, endline, 80);
+ 
+     /* Find end of last 2880-byte block of header */
+-    fhead = ksearch (fitsheader, "END") + 80;
++    /* torchfits: ksearch() scans only the first 57600 bytes, so a long
++       user area left END out of its reach and NULL + 80 was used here;
++       fall back to the END card written just above. */
++    fp = ksearch (fitsheader, "END");
++    fhead = (fp != NULL ? fp : fhead) + 80;
+     nblock = *nbfits / 2880;
+     fhead1 = fitsheader + (nblock * 2880);
+     *fitssize = fhead - fitsheader;  /* no. of bytes to end of END keyword */
+@@ -2165,6 +2169,12 @@ hputcom (char *hstring, char *keyword, char *comment)
+ 	    else
+ 		c0 = v1 + (q2-line) + 2; /* allan: 1997-09-30, was c0=q2+2 */
+ 
++	    /* torchfits: a value that fills the card leaves no room for
++	       "/ comment"; writing it anyway ran past the card and made
++	       lcom below negative (strncpy with a huge length). */
++	    if (c0 + 2 > v2)
++		return;
++
+ 	    strncpy (c0, "/ ",2);
+ 	    }
+ 

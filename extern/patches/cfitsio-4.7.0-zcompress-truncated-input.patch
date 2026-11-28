@@ -1,0 +1,32 @@
+# torchfits: fix in zcompress.c, not (yet) upstream.
+#
+# uncompress2mem_from_mem() treats Z_BUF_ERROR as "the output buffer is
+# full" and grows the buffer, but zlib also returns it when the input is
+# used up before the end of the stream. A truncated GZIP_1/GZIP_2 tile (or
+# any truncated gzip stream decompressed from memory) therefore realloc'd
+# BUFFINCR more bytes forever: the read hung while its address space grew
+# without bound. The file-based uncompress2mem() already stops when
+# avail_in reaches 0; the in-memory variant now fails with status 414
+# (DATA_DECOMPRESSION_ERR) when there is no input left and the output
+# buffer still has room. torchfits reaches it on every read of a GZIP_1 or
+# GZIP_2 tile-compressed image.
+#
+# Present in cfitsio-4.7.0 and upstream develop as of 2026-11-23 (6b69524).
+
+--- a/zcompress.c
++++ b/zcompress.c
+@@ -227,6 +227,14 @@ int uncompress2mem_from_mem(
+         } else if (err == Z_OK || err == Z_BUF_ERROR) { /* need more space in output buffer */
+ 	    /* Z_BUF_ERROR means need more input data to make progress */
+ 
++            /* torchfits: no input left and room left for output means the
++               stream is truncated; growing the buffer would loop forever. */
++            if (err == Z_BUF_ERROR && d_stream.avail_in == 0 &&
++                d_stream.avail_out > 0) {
++                inflateEnd(&d_stream);
++                return(*status = 414);
++            }
++
+             if (mem_realloc) {   
+                 *buffptr = mem_realloc(*buffptr,*buffsize + BUFFINCR);
+                 if (*buffptr == NULL){
