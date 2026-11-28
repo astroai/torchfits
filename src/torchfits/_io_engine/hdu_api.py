@@ -74,6 +74,7 @@ def find_first_hdu(path: str) -> Optional[int]:
     path = coerce_fits_path(path)
     file_handle, cached = get_cached_handle(path)
     first_table_hdu: Optional[int] = None
+    first_shaped_empty_hdu: Optional[int] = None
     try:
         num_hdus = cpp.get_num_hdus(file_handle)
         for i in range(num_hdus):
@@ -105,6 +106,13 @@ def find_first_hdu(path: str) -> Optional[int]:
                     shape = []
                 if shape and all(int(dim) > 0 for dim in shape):
                     return i
+                if len(shape) > 1 and first_shaped_empty_hdu is None:
+                    # A zero-size N-D image with declared axes (``(3, 0, 12)``;
+                    # a 1-D ``(0,)`` is the empty-primary placeholder),
+                    # e.g. the uncompressed extension a tile-compressed write
+                    # stores it in: a better last resort than the empty
+                    # primary, whose read would lose the declared shape.
+                    first_shaped_empty_hdu = i
                 continue
 
             if hdu_type in {"ASCII_TABLE", "BINARY_TABLE"}:
@@ -136,7 +144,7 @@ def find_first_hdu(path: str) -> Optional[int]:
                 # Cleanup only: never mask the scan's result or error.
                 _log.debug("closing %r after the HDU scan failed", path, exc_info=True)
 
-    return first_table_hdu
+    return first_table_hdu if first_table_hdu is not None else first_shaped_empty_hdu
 
 
 def autodetect_hdu(path: str) -> int:

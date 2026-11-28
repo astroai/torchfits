@@ -81,3 +81,28 @@ def test_zero_size_image_hdu_is_stored_uncompressed(tmp_path, compress):
     with torchfits.open(cube) as hdul:
         torchfits.write(out, hdul, compress=compress)
     assert torchfits.read(out, hdu=1).shape == (3, 0, 12)
+
+
+@pytest.mark.parametrize("compress", [True, "RICE_1", "GZIP_1"])
+@pytest.mark.parametrize("shape", [(3, 0, 12), (0, 7)])
+def test_compressed_write_of_zero_size_tensor_keeps_declared_shape(
+    tmp_path, compress, shape
+):
+    # A bare zero-size tensor with declared axes was mistaken for the empty
+    # placeholder primary and dropped: the file held only the writer's empty
+    # primary, so the declared shape was lost. Like any compressed write the
+    # image now lands in HDU 1 (stored uncompressed, as fpack does).
+    path = str(tmp_path / "zero_c.fits")
+    torchfits.write(path, torch.zeros(*shape), compress=compress)
+    assert torchfits.read(path, hdu=1).shape == shape
+    assert torchfits.read(path, hdu="auto").shape == shape
+    with torchfits.open(path) as hdul:
+        assert len(hdul) == 2
+
+
+def test_compressed_write_of_shapeless_empty_tensor_is_a_placeholder(tmp_path):
+    path = str(tmp_path / "empty_c.fits")
+    torchfits.write(path, torch.empty(0), compress=True)
+    with torchfits.open(path) as hdul:
+        assert len(hdul) == 1
+    assert torchfits.read(path).shape == (0,)

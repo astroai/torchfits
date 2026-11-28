@@ -747,7 +747,8 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
 
     The compressed writer always emits its own empty primary at HDU 0, so a
     leading empty primary in the input -- a ``NAXIS=0`` header card, or
-    in-memory data with no elements such as ``TensorHDU(torch.empty(0))`` --
+    in-memory 0-/1-D data with no elements such as
+    ``TensorHDU(torch.empty(0))`` --
     must be skipped both when writing and when replaying per-HDU header cards;
     otherwise the output HDU indices shift by one and header-card replay runs
     off the end ("Could not move to HDU").
@@ -765,7 +766,13 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
         return True
     data = getattr(hdu, "_data", None)
     numel = getattr(data, "numel", None)
-    return callable(numel) and numel() == 0
+    if not (callable(numel) and numel() == 0):
+        return False
+    # Only a shapeless placeholder (``torch.empty(0)``): an image that
+    # declares more axes, such as ``torch.zeros(3, 0, 12)``, is data whose
+    # shape must survive (it is stored uncompressed, like fpack does).
+    dim = getattr(data, "dim", None)
+    return not callable(dim) or dim() <= 1
 
 
 def _write_header_cards_if_supported(
