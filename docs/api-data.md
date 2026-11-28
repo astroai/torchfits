@@ -478,6 +478,8 @@ locality (sequential, sharded, or a windowed shuffle) runs at eager speed
 with larger blocks. Use lazy mode when the table does not fit in memory, or
 to avoid a long load before the first batch.
 
+Runnable: [`example_lazy_table_dataset.py`](published-examples/example_lazy_table_dataset.py).
+
 ---
 
 ## `FitsTableIterableDataset`

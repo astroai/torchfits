@@ -594,6 +594,9 @@ torchfits.write(
     assert (restored - counts).abs().max() <= 0.25 + 1e-3
     ```
 
+    Runnable, with the matching `torchfits compress` flags:
+    [`example_fpack_compression.py`](published-examples/example_fpack_compression.py).
+
 !!! tip "Skewed float → int16"
     Linear min→max packing onto int16 wastes codes on rare extremes. Prefer
     native float (`quantize=None`). When size forces int16, use

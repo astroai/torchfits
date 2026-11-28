@@ -129,6 +129,8 @@ torchfits.table.read("legacy.fits", encoding="latin-1")
 torchfits.table.read("legacy.fits", decode_errors="replace")
 ```
 
+Runnable: [`example_decode_errors.py`](published-examples/example_decode_errors.py).
+
 ```python
 df = torchfits.table.read(
     "catalog.fits",
@@ -255,6 +257,8 @@ torchfits.table.read_torch("cells.fits", shape_cells=True)["img"].shape  # (100,
 torchfits.table.read_torch("cells.fits")["img"].shape  # (100, 6)
 ```
 
+Runnable: [`example_tdim_cells.py`](published-examples/example_tdim_cells.py).
+
 ---
 
 ## `table.scan()`
@@ -333,7 +337,13 @@ A malformed predicate raises `ValueError` at the call.
 ```python
 for batch in torchfits.table.scan_torch("survey.fits", hdu=1, batch_size=10000):
     print(batch.keys())  # dict[str, torch.Tensor]
+
+for batch in torchfits.table.scan_torch("survey.fits", where="MAG < 20"):
+    ...  # only the matching rows of each window
 ```
+
+Runnable: [`example_table_where_streaming.py`](published-examples/example_table_where_streaming.py)
+(native `where=` on `read` / `scan` / `scan_torch` and the table datasets).
 
 ---
 
@@ -486,6 +496,9 @@ with torchfits.table.writer("out.fits", extname="CAT", checksum=True) as w:
 - Streams always create a new file (`overwrite=` as for `write()`); appending
   a table HDU to an existing file is not supported -- use
   `torchfits.insert_hdu` -- and `quantize=` is not available.
+
+Runnable: [`example_table_streaming_write.py`](published-examples/example_table_streaming_write.py)
+(Parquet → FITS out of core, filtered FITS → FITS, and a failed stream).
 
 ---
 
