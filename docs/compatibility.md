@@ -163,9 +163,10 @@ materialized:
 - `table.scan()` / `scan_torch()` (with or without `where=`) and
   `table.writer()` hold one batch at a time; use them for tables larger
   than RAM.
-- `table.read(where=)` keeps the matching rows only. `table.read_torch(where=)`
-  reads the predicate columns whole and builds a boolean mask (a 2.1 GB
-  one-byte column peaked at 4.4 GB).
+- `table.read(where=)` and `table.read_torch(where=)` keep the matching rows
+  only. `read_torch` reads and masks one row window (about 64 MB) at a time:
+  `where=` over a 2.1 GB one-byte column peaks at 0.26 GB RSS, and a 10%
+  match on a 1.2 GB table at 0.5 GB.
 - `FitsTableDataset` loads the table at construction; `lazy=True` keeps
   `cache_blocks × block_rows` rows per process (per `DataLoader` worker). With
   4 workers over a 5 M-row table: ~100 MB PSS per worker eager (copy-on-write

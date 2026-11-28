@@ -196,8 +196,9 @@ string columns stay `(N, width)` uint8 matrices.
 `where=` on `read_torch` accepts only **simple** predicates: comparisons
 (`==`, `!=`, `<`, `<=`, `>`, `>=`), `BETWEEN`, and `AND` of those. Expressions
 with `OR`, `IN`, `IS NULL`, or `NOT` raise `ValueError` — use
-`table.read(..., where=...)` for the full dialect. Matching rows are kept by
-reading the needed columns and applying a torch mask. When combined with a
+`table.read(..., where=...)` for the full dialect. The needed columns are
+read and masked one row window (about 64 MB) at a time and only matching rows
+are kept, so memory follows the result, not the table. When combined with a
 row window (`start_row` / `num_rows`), the window selects file rows first and
 the predicate filters inside it — identical to `table.read(row_slice=..., where=...)`.
 
@@ -509,7 +510,7 @@ Pass `where=` to keep matching rows.
 | Call | Dialect | How it filters |
 |---|---|---|
 | `table.read` / `table.scan` / `table.scan_torch` | Full (see operators below) | Native filtered scan when eligible (see below); otherwise read then Arrow filter. Arrow `where=` reads never import PyTorch |
-| `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns, then torch mask. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
+| `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns and torch-mask them one row window at a time. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
 
 Root `torchfits.read()` has no `where=` parameter.
 

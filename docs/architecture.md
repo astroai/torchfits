@@ -196,8 +196,9 @@ Activated when `mmap=True` and the table layout permits it.
 ### Filtered read (`where=`)
 
 - **`table.read_torch(..., where=)`:** simple compare / `BETWEEN` / `AND` only.
-  Reads projected columns, then applies a torch mask. Unsupported expressions
-  raise `ValueError`.
+  Reads projected columns and applies a torch mask one row window (about
+  64 MB of rows) at a time, keeping only matching rows. Unsupported
+  expressions raise `ValueError`.
 - **`table.read` / `table.scan` / `table.scan_torch` (`where=`):** full
   dialect. When `choose_where_read_plan` selects pushdown (readable header, no
   VLA in the projection, and `backend="cpp"` or `backend="auto"` with
