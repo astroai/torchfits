@@ -56,7 +56,26 @@ the notes. The changes that matter for what you call:
 
 ## Next
 
-Nothing is scheduled beyond the 1.4 release.
+The **1.4.x** line aims to be the FITS release to beat: faster than every
+earlier torchfits release and every other FITS library on each benchmark case,
+and complete on the FITS 4.0 format. Planned work, in order:
+
+- **Native throughput**: parallel tile decompression and compression,
+  64-bit heap descriptors on write, faster variable-length columns, and
+  native `where=` for `read_torch`.
+- **Out of core and remote**: a streaming image writer, in-place image
+  section updates, and partial remote reads of compressed images, cubes and
+  tables.
+- **Format completeness**: tiled table compression, random groups,
+  `A3DTABLE`, the `INHERIT` convention, shaped string arrays, and lossless
+  nested columns with nulls.
+- **Usability, CLI and docs**: an error-message audit, CLI equivalents for
+  common fpack, ftools and STILTS tasks, migration guides per library, and a
+  performance guide backed by the published benchmarks.
+
+Every step is measured in
+[torchfits-harness](https://github.com/astroai/torchfits-harness) against
+earlier releases and the other FITS libraries.
 
 Out of scope: world coordinates, units, catalog cross-matching and source
 finding stay in other packages, and so do spectroscopy and continuum
