@@ -10,7 +10,7 @@ from torch import Tensor
 
 from .._errors import FITSFileNotFoundError
 from ._repr import render_html_table
-from .header import Header
+from .header import Header, naxis2_row_count
 
 
 def _row_aligned_count(value: Any) -> Optional[int]:
@@ -300,11 +300,8 @@ class TableHDU:
                 if isinstance(value, (list, tuple)):
                     return len(value)
             return 0
-        if self.header and "NAXIS2" in self.header:
-            try:
-                return int(self.header["NAXIS2"])
-            except Exception:
-                pass
+        if self.header:
+            return naxis2_row_count(self.header, None)
         return 0
 
     @property

@@ -398,3 +398,26 @@ class Header(dict[str, Any]):
             cell_extra=["", "", "opacity: 0.7;"],
             first_col_bold=True,
         )
+
+
+def naxis2_row_count(header: Any, path: str | None = None) -> int:
+    """Table row count from ``NAXIS2``: missing means 0 rows, malformed raises.
+
+    A malformed value (``"abc"``, ``2.5``) is a corrupt header; coercing it to
+    zero rows made ``len()`` of a real table silently report an empty one.
+    """
+    raw = header.get("NAXIS2")
+    if raw is None:
+        return 0
+    value: int | None = None
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            value = None
+    if value is None:
+        where = f" in {path!r}" if path else ""
+        raise ValueError(f"cannot parse NAXIS2 row count {raw!r}{where}")
+    return value

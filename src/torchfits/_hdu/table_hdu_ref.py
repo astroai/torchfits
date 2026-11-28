@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
 from .._errors import HDUNotFoundError
 from ._repr import render_html_table
-from .header import Header
+from .header import Header, naxis2_row_count
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -94,13 +94,10 @@ class TableHDURef:
 
     @property
     def num_rows(self) -> int:
-        try:
-            total = int(self.header.get("NAXIS2", 0))
-        except (HDUNotFoundError, FileNotFoundError):
-            # The source itself is gone: a 0-row answer would hide that.
-            raise
-        except Exception:
-            total = 0
+        # A header that cannot be read (file gone, HDU missing, I/O error)
+        # propagates: a 0-row answer would hide it. Only a missing NAXIS2
+        # means zero rows; a malformed one is a corrupt header (r3a-17).
+        total = naxis2_row_count(self.header, self._source_path)
         if self._row_slice is None:
             return max(0, total)
         # One definition of the row window, shared with read()/iter_rows()
