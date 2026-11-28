@@ -9,7 +9,7 @@ import torch
 from ._hdu_lookup import raise_hdu_index_error
 from .paths import coerce_fits_path
 from .hdu_api import _resolve_hdu_index, autodetect_hdu
-from .device import to_device
+from .device import move_table_columns
 
 
 def _resolve_mmap(mmap: Union[bool, str]) -> bool:
@@ -24,20 +24,7 @@ def _resolve_mmap(mmap: Union[bool, str]) -> bool:
 def _move_table_dict(
     data: dict[str, Any], device: str | torch.device
 ) -> dict[str, Any]:
-    if str(device) == "cpu":
-        return data
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, torch.Tensor):
-            out[key] = to_device(value, device)
-        elif isinstance(value, list):
-            out[key] = [
-                to_device(item, device) if isinstance(item, torch.Tensor) else item
-                for item in value
-            ]
-        else:
-            out[key] = value
-    return out
+    return move_table_columns(data, device)
 
 
 def _apply_row_window(

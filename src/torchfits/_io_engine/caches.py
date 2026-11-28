@@ -9,7 +9,7 @@ from types import MappingProxyType
 from threading import RLock
 from typing import Any
 
-from .device import to_device
+from .device import move_table_columns, to_device
 
 _CACHE_STATS_DEFAULT = {
     "total_requests": 0,
@@ -362,20 +362,7 @@ def _check_read_cache_locked(
                         if isinstance(cached_data, torch.Tensor):
                             out_data = to_device(cached_data, device)
                         elif isinstance(cached_data, dict):
-                            new_data: dict[str, Any] = {}
-                            for key, value in cached_data.items():
-                                if isinstance(value, torch.Tensor):
-                                    new_data[key] = to_device(value, device)
-                                elif isinstance(value, list):
-                                    new_data[key] = [
-                                        to_device(item, device)
-                                        if isinstance(item, torch.Tensor)
-                                        else item
-                                        for item in value
-                                    ]
-                                else:
-                                    new_data[key] = value
-                            out_data = new_data
+                            out_data = move_table_columns(cached_data, device)
                     else:
                         # Hand out a private copy so callers mutating their
                         # result cannot alias (and corrupt) the cached entry.

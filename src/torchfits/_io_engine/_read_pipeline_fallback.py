@@ -14,7 +14,7 @@ import torch
 
 from .._errors import HDUNotFoundError
 from ..hdu import Header
-from .device import to_device, validate_device
+from .device import move_table_columns, to_device, validate_device
 from ._read_pipeline import (
     _coerce_bit_table_columns,
     _coerce_unsigned_table_columns,
@@ -421,22 +421,7 @@ def read_fallback_table(
             cache_capacity,
         )
 
-    if str(device) != "cpu":
-        new_data: dict[str, Any] = {}
-        for key, value in table_data.items():
-            if isinstance(value, torch.Tensor):
-                new_data[key] = to_device(value, device)
-            elif isinstance(value, list):
-                new_list = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        new_list.append(to_device(item, device))
-                    else:
-                        new_list.append(item)
-                new_data[key] = new_list
-            else:
-                new_data[key] = value
-        table_data = new_data
+    table_data = move_table_columns(table_data, device)
 
     if isinstance(hdu_num, int):
         set_cached_hdu_type(path, hdu_num, "BINARY_TABLE", signature)

@@ -958,35 +958,14 @@ def _scan_torch_iter(
     header: Any = None,
     where: Optional[str] = None,
 ) -> Iterator[dict[str, Any]]:
-    import torch
     import torchfits
 
-    from .._io_engine.device import to_device
+    from .._io_engine.device import move_table_columns
 
     def _move(chunk: dict[str, Any]) -> dict[str, Any]:
-        if str(device) == "cpu":
-            return chunk
-        moved: dict[str, Any] = {}
-        for key, value in chunk.items():
-            if isinstance(value, torch.Tensor):
-                t = value
-                if pin_memory and t.device.type == "cpu":
-                    t = t.pin_memory()
-                moved[key] = to_device(t, device, non_blocking=non_blocking)
-            elif isinstance(value, list):
-                new_list = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        t = item
-                        if pin_memory and t.device.type == "cpu":
-                            t = t.pin_memory()
-                        new_list.append(to_device(t, device, non_blocking=non_blocking))
-                    else:
-                        new_list.append(item)
-                moved[key] = new_list
-            else:
-                moved[key] = value
-        return moved
+        return move_table_columns(
+            chunk, device, non_blocking=non_blocking, pin_memory=pin_memory
+        )
 
     if where is not None:
         for chunk in _scan_torch_where_chunks(

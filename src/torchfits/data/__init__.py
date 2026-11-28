@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterator, Sequence
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
-from .._io_engine.device import to_device
+from .._io_engine.device import move_table_columns, to_device
 from .datasets import (
     BandInfo,
     FitsCubeDataset,
@@ -377,15 +377,9 @@ def _resolve_table_mmap(mmap: bool | str) -> bool:
 
 
 def _move_table_chunk(chunk: dict[str, Any], device: str) -> dict[str, Any]:
-    if str(device) == "cpu":
-        return chunk
-    moved: dict[str, Any] = {}
-    for key, value in chunk.items():
-        if isinstance(value, torch.Tensor):
-            moved[key] = to_device(value, device)
-        else:
-            moved[key] = value
-    return moved
+    # VLA columns (lists of row tensors) follow their sibling columns, as
+    # they do in scan_torch / FitsTableIterableDataset.
+    return move_table_columns(chunk, device)
 
 
 def _eager_table_columns(
