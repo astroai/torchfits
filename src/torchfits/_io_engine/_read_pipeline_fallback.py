@@ -219,6 +219,7 @@ def read_fallback(
         # would hide FileNotFoundError/PermissionError from callers (r4a-05).
         raise
     except Exception as exc:
+        # Translation boundary: the documented RuntimeError for a failed read.
         raise RuntimeError(f"Failed to read FITS file '{path}': {exc}") from exc
 
 

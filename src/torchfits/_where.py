@@ -28,13 +28,13 @@ def _parse_where_literal(raw: str) -> Any:
     if re.fullmatch(r"[+-]?\d+", token):
         try:
             return int(token)
-        except Exception:
+        except ValueError:  # past sys.get_int_max_str_digits()
             pass
 
     if re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", token):
         try:
             return float(token)
-        except Exception:
+        except ValueError:
             pass
 
     # Bare-word strings are accepted (e.g. where="NAME == STAR_A").

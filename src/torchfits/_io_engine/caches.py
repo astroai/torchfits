@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from collections import OrderedDict
@@ -10,6 +11,8 @@ from threading import RLock
 from typing import Any
 
 from .device import move_table_columns, to_device
+
+_log = logging.getLogger(__name__)
 
 _CACHE_STATS_DEFAULT = {
     "total_requests": 0,
@@ -143,7 +146,7 @@ def path_signature(path: str) -> Any:
         return object()
     try:
         st = os.stat(target)
-    except Exception:
+    except (OSError, ValueError):  # ValueError: embedded NUL in the path
         return None
     mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
     return (int(st.st_size), int(mtime_ns), int(st.st_ino))
@@ -437,13 +440,13 @@ def _register_open_hdulist(path: str, handle: Any, hdulist: Any) -> None:
     """Register an HDUList's open file handle so mutations can close it."""
     try:
         real = os.path.realpath(path)
-    except Exception:
+    except (OSError, ValueError):
         real = os.path.abspath(path)
     with cache_lock:
         _open_hdulist_registry.setdefault(real, []).append((handle, hdulist))
     try:
         hdulist._registry_key = real
-    except Exception:
+    except AttributeError:  # an object with __slots__ / read-only attributes
         pass
 
 
@@ -484,7 +487,7 @@ def _close_hdulist_for_path(path: str) -> None:
     """
     try:
         real = os.path.realpath(path)
-    except Exception:
+    except (OSError, ValueError):
         real = os.path.abspath(path)
     with cache_lock:
         entries = _open_hdulist_registry.pop(real, [])
@@ -494,13 +497,17 @@ def _close_hdulist_for_path(path: str) -> None:
         try:
             handle.close()
         except Exception:
-            pass
+            # Cleanup before a mutation: the mutation's own open reports a
+            # handle that is really still open.
+            _log.debug(
+                "closing an open HDUList handle for %r failed", path, exc_info=True
+            )
         # Prevent double-close when HDUList.__exit__ calls close() later.
         try:
             hdulist._file_handle = None
             hdulist._lazy_handle = None
             hdulist._registry_key = None
-        except Exception:
+        except AttributeError:
             pass
 
 
@@ -517,8 +524,12 @@ def invalidate_path_caches(path: str) -> None:
         import torchfits._C as cpp
 
         cpp.evict_cached_reader(path)
+    except ImportError:
+        pass  # torch-free / core-only process: no native readers to evict
     except Exception:
-        pass
+        # Best effort: a reader that stays cached is re-validated against
+        # the file signature on its next use.
+        _log.debug("evicting cached table readers for %r failed", path, exc_info=True)
 
     with cache_lock:
         _invalidate_path_caches_locked(path)

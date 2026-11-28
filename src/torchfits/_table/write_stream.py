@@ -260,7 +260,7 @@ class TableWriter:
         try:
             self.abort()
         except Exception:
-            pass
+            pass  # finalizer: exceptions here are only printed as noise
 
     # -- internals -------------------------------------------------------------
 

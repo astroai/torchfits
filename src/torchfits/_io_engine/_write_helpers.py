@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -19,6 +20,9 @@ from .quantize import (
     parse_table_quantize_spec,
     quantize_int16_robust,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 class UInt64WriteError(ValueError):
@@ -451,7 +455,12 @@ def _arrow_column_values(column: Any, field: Any = None) -> Any:
 def _arrow_flat_column_values(column: Any) -> Any:
     try:
         import pyarrow as pa
-
+    except ImportError:  # not an Arrow column after all
+        return column.to_numpy(zero_copy_only=False)
+    # Conversion failures of this column (types to_numpy cannot express);
+    # anything else is a real error and propagates.
+    conversion_errors = (pa.ArrowException, ValueError, TypeError, NotImplementedError)
+    try:
         typ = column.type
         if (
             pa.types.is_fixed_size_list(typ)
@@ -470,11 +479,11 @@ def _arrow_flat_column_values(column: Any) -> Any:
                 return flat.to_numpy(zero_copy_only=False).reshape(
                     len(arr), typ.list_size
                 )
-    except Exception:
-        pass
+    except conversion_errors:
+        _log.debug("fixed-size-list fast path failed; using to_numpy", exc_info=True)
     try:
         return column.to_numpy(zero_copy_only=False)
-    except Exception:
+    except conversion_errors:
         return column.to_pylist()
 
 
@@ -499,6 +508,9 @@ def _normalize_table_input(data: Any) -> Any:
         try:
             return {col: data[col].to_numpy() for col in data.columns}
         except Exception:
+            # Polars errors derive from Exception only (PolarsError), so no
+            # narrower clause catches a column to_numpy cannot express.
+            _log.debug("DataFrame to_numpy failed; using to_dict", exc_info=True)
             return dict(data.to_dict(as_series=False))
     # Pandas DataFrame
     if hasattr(data, "columns") and hasattr(data, "to_dict"):
@@ -731,7 +743,7 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
         return False
     try:
         naxis = int(hdr.get("NAXIS", -1))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         naxis = -1
     if naxis == 0:
         return True
@@ -826,7 +838,7 @@ def _vla_item_signature(item: Any) -> tuple[Any, ...] | None:
     if isinstance(item, (list, tuple, np.ndarray)):
         try:
             arr = np.asarray(item)
-        except Exception:
+        except (TypeError, ValueError):  # ragged / non-numeric sequence
             return None
         if arr.ndim > 1 or arr.dtype == np.object_:
             return None
@@ -1436,6 +1448,8 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                     else:
                         img = torch.as_tensor(img)
                 except Exception:
+                    # Translated, not swallowed: torch raises TypeError,
+                    # ValueError or RuntimeError for unconvertible payloads.
                     raise NotImplementedError(
                         "Compressed FITS writing supports tensor image payloads"
                         " for dict HDUs. Could not convert"

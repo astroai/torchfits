@@ -56,6 +56,10 @@ class UsageError(CliError):
 class IoError(CliError):
     """I/O or FITS-structure failure (exit 3).
 
+    Command bodies catch ``Exception`` at each file boundary and re-raise it
+    as ``IoError`` (after letting ``CliError`` through): that is the exit-3
+    contract in docs/cli.md. ``main`` maps anything that escapes to exit 5.
+
     Raw CFITSIO read failures (``status=107``/``108``, "error reading data
     buffer") get a plain-language note: they almost always mean the file is
     shorter than its headers declare.

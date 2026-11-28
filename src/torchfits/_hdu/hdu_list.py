@@ -147,10 +147,7 @@ class HDUList:
 
             from .._io_engine.caches import _register_open_hdulist
 
-            try:
-                _register_open_hdulist(path, lazy, hdul)
-            except Exception:
-                pass
+            _register_open_hdulist(path, lazy, hdul)
 
             for info in hdu_infos:
                 # LONGSTRN '&'+CONTINUE chains are rejoined at construction
@@ -182,10 +179,12 @@ class HDUList:
             return hdul
 
         except Exception as e:
+            # Translation boundary: every open failure is reported as the
+            # documented RuntimeError naming the file.
             try:
                 lazy.close()
             except Exception:
-                pass
+                pass  # cleanup only: never mask the open error
             raise RuntimeError(f"Failed to open FITS file '{path}': {str(e)}") from e
 
     def __len__(self) -> int:
@@ -253,7 +252,7 @@ class HDUList:
         try:
             self.close()
         except Exception:
-            pass
+            pass  # finalizer: exceptions here are only printed as noise
 
     def close(self) -> None:
         target = self._file_handle or self._lazy_handle
@@ -267,7 +266,7 @@ class HDUList:
                 _unregister_open_hdulist(self._registry_key, target)
                 self._registry_key = None
             except Exception:
-                pass
+                pass  # cleanup only: the handle must still be closed below
             try:
                 target.close()
             finally:
@@ -330,6 +329,8 @@ class HDUList:
 
             return True
         except Exception:
+            # A validity predicate: any failure to read the file means "not
+            # valid", which is the answer this method exists to give.
             return False
 
     @staticmethod

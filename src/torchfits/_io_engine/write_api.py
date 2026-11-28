@@ -161,6 +161,8 @@ def write(
             # wrapping them hid the contract from callers.
             raise
         except Exception as e:
+            # Translation boundary: the documented RuntimeError for a failed
+            # write (atomic_write_target has already removed the temp file).
             raise RuntimeError(f"Failed to write FITS file '{path}': {e}") from e
     # After the rename, never before: see atomic_write_target.
     _invalidate_written_target(path)

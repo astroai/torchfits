@@ -28,7 +28,7 @@ def _normalize_header_value(value: Any) -> Any:
             return value.item()
         if isinstance(value, np.ndarray) and value.ndim == 0:
             return value.item()
-    except Exception:
+    except ImportError:
         pass
     return value
 

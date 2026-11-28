@@ -211,7 +211,9 @@ class TableHDURef:
     def _is_ascii_table(self) -> bool:
         try:
             return str(self.header.get("XTENSION", "")).strip().upper() == "TABLE"
-        except Exception:
+        except (AttributeError, TypeError):
+            # A header object without a usable .get(); a header that cannot
+            # be read raises here as it would from the read itself.
             return False
 
     def read(

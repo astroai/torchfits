@@ -31,7 +31,7 @@ def has_bz2_support() -> bool:
         import torchfits._C as _C
 
         return bool(getattr(_C, "HAS_BZIP2", False))
-    except Exception:
+    except ImportError:
         return False
 
 
@@ -55,7 +55,7 @@ def has_curl_support() -> bool:
         import torchfits._C as _C
 
         return bool(getattr(_C, "HAS_CURL", True))
-    except Exception:
+    except ImportError:
         return True
 
 
