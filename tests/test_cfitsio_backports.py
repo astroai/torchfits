@@ -239,6 +239,28 @@ def test_ten_axis_image_reads_raise(tmp_path: Path) -> None:
 # Tables
 
 
+def test_ascii_table_with_too_many_fields_raises(tmp_path: Path) -> None:
+    """getkey-tfields: ffgttb compared instead of assigning BAD_TFIELDS, so
+    TFIELDS > 999 opened as a valid ASCII table."""
+    fields = 1000
+    cards = [
+        _card("XTENSION", "TABLE"),
+        _card("BITPIX", 8),
+        _card("NAXIS", 2),
+        _card("NAXIS1", fields),
+        _card("NAXIS2", 1),
+        _card("PCOUNT", 0),
+        _card("GCOUNT", 1),
+        _card("TFIELDS", fields),
+    ]
+    for i in range(1, fields + 1):
+        cards += [_card(f"TBCOL{i}", i), _card(f"TFORM{i}", "A1")]
+    path = tmp_path / "tfields.fits"
+    path.write_bytes(_PRIMARY_NULL + _header(cards) + _pad(b"x" * fields, b" "))
+    with pytest.raises((RuntimeError, OSError)):
+        torchfits.table.read(str(path), hdu=1)
+
+
 @pytest.mark.parametrize("mmap", [True, False])
 def test_ascii_string_column_ignores_narrower_tdisp(tmp_path: Path, mmap: bool) -> None:
     """getcols-vla-strings: upstream 113781d cuts ffgcls2 strings to the
