@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - roadmap: 1.3.3 shipped the DLPack/stable-ABI change; plan 1.4
 - data: Document remote completeness checks and dataset edge cases
 
+- cli: Fpack controls recipes; drop them from the roadmap
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
@@ -36,9 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Keep TTYPE-less columns through mutations
 - native: Key shared read metadata by canonical path
 - cli: Refuse hard-linked output aliases of the input
+- table: Write Arrow IPC without the deprecated write_feather
+- compress: Keep NaN pixels of quantized float images
+- native: Lock the shared handle in TableReader(file_obj, hdu) reads
 ### Performance
 - native: Release the GIL while deleting table rows
 - cli: Stream convert --columns/--where for non-FITS output
+- native: Release the GIL in the table write and mutation bindings
+- cli: Stream convert --to fits through table.writer
+- data: Read each FitsTableIterableDataset where= chunk once
+
+### Added
+- Compress integer images as quantized floats (fpack -i2f)
+- compress: Explicit float quantization and dither controls
+- compress: Tile geometry for tile-compressed image writes
+- table: Native, torch-free, windowed where= filtering
+- table: Stream batches into FITS tables with table.writer()
 
 ## [1.3.3] — 2026-11-20
 
