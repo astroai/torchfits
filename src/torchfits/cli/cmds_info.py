@@ -40,8 +40,8 @@ def _info_record(path: str, index: int, hdu: Any) -> dict[str, Any]:
     }
     if record["type"] == "IMAGE":
         # A compressed image stores its geometry in ZNAXIS*/ZBITPIX; the
-        # plain NAXIS*/BITPIX (and therefore shape_str/dtype_str) describe
-        # the tile table, so prefer the Z cards when they are present.
+        # plain NAXIS*/BITPIX describe the tile table, so prefer the Z cards
+        # when they are present.
         geometry = compressed_image_geometry(header)
         if geometry is not None:
             record["shape"] = str(geometry[0])

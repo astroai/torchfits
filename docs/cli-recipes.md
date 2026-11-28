@@ -167,6 +167,9 @@ torchfits convert catalog.fits -o /tmp/catalog.csv -e 1 -c RA,DEC,MAG_G
 
 # Filter and export in a single pass (STILTS-style SQL predicate)
 torchfits convert catalog.fits -o /tmp/bright_stars.parquet -e 1 -w "MAG_G < 18.0 AND DEC > 0" -c RA,DEC,MAG_G
+
+# Filter into a new FITS table, keeping TFORM/TUNIT/TNULL/EXTNAME (streamed)
+torchfits convert catalog.fits -o /tmp/bright_stars.fits -e 1 -w "MAG_G < 18.0"
 ```
 
 ---

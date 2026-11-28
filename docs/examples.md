@@ -172,6 +172,7 @@ torchfits.write("packed_int16.fits", image_float, quantize="robust", overwrite=T
 | [`example_manga_logcube.py`](published-examples/example_manga_logcube.py) | SDSS MaNGA IFU datacubes (`FLUX`, `IVAR`, `MASK`, `WAVE`) |
 | [`example_megacam_mef_cutouts.py`](published-examples/example_megacam_mef_cutouts.py) | Parallel cutouts from CFHT MegaCam 36-CCD mosaics |
 | [`example_quantize_int16.py`](published-examples/example_quantize_int16.py) | Robust 16-bit quantization for images and table columns |
+| [`example_fpack_compression.py`](published-examples/example_fpack_compression.py) | fpack-style tile compression: `tile_shape=`, `quantize_level=`, `quantize_method=`, `dither_seed=`, `int_to_float=`, and `torchfits compress -t/-q/--int-to-float` |
 
 ### Tables & Catalogs
 
@@ -180,6 +181,10 @@ torchfits.write("packed_int16.fits", image_float, quantize="robust", overwrite=T
 | [`example_table.py`](published-examples/example_table.py) | Arrow tables, tensor dictionary loading, and Chandra event filtering |
 | [`example_polars.py`](published-examples/example_polars.py) | `read_polars` and out-of-core `scan_polars` streaming |
 | [`example_table_recipes.py`](published-examples/example_table_recipes.py) | SQL pushdown, DuckDB querying, and Arrow record batch iterators |
+| [`example_table_streaming_write.py`](published-examples/example_table_streaming_write.py) | Streaming FITS table writes with `table.writer()` / `table.write(stream)`: Parquet → FITS out of core, filtered FITS → FITS, atomic failure |
+| [`example_table_where_streaming.py`](published-examples/example_table_where_streaming.py) | Native `where=` filters: torch-free `table.read` / `scan`, `scan_torch(where=)`, and `FitsTableIterableDataset(where=)` with workers |
+| [`example_tdim_cells.py`](published-examples/example_tdim_cells.py) | N-D table cells: writing `(N, d1, d2, ...)` columns with `TDIM`, reading them back with `shape_cells=True` |
+| [`example_decode_errors.py`](published-examples/example_decode_errors.py) | Strict ASCII string decoding and the `encoding=` / `decode_errors=` opt-ins for legacy non-ASCII files |
 
 ### Datasets & Streaming
 
@@ -187,6 +192,7 @@ torchfits.write("packed_int16.fits", image_float, quantize="robust", overwrite=T
 |---|---|
 | [`example_staged_cutouts.py`](published-examples/example_staged_cutouts.py) | `FitsStagedCutoutIterableDataset`: background prefetch of the next survey mosaic, bounded scratch staging, `DataLoader` integration |
 | [`example_streaming_cubes_spectra.py`](published-examples/example_streaming_cubes_spectra.py) | `FitsCubeIterableDataset` and `FitsSpectrumIterableDataset` for constant-memory IFU cubes and multi-arm spectra |
+| [`example_lazy_table_dataset.py`](published-examples/example_lazy_table_dataset.py) | `FitsTableDataset(lazy=True)`: block-cached random access to a catalog that need not fit in memory, shuffled across `DataLoader` workers |
 
 ### Correctness Cookbooks & Harnesses
 
@@ -228,7 +234,7 @@ cache precedence. `examples/test_examples.py` sets `TORCHFITS_EXAMPLE_FAST=1`
 for every example under CI, and unconditionally for
 `example_megacam_cr_denoise.py`, to skip downloads and bound its training run.
 The runner also refuses to start under `PYTHONOPTIMIZE`, which would delete the
-assertions three of these examples are built from.
+assertions most of these examples are built from.
 
 ### Out of gallery
 

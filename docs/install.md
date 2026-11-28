@@ -154,7 +154,7 @@ pixi run lint           # ruff linter and formatter
 
 | Extra | Included packages | Purpose |
 |---|---|---|
-| `torchfits[dev]` | pytest, ruff, mypy, pandas, matplotlib | Library development toolchain |
+| `torchfits[dev]` | pytest, pytest-cov, ruff, mypy, pandas, matplotlib | Library development toolchain |
 | `torchfits[test]` | pytest, pytest-cov, psutil | Unit testing extras (`pip install torchfits[test]`); PyArrow comes from the base package |
 | `torchfits[docs]` | zensical | Building the documentation site |
 | `torchfits[examples]` | matplotlib | Running tutorial scripts |
