@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - api: Match signatures to the code and link the 1.4 features
 - examples: Add runnable examples for the 1.4 table, compression and dataset features
 - roadmap: Close the narrow-table read and table-reader split items
+- roadmap: Plan the 1.4.x line as the FITS release to beat
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
