@@ -620,7 +620,18 @@ def _where_mask_for_table(
         non_null = [v for v in literals if v is not None]
         has_null = any(v is None for v in literals)
 
-        if non_null:
+        if non_null and (
+            pa.types.is_integer(column.type) or pa.types.is_floating(column.type)
+        ):
+            # Membership is equality with any listed value. Reusing the exact
+            # comparison keeps a literal outside the column's range (or a
+            # float on an integer column) a plain non-match, where an Arrow
+            # value set would overflow or refuse the cast.
+            mask = None
+            for value in non_null:
+                part = _compare(column, column_name, "==", value)
+                mask = part if mask is None else pc.or_kleene(mask, part)
+        elif non_null:
             if pa.types.is_boolean(column.type):
                 value_set = pa.array(
                     [_boolean_literal(v, column_name) for v in non_null],

@@ -470,3 +470,34 @@ def test_byte_vector_column_is_not_decoded_as_text(tmp_path, mmap, decode_bytes)
     )
     assert out.schema.field("V").type == pa.list_(pa.uint8(), 2)
     assert out["V"].to_pylist() == [[255, 255]] * 3
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("K IN (9223372036854775808)", []),
+        ("K IN (99999999999999999999999, 1)", [0]),
+        ("K NOT IN (9223372036854775808, 1)", [1, 2]),
+        ("K IN (1e30, 2)", [1]),
+        ("K IN (2.5, 3)", [2]),
+        ("F IN (99999999999999999999999, 2.5)", [2]),
+    ],
+)
+@pytest.mark.parametrize("mmap", [True, False])
+def test_in_list_literal_outside_column_range(tmp_path, expr, expected, mmap):
+    # IN built an Arrow value set from the literals, so one outside int64
+    # raised OverflowError / ArrowInvalid instead of matching nothing.
+    path = str(tmp_path / "in.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int64),
+            "K": np.array([1, 2, 3], dtype=np.int64),
+            "F": np.array([1.0, 2.0, 2.5]),
+        },
+    )
+    out = torchfits.table.read(path, where=expr, mmap=mmap)
+    assert out["ID"].to_pylist() == expected
+    data = {"K": np.array([1, 2, 3]), "F": np.array([1.0, 2.0, 2.5])}
+    mask = evaluate_where(parse_where_expression(expr), data)
+    assert np.flatnonzero(mask).tolist() == expected
