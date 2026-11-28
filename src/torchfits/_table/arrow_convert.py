@@ -577,6 +577,10 @@ def _raw_column_to_arrow_direct(
     if width == 0:
         return None
     buffer = pa.py_buffer(data)
+    if width == 1 and _tform_is_scalar(fits_tform):
+        # A repeat-1 column is scalar per the schema mapping; a native (N, 1)
+        # payload must not surface as FixedSizeList<T>[1] (r5c-13).
+        return pa.Array.from_buffers(type_, rows, [None, buffer])
     if dtype_name == "uint8":
         if decode_bytes or _fits_tform_is_bit(fits_tform):
             return None

@@ -12,6 +12,7 @@ import gc
 
 import numpy as np
 import pyarrow as pa
+import pytest
 
 from torchfits._table.arrow_convert import (
     _numpy_buffer_to_arrow,
@@ -227,3 +228,35 @@ def test_arrow_table_keeps_the_native_column_storage_alive(tmp_path):
         assert arrow_table.column("X").to_pylist() == values.tolist()
     finally:
         del junk
+
+
+@pytest.mark.parametrize("tform", ["E", "1E"])
+def test_direct_path_surfaces_a_width_one_scalar_column_as_scalar(tform):
+    # r5c-13: a native (N, 1) payload for a repeat-1 column is scalar, as the
+    # header schema maps it -- not FixedSizeList<float>[1].
+    values = np.arange(3, dtype=np.float32).reshape(3, 1)
+    raw = {
+        "kind": "fixed",
+        "dtype": "float32",
+        "shape": [3, 1],
+        "data": _readonly_view(values),
+    }
+    arrow_array = _raw_column_to_arrow_array(
+        pa, raw, False, "ascii", True, fits_tform=tform
+    )
+    assert arrow_array.type == pa.float32()
+    assert arrow_array.to_pylist() == [0.0, 1.0, 2.0]
+    assert _values_address(arrow_array) == pa.py_buffer(raw["data"]).address
+
+
+def test_direct_path_keeps_a_width_one_vector_without_a_scalar_tform():
+    # A schema-less payload keeps its declared (N, 1) shape.
+    values = np.arange(3, dtype=np.float32).reshape(3, 1)
+    raw = {
+        "kind": "fixed",
+        "dtype": "float32",
+        "shape": [3, 1],
+        "data": _readonly_view(values),
+    }
+    arrow_array = _raw_column_to_arrow_direct(pa, raw, False, None)
+    assert arrow_array.type == pa.list_(pa.float32(), 1)
