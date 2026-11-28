@@ -179,8 +179,16 @@ def set_cached_hdu_type(
     signature_cached_set(hdu_type_cache, (path, hdu), hdu_type, 512, signature)
 
 
-def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
+# Sentinel default for signature_cached_get: lets a caller that stores None as
+# a real answer (a negative lookup) tell it apart from a miss.
+MISSING: Any = object()
+
+
+def signature_cached_get(cache: Any, key: tuple[str, Any], default: Any = None) -> Any:
     """Get an entry validated against the file's current stat signature.
+
+    Returns *default* on a miss (absent or stale entry). Pass ``MISSING`` when
+    ``None`` is a value the cache stores, such as a negative lookup.
 
     ``key`` is ``(path, discriminator)``: an HDU index for the per-HDU caches,
     or the ``"payload"`` sentinel auto_hdu_cache keys its whole-file answer by.
@@ -213,12 +221,12 @@ def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
     with cache_lock:
         entry = cache.get(key)
         if entry is None:
-            return None
+            return default
         cache.move_to_end(key)
         stored_sig, value = entry
         if stored_sig != path_signature(key[0]):
             del cache[key]
-            return None
+            return default
         return value
 
 

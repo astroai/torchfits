@@ -862,9 +862,11 @@ public:
             result[col_idx] = ColumnData(tensor);
         }
 
-        // Row-buffered reads via fits_read_tblbytes when selecting fixed-width
-        // binary columns (≥2 cols or full row). Deinterleave beats N× fits_read_col
-        // on wide projections; single-column / VLA / BIT / complex stay on fits_read_col.
+        // Row-buffered reads (tiled pread, else fits_read_tblbytes) for every
+        // fixed-width binary projection, single columns included: CFITSIO's
+        // fits_read_col walks the same row span block by block, so a 1-column
+        // read of a 20-column table cost more than the 2-column buffered read.
+        // VLA / BIT / complex stay on fits_read_col.
         long requested_bytes = 0;
         bool has_vla = false;
         bool has_bit = false;
@@ -890,11 +892,7 @@ public:
         bool use_buffered = false;
         if (table_buffered_read_enabled() &&
             !is_ascii_ && !has_vla && !has_bit && !has_complex && row_width_bytes_ > 0) {
-            // Full-row OR multi-column projection (≥2 fixed cols): one
-            // fits_read_tblbytes + deinterleave beats N× fits_read_col on wide tables.
-            const long nsel = static_cast<long>(col_indices.size());
-            use_buffered = (requested_bytes == row_width_bytes_) ||
-                           (nsel >= 2 && requested_bytes > 0);
+            use_buffered = requested_bytes > 0;
         }
 
         auto read_column_by_column = [&]() {
@@ -3257,6 +3255,34 @@ public:
         long start_row, long num_rows,
         std::unordered_map<int, ColumnData>& result) {
 
+        // Prefer direct pread of the table heap over fits_read_tblbytes when we
+        // have a local path (same bytes, less CFITSIO overhead on cold opens).
+        // The data offset is cached: fits_get_hduaddrll touches ~12 MiB of
+        // anonymous memory on every call (kernel rusage shows ~2930 minor
+        // faults per read), which dominates the pread cost on a busy host.
+        int data_fd = -1;
+        if (direct_io_ok()) {
+            if (data_offset_ < 0) {
+                LONGLONG headstart = 0, dataend = 0;
+                int addr_status = 0;
+                fits_get_hduaddrll(fptr_, &headstart, &data_offset_, &dataend, &addr_status);
+                if (addr_status != 0 || data_offset_ <= 0) {
+                    data_offset_ = -1;
+                }
+            }
+            if (data_offset_ > 0) {
+                if (data_fd_cached_ < 0) {
+                    data_fd_cached_ = ::open(filename_.c_str(), O_RDONLY);
+                }
+                data_fd = data_fd_cached_;
+            }
+        }
+
+        if (data_fd >= 0) {
+            read_columns_pread_tiled(col_indices, start_row, num_rows, result, data_fd);
+            return;
+        }
+
         // 16MB chunk target, then align with CFITSIO's suggested table row buffer.
         // Clamp to the requested row window so small tables do not allocate a full
         // 16 MiB scratch (visible as rss when mmap/cache are off in scorecard).
@@ -3291,187 +3317,151 @@ public:
         }
         std::vector<uint8_t>& buffer = scratch_buffer_;
 
-        // Prefer direct pread of the table heap over fits_read_tblbytes when we
-        // have a local path (same bytes, less CFITSIO overhead on cold opens).
-        // The data offset is cached: fits_get_hduaddrll touches ~12 MiB of
-        // anonymous memory on every call (kernel rusage shows ~2930 minor
-        // faults per read), which dominates the pread cost on a busy host.
-        int data_fd = -1;
-        if (direct_io_ok()) {
-            if (data_offset_ < 0) {
-                LONGLONG headstart = 0, dataend = 0;
-                int addr_status = 0;
-                fits_get_hduaddrll(fptr_, &headstart, &data_offset_, &dataend, &addr_status);
-                if (addr_status != 0 || data_offset_ <= 0) {
-                    data_offset_ = -1;
-                }
-            }
-            if (data_offset_ > 0) {
-                if (data_fd_cached_ < 0) {
-                    data_fd_cached_ = ::open(filename_.c_str(), O_RDONLY);
-                }
-                data_fd = data_fd_cached_;
-            }
-        }
-
-        // Double-buffered chunks: issue chunk N+1's pread on a helper thread
-        // while chunk N de-interleaves/swaps, overlapping the buffered path's
-        // two full-duplex passes. Skipped for tiny tables where thread
-        // handoff costs more than the copy.
-        // Overlap only pays when a single chunk's pread is large enough that
-        // hiding it beats two thread handoffs (~0.1 ms): measured regression
-        // on 13 MB tables with warm page cache, gain on multi-hundred-MB
-        // payloads / cold storage.
-        const size_t requested_table_bytes = internal::checked_nonnegative_multiply<size_t>(
-            internal::checked_nonnegative_cast<size_t>(
-                num_rows, "Invalid table geometry for prefetch row count"),
-            row_width_size, "Invalid table geometry for prefetch size");
-        const bool prefetch =
-            data_fd >= 0 && num_rows > 1 && requested_table_bytes >= (64u << 20);
-        std::vector<uint8_t> second_buffer;
-        if (prefetch) {
-            second_buffer.resize(need_bytes);
-        }
-
+        // No raw fd (borrowed handle, compressed or remote input): read whole
+        // rows through CFITSIO a chunk at a time and de-interleave them.
         long rows_done = 0;
-        int cur = 0;                 // scratch holding the current chunk
-        bool cur_filled = false;     // ...already prefetched by the previous pass
-        // SAFETY: `cur` must only rotate while prefetch is live; otherwise
-        // chunk_buf alternates onto the unsized second buffer.
         while (rows_done < num_rows) {
             const long rows = std::min(rows_per_chunk, num_rows - rows_done);
-            uint8_t* chunk_buf =
-                (prefetch && cur == 1) ? second_buffer.data() : buffer.data();
-            assert(!prefetch || cur == 0 || second_buffer.size() >=
-                       internal::checked_nonnegative_multiply<size_t>(
-                           internal::checked_nonnegative_cast<size_t>(
-                               rows, "Invalid table geometry for chunk row count"),
-                           row_width_size, "Invalid table geometry for chunk size"));
+            int status = 0;
+            fits_read_tblbytes(
+                fptr_, start_row + rows_done, 1,
+                internal::checked_nonnegative_multiply<long>(
+                    rows, row_width_bytes_,
+                    "Invalid table geometry for buffered read size"),
+                buffer.data(), &status);
+            if (status != 0) {
+                char err_msg[81];
+                fits_get_errstatus(status, err_msg);
+                throw std::runtime_error(
+                    "Failed to read table bytes: " + std::string(err_msg));
+            }
+            for (int col_idx : col_indices) {
+                const auto& col = columns_[col_idx];
+                native::Tensor tensor = result[col_idx].fixed_data;
+                uint8_t* dest_ptr =
+                    (uint8_t*)get_tensor_data_ptr(
+                        tensor,
+                        internal::checked_nonnegative_multiply<long>(
+                            rows_done, static_cast<long>(col.repeat),
+                            "Invalid table geometry for column " + col.name +
+                                " destination offset"));
+                extract_column_data(buffer.data(), rows, col, dest_ptr);
+            }
+            rows_done += rows;
+        }
+    }
 
-            // Join the prefetch (if any): this chunk's bytes are already in
-            // place, or the read failed and we surface it exactly like the
-            // serial path would.
-            std::atomic<bool> pf_ok{true};
-            auto pread_range = [&](uint8_t* dst, long row_index, long nrows) -> bool {
-                const LONGLONG relative_offset =
-                    internal::checked_nonnegative_multiply<LONGLONG>(
-                        internal::checked_nonnegative_cast<LONGLONG>(
-                            row_index, "Invalid table geometry for pread row"),
-                        internal::checked_nonnegative_cast<LONGLONG>(
-                            row_width_bytes_, "Invalid table geometry for pread row width"),
-                        "Invalid table geometry for pread offset");
-                const off_t off = internal::checked_nonnegative_cast<off_t>(
-                    internal::checked_nonnegative_add<LONGLONG>(
-                        data_offset_, relative_offset,
-                        "Invalid table geometry for pread offset"),
-                    "Invalid table geometry for pread offset");
-                const size_t nbytes = internal::checked_nonnegative_multiply<size_t>(
+    // Direct-I/O buffered read: the row window is split into ~512 KiB tiles
+    // of whole rows, and each pool thread preads one tile into its own
+    // cache-resident scratch and gathers every requested column out of it
+    // before claiming the next. The 16 MiB serial scratch it replaces sent
+    // each column back to DRAM for its gather, so a 1-column projection of a
+    // 20-column table cost more than fits_read_col, and a full read of an
+    // 84 MB table ran 5x behind mmap. Several preads in flight also overlap
+    // I/O with the gather on cold storage, which the old double-buffered
+    // prefetch thread did for >= 64 MiB reads only.
+    void read_columns_pread_tiled(
+        const std::vector<int>& col_indices,
+        long start_row, long num_rows,
+        std::unordered_map<int, ColumnData>& result,
+        int data_fd) {
+        const size_t row_width_size = internal::checked_nonnegative_cast<size_t>(
+            row_width_bytes_, "Invalid table geometry for scratch row width");
+        constexpr size_t kTileBytes = 512u * 1024u;
+        const long rows_per_tile = std::max<long>(
+            1L, std::min<long>(num_rows, static_cast<long>(kTileBytes / row_width_size)));
+        const size_t tile_bytes = internal::checked_nonnegative_multiply<size_t>(
+            static_cast<size_t>(rows_per_tile), row_width_size,
+            "Invalid table geometry for scratch buffer");
+        const long ntiles = (num_rows + rows_per_tile - 1) / rows_per_tile;
+
+        // Destination bases resolved on the calling thread: the workers only
+        // see raw pointers, never the result map.
+        struct Target {
+            const ColumnInfo* col;
+            uint8_t* base;
+            size_t row_bytes;  // output bytes per row
+        };
+        std::vector<Target> targets;
+        targets.reserve(col_indices.size());
+        for (int col_idx : col_indices) {
+            const auto& col = columns_[col_idx];
+            native::Tensor tensor = result[col_idx].fixed_data;
+            targets.push_back(Target{
+                &col,
+                static_cast<uint8_t*>(get_tensor_data_ptr(tensor, 0)),
+                internal::checked_nonnegative_multiply<size_t>(
                     internal::checked_nonnegative_cast<size_t>(
-                        nrows, "Invalid table geometry for pread row count"),
-                    row_width_size, "Invalid table geometry for pread size");
+                        col.repeat, "Invalid table geometry for column " + col.name),
+                    tensor.element_size(),
+                    "Invalid table geometry for column " + col.name + " destination")});
+        }
+        // Absolute file offset of the window's first row, checked once; each
+        // tile's offset below stays inside [first, first + window bytes).
+        const off_t window_offset = internal::checked_nonnegative_cast<off_t>(
+            internal::checked_nonnegative_add<LONGLONG>(
+                data_offset_,
+                internal::checked_nonnegative_multiply<LONGLONG>(
+                    static_cast<LONGLONG>(start_row - 1),
+                    static_cast<LONGLONG>(row_width_bytes_),
+                    "Invalid table geometry for pread offset"),
+                "Invalid table geometry for pread offset"),
+            "Invalid table geometry for pread offset");
+        internal::checked_nonnegative_add<off_t>(
+            window_offset,
+            internal::checked_nonnegative_cast<off_t>(
+                internal::checked_nonnegative_multiply<size_t>(
+                    static_cast<size_t>(num_rows), row_width_size,
+                    "Invalid table geometry for pread size"),
+                "Invalid table geometry for pread size"),
+            "Invalid table geometry for pread range");
+
+        std::atomic<bool> failed{false};
+        auto run_tiles = [&](int64_t t_begin, int64_t t_end) {
+            // Per-thread scratch: pool threads persist, so the pages stay
+            // resident across reads instead of refaulting per call.
+            thread_local std::vector<uint8_t> tile;
+            if (tile.size() < tile_bytes) {
+                tile.resize(tile_bytes);
+            }
+            for (int64_t t = t_begin; t < t_end; ++t) {
+                if (failed.load(std::memory_order_relaxed)) return;
+                const long first = static_cast<long>(t) * rows_per_tile;
+                const long rows = std::min(rows_per_tile, num_rows - first);
+                const size_t nbytes = static_cast<size_t>(rows) * row_width_size;
+                const off_t off =
+                    window_offset + static_cast<off_t>(first) * static_cast<off_t>(row_width_size);
                 size_t got = 0;
                 while (got < nbytes) {
-                    const ssize_t n = ::pread(data_fd, dst + got, nbytes - got,
-                                              internal::checked_nonnegative_add<off_t>(
-                                                  off,
-                                                  internal::checked_nonnegative_cast<off_t>(
-                                                      got,
-                                                      "Invalid table geometry for pread progress"),
-                                                  "Invalid table geometry for pread progress"));
-                    if (n < 0) {
-                        if (errno == EINTR) continue;
-                        return false;
-                    }
-                    if (n == 0) {
-                        return false;
+                    const ssize_t n = ::pread(data_fd, tile.data() + got, nbytes - got,
+                                              off + static_cast<off_t>(got));
+                    if (n < 0 && errno == EINTR) continue;
+                    if (n <= 0) {
+                        failed.store(true, std::memory_order_relaxed);
+                        return;
                     }
                     got += static_cast<size_t>(n);
                 }
-                return true;
-            };
-
-            if (!cur_filled) {
-                int status = 0;
-                if (data_fd >= 0) {
-                    if (!pread_range(chunk_buf, start_row - 1 + rows_done, rows)) {
-                        ::close(data_fd);
-                        data_fd = -1;
-                        data_fd_cached_ = -1;
-                        throw std::runtime_error("Failed to pread table bytes");
-                    }
-                } else {
-                    fits_read_tblbytes(
-                        fptr_, start_row + rows_done, 1,
-                        internal::checked_nonnegative_multiply<long>(
-                            rows, row_width_bytes_,
-                            "Invalid table geometry for buffered read size"),
-                        chunk_buf, &status);
-                }
-                if (status != 0) {
-                    if (data_fd >= 0) {
-                        ::close(data_fd);
-                        data_fd = -1;
-                        data_fd_cached_ = -1;
-                    }
-                    char err_msg[81];
-                    fits_get_errstatus(status, err_msg);
-                    throw std::runtime_error(
-                        "Failed to read table bytes: " + std::string(err_msg));
+                for (const Target& target : targets) {
+                    extract_column_data(tile.data(), rows, *target.col,
+                                        target.base + static_cast<size_t>(first) * target.row_bytes,
+                                        /*allow_parallel=*/false);
                 }
             }
-
-            // Prefetch the next chunk into the other scratch while the
-            // current one de-interleaves below.
-            const long next_rows = std::min(rows_per_chunk, num_rows - rows_done - rows);
-            std::thread pf_thread;
-            if (prefetch && next_rows > 0 && data_fd >= 0) {
-                uint8_t* dst2 = cur == 0 ? second_buffer.data() : buffer.data();
-                const long next_first = start_row - 1 + rows_done + rows;
-                pf_thread = std::thread([&]() {
-                    if (!pread_range(dst2, next_first, next_rows)) {
-                        pf_ok.store(false);
-                    }
-                });
+        };
+        if (ntiles <= 1) {
+            run_tiles(0, ntiles);
+        } else {
+            // Grain 1: tiles are claimed dynamically, so a preempted thread on
+            // a busy host takes fewer of them instead of stalling the read.
+            core::parallel_for(0, ntiles, 1, run_tiles);
+        }
+        if (failed.load()) {
+            ::close(data_fd);
+            if (data_fd_cached_ == data_fd) {
+                data_fd_cached_ = -1;
             }
-
-            try {
-                for (int col_idx : col_indices) {
-                    const auto& col = columns_[col_idx];
-                    native::Tensor tensor = result[col_idx].fixed_data;
-                    uint8_t* dest_ptr =
-                        (uint8_t*)get_tensor_data_ptr(
-                            tensor,
-                            internal::checked_nonnegative_multiply<long>(
-                                rows_done, static_cast<long>(col.repeat),
-                                "Invalid table geometry for column " + col.name +
-                                    " destination offset"));
-                    extract_column_data(chunk_buf, rows, col, dest_ptr);
-                }
-            } catch (...) {
-                // The prefetch thread reads `data_fd`; join before unwinding
-                // so nothing touches a closed descriptor.
-                if (pf_thread.joinable()) {
-                    pf_thread.join();
-                }
-                throw;
-            }
-
-            if (pf_thread.joinable()) {
-                pf_thread.join();
-                if (!pf_ok.load()) {
-                    ::close(data_fd);
-                    data_fd = -1;
-                    data_fd_cached_ = -1;
-                    throw std::runtime_error("Failed to pread table bytes");
-                }
-                rows_done += rows;
-                cur ^= 1;
-                cur_filled = true;
-                continue;
-            }
-
-            rows_done += rows;
-            cur_filled = false;
+            throw std::runtime_error("Failed to pread table bytes");
         }
     }
 
@@ -3489,7 +3479,8 @@ public:
         }
     }
 
-    void extract_column_data(const uint8_t* buffer, long num_rows, const ColumnInfo& col, uint8_t* dest) {
+    void extract_column_data(const uint8_t* buffer, long num_rows, const ColumnInfo& col, uint8_t* dest,
+                             bool allow_parallel = true) {
         // int→size_t: width/repeat come from TFORM cards and must be positive;
         // a negative would wrap huge and drive wild memcpy lengths below.
         if (col.width <= 0 || col.repeat <= 0 || row_width_bytes_ <= 0) {
@@ -3523,7 +3514,7 @@ public:
             if (num_rows <= 0) {
                 return;
             }
-            if (num_rows < 512) {
+            if (num_rows < 512 || !allow_parallel) {
                 body(0L, num_rows);
             } else {
                 native::parallel_for(0, num_rows, grain, body);

@@ -170,17 +170,21 @@ images, CFITSIO handles decompression internally.
 
 ## Table read paths
 
-### Buffered full-row path
+### Buffered row path
 
-When all selected columns span the full row width, uses `fits_read_tblbytes`
-to read entire rows in one call, then unpacks columns in-memory. Fewer I/O
-syscalls than per-column reads. Controlled by `TORCHFITS_TABLE_BUFFERED`.
+Serves every fixed-width binary-table projection (full rows, a few columns, or
+a single column). For a plain local file the row window is split into ~512 KiB
+tiles of whole rows; each pool thread `pread`s a tile into its own
+cache-resident scratch and gathers every requested column out of it. Without a
+raw fd (compressed or borrowed inputs) it reads whole rows with
+`fits_read_tblbytes` a chunk at a time instead. Controlled by
+`TORCHFITS_TABLE_BUFFERED`.
 
 ### Column-by-column path
 
-Uses `fits_read_col` per column. Handles VLA, BIT, logical, string, and
-complex types with type-specific dispatch. Activated when column selection
-doesn't cover the full row, or for types that require special handling.
+Uses `fits_read_col` per column. Handles VLA, BIT, complex and ASCII-table
+columns with type-specific dispatch, and every column when
+`TORCHFITS_TABLE_BUFFERED=0`.
 
 ### mmap table path
 
@@ -462,7 +466,7 @@ profiling or working around a specific bottleneck.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row table reads |
+| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered row reads for fixed-width table columns |
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable SharedReadMeta validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
 | `TORCHFITS_XOR_PARALLEL_MIN_BYTES` | `262144` | Threshold for parallel sign-bit XOR |

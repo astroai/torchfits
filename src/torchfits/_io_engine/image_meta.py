@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from .caches import (
+    MISSING,
     auto_mmap_cache,
     cold_nommap_cache,
     image_meta_cache,
@@ -22,9 +23,9 @@ from ..hdu import Header
 ImageMeta = tuple[int, int, tuple[int, ...], float, float, bool]
 
 
-def _sig_get(cache: Any, key: tuple[str, int]) -> Any:
+def _sig_get(cache: Any, key: tuple[str, int], default: Any = None) -> Any:
     """Signature-validated read for policy caches (staleness-safe)."""
-    return signature_cached_get(cache, key)
+    return signature_cached_get(cache, key, default)
 
 
 def _sig_set(
@@ -136,9 +137,11 @@ def get_image_meta(
         cpp_module = _cpp
 
     sig = (path, hdu)
-    cached = _sig_get(image_meta_cache, sig)
-    if cached is not None:
-        return cast(ImageMeta, cached)
+    # MISSING, not None: a failed probe is cached as None, and must be served
+    # as such instead of re-running every probe below on each call.
+    cached = _sig_get(image_meta_cache, sig, MISSING)
+    if cached is not MISSING:
+        return cast("ImageMeta | None", cached)
 
     before = path_signature(path)
     meta = _gz_image_meta(path, hdu)
@@ -163,9 +166,9 @@ def get_image_meta_from_handle(
 ) -> ImageMeta | None:
     """Fetch image metadata using an already-open FITS handle."""
     sig = (path, hdu)
-    cached = _sig_get(image_meta_cache, sig)
-    if cached is not None:
-        return cast(ImageMeta, cached)
+    cached = _sig_get(image_meta_cache, sig, MISSING)
+    if cached is not MISSING:
+        return cast("ImageMeta | None", cached)
 
     before = path_signature(path)
     try:
