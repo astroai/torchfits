@@ -855,8 +855,15 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
                     dither_seed = nb::cast<int>(opts["dither_seed"]);
             }
         }
+        // CFITSIO cannot tile an image with a zero-length axis: it divides by
+        // the tile count and the process dies of SIGFPE. Like fpack, store
+        // such an HDU uncompressed (it has no pixels to compress). 0 clears
+        // the request; NOCOMPRESS (-1) would still take the compressed path.
+        const bool empty_image =
+            std::find(naxes.begin(), naxes.end(), 0L) != naxes.end();
         status = 0;
-        fits_set_compression_type(fptr_, compression_type, &status);
+        fits_set_compression_type(
+            fptr_, empty_image ? 0 : compression_type, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression type");
         // Default to lossless where CFITSIO supports it: CFITSIO quantizes
         // float/double pixels (lossy) unless explicitly disabled, which would
@@ -886,7 +893,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         fits_set_quantize_method(fptr_, quantize_method, &status);
         fits_set_dither_seed(fptr_, dither_seed, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression quantization");
-        if (compression_type == PLIO_1) {
+        if (compression_type == PLIO_1 && !empty_image) {
             nb::dlpack::dtype dt_plio = tensor.dtype();
             if (dt_plio.code == (uint8_t)nb::dlpack::dtype_code::Float) {
                 throw std::runtime_error("PLIO_1 compression algorithm does not support floating-point image data");
@@ -896,7 +903,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         tilesize[0] = naxes[0];
         if (!requested_tile.empty()) {
             tilesize = requested_tile;
-        } else if (compression_type == HCOMPRESS_1) {
+        } else if (compression_type == HCOMPRESS_1 && !empty_image) {
             // HCOMPRESS requires 2D tiles; use 16-row bands like fpack's
             // default so output tiles match the reference CLI.
             if (naxis < 2)
@@ -905,8 +912,10 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             tilesize[0] = naxes[0];
             tilesize[1] = naxes[1] < 16 ? naxes[1] : 16;
         }
-        fits_set_tile_dim(fptr_, naxis, tilesize.data(), &status);
-        if (status != 0) throw std::runtime_error("Failed to set tile dimensions");
+        if (!empty_image) {
+            fits_set_tile_dim(fptr_, naxis, tilesize.data(), &status);
+            if (status != 0) throw std::runtime_error("Failed to set tile dimensions");
+        }
         int bitpix = FLOAT_IMG, datatype = TFLOAT;
         nb::dlpack::dtype dt = tensor.dtype();
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) { bitpix = BYTE_IMG; datatype = TBYTE; }
@@ -946,8 +955,10 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             fits_write_imgnull(fptr_, ctype, 1, nelements, nulled.data(), &null_value, &status);
             return true;
         };
-        bool wrote = false;
-        if (quantize_level != 0.0f && datatype == TFLOAT)
+        bool wrote = nelements == 0;
+        if (wrote) {
+            // nothing to write
+        } else if (quantize_level != 0.0f && datatype == TFLOAT)
             wrote = write_nan_as_null(static_cast<const float*>(data_ptr), FLOATNULLVALUE, TFLOAT);
         else if (quantize_level != 0.0f && datatype == TDOUBLE)
             wrote = write_nan_as_null(static_cast<const double*>(data_ptr), DOUBLENULLVALUE, TDOUBLE);
