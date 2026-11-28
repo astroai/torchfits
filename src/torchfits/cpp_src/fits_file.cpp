@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <atomic>
 #include <limits>
@@ -513,7 +514,11 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
 }
 
 bool FITSFile::write_image(nb::ndarray<> tensor) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    // Called with the GIL held (the binding, write_hdus). The dtype and shape
+    // are read here; creating the HDU, packing a strided view and writing the
+    // pixels touch no Python object -- `tensor` keeps the payload alive -- so
+    // they run without the GIL.
+    auto lock = lock_io_holding_gil();
     torchfits::internal::require_cpu_ndarray(tensor, "image data");
     int status = 0;
     int naxis = tensor.ndim();
@@ -533,6 +538,7 @@ bool FITSFile::write_image(nb::ndarray<> tensor) {
     else throw std::runtime_error("Unsupported tensor dtype");
     long nelements = static_cast<long>(
         torchfits::detail::checked_nelements_product(naxes));
+    nb::gil_scoped_release release;
     fits_create_img(fptr_, bitpix, naxis, naxes.data(), &status);
     if (status != 0) {
         char err_text[31];
@@ -693,7 +699,7 @@ std::string FITSFile::get_hdu_type(int hdu_num) {
 }
 
 bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    auto lock = lock_io_holding_gil();
     validate_hdu_list_headers(hdus);
     int hdu_count = 0;
     for (auto handle : hdus) {
@@ -708,7 +714,8 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                 schema_obj = hdu_obj.attr("_schema");
                 if (schema_obj.is_none()) schema_obj = nb::none();
             }
-            write_table_hdu(fptr_, data_dict, header_dict, schema_obj, false);
+            // Converts the columns with the GIL, writes them without it.
+            write_table_hdu(fptr_, data_dict, header_dict, schema_obj, false, true);
             hdu_count++;
             continue;
         }
@@ -765,7 +772,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
 }
 
 bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    auto lock = lock_io_holding_gil();
     validate_hdu_list_headers(hdus);
     int status = 0;
     long naxes0[1] = {0};
@@ -811,7 +818,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             nb::dict header_dict;
             if (nb::hasattr(hdu_obj, "header"))
                 header_dict = nb::cast<nb::dict>(hdu_obj.attr("header"));
-            write_table_hdu(fptr_, data_dict, header_dict, nb::none(), false);
+            write_table_hdu(fptr_, data_dict, header_dict, nb::none(), false, true);
             continue;
         }
         nb::object data_obj;
@@ -863,6 +870,11 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
                     dither_seed = nb::cast<int>(opts["dither_seed"]);
             }
         }
+        // Everything from here to the header cards is CFITSIO work on native
+        // buffers (`tensor` keeps the payload alive): tile compression is the
+        // slow part of a compressed write, so it runs without the GIL.
+        std::optional<nb::gil_scoped_release> release;
+        release.emplace();
         status = 0;
         fits_set_compression_type(fptr_, compression_type, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression type");
@@ -966,6 +978,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             throw std::runtime_error("Error writing compressed image: status=" + std::to_string(status) +
                                      " msg=" + std::string(err_text));
         }
+        release.reset();
         write_header_dict(hdu_obj);
     }
     return true;

@@ -180,10 +180,15 @@ descriptors, see [Environment variables](architecture.md#environment-variables))
 plus up to 8 cached table readers per thread (two descriptors each).
 `clear_all_caches()` closes all of them.
 
-Threads: reads, cutouts, table reads, checksums and file opens run without
-the GIL. Image and table *writes* (`write`, `table.write`, `append_rows`)
-hold it while CFITSIO writes. Calls under ~100 µs (headers, tiny images) are
-bound by Python overhead and do not speed up with more threads.
+Threads: reads, cutouts, table reads, checksums, file opens and writes run
+without the GIL. A write (`write`, `write(compress=...)`, `insert_hdu` /
+`replace_hdu`, `table.write`, `append_rows` and the other table mutations,
+`table.writer()`) converts its input with the GIL held and releases it for
+CFITSIO's create, data write (including tile compression) and close; four
+threads writing separate 64 MB images finish about 2× sooner than with the
+GIL held, and compressed writes about 2.4×. Header cards are still written
+with the GIL. Calls under ~100 µs (headers, tiny images) are bound by Python
+overhead and do not speed up with more threads.
 
 ---
 

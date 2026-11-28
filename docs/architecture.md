@@ -305,7 +305,13 @@ Cleared when exceeding 4096 entries.
 Every major I/O operation (`read_full`, `read_fits_table`,
 `read_fits_table_filtered`, `read_hdus_batch`) releases the GIL during the
 CFITSIO/raw-fd call and re-acquires before returning to Python. Safe for
-multi-worker DataLoader usage.
+multi-worker DataLoader usage. Writers (`write_fits_file`,
+`write_fits_file_compressed_images`, `write_fits_table`, the table mutation
+bindings, `TableStreamWriter`) convert the Python payload with the GIL held,
+keep owning references to the arrays, and run CFITSIO's create/write/close
+without it; header cards are written with the GIL. A `FITSFile` write holds
+the handle's I/O lock across that release, so Python-side callers take the
+lock with `lock_io_holding_gil()`, which never waits for it with the GIL held.
 
 ```mermaid
 flowchart LR

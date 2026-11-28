@@ -36,6 +36,20 @@ public:
     void close();
 
     fitsfile* get_fptr() const { return fptr_; }
+
+    // Take io_mutex_ from a thread that holds the GIL, waiting for it with the
+    // GIL released. The write paths hold io_mutex_ while they give the GIL up
+    // for the CFITSIO writes and take it back for the header cards, so a
+    // thread blocking on the lock with the GIL held would deadlock against
+    // them. Callers without the GIL lock io_mutex_ directly.
+    std::unique_lock<std::recursive_mutex> lock_io_holding_gil() const {
+        std::unique_lock<std::recursive_mutex> lock(io_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            nanobind::gil_scoped_release release;
+            lock.lock();
+        }
+        return lock;
+    }
     int get_start_hdu() const { return start_hdu_; }
 
     // For code that drives CFITSIO on this handle directly (bindings, table
@@ -43,8 +57,9 @@ public:
     // returned owner keeps the fitsfile open until the borrower drops it, so a
     // close() while a TableReader still uses the handle is deferred, not a
     // use-after-free.
+    // Called with the GIL held (share_fptr_from_python_object).
     std::shared_ptr<fitsfile> share_fptr() {
-        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        auto lock = lock_io_holding_gil();
         if (!fptr_) throw std::runtime_error("FITSFile is closed");
         return fptr_owner_;
     }
