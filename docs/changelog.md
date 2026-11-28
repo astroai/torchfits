@@ -129,6 +129,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - io: Reuse learned HDU offsets so reading HDU n is O(1)
 - hdu: List a many-HDU file through one open handle
 - native: Specialized column gathers and one output block for table reads
+- native: Make the first read of a name cheap again
+- native: Keep the byte-swap copy loops tight and out of line
+- native: Move a re-read path to the front of the raw-fd LRU in O(1)
+- table: Trim blank-padded string columns in Arrow, not numpy
+- table: Stop rebuilding full column metadata in per-read schema passes
+- native: Read the HDU-offset file version at close, not on every open
+- native: Remember path resolution for the metadata validation window
 ### Added
 - Compress integer images as quantized floats (fpack -i2f)
 - compress: Explicit float quantization and dither controls
