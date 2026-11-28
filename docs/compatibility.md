@@ -14,7 +14,7 @@ For supported FITS formats, HDU types, tile compression, and catalog features, s
 | **PyTorch** | **2.12 or newer** (`torch>=2.12`, no upper bound) | Same; the build needs no PyTorch |
 | **Hardware & CUDA** | **CPU**, **any CUDA build of a supported PyTorch**, **Apple Silicon MPS** | All PyTorch-supported compute devices |
 | **Operating Systems** | **Linux** (`x86_64` with SSSE3, `aarch64`, glibc 2.28+)<br>**macOS 14+** (`arm64` Apple Silicon) | Linux with glibc 2.28+, macOS 14+; `x86_64` builds require an SSSE3 CPU |
-| **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 25.0.0** | Same |
+| **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 26.0.0** | Same |
 
 ---
 

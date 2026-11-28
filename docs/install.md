@@ -96,7 +96,7 @@ platform without a published wheel. The build itself needs no PyTorch.
 - Python 3.11+
 - C++20 compiler (GCC 10+, Clang 14+, MSVC 2019+)
 - [CMake](https://cmake.org/) 3.21+ and [Ninja](https://ninja-build.org/)
-- At runtime: [PyTorch](https://pytorch.org/) ≥ 2.12, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 25
+- At runtime: [PyTorch](https://pytorch.org/) ≥ 2.12, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 26
 
 === "Linux"
 
