@@ -178,15 +178,28 @@ inline void open_fits_readwrite_raw(fitsfile** fptr, const std::string& path, in
     }
 }
 
+// A failed CFITSIO open can leave *fptr set (e.g. a compression spec that
+// fails to parse after the file was opened); close it so no caller leaks the
+// handle or reads a half-initialized one (r9b-06).
+inline void drop_failed_open(fitsfile** fptr, int status) {
+    if (status != 0 && *fptr != nullptr) {
+        int close_status = 0;
+        fits_close_file(*fptr, &close_status);
+        *fptr = nullptr;
+    }
+}
+
 inline int open_fits_for_write(fitsfile** fptr, const std::string& path) {
     int status = 0;
     *fptr = nullptr;
     open_fits_readwrite_raw(fptr, path, &status);
+    drop_failed_open(fptr, status);
     if (status == FILE_NOT_OPENED) {
         evict_cached_reader(path);
         status = 0;
         *fptr = nullptr;
         open_fits_readwrite_raw(fptr, path, &status);
+        drop_failed_open(fptr, status);
         if (status == FILE_NOT_OPENED) {
             throw std::runtime_error(
                 "Failed to open '" + path + "' for writing: CFITSIO still reports "
