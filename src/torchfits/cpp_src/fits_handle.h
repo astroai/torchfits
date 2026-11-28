@@ -16,22 +16,31 @@
 
 #include <fitsio.h>
 
+#include <string>
+
+#include "core/fits_core.h"
+
 namespace torchfits {
 
 struct FitsHandleGuard {
     fitsfile* fptr = nullptr;
+    // Path a read-only handle was opened from: on close its learned HDU
+    // offsets are published for the next open (detail::remember_hdu_offsets).
+    std::string remember_path;
 
     FitsHandleGuard() = default;
     FitsHandleGuard(const FitsHandleGuard&) = delete;
     FitsHandleGuard& operator=(const FitsHandleGuard&) = delete;
 
-    FitsHandleGuard(FitsHandleGuard&& other) noexcept : fptr(other.fptr) {
+    FitsHandleGuard(FitsHandleGuard&& other) noexcept
+        : fptr(other.fptr), remember_path(std::move(other.remember_path)) {
         other.fptr = nullptr;
     }
     FitsHandleGuard& operator=(FitsHandleGuard&& other) noexcept {
         if (this != &other) {
             release();
             fptr = other.fptr;
+            remember_path = std::move(other.remember_path);
             other.fptr = nullptr;
         }
         return *this;
@@ -41,6 +50,7 @@ struct FitsHandleGuard {
 
     void release() {
         if (!fptr) return;
+        if (!remember_path.empty()) detail::remember_hdu_offsets(fptr, remember_path);
         int status = 0;
         fits_close_file(fptr, &status);
         fptr = nullptr;

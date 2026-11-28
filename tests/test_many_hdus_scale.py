@@ -102,3 +102,64 @@ def test_open_lists_a_many_hdu_file_in_one_pass(tmp_path):
     # One pass reads each 2880-byte header once (~N blocks). Opening the file
     # per HDU re-read the headers in front of it: ~N^2 / 2 blocks.
     assert _bytes_read(_open) < 8 * N_EXT * BLOCK
+
+
+def test_path_reads_of_a_late_hdu_do_not_rescan_the_headers(tmp_path):
+    path = str(tmp_path / "mef.fits")
+    _write_mef(path, N_EXT)
+    torchfits.clear_all_caches()
+    assert int(torchfits.read(path, hdu=N_EXT)[0, 0]) == N_EXT  # learns offsets
+
+    reads = {
+        "read": lambda: torchfits.read(path, hdu=N_EXT),
+        "read_tensor": lambda: torchfits.read_tensor(path, hdu=N_EXT),
+        "verify_checksums": lambda: torchfits.verify_checksums(path, N_EXT),
+        "read_keys": lambda: torchfits.read_keys(path, ["NAXIS"], N_EXT),
+    }
+    for name, fn in reads.items():
+        # A handle that knows the offsets reads the primary header and the
+        # target HDU: a handful of blocks, not the N_EXT headers before it.
+        assert _bytes_read(fn) < 16 * BLOCK, name
+    assert int(torchfits.read(path, hdu=N_EXT - 1)[0, 0]) == N_EXT - 1
+    assert int(torchfits.read(path, hdu=7)[0, 0]) == 7
+
+
+def test_learned_hdu_offsets_do_not_survive_a_rewrite(tmp_path):
+    path = str(tmp_path / "mef.fits")
+    _write_mef(path, 50)
+    torchfits.clear_all_caches()
+    assert int(torchfits.read(path, hdu=50)[0, 0]) == 50
+    # Out-of-band rewrite (not through torchfits): extension 1 grows by
+    # several blocks, so every later HDU moves.
+    _write_mef(path, 60, first_rows=3000)
+    for hdu in (60, 50, 2):
+        assert int(torchfits.read(path, hdu=hdu)[0, 0]) == hdu
+    assert torchfits.read_num_hdus(path) == 61
+    # A rewrite through torchfits invalidates the offsets too.
+    torchfits.delete_hdu(path, 1)
+    assert int(torchfits.read(path, hdu=59)[0, 0]) == 60
+    assert int(torchfits.read(path, hdu=1)[0, 0]) == 2
+
+
+def test_concurrent_reads_of_a_many_hdu_file_stay_correct(tmp_path):
+    """Threads opening the same file share CFITSIO's FITSfile; seeding the
+    learned offsets must not race another thread's open or HDU move."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = str(tmp_path / "mef.fits")
+    _write_mef(path, 120)
+    torchfits.clear_all_caches()
+
+    def _worker(seed: int) -> list[tuple[int, int]]:
+        rng = np.random.default_rng(seed)
+        out = []
+        for hdu in rng.integers(1, 121, size=150):
+            out.append((int(hdu), int(torchfits.read(path, hdu=int(hdu))[0, 0])))
+            if hdu % 7 == 0:
+                torchfits.verify_checksums(path, int(hdu))
+        return out
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = [pair for chunk in pool.map(_worker, range(12)) for pair in chunk]
+    assert len(results) == 12 * 150
+    assert all(hdu == value for hdu, value in results)

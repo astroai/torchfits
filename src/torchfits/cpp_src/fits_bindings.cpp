@@ -92,6 +92,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     const int target_hdu = hdu_num + 1;
@@ -351,6 +352,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     fits_movnam_hdu(
@@ -587,6 +589,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
 
     auto close_guard = [&]() {
         if (fptr) {
+            d::remember_hdu_offsets(fptr, path);
             int close_status = 0;
             fits_close_file(fptr, &close_status);
             fptr = nullptr;
@@ -1976,6 +1979,7 @@ void bind_fits(nb::module_& m) {
         }
         FitsHandleGuard guard;
         guard.fptr = fptr;
+        guard.remember_path = path;
         int datastatus = -1;
         int hdustatus = -1;
         auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
