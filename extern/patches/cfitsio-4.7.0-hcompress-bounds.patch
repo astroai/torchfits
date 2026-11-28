@@ -1,0 +1,84 @@
+Bound every write of the HCOMPRESS bit-stream encoder by the output buffer.
+
+output_nbits/output_nybble/done_outputing_bits clamped the byte counter at
+noutmax but still stored outfile[noutchar], one byte past the end once it
+was reached, and output_nnybble (the bit-plane bitmap writer) had no bound
+at all: compressing a small tile of high-entropy 32-bit integers (e.g. a 4x4
+tile of full-range int32) ran past the nx*4.4+26-byte tile buffer and
+corrupted the heap. Writes past the buffer are now dropped; the encoder
+already reports the full buffer (status 413) when the counter reaches noutmax.
+
+--- a/fits_hcompress.c
++++ b/fits_hcompress.c
+@@ -1122,9 +1122,12 @@
+ 		 * buffer2 full, put out top 8 bits
+ 		 */
+ 
+-	        outfile[noutchar] = ((buffer2>>(-bits_to_go2)) & 0xff);
+-
+-		if (noutchar < noutmax) noutchar++;
++		/* never write past the noutmax-byte buffer; encode() reports
++		   the overflow once the counter reaches noutmax */
++		if (noutchar < noutmax) {
++		    outfile[noutchar] = ((buffer2>>(-bits_to_go2)) & 0xff);
++		    noutchar++;
++		}
+ 		
+ 		bits_to_go2 += 8;
+ 	}
+@@ -1145,9 +1148,12 @@
+ 		 * buffer2 full, put out top 8 bits
+ 		 */
+ 
+-	        outfile[noutchar] = ((buffer2>>(-bits_to_go2)) & 0xff);
+-
+-		if (noutchar < noutmax) noutchar++;
++		/* never write past the noutmax-byte buffer; encode() reports
++		   the overflow once the counter reaches noutmax */
++		if (noutchar < noutmax) {
++		    outfile[noutchar] = ((buffer2>>(-bits_to_go2)) & 0xff);
++		    noutchar++;
++		}
+ 		
+ 		bits_to_go2 += 8;
+ 	}
+@@ -1196,9 +1202,11 @@
+ 	    buffer2 = 0;
+ 	    for (ii = 0; ii < jj; ii++)
+ 	    {
+-		outfile[noutchar] = ((array[kk] & 15)<<4) | (array[kk+1] & 15);
++		if (noutchar < noutmax) {
++		    outfile[noutchar] = ((array[kk] & 15)<<4) | (array[kk+1] & 15);
++		    noutchar++;
++		}
+ 		kk += 2;
+-		noutchar++;
+ 	    }
+ 	} else {
+ 	    for (ii = 0; ii < jj; ii++)
+@@ -1210,8 +1218,10 @@
+ 		 buffer2 full, put out top 8 bits
+ 		 */
+ 
+-	        outfile[noutchar] = ((buffer2>>shift) & 0xff);
+-		noutchar++;
++		if (noutchar < noutmax) {
++		    outfile[noutchar] = ((buffer2>>shift) & 0xff);
++		    noutchar++;
++		}
+ 	    }
+ 	}
+ 
+@@ -1233,8 +1243,10 @@
+ 	if(bits_to_go2 < 8) {
+ /*		putc(buffer2<<bits_to_go2,outfile); */
+ 
+-	        outfile[noutchar] = (buffer2<<bits_to_go2);
+-		if (noutchar < noutmax) noutchar++;
++		if (noutchar < noutmax) {
++		    outfile[noutchar] = (buffer2<<bits_to_go2);
++		    noutchar++;
++		}
+ 
+ 		/* count the garbage bits too */
+ 		bitcount += bits_to_go2;
