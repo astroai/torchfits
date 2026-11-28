@@ -181,7 +181,7 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           pip install "torch$TORCH_TESTED_PIN" --index-url https://download.pytorch.org/whl/cpu
           pip install numpy pytest nanobind scikit-build-core psutil pyarrow
-          pip install "pyarrow>=25" "polars>=1.43.2" "duckdb>=1.5.5" "mypy>=2.3.1"
+          pip install "pyarrow>=26" "polars>=1.43.2" "duckdb>=1.5.5" "mypy>=2.3.1"
           pip install -e . --no-build-isolation
       - name: Mypy type check
         run: mypy src/torchfits

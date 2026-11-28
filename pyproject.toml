@@ -49,7 +49,7 @@ dependencies = [
     # numpy 2.5 dropped cp311, so 2.4.6 is the newest floor 3.11 can install;
     # 3.12+ resolves 2.5.x from the same specifier.
     "numpy>=2.4.6",  # Core numerical operations
-    "pyarrow>=25.0.0",  # Table I/O (Arrow interchange)
+    "pyarrow>=26.0.0",  # Table I/O (Arrow interchange)
 ]
 
 [project.scripts]
