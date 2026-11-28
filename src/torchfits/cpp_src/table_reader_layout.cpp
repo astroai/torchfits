@@ -55,6 +55,7 @@ TableReader::TableReader(const std::string& filename, int hdu_num)
         analyze_table();
     } catch (...) {
         close_data_fd();
+        torchfits::detail::remember_hdu_offsets(fptr_, filename_);
         int close_status = 0;
         fits_close_file(fptr_, &close_status);
         fptr_ = nullptr;

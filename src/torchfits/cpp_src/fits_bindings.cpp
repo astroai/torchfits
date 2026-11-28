@@ -1783,7 +1783,11 @@ void bind_fits(nb::module_& m) {
             }
             return type;
         })
-        .def("close", &FITSFile::close)
+        .def("close", [](FITSFile& self) {
+            // Flushes and closes the file: no Python object involved.
+            nb::gil_scoped_release release;
+            self.close();
+        })
         .def("write_image", &FITSFile::write_image, nb::arg("tensor"))
         .def("write_hdus", &FITSFile::write_hdus)
         .def("get_shape", [](FITSFile& self, int hdu_num) {
@@ -1923,8 +1927,17 @@ void bind_fits(nb::module_& m) {
         }
         validate_hdu_list_headers(hdus);
         invalidate_shared_meta(path);
-        FITSFile file(final_path.c_str(), 1);
-        file.write_hdus(hdus, overwrite);
+        // Creating the file (deleting the old one for "!path") and the final
+        // close/flush touch no Python object; write_hdus converts each HDU with
+        // the GIL and writes its data without it.
+        std::optional<FITSFile> file;
+        {
+            nb::gil_scoped_release release;
+            file.emplace(final_path.c_str(), 1);
+        }
+        file->write_hdus(hdus, overwrite);
+        nb::gil_scoped_release release;
+        file->close();
     });
 
     m.def("write_fits_file_compressed_images",
@@ -1960,8 +1973,14 @@ void bind_fits(nb::module_& m) {
 
               validate_hdu_list_headers(hdus);
               invalidate_shared_meta(path);
-              FITSFile file(final_path.c_str(), 1);
-              file.write_hdus_compressed_images(hdus, comptype);
+              std::optional<FITSFile> file;
+              {
+                  nb::gil_scoped_release release;
+                  file.emplace(final_path.c_str(), 1);
+              }
+              file->write_hdus_compressed_images(hdus, comptype);
+              nb::gil_scoped_release release;
+              file->close();
           },
           nb::arg("path"), nb::arg("hdus"), nb::arg("overwrite"),
           nb::arg("algorithm") = std::string("RICE_1"));

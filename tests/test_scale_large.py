@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -282,6 +283,9 @@ def test_ten_thousand_hdu_file(tmp_path, capsys):
     _build_sparse(path, hdus)
     p = str(path)
     torchfits.clear_all_caches()
+    # Learned HDU offsets are only recorded for a file version older than
+    # TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS (3 s by default).
+    time.sleep(3.5)
 
     before = _rchar()
     with torchfits.open(p) as hdul:

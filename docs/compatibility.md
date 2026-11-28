@@ -163,9 +163,10 @@ materialized:
 - `table.scan()` / `scan_torch()` (with or without `where=`) and
   `table.writer()` hold one batch at a time; use them for tables larger
   than RAM.
-- `table.read(where=)` keeps the matching rows only. `table.read_torch(where=)`
-  reads the predicate columns whole and builds a boolean mask (a 2.1 GB
-  one-byte column peaked at 4.4 GB).
+- `table.read(where=)` and `table.read_torch(where=)` keep the matching rows
+  only. `read_torch` reads and masks one row window (about 64 MB) at a time:
+  `where=` over a 2.1 GB one-byte column peaks at 0.26 GB RSS, and a 10%
+  match on a 1.2 GB table at 0.5 GB.
 - `FitsTableDataset` loads the table at construction; `lazy=True` keeps
   `cache_blocks × block_rows` rows per process (per `DataLoader` worker). With
   4 workers over a 5 M-row table: ~100 MB PSS per worker eager (copy-on-write
@@ -180,10 +181,15 @@ descriptors, see [Environment variables](architecture.md#environment-variables))
 plus up to 8 cached table readers per thread (two descriptors each).
 `clear_all_caches()` closes all of them.
 
-Threads: reads, cutouts, table reads, checksums and file opens run without
-the GIL. Image and table *writes* (`write`, `table.write`, `append_rows`)
-hold it while CFITSIO writes. Calls under ~100 µs (headers, tiny images) are
-bound by Python overhead and do not speed up with more threads.
+Threads: reads, cutouts, table reads, checksums, file opens and writes run
+without the GIL. A write (`write`, `write(compress=...)`, `insert_hdu` /
+`replace_hdu`, `table.write`, `append_rows` and the other table mutations,
+`table.writer()`) converts its input with the GIL held and releases it for
+CFITSIO's create, data write (including tile compression) and close; four
+threads writing separate 64 MB images finish about 2× sooner than with the
+GIL held, and compressed writes about 2.4×. Header cards are still written
+with the GIL. Calls under ~100 µs (headers, tiny images) are bound by Python
+overhead and do not speed up with more threads.
 
 ---
 

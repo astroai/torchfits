@@ -86,7 +86,8 @@ void validate_hdu_list_headers(nb::list hdus);
 void update_header_value(fitsfile* fptr, const std::string& key, nb::handle value,
                          const char* comment, int* status);
 // release_gil: run the table creation and data writes without the GIL (the
-// caller must hold it on entry and own fptr exclusively -- no FITSFile lock).
+// caller must hold it on entry and own fptr exclusively; a FITSFile caller
+// holds its lock, see FITSFile::lock_io_holding_gil).
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii,
                      bool release_gil = false);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
