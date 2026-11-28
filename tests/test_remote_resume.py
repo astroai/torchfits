@@ -569,3 +569,121 @@ def test_python_fetched_https_works_without_libcurl(tmp_path, monkeypatch):
     assert cut.tolist() == [[0.0, 1.0], [4.0, 5.0]]
     with pytest.raises(ValueError, match="libcurl"):
         torchfits.read(url)
+
+
+def _seed_partial(cache: Path, url: str, body: bytes, etag: str) -> Path:
+    dest = remote.cache_path_for_url(url, cache_dir=cache)
+    partial = remote._partial_path_for(dest)
+    partial.write_bytes(body)
+    Path(str(partial) + ".meta").write_text(
+        json.dumps({"etag": etag, "last_modified": None})
+    )
+    return dest
+
+
+@pytest.mark.skipif(remote._fcntl is None, reason="resume needs fcntl partials")
+def test_resume_sends_if_range_and_appends_on_206(tmp_path):
+    body = _fits_image_bytes()
+    url = "https://example.test/resume.fits"
+    dest = _seed_partial(tmp_path, url, body[:2880], '"v1"')
+    seen = {}
+
+    def fake_open(u, headers=None, timeout=None):
+        seen.update(headers or {})
+        return _FakeResp(
+            206,
+            {
+                "Content-Range": f"bytes 2880-{len(body) - 1}/{len(body)}",
+                "Content-Length": str(len(body) - 2880),
+            },
+            body[2880:],
+        )
+
+    with mock.patch("torchfits.data.remote.http_open", side_effect=fake_open):
+        remote._download_http(url, dest)
+    assert seen == {"Range": "bytes=2880-", "If-Range": '"v1"'}
+    assert dest.read_bytes() == body
+
+
+@pytest.mark.skipif(remote._fcntl is None, reason="resume needs fcntl partials")
+def test_resume_restarts_when_if_range_validator_is_stale(tmp_path):
+    """A changed remote answers If-Range with a full 200: never glue bytes."""
+    old = _fits_image_bytes(600)
+    new = _fits_image_bytes(900)
+    url = "https://example.test/changed.fits"
+    dest = _seed_partial(tmp_path, url, old[:2880], '"v1"')
+    resp = _FakeResp(200, {"Content-Length": str(len(new)), "ETag": '"v2"'}, new)
+    with mock.patch("torchfits.data.remote.http_open", return_value=resp):
+        remote._download_http(url, dest)
+    assert dest.read_bytes() == new
+
+
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+def test_make_loader_workers_fetch_each_remote_once(tmp_path, monkeypatch):
+    """Map-style and staged datasets under multi-worker make_loader share one
+    download per URL (flock-serialized cache, no duplicate transfer)."""
+    import collections
+    import http.server
+    import multiprocessing
+
+    import torch
+
+    import torchfits
+    import torchfits.http_util as hu
+    from torchfits.data import (
+        FitsImageDataset,
+        FitsStagedCutoutIterableDataset,
+        make_loader,
+    )
+
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("needs fork so workers see the patched SSRF guard")
+    if remote._fcntl is None:  # pragma: no cover - non-POSIX
+        pytest.skip("cross-process dedup needs fcntl")
+    blobs = {}
+    for i in range(4):
+        p = tmp_path / f"f{i}.fits"
+        torchfits.write(str(p), torch.full((16, 16), float(i)), overwrite=True)
+        blobs[f"/f{i}.fits"] = p.read_bytes()
+    hits: collections.Counter[str] = collections.Counter()
+    lock = threading.Lock()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):  # noqa: N802 - http.server API
+            with lock:
+                hits[self.path] += 1
+            body = blobs[self.path]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(hu, "_is_blocked_ip", lambda ip: False)
+    urls = [f"http://127.0.0.1:{server.server_port}/f{i}.fits" for i in range(4)]
+    try:
+        datasets = [
+            FitsImageDataset(urls, cache_dir=tmp_path / "cache"),
+            FitsStagedCutoutIterableDataset(
+                urls,
+                cutout_size=(4, 4),
+                cutouts_per_file=2,
+                staging_dir=tmp_path / "stage",
+            ),
+        ]
+        for ds in datasets:
+            hits.clear()
+            loader = make_loader(
+                ds, batch_size=2, num_workers=2, multiprocessing_context="fork"
+            )
+            assert sum(1 for _ in loader) > 0
+            assert dict(hits) == {f"/f{i}.fits": 1 for i in range(4)}, type(ds)
+    finally:
+        server.shutdown()
+        server.server_close()
