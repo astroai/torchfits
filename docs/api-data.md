@@ -29,6 +29,16 @@ Typical stack: `read_tensor` / `table.read` → optional
 | Fixed cutouts `(path, hdu, x, y, size)` | Map-style | `FitsCutoutDataset` |
 | Survey mosaics (remote/local) | Async staged cutouts | `FitsStagedCutoutIterableDataset` |
 
+**Recommended entry points.** For images and cubes, start from
+`FitsTensorDataset` (map-style) or `FitsTensorIterableDataset` (streaming):
+they read any N-D IMAGE HDU and take every option the image classes take.
+`FitsImageDataset` / `FitsImageIterableDataset` are the same classes with
+`add_channel_dim=True` by default (plus `FitsImageDataset.from_bands`), and
+`FitsCubeDataset` / `FitsCubeIterableDataset` add leading-axis selection
+(`slice_index=`, `spectral_slice=`); use them when those defaults are what you
+want. Spectra, tables and cutouts have their own readers. Every class above
+stays supported; the presets are not deprecated.
+
 **Channels:** flux bands / arms / CCDs stack as tensor channels. IVAR and
 mask are companion tensors (or dict fields) — pass `ivar_hdu=` / `mask_hdu=`
 (or table `ivar_column=`).

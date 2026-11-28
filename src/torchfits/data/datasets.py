@@ -214,6 +214,32 @@ def _buffered_shuffle(
     yield from buffer
 
 
+class _EpochStream:
+    """``__iter__`` shared by the iterable datasets.
+
+    Each ``__iter__`` is one epoch boundary: it draws the epoch seed (see
+    :class:`_EpochSeed`) that every stochastic stream in ``_generate`` reads
+    from ``self._epoch``, so one pass is internally consistent, then applies
+    the optional reservoir shuffle buffer to the stream.
+    """
+
+    shuffle_buffer_size: int | None
+    _epoch_seed: _EpochSeed
+    _epoch: int
+
+    def _generate(self) -> Iterator[Any]:
+        raise NotImplementedError
+
+    def __iter__(self) -> Iterator[Any]:
+        self._epoch = self._epoch_seed.next()
+        stream = self._generate()
+        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
+            stream = _buffered_shuffle(
+                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
+            )
+        return stream
+
+
 def _resolve_paths(paths: str | list[str]) -> list[str]:
     if isinstance(paths, str):
         if is_remote_url(paths):
@@ -1005,7 +1031,7 @@ class FitsCubeDataset(FitsTensorDataset):
         )
 
 
-class FitsTensorIterableDataset(IterableDataset[Any]):
+class FitsTensorIterableDataset(_EpochStream, IterableDataset[Any]):
     """Sharded iterable general N-D IMAGE reader."""
 
     def __init__(
@@ -1098,17 +1124,6 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
                 yield payload
             else:
                 yield payload, torch.tensor(sharded_labels[idx], dtype=torch.long)
-
-    def __iter__(self) -> Iterator[Any]:
-        # One epoch boundary: every stochastic stream below reads self._epoch,
-        # so a single __iter__ yields one internally consistent epoch.
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
 
     def __repr__(self) -> str:
         return (
@@ -1423,7 +1438,7 @@ class FitsSpectrumDataset(Dataset[Any]):
         )
 
 
-class FitsSpectrumIterableDataset(IterableDataset[Any]):
+class FitsSpectrumIterableDataset(_EpochStream, IterableDataset[Any]):
     """1D spectra streaming (IMAGE or table column), multi-arm layouts."""
 
     def __init__(
@@ -1536,15 +1551,6 @@ class FitsSpectrumIterableDataset(IterableDataset[Any]):
             else:
                 yield payload, torch.tensor(sharded_labels[idx], dtype=torch.long)
 
-    def __iter__(self) -> Iterator[Any]:
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
-
     def __repr__(self) -> str:
         return (
             f"FitsSpectrumIterableDataset(n={len(self.files)}, hdu={self.hdu!r}, "
@@ -1586,7 +1592,7 @@ def _reap_stage_dir(stage_root: Path, threads: list[threading.Thread]) -> None:
     shutil.rmtree(stage_root, ignore_errors=True)
 
 
-class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
+class FitsStagedCutoutIterableDataset(_EpochStream, IterableDataset[Any]):
     """Streaming cutouts from large remote or local FITS mosaics with ephemeral staging."""
 
     def __init__(
@@ -1841,15 +1847,6 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                 # worker's); unlinking it there would race their open.
                 if self.cleanup and is_remote and self._url_counts[file_ref] < 2:
                     cleanup_downloaded_file(local_path)
-
-    def __iter__(self) -> Iterator[Any]:
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
 
     def __repr__(self) -> str:
         return (

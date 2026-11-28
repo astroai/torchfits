@@ -36,9 +36,9 @@ from .datasets import (
     FitsStagedCutoutIterableDataset,
     FitsTensorDataset,
     FitsTensorIterableDataset,
-    _buffered_shuffle,
     _check_return_label,
     _EpochSeed,
+    _EpochStream,
     _resolve_rank_and_world_size,
     discover_bands,
 )
@@ -664,7 +664,7 @@ def _shard_row_range(
     return start, start + size
 
 
-class FitsTableIterableDataset(IterableDataset[Any]):
+class FitsTableIterableDataset(_EpochStream, IterableDataset[Any]):
     """Iterable dataset streaming FITS table rows in constant memory.
 
     Each DataLoader worker (and each distributed rank) receives a
@@ -827,13 +827,7 @@ class FitsTableIterableDataset(IterableDataset[Any]):
                 raise ValueError(
                     "shuffle_buffer_size requires per-row mode (as_batches=False)"
                 )
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
+        return super().__iter__()
 
     def __repr__(self) -> str:
         return (
