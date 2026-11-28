@@ -292,7 +292,10 @@ descriptor CFITSIO reads through, or with an environment CFITSIO a `stat()` of
 the path before and after the open) rather than to the validation window: a handle is
 only seeded from offsets recorded for its own version, and a handle only
 records them if the path still names that version when it closes and no
-in-process writer invalidated the path meanwhile. A version is recorded only
+in-process writer invalidated the path meanwhile. (With the descriptor
+accessor the version is read once, at close, and must have been settled at the
+moment of the open; a handle that never reaches a third HDU pays no extra
+syscall.) A version is recorded only
 once it is `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` old, so a rewrite within the
 filesystem's timestamp granularity cannot keep its ctime; a file younger than
 that is read with the plain header walk. Files on FUSE mounts (sshfs and

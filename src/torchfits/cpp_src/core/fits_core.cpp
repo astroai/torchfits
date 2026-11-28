@@ -684,9 +684,18 @@ bool hdu_offsets_cacheable(const std::string& path) {
            path.find("://") == std::string::npos;
 }
 
-// What a handle saw when it was opened; see the protocol above.
+// What a handle saw when it was opened; see the protocol above. With the
+// descriptor accessor the version is not read at open (`version_known` false):
+// most handles never see three HDUs and so never publish, and the fstat() and
+// fstatfs() that capturing it cost were paid on every small read. The close
+// reads it from the same descriptor instead and requires it to have been
+// settled at `open_wall_ns` -- the age rule applied at the moment of the open,
+// which is exactly the version an open-time capture would have recorded: any
+// write after the open stamps a ctime later than open_wall_ns - min_age.
 struct OpenedVersion {
     FileVersion version;
+    bool version_known = false;
+    int64_t open_wall_ns = 0;
     uint64_t meta_uid = 0;
 };
 
@@ -820,25 +829,36 @@ bool opened_version(fitsfile* fptr, const std::string& path, const struct stat* 
 // and seed it from a table recorded for that version.
 void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat* before) {
     track_open_handle(fptr, nullptr);
-    if (!trusted_wall_clock_now(nullptr)) return;
-    FileVersion version;
-    if (fptr->Fptr == nullptr || !opened_version(fptr, path, before, &version)) return;
-#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
-    const int fd = fits_get_diskfile_fd(fptr);
-#else
-    const int fd = -1;
-#endif
-    if (!timestamps_trustworthy(fd, path)) return;
+    int64_t open_wall_ns = 0;
+    if (!trusted_wall_clock_now(&open_wall_ns)) return;
+    if (fptr->Fptr == nullptr) return;
     auto meta = get_shared_meta_for_path(path);
     if (!meta) return;
     OpenedVersion opened;
-    opened.version = version;
+    opened.open_wall_ns = open_wall_ns;
     std::shared_ptr<const HduOffsetTable> table;
     {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         opened.meta_uid = meta->uid.load(std::memory_order_relaxed);
         table = meta->hdu_offsets;
     }
+    if (kVersionFromDescriptor) {
+        // Seed only from a table recorded for exactly the version this
+        // descriptor reads. A table is only ever recorded for a file on a
+        // filesystem whose timestamps passed timestamps_trustworthy(), and its
+        // version names that filesystem (st_dev), so a match needs no statfs.
+        FileVersion version;
+        if (table && descriptor_version(fptr, &version) && table->version == version) {
+            seed_hdu_offsets(fptr, *table);
+        }
+        track_open_handle(fptr, &opened);
+        return;
+    }
+    FileVersion version;
+    if (!opened_version(fptr, path, before, &version)) return;
+    if (!timestamps_trustworthy(-1, path)) return;
+    opened.version = version;
+    opened.version_known = true;
     if (table && table->version == version) seed_hdu_offsets(fptr, *table);
     if (version.settled()) track_open_handle(fptr, &opened);
 }
@@ -885,18 +905,28 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
         // Fewer than three known HDUs is nothing a fresh open does not
         // already learn from its first header.
         if (file->writemode != READONLY || file->maxhdu < 2 ||
-            file->logfilesize != opened.version.size) {
+            (opened.version_known && file->logfilesize != opened.version.size)) {
             return;
         }
         // Nothing changed the file the handle read (a write moves its ctime)...
         FileVersion read_now;
-        if (kVersionFromDescriptor &&
-            (!descriptor_version(fptr, &read_now) || !(read_now == opened.version))) {
-            return;
+        if (kVersionFromDescriptor) {
+            if (!descriptor_version(fptr, &read_now)) return;
+            if (opened.version_known) {
+                if (!(read_now == opened.version)) return;
+            } else {
+                // ...which, read only now, must already have been settled
+                // when the handle was opened (see OpenedVersion).
+                if (opened.open_wall_ns - read_now.ctime_ns < kHduOffsetMinAgeNs ||
+                    opened.open_wall_ns - read_now.mtime_ns < kHduOffsetMinAgeNs ||
+                    file->logfilesize != read_now.size) {
+                    return;
+                }
+                opened.version = read_now;
+                opened.version_known = true;
+            }
         }
-        // ...and the path still names it (a replacement has another inode).
-        struct stat now {};
-        if (::stat(path.c_str(), &now) != 0 || !(FileVersion::of(now) == opened.version)) return;
+        if (!opened.version_known) return;
         const size_t count = static_cast<size_t>(file->maxhdu) + 2;
         auto meta = get_shared_meta_for_path(path);
         if (!meta) return;
@@ -910,6 +940,12 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
                 return;
             }
         }
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+        if (!timestamps_trustworthy(fits_get_diskfile_fd(fptr), path)) return;
+#endif
+        // ...and the path still names it (a replacement has another inode).
+        struct stat now {};
+        if (::stat(path.c_str(), &now) != 0 || !(FileVersion::of(now) == opened.version)) return;
         auto table = make_offset_table(opened.version, file->headstart, count);
         if (!table) return;
         std::unique_lock<std::shared_mutex> lock(meta->mutex);
