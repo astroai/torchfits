@@ -153,3 +153,68 @@ def test_table_write_accepts_pathlib_path(tmp_path):
     path = tmp_path / "t.fits"
     table.write(path, {"A": np.array([1, 2], dtype=np.uint16)}, overwrite=True)
     assert torchfits.read(str(path), hdu=1)["A"].tolist() == [1, 2]
+
+
+def test_cli_http_box_cutout_walks_headers_once(tmp_path, monkeypatch):
+    """The CLI cutout used to read the header through CFITSIO (a full
+    download) and then walk every HDU header again by Range for the pixels."""
+    from torchfits.cli.main import main
+
+    path = str(tmp_path / "mef.fits")
+    image = torch.arange(48, dtype=torch.float32).reshape(6, 8)
+    torchfits.write(
+        path,
+        [
+            {"data": torch.zeros(2, 2), "header": {"OBJECT": "P"}},
+            {"data": image, "header": {"EXTNAME": "SCI", "CRPIX1": 5.0}},
+        ],
+        overwrite=True,
+    )
+    blob = open(path, "rb").read()
+    header_fetches: list[int] = []
+
+    def fake_range(url, start, end, timeout=None):
+        if start % 2880 == 0 and blob[start : start + 6] in (b"SIMPLE", b"XTENSI"):
+            header_fetches.append(start)
+        return blob[start : end + 1]
+
+    def no_full_read(*args, **kwargs):
+        raise AssertionError("HTTP box cutout must not read the header again")
+
+    monkeypatch.setattr(http_subset, "http_read_range", fake_range)
+    monkeypatch.setattr(torchfits, "read_header", no_full_read)
+    out = tmp_path / "cut.fits"
+    url = "https://example.org/mef.fits"
+    assert main(["cutout", url, "-e", "1", "--box", "2,1,6,4", "-o", str(out)]) == 0
+    monkeypatch.undo()
+    assert torch.equal(torchfits.read(str(out)), image[1:4, 2:6])
+    header = torchfits.read_header(str(out), 0)
+    assert header["CRPIX1"] == 3.0
+    # one fetch per HDU header (primary, then SCI), no second walk
+    assert sorted(set(header_fetches)) == header_fetches
+
+
+def test_cli_http_box_cutout_falls_back_to_one_download(tmp_path, monkeypatch):
+    from torchfits.cli.main import main
+    import torchfits.data.remote as remote
+
+    path = str(tmp_path / "c.fits")
+    image = torch.arange(64, dtype=torch.int16).reshape(8, 8)
+    torchfits.write(path, image, compress="RICE", overwrite=True)
+    blob = open(path, "rb").read()
+    downloads: list[str] = []
+
+    monkeypatch.setattr(
+        http_subset, "http_read_range", lambda url, s, e, timeout=None: blob[s : e + 1]
+    )
+
+    def fake_resolve(url, *args, **kwargs):
+        downloads.append(url)
+        return path
+
+    monkeypatch.setattr(remote, "resolve_local_path", fake_resolve)
+    out = tmp_path / "cut.fits"
+    url = "https://example.org/c.fits"
+    assert main(["cutout", url, "-e", "1", "--box", "0,0,3,2", "-o", str(out)]) == 0
+    assert downloads == [url]
+    assert torch.equal(torchfits.read(str(out)), image[0:2, 0:3])
