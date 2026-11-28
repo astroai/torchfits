@@ -3,7 +3,7 @@
 The RICE decoders checked for the end of the compressed stream only after each
 block of pixels, so a tile whose descriptor claims fewer bytes than its pixels
 need was decoded past the end of the heap buffer before the error surfaced
-(cfitsio-4.7.0-rice-decode-bounds). Out-of-bounds reads only show under ASan
+(cfitsio-4.7.0-ricecomp-input-bounds). Out-of-bounds reads only show under ASan
 (the sanitizer workflow runs this file); everywhere the read must fail with a
 RuntimeError, never crash or return pixels.
 """
