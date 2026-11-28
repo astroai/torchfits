@@ -7,6 +7,7 @@
 #include <cmath>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <shared_mutex>
 #include <list>
@@ -1028,7 +1029,7 @@ void validate_hdu_list_headers(nb::list hdus) {
     }
 }
 
-void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii) {
+void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii, bool release_gil) {
     struct ColumnWriteInfo {
         std::string name;
         bool is_vla = false;
@@ -1498,6 +1499,14 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         tform[static_cast<size_t>(i)] = tform_store[static_cast<size_t>(i)].data();
         tunit[static_cast<size_t>(i)] = tunit_store[static_cast<size_t>(i)].data();
     }
+    // Every column is converted by now: creating the table and writing its
+    // data touches no Python object (the payload arrays stay referenced by
+    // `columns`), so with release_gil it runs without the GIL. The header
+    // cards below are Python objects again.
+    std::optional<nb::gil_scoped_release> release;
+    if (release_gil) {
+        release.emplace();
+    }
     fits_create_tbl(fptr, is_ascii ? ASCII_TBL : BINARY_TBL, num_rows, num_cols,
                     ttype.data(), tform.data(), tunit.data(), "Table", &status);
 
@@ -1606,6 +1615,8 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         }
     }
 
+    release.reset();
+
     for (auto item : header) {
         std::string key = nb::cast<std::string>(item.first);
         key = d::sanitize_fits_key(key);
@@ -1666,7 +1677,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
 }
 
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header) {
-    write_table_hdu(fptr, tensor_dict, header, nb::none(), false);
+    write_table_hdu(fptr, tensor_dict, header, nb::none(), false, false);
 }
 
 std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj) {

@@ -266,6 +266,10 @@ def _where_row_indices(path: str, hdu: int, where: str) -> Any:
     return np.flatnonzero(np.asarray(flags.to_numpy(zero_copy_only=False), dtype=bool))
 
 
+# Source bytes read per chunk by the streamed FITS -> FITS convert.
+_RAW_CHUNK_BYTES = 8 << 20
+
+
 def _convert_table_to_fits(
     path: str, output: str, hdu: int, columns: list[str] | None, where: str | None
 ) -> None:
@@ -275,18 +279,14 @@ def _convert_table_to_fits(
     sentinels, TDIM, unsigned conventions) with their TUNIT and other
     per-column cards renumbered for a ``--columns`` projection; EXTNAME and
     the other non-structural keywords of the source HDU are carried over.
-    """
-    import numpy as np
 
-    from torchfits.io import _write_header_cards_if_supported
-    from torchfits._table._mutation_coerce import _read_table_for_rewrite
-    from torchfits._table.write import (
-        _extract_table_schema_from_header,
-        _resolve_table_hdu_index_and_columns,
-        _rewrite_table_header,
-        _scaled_columns_as_stored,
-        write,
-    )
+    Fixed-width columns stream through ``table.writer``: the stored row bytes
+    are copied chunk by chunk (projected and filtered), so memory is bounded
+    by the chunk size and every cell is byte-identical. A selection with a
+    variable-length column (whose cells live in the heap) is rewritten from
+    the materialized table instead.
+    """
+    from torchfits._table.write import _resolve_table_hdu_index_and_columns
 
     target_hdu, header_map, all_columns, _ = _resolve_table_hdu_index_and_columns(
         path, hdu
@@ -298,6 +298,189 @@ def _convert_table_to_fits(
         if missing:
             raise UsageError(f"--columns: unknown column(s): {', '.join(missing)}")
         selected = list(dict.fromkeys(columns))
+    if _raw_copy_spans(header_map, selected) is None:
+        _convert_table_to_fits_materialized(
+            path, output, target_hdu, header_map, selected, where
+        )
+        return
+    _convert_table_to_fits_streamed(
+        path, output, target_hdu, header_map, selected, where
+    )
+
+
+def _raw_copy_spans(
+    header_map: dict[str, Any], selected: list[str]
+) -> dict[str, tuple[int, int]] | None:
+    """Stored-row byte spans of ``selected``, or None when they cannot be
+    copied as bytes (variable-length or unknown columns, compressed tables)."""
+    from torchfits import fits_schema
+    from torchfits._table.write import _table_column_spans
+
+    if header_map.get("ZTABLE") or header_map.get("ZIMAGE"):
+        return None
+    wanted = set(selected)
+    for col in fits_schema.iter_table_columns(header_map):
+        if col.name in wanted and (col.tform_info.vla or not col.tform_info.code):
+            return None
+    spans = _table_column_spans(header_map)
+    if spans is None or any(name not in spans for name in selected):
+        return None
+    return {name: spans[name] for name in selected}
+
+
+def _stored_column_schema(
+    header_map: dict[str, Any], selected: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Column layout cards of ``selected`` for a writer fed stored bytes:
+    TNULL stays the raw stored sentinel (no unsigned-domain conversion)."""
+    from torchfits._table.write import (
+        _column_name_index_map,
+        _extract_table_schema_from_header,
+    )
+
+    schema = _extract_table_schema_from_header(header_map, selected)
+    index = {name: idx for idx, name in _column_name_index_map(header_map).items()}
+    for name in selected:
+        raw = header_map.get(f"TNULL{index[name]}")
+        if raw is not None:
+            schema[name]["tnull"] = raw
+    return schema
+
+
+def _empty_stored_column(fmt: str) -> Any:
+    """A zero-row column the native writer types by ``fmt`` alone."""
+    import numpy as np
+
+    from torchfits import fits_schema
+
+    code = fits_schema.parse_tform(fmt).code
+    if code == "A":
+        return np.array([], dtype="S1")
+    if code == "X":
+        return np.zeros(0, dtype=bool)
+    return np.zeros(0, dtype=np.float64)
+
+
+def _chunk_where_mask(
+    path: str, hdu: int, start: int, stop: int, where: str, ast: Any, refs: list[str]
+) -> Any:
+    """Rows ``start:stop`` that ``where`` keeps (same predicate as table.read)."""
+    import numpy as np
+
+    from torchfits import table as tf_table
+    from torchfits._table._read_where import _where_mask_for_table
+
+    try:
+        predicate_table = tf_table.read(
+            path, hdu=hdu, columns=refs or None, row_slice=(start, stop)
+        )
+        mask = _where_mask_for_table(predicate_table, where, parsed_ast=ast)
+    except (KeyError, ValueError) as exc:
+        detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+        raise UsageError(f"--where: {detail}") from exc
+    flags: Any = mask
+    return np.asarray(flags.to_numpy(zero_copy_only=False), dtype=bool)
+
+
+def _convert_table_to_fits_streamed(
+    path: str,
+    output: str,
+    hdu: int,
+    header_map: dict[str, Any],
+    selected: list[str],
+    where: str | None,
+) -> None:
+    import numpy as np
+
+    from torchfits._io_engine._hdu_splice import hdu_byte_spans, open_fits_bytes
+    from torchfits._table.write import (
+        _resolve_table_hdu_index_and_columns,
+        _rewrite_table_header,
+        _table_column_spans,
+    )
+    from torchfits._table.write_stream import TableWriter
+    from torchfits._where import parse_where_expression, where_columns_from_ast
+
+    src_spans = _raw_copy_spans(header_map, selected) or {}
+    schema = _stored_column_schema(header_map, selected)
+    header = _rewrite_table_header(path, hdu, header_map, selected)
+    ascii_table = str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+    nrows = int(header_map.get("NAXIS2", 0) or 0)
+    width = int(header_map.get("NAXIS1", 0) or 0)
+    ast = parse_where_expression(where) if where else None
+    refs = sorted(set(where_columns_from_ast(ast))) if ast is not None else []
+
+    with TableWriter(
+        output,
+        schema=schema,
+        overwrite=True,
+        table_type="ascii" if ascii_table else "binary",
+    ) as writer:
+        empty = {
+            name: _empty_stored_column(schema[name]["format"]) for name in selected
+        }
+        writer._begin(empty, replay_header=header)
+        out_map = _resolve_table_hdu_index_and_columns(writer._temp, 1)[1]
+        dst_spans = _table_column_spans(out_map) or {}
+        out_width = int(out_map.get("NAXIS1", 0) or 0)
+        if any(src_spans[n][1] != dst_spans.get(n, (0, -1))[1] for n in selected):
+            raise IoError(f"{path}: cannot map the selected columns onto the output")
+        identity = out_width == width and all(
+            src_spans[n][0] == dst_spans[n][0] for n in selected
+        )
+        if nrows == 0 or width == 0:
+            return
+        chunk = max(1, _RAW_CHUNK_BYTES // width)
+        data_start = hdu_byte_spans(path)[hdu][1]
+        with open_fits_bytes(path) as fh:
+            fh.seek(data_start)
+            for start in range(0, nrows, chunk):
+                count = min(chunk, nrows - start)
+                raw = fh.read(count * width)
+                if len(raw) != count * width:
+                    raise IoError(f"{path}: table HDU {hdu} data is truncated")
+                rows = np.frombuffer(raw, dtype=np.uint8).reshape(count, width)
+                if ast is not None:
+                    rows = rows[
+                        _chunk_where_mask(
+                            path, hdu, start, start + count, where or "", ast, refs
+                        )
+                    ]
+                if not len(rows):
+                    continue
+                if identity:
+                    out = np.ascontiguousarray(rows)
+                else:
+                    out = np.full(
+                        (len(rows), out_width), 0x20 if ascii_table else 0, np.uint8
+                    )
+                    for name in selected:
+                        s_off, nbytes = src_spans[name]
+                        d_off = dst_spans[name][0]
+                        out[:, d_off : d_off + nbytes] = rows[:, s_off : s_off + nbytes]
+                writer._write_raw_rows(out)
+
+
+def _convert_table_to_fits_materialized(
+    path: str,
+    output: str,
+    target_hdu: int,
+    header_map: dict[str, Any],
+    selected: list[str],
+    where: str | None,
+) -> None:
+    """Whole-table rewrite for selections the byte copy cannot stream."""
+    import numpy as np
+
+    from torchfits.io import _write_header_cards_if_supported
+    from torchfits._table._mutation_coerce import _read_table_for_rewrite
+    from torchfits._table.write import (
+        _extract_table_schema_from_header,
+        _rewrite_table_header,
+        _scaled_columns_as_stored,
+        write,
+    )
+
     rows = None
     if where:
         try:

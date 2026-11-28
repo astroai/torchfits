@@ -20,7 +20,7 @@ _log = logging.getLogger(__name__)
 
 def write(
     path: str,
-    data: dict[str, Any],
+    data: Any,
     *,
     schema: dict[str, dict[str, Any]] | None = None,
     header: dict[str, Any] | None = None,
@@ -28,19 +28,44 @@ def write(
     extname: str | None = None,
     table_type: str = "binary",
     quantize: Any = None,
+    checksum: bool = False,
 ) -> None:
-    """Write a columnar dict as a FITS table.
+    """Write a columnar dict, table/dataframe, or stream of batches as a FITS table.
+
+    ``data`` is a column dict, an Arrow/pandas/polars/astropy table, or a
+    stream of batches -- a ``pyarrow.RecordBatchReader`` or an iterable of
+    record batches / tables / column dicts -- which is written incrementally
+    with memory bounded by the batch size (see :func:`writer`).
 
     ``quantize=\"robust\"`` packs all float columns to ``TFORM=I`` with
     ``TSCAL``/``TZERO``. Pass ``{\"col\": \"robust\"}`` (or per-column option
     dicts) to select columns. Default keeps native float ``TFORM``.  When
     ``quantize`` is set but no column qualifies (e.g. an integer-only table),
     a ``QuantizeError`` is raised rather than silently writing unpacked.
+    ``quantize`` is not supported for streams. ``checksum=True`` stamps
+    DATASUM/CHECKSUM on every HDU of the new file.
     """
     from .._io_engine._write_helpers import _normalize_table_input
     from .._io_engine.paths import guard_write_path
+    from .write_stream import is_batch_stream, write_batches
 
     guard_write_path(path)
+    if is_batch_stream(data):
+        if quantize is not None:
+            raise ValueError(
+                "quantize= is not supported when writing a stream of batches"
+            )
+        write_batches(
+            path,
+            data,
+            schema=schema,
+            header=header,
+            extname=extname,
+            overwrite=overwrite,
+            checksum=checksum,
+            table_type=table_type,
+        )
+        return
     if str(path).lower().endswith(".bz2"):
         # CFITSIO would create a plain, uncompressed FITS under this name.
         raise ValueError(
@@ -108,6 +133,10 @@ def write(
             )
             if hdr:
                 _write_header_cards_if_supported(write_path, 1, hdr)
+            if checksum:
+                from .._io_engine.write_api import _write_all_checksums
+
+                _write_all_checksums(write_path)
         _invalidate_path_caches(path)
         return
 
@@ -117,6 +146,38 @@ def write(
         header=hdr if hdr else None,
         overwrite=overwrite,
         quantize=quantize,
+        checksum=checksum,
+    )
+
+
+def writer(
+    path: str,
+    *,
+    schema: dict[str, dict[str, Any]] | None = None,
+    header: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    extname: str | None = None,
+    table_type: str = "binary",
+    checksum: bool = False,
+) -> Any:
+    """Open an incremental FITS table writer (the write-side ``reader()``).
+
+    Returns a :class:`~torchfits._table.write_stream.TableWriter`; call its
+    ``write(batch)`` per batch and ``close()``, or use it as a context
+    manager. The table is built in a temp file next to ``path`` and published
+    atomically on a clean close; an exception or ``abort()`` leaves ``path``
+    untouched. The first batch with rows (or ``schema=``) fixes the layout.
+    """
+    from .write_stream import TableWriter
+
+    return TableWriter(
+        path,
+        schema=schema,
+        header=header,
+        extname=extname,
+        overwrite=overwrite,
+        checksum=checksum,
+        table_type=table_type,
     )
 
 
@@ -302,6 +363,45 @@ _BINTABLE_CELL_BYTES = {
     "P": 8,
     "Q": 16,
 }
+
+
+def _table_column_spans(
+    header_map: dict[str, Any],
+) -> dict[str, tuple[int, int]] | None:
+    """``{name: (byte offset, byte width)}`` of each column in a stored row.
+
+    Binary-table cells follow one another in TFORM order (a variable-length
+    column holds its descriptor); ASCII-table fields sit at ``TBCOLn``.
+    ``None`` when a column's width cannot be told from its TFORM.
+    """
+    import re
+
+    from .. import fits_schema
+
+    ascii_table = str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+    out: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for col in fits_schema.iter_table_columns(header_map):
+        info = col.tform_info
+        if ascii_table:
+            tbcol = header_map.get(f"TBCOL{col.index}")
+            match = re.match(r"^[A-Z]\s*(\d+)", str(col.tform).strip().upper())
+            if tbcol is None or match is None:
+                return None
+            out[col.name] = (int(tbcol) - 1, int(match.group(1)))
+            continue
+        code = info.code or ""
+        if info.vla:
+            width = _BINTABLE_CELL_BYTES[info.vla_descriptor or "P"]
+        elif code == "X":
+            width = (info.repeat + 7) // 8
+        elif code in _BINTABLE_CELL_BYTES:
+            width = info.repeat * _BINTABLE_CELL_BYTES[code]
+        else:
+            return None
+        out[col.name] = (offset, width)
+        offset += width
+    return out
 
 
 def _scaled_columns_as_stored(

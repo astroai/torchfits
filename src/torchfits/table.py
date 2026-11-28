@@ -41,7 +41,7 @@ from ._table.read import (
     scanner,
     schema,
 )
-from ._table.write import write
+from ._table.write import write, writer
 from ._table_engine import TABLE_BACKENDS
 
 if TYPE_CHECKING:
@@ -124,6 +124,7 @@ __all__ = [
     "to_polars",
     "update_rows",
     "write",
+    "writer",
     "write_csv",
     "write_ipc",
     "write_parquet",

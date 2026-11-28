@@ -81,7 +81,10 @@ void validate_hdu_list_headers(nb::list hdus);
 // other type; CFITSIO failures land in *status.
 void update_header_value(fitsfile* fptr, const std::string& key, nb::handle value,
                          const char* comment, int* status);
-void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii);
+// release_gil: run the table creation and data writes without the GIL (the
+// caller must hold it on entry and own fptr exclusively -- no FITSFile lock).
+void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii,
+                     bool release_gil = false);
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header);
 // Shared owner of a Python FITSFile's fitsfile*. Throws if the handle is
 // closed; keeps it open while held (see FITSFile::share_fptr).

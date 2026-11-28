@@ -288,8 +288,12 @@ column formats (`TFORMn`), `TSCALn`/`TZEROn`, `TNULLn` sentinels, `TDIMn`,
 `TUNITn` and other per-column cards (renumbered for `--columns`), `EXTNAME`,
 and the HDU's other non-structural keywords are kept.
 
-Parquet, CSV/TSV, and Arrow output is streamed batch by batch, with or without
-`--columns`/`--where`; FITS output is built in memory.
+Output is streamed batch by batch, with or without `--columns`/`--where`, so
+memory stays bounded by the batch size. FITS output copies the stored row bytes
+of the selected columns chunk by chunk through `torchfits.table.writer()`
+(every cell byte-identical); a selection that includes a variable-length
+(`P`/`Q`) column is the exception and is rewritten from the table read into
+memory.
 
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
