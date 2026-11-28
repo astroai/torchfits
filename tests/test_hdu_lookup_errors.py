@@ -223,7 +223,11 @@ def test_import_does_not_load_torch():
         (["stats", "{p}", "-e", "-1"], 2),
         (["verify", "{p}", "-e", "7"], 2),
         (["setkey", "{p}", "-k", "FOO", "--value", "1", "-e", "7"], 2),
-        (["cutout", "{p}", "--box", "0,0,2,2", "-o", "{o}", "-e", "7"], 3),
+        # A missing -e index is a usage error everywhere (docs/cli.md); cutout,
+        # convert and transform used to report it as an I/O error (exit 3).
+        (["cutout", "{p}", "--box", "0,0,2,2", "-o", "{o}", "-e", "7"], 2),
+        (["convert", "{p}", "{o}.csv", "-e", "7"], 2),
+        (["transform", "{p}", "-o", "{o}", "-e", "7", "--name", "LogStretch"], 2),
     ],
 )
 def test_cli_out_of_range_message(mef, tmp_path, capsys, argv, code):

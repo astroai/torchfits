@@ -93,6 +93,8 @@ def test_convert_bad_selection_is_usage_error_before_output(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["cat.fits", out.name]
 
 
-def test_convert_bad_hdu_with_where_stays_io_error(catalog, tmp_path):
+def test_convert_missing_hdu_with_where_is_usage_error(catalog, tmp_path):
+    # An -e index the file does not have is a usage error in every
+    # subcommand (docs/cli.md exit codes); a corrupt HDU stays exit 3.
     out = tmp_path / "out.parquet"
-    assert main(["convert", str(catalog), str(out), "-e", "7", "-w", "RA > 1"]) == 3
+    assert main(["convert", str(catalog), str(out), "-e", "7", "-w", "RA > 1"]) == 2
