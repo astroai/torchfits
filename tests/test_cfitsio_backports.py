@@ -1,0 +1,244 @@
+"""Crafted inputs for the CFITSIO fixes carried in extern/patches/.
+
+Each case below is a file that crashed or read out of bounds in the vendored
+cfitsio-4.7.0 (SIGFPE, SIGSEGV, stack smashing, or an AddressSanitizer
+report) and now fails with a Python exception, or reads correctly. The
+crafted reads run in a child interpreter so that a regression shows up as a
+failed test with the child's signal instead of killing the test session.
+Under the sanitizer workflow the child inherits LD_PRELOAD, so an
+out-of-bounds read that happens to return garbage still fails there.
+
+Each test names the extern/patches/ file whose fix it covers.
+"""
+
+from __future__ import annotations
+
+import struct
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+import torchfits
+
+# --------------------------------------------------------------------------
+# FITS building blocks
+
+
+def _card(key: str, value: str | int | bool | None = None) -> bytes:
+    if value is None:
+        text = key
+    elif isinstance(value, bool):
+        text = f"{key:<8}= {'T' if value else 'F':>20}"
+    elif isinstance(value, str):
+        text = f"{key:<8}= {value!r:<20}"
+    else:
+        text = f"{key:<8}= {value:>20}"
+    return text.ljust(80).encode("ascii")
+
+
+def _header(cards: list[bytes]) -> bytes:
+    payload = b"".join([*cards, _card("END")])
+    return payload.ljust((len(payload) + 2879) // 2880 * 2880, b" ")
+
+
+def _pad(data: bytes, fill: bytes = b"\0") -> bytes:
+    return data.ljust((len(data) + 2879) // 2880 * 2880, fill)
+
+
+_PRIMARY_NULL = _header(
+    [
+        _card("SIMPLE", True),
+        _card("BITPIX", 8),
+        _card("NAXIS", 0),
+        _card("EXTEND", True),
+    ]
+)
+
+
+def _parse_hdus(buf: bytes) -> list[tuple[int, dict[str, str]]]:
+    """(data start, cards) for every HDU."""
+    hdus = []
+    pos = 0
+    while pos < len(buf):
+        cards: dict[str, str] = {}
+        done = False
+        while not done:
+            block = buf[pos : pos + 2880]
+            pos += 2880
+            for i in range(36):
+                card = block[i * 80 : (i + 1) * 80].decode("ascii")
+                key = card[:8].strip()
+                if key == "END":
+                    done = True
+                    break
+                if card[8:10] == "= ":
+                    value = card[10:].split("/")[0].strip()
+                    cards[key] = value.strip("'").strip()
+        hdus.append((pos, cards))
+        naxis = int(cards.get("NAXIS", 0))
+        size = 0
+        if naxis:
+            count = 1
+            for i in range(1, naxis + 1):
+                count *= int(cards[f"NAXIS{i}"])
+            size = (
+                abs(int(cards["BITPIX"])) // 8 * (int(cards.get("PCOUNT", 0)) + count)
+            )
+        pos += (size + 2879) // 2880 * 2880
+    return hdus
+
+
+def _run_child(code: str, *args: str, cwd: Path | None = None) -> str:
+    """Run `code` in a fresh interpreter; fail on any signal or traceback."""
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=cwd,
+    )
+    assert result.returncode == 0, (
+        f"child exited with {result.returncode} "
+        f"(negative = killed by that signal)\n{result.stdout}\n{result.stderr}"
+    )
+    return result.stdout
+
+
+# A read that must fail with an exception, not a crash or a silent result.
+_EXPECT_ERROR = """
+import sys
+import torchfits
+try:
+    result = torchfits.read(sys.argv[1], hdu=int(sys.argv[2]))
+except (RuntimeError, OSError, ValueError) as exc:
+    print("RAISED", type(exc).__name__, exc)
+else:
+    print("READ", tuple(result.shape))
+"""
+
+
+def _assert_read_raises(target: str, hdu: int = 0, cwd: Path | None = None) -> str:
+    out = _run_child(_EXPECT_ERROR, target, str(hdu), cwd=cwd)
+    assert out.startswith("RAISED"), out
+    return out
+
+
+# --------------------------------------------------------------------------
+# Tile-compressed images (RICE_1, HCOMPRESS_1)
+
+
+def _compressed_tile(path: Path) -> tuple[int, int, int, str]:
+    """(descriptor position, tile length, tile heap position, TFORM)."""
+    buf = path.read_bytes()
+    data_start, cards = next(h for h in _parse_hdus(buf) if h[1].get("ZIMAGE") == "T")
+    assert cards["TTYPE1"] == "COMPRESSED_DATA", cards
+    tform = cards["TFORM1"]
+    code = ">qq" if "Q" in tform else ">ii"
+    length, offset = struct.unpack_from(code, buf, data_start)
+    heap = data_start + int(
+        cards.get("THEAP", int(cards["NAXIS1"]) * int(cards["NAXIS2"]))
+    )
+    return data_start, length, heap + offset, tform
+
+
+def _write_compressed(path: Path, dtype: torch.dtype, algorithm: str) -> Path:
+    data = (torch.arange(64 * 64) % 97 * 3).reshape(64, 64).to(dtype)
+    torchfits.write(str(path), data, compress=algorithm, tile_shape=(64, 64))
+    return path
+
+
+def _truncate_tile(path: Path) -> None:
+    descriptor, length, _, tform = _compressed_tile(path)
+    code = ">qq" if "Q" in tform else ">ii"
+    buf = bytearray(path.read_bytes())
+    _, offset = struct.unpack_from(code, buf, descriptor)
+    # Half the compressed bytes: the decoder needs the rest and, unpatched,
+    # read on past the end of the tile buffer to find them.
+    struct.pack_into(code, buf, descriptor, length // 2, offset)
+    path.write_bytes(bytes(buf))
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.int16, torch.int32])
+def test_truncated_rice_tile_raises(tmp_path: Path, dtype: torch.dtype) -> None:
+    """ricecomp-input-bounds: uint8/int16/int32 exercise fits_rdecomp_byte,
+    fits_rdecomp_short and fits_rdecomp."""
+    path = _write_compressed(tmp_path / "rice.fits", dtype, "RICE_1")
+    _truncate_tile(path)
+    _assert_read_raises(str(path), hdu=1)
+
+
+def test_intact_compressed_tiles_still_read(tmp_path: Path) -> None:
+    """The decoder checks must not reject valid tiles."""
+    for algorithm in ("RICE_1", "HCOMPRESS_1", "GZIP_1", "GZIP_2"):
+        for dtype in (torch.int16, torch.int32):
+            path = _write_compressed(
+                tmp_path / f"{algorithm}-{dtype}.fits", dtype, algorithm
+            )
+            expected = (torch.arange(64 * 64) % 97 * 3).reshape(64, 64).to(dtype)
+            assert torch.equal(torchfits.read(str(path), hdu=1), expected)
+
+
+# --------------------------------------------------------------------------
+# Images with many axes
+
+
+def _write_many_axis_image(path: Path, naxis: int) -> Path:
+    cards = [_card("SIMPLE", True), _card("BITPIX", 16), _card("NAXIS", naxis)]
+    cards += [_card(f"NAXIS{i}", 1) for i in range(1, naxis + 1)]
+    path.write_bytes(_header(cards) + _pad(b"\0\1"))
+    return path
+
+
+# --------------------------------------------------------------------------
+# Tables
+
+
+# --------------------------------------------------------------------------
+# IRAF .imh/.pix (CFITSIO converts them when the name ends in ".imh" and
+# goes through the extended filename syntax, e.g. "x.imh[0]")
+
+
+def _write_iraf(
+    directory: Path,
+    name: str,
+    shape: tuple[int, ...] = (3, 4),
+    physical: tuple[int, ...] | None = None,
+    pixoff: int = 513,
+    user: bytes = b"",
+) -> str:
+    """An IRAF v2 image (big-endian TY_SHORT); returns the .imh file name."""
+    physical = physical or shape
+    header = bytearray(2046)
+    header[0:5] = b"imhv2"
+    struct.pack_into(">i", header, 10, 3)  # pixel type TY_SHORT
+    struct.pack_into(">i", header, 14, 0)  # pixels not byte-swapped
+    struct.pack_into(">i", header, 18, len(shape))
+    for i, n in enumerate(shape):
+        struct.pack_into(">i", header, 22 + 4 * i, n)
+    for i, n in enumerate(physical):
+        struct.pack_into(">i", header, 50 + 4 * i, n)
+    struct.pack_into(">i", header, 86, pixoff)  # in 2-byte units, 1-based
+    pix = f"{name}.pix".encode()
+    header[126 : 126 + len(pix)] = pix
+    (directory / f"{name}.imh").write_bytes(bytes(header) + user + b"\0")
+    pixels = np.arange(int(np.prod(physical)), dtype=">i2").tobytes()
+    (directory / f"{name}.pix").write_bytes(b"impv2".ljust(1024, b"\0") + pixels)
+    return f"{name}.imh"
+
+
+_EXPECT_IRAF_IMAGE = """
+import sys
+import torchfits
+image = torchfits.read(sys.argv[1] + "[0]")
+print(tuple(image.shape), image.flatten().tolist())
+"""
+
+
+def _assert_iraf_reads(directory: Path, imh: str) -> None:
+    out = _run_child(_EXPECT_IRAF_IMAGE, imh, cwd=directory)
+    assert out.strip() == f"(4, 3) {list(range(12))}", out
