@@ -688,6 +688,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         if (float_like) {
             LONGLONG nelements = d::checked_nelements_product(naxes_ll.data(), naxis);
+            d::ensure_image_data_within_file(fptr, bitpix, nelements);
             int64_t torch_shape[9];
             for (int i = 0; i < naxis; ++i)
                 torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);

@@ -119,6 +119,49 @@ inline LONGLONG checked_nelements_product(const std::vector<DimT>& naxes) {
 }
 
 
+// Refuse an uncompressed image whose header declares more data than the file
+// holds before a buffer of that size is allocated: a corrupt or truncated
+// header claiming a huge NAXIS product on a small file raised a bare
+// MemoryError (std::bad_alloc) instead of saying the file is truncated, and a
+// cutout of it failed with CFITSIO's "tried to move past end of file". Like
+// the table readers, the whole declared data unit (without the final block
+// padding) must be present. `fptr` must be positioned on the image HDU.
+// Tile-compressed images are not checked here: their pixel count does not
+// bound the stored bytes.
+inline void ensure_image_data_within_file(fitsfile* fptr, int bitpix, LONGLONG nelements) {
+    if (fptr == nullptr || fptr->Fptr == nullptr || nelements <= 0) {
+        return;
+    }
+    int status = 0;
+    if (fits_is_compressed_image(fptr, &status) != 0 || status != 0) {
+        return;
+    }
+    LONGLONG headstart = 0;
+    LONGLONG datastart = 0;
+    LONGLONG dataend = 0;
+    fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
+    if (status != 0 || datastart < 0) {
+        return;
+    }
+    const unsigned long long elem = static_cast<unsigned long long>(bitpix < 0 ? -bitpix : bitpix) / 8ULL;
+    const unsigned long long n = static_cast<unsigned long long>(nelements);
+    const unsigned long long room =
+        static_cast<unsigned long long>(std::numeric_limits<LONGLONG>::max()) -
+        static_cast<unsigned long long>(datastart);
+    const LONGLONG filesize = fptr->Fptr->logfilesize;
+    if (elem == 0 || (n <= room / elem && static_cast<LONGLONG>(n * elem) + datastart <= filesize)) {
+        return;
+    }
+    const bool overflow = n > room / elem;
+    throw std::runtime_error(
+        "FITS image is truncated: header declares " +
+        (overflow ? std::string("more data than can be addressed")
+                  : std::to_string(n * elem) + " data bytes through offset " +
+                        std::to_string(static_cast<long long>(n * elem) + datastart)) +
+        " but the file holds only " + std::to_string(static_cast<long long>(filesize)) +
+        " bytes; the copy is incomplete or the header is corrupt");
+}
+
 
 
 // ---------------------------------------------------------------------------
@@ -216,6 +259,7 @@ inline native::Tensor read_tensor_canonical(
     }
 
     LONGLONG nelements = checked_nelements_product(naxes_ll.data(), naxis);
+    ensure_image_data_within_file(fptr, bitpix, nelements);
 
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i)

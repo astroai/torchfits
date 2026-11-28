@@ -410,6 +410,7 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     LONGLONG nelements = 0;
     if (naxis > 0) {
         nelements = torchfits::detail::checked_nelements_product(naxes_ll.data(), naxis);
+        torchfits::detail::ensure_image_data_within_file(fptr_, bitpix, nelements);
     }
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i) torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
@@ -604,6 +605,11 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
         }
     }
     if (naxis < 2) throw std::runtime_error("Subset reading requires at least 2D image");
+    {
+        std::vector<long> dims(naxes, naxes + naxis);
+        detail::ensure_image_data_within_file(
+            fptr_, bitpix, detail::checked_nelements_product(dims));
+    }
     long max_x = naxes[0], max_y = naxes[1];
     if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
     if (x2 > max_x) x2 = max_x; if (y2 > max_y) y2 = max_y;
@@ -1061,7 +1067,8 @@ void SubsetReader::init_from_hdu() {
     // mmap fast path. The checker permits zero dimensions (empty windows are
     // handled without a data read) and rejects products too large for any
     // supported element type or address-space mapping.
-    (void)detail::checked_nelements_product(naxes_);
+    detail::ensure_image_data_within_file(
+        file_.get_fptr(), bitpix, detail::checked_nelements_product(naxes_));
     max_x_ = naxes_[0];
     max_y_ = naxes_[1];
     const auto scale = file_.get_scale_info_for_hdu(hdu_num_);

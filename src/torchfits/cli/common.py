@@ -77,6 +77,8 @@ _TRUNCATION_MARKERS = (
     "error reading from fits file",
     "tried to move past end of file",
     "error reading data buffer",
+    "fits image is truncated",
+    "fits table is truncated",
 )
 _TRUNCATION_NOTE = (
     " [truncated or unreadable FITS file: it is shorter than its headers declare]"
