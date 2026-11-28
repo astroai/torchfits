@@ -29,7 +29,16 @@ logger = logging.getLogger("torchfits._table._read_scan")
 def _reraise_invalid_geometry(exc: BaseException) -> None:
     message = str(exc)
     if "Invalid table geometry" in message or "Invalid VLA geometry" in message:
-        raise exc
+        try:
+            raise exc
+        finally:
+            # This frame joins the traceback: a local still naming the
+            # exception would form a cycle (exception -> traceback -> frame
+            # -> exception), and every frame on it -- the caller's native
+            # reader with its two descriptors included -- would stay alive
+            # until the next gc pass instead of closing when the caller is
+            # done with the error.
+            del exc
 
 
 def read_full_raw(

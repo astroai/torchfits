@@ -878,7 +878,10 @@ def _native_read_failed(exc: BaseException) -> None:
         or "Invalid table geometry" in message
         or "Invalid VLA geometry" in message
     ):
-        raise exc
+        try:
+            raise exc
+        finally:
+            del exc  # no exception -> traceback -> frame cycle (see _read_strategies)
     logger.debug("native WHERE read failed; using the evaluator: %s", exc)
 
 
