@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 
 from torch import Tensor
@@ -11,6 +11,7 @@ from torch import Tensor
 from ..hdu import HDUList, Header, TensorHDU
 from .paths import guard_write_path
 from .checksum_api import write_checksums as _write_checksums_impl
+from ._tile_compression import CompressionOptions, compression_options
 from ._hdu_rewrite import (
     _write_hdus_uncompressed,
     _write_hdus_with_optional_compression,
@@ -77,6 +78,12 @@ def write(
     compress: Union[bool, str] = False,
     quantize: Any = None,
     checksum: bool = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Write data to FITS file.
 
@@ -94,6 +101,26 @@ def write(
         checksum: When True, compute and write CFITSIO DATASUM/CHECKSUM
             keywords for every HDU after the payload lands (archive-ingest
             friendly). Verify later with :func:`torchfits.verify_checksums`.
+        tile_shape: Tile size per image axis for tile-compressed writes, in
+            tensor axis order (``(rows, cols)`` for a 2-D image); it covers the
+            trailing axes and leading axes get tile size 1. ``-1`` (or a size
+            past the axis length) means the whole axis. Default: one image row
+            per tile (16 rows for ``HCOMPRESS_1``). Requires ``compress=``.
+        quantize_level: CFITSIO quantization of floating-point images in a
+            tile-compressed write (``fpack -q``): ``> 0`` sets the step to
+            the tile noise sigma divided by the level, ``< 0`` sets an
+            absolute step of ``abs(level)``, ``0`` stores floats losslessly
+            (``GZIP_1``/``GZIP_2`` only). Default: lossless for ``GZIP_1``,
+            4.0 otherwise. Integer images are never quantized.
+        quantize_method: ``"subtractive_dither_1"`` (CFITSIO default),
+            ``"subtractive_dither_2"`` (also keeps exact zeros) or
+            ``"no_dither"`` (default level 16).
+        dither_seed: Dither seed in 1..10000 for reproducible quantization
+            (default: CFITSIO picks one from the clock).
+        int_to_float: Compress integer images as quantized float32, like
+            ``fpack -i2f``: physical values (after ``BSCALE``/``BZERO``,
+            ``BLANK`` -> NaN) are quantized at ``quantize_level`` (default
+            4.0). Lossy; the stored image becomes ``BITPIX = -32``.
 
     Image tensors on non-CPU devices are detached and copied to CPU before
     the CFITSIO writer runs (in-memory input tensors are not modified).
@@ -113,6 +140,14 @@ def write(
         )
     if path_exists and os.path.isdir(path):
         raise IsADirectoryError(path)
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
 
     # Always write a fresh temp file and publish it afterwards: a failed write
     # then never creates or deletes anything at ``path`` (the old error path
@@ -127,6 +162,7 @@ def write(
                 compress=compress,
                 quantize=quantize,
                 checksum=checksum,
+                options=options,
             )
         except (ValueError, TypeError):
             # Argument errors (non-ASCII text, bad quantize=, a compress= of
@@ -146,6 +182,7 @@ def _write_new_file(
     compress: Union[bool, str],
     quantize: Any,
     checksum: bool,
+    options: Optional[CompressionOptions] = None,
 ) -> None:
     """write() body: ``path`` is a temp path that does not exist yet."""
     overwrite = False
@@ -222,7 +259,11 @@ def _write_new_file(
             )
 
         _write_hdus_with_optional_compression(
-            path, compressed_hdus, compress=compress, overwrite=overwrite
+            path,
+            compressed_hdus,
+            compress=compress,
+            overwrite=overwrite,
+            options=options,
         )
         if checksum:
             _write_all_checksums(path)

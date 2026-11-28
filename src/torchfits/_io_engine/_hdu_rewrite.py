@@ -35,6 +35,11 @@ from ._file_ops import (
     _invalidate_written_target,
     _resolve_compression_algorithm,
 )
+from ._tile_compression import (
+    CompressionOptions,
+    integer_image_as_float,
+    require_quantizable_image,
+)
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
     _COMPRESSION_CARD_KEYS,
@@ -317,8 +322,11 @@ def _write_hdus_with_optional_compression(
     compress: Union[bool, str] = False,
     *,
     overwrite: bool = True,
+    options: Optional[CompressionOptions] = None,
 ) -> None:
     """Rewrite HDUs, optionally using CFITSIO compressed-image writer.
+
+    ``options`` (tile geometry, ...) apply to every image HDU written.
 
     Like the uncompressed writer, the dict writers get commentary-free header
     mappings and the full card list is replayed once per output HDU (at
@@ -336,6 +344,7 @@ def _write_hdus_with_optional_compression(
 
     payload: list[Any] = []
     primary_header: Any = None
+    any_float = False
     for idx, hdu in enumerate(hdus):  # noqa: B007
         table_proxy = _prepare_table_hdu_for_payload(hdu)
         if table_proxy is not None:
@@ -358,6 +367,11 @@ def _write_hdus_with_optional_compression(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
         _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
+        converted = (
+            options is not None
+            and options.int_to_float
+            and integer_image_as_float(hdu_dict)
+        )
         replay_header = _payload_replay_header(hdu_dict)
         if replay_header is not None:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(replay_header)
@@ -377,7 +391,14 @@ def _write_hdus_with_optional_compression(
                 # PLIO only stores values in [0, 2**24): hand CFITSIO the
                 # physical uint16 pixels instead of the signed -32768 codes.
                 hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
+        if options is not None:
+            data = hdu_dict["data"]
+            any_float = any_float or data.is_floating_point()
+            hdu_dict["_compression"] = options.image_options(
+                data, idx, converted=converted
+            )
         payload.append(hdu_dict)
+    require_quantizable_image(options, any_float)
 
     _invalidate_path_caches(path)
     cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)

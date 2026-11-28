@@ -1,6 +1,8 @@
 #undef READONLY
 #include <string>
 #include <algorithm>
+#include <cmath>
+#include <type_traits>
 #include <cctype>
 #include <vector>
 #include <unordered_map>
@@ -486,7 +488,7 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     float fnullval = NAN;
     double dnullval = NAN;
     void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
+        bitpix, compressed, datatype, &fnullval, &dnullval, fptr_);
     fits_read_img(fptr_, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
         char err_text[31];
@@ -648,7 +650,7 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
     double dnullval = NAN;
     const bool compressed = is_compressed_image_cached(hdu_num);
     void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
+        bitpix, compressed, datatype, &fnullval, &dnullval, fptr_);
     fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
                      nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
@@ -819,6 +821,35 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         std::vector<long> naxes(naxis);
         for (int i = 0; i < naxis; ++i) naxes[i] = tensor.shape(i);
         std::reverse(naxes.begin(), naxes.end());
+        // Per-HDU options the Python layer validated and resolved
+        // (write(tile_shape=..., quantize_*=..., dither_seed=...)); absent
+        // keys keep the defaults below.
+        std::vector<long> requested_tile;
+        bool has_qlevel = false;
+        float requested_qlevel = 0.0f;
+        int quantize_method = 0;  // 0 = CFITSIO default (SUBTRACTIVE_DITHER_1)
+        int dither_seed = 0;      // 0 = CFITSIO picks one from the clock
+        if (nb::isinstance<nb::dict>(hdu_obj)) {
+            nb::dict d = nb::cast<nb::dict>(hdu_obj);
+            if (d.contains("_compression") && !d["_compression"].is_none()) {
+                nb::dict opts = nb::cast<nb::dict>(d["_compression"]);
+                if (opts.contains("tile_dims")) {
+                    requested_tile = nb::cast<std::vector<long>>(opts["tile_dims"]);
+                    if (requested_tile.size() != static_cast<size_t>(naxis))
+                        throw std::runtime_error("tile_dims must have one entry per image axis");
+                    for (long t : requested_tile)
+                        if (t <= 0) throw std::runtime_error("tile_dims entries must be positive");
+                }
+                if (opts.contains("quantize_level")) {
+                    has_qlevel = true;
+                    requested_qlevel = static_cast<float>(nb::cast<double>(opts["quantize_level"]));
+                }
+                if (opts.contains("quantize_method"))
+                    quantize_method = nb::cast<int>(opts["quantize_method"]);
+                if (opts.contains("dither_seed"))
+                    dither_seed = nb::cast<int>(opts["dither_seed"]);
+            }
+        }
         status = 0;
         fits_set_compression_type(fptr_, compression_type, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression type");
@@ -841,8 +872,14 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         // lossless integer HDU does not leave a later float HDU at qlevel=0,
         // which float RICE rejects (status 413). 4.0 is CFITSIO's own default
         // for the default SUBTRACTIVE_DITHER_1 method (imcompress.c).
+        // Method and seed are per-file requests too: set them on every HDU
+        // (0 = CFITSIO's own defaults) so one HDU's choice cannot leak on.
         status = 0;
-        fits_set_quantize_level(fptr_, lossless_capable ? 0.0f : 4.0f, &status);
+        const float quantize_level =
+            has_qlevel ? requested_qlevel : (lossless_capable ? 0.0f : 4.0f);
+        fits_set_quantize_level(fptr_, quantize_level, &status);
+        fits_set_quantize_method(fptr_, quantize_method, &status);
+        fits_set_dither_seed(fptr_, dither_seed, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression quantization");
         if (compression_type == PLIO_1) {
             nb::dlpack::dtype dt_plio = tensor.dtype();
@@ -852,7 +889,9 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         }
         std::vector<long> tilesize(naxis, 1);
         tilesize[0] = naxes[0];
-        if (compression_type == HCOMPRESS_1) {
+        if (!requested_tile.empty()) {
+            tilesize = requested_tile;
+        } else if (compression_type == HCOMPRESS_1) {
             // HCOMPRESS requires 2D tiles; use 16-row bands like fpack's
             // default so output tiles match the reference CLI.
             if (naxis < 2)
@@ -888,7 +927,26 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         std::vector<uint8_t> contig_buf;
         void* data_ptr = torchfits::internal::ensure_c_contiguous_ndarray(
             tensor, nelements, contig_buf);
-        fits_write_img(fptr_, datatype, 1, nelements, data_ptr, &status);
+        // fits_write_img does not flag NaNs as nulls, so CFITSIO quantized
+        // NaN pixels into arbitrary integers (silent garbage on every
+        // reader). Like fpack, write NaN as CFITSIO's null value when floats
+        // are quantized: the tile records it as ZBLANK and decompresses back
+        // to NaN. NaN-free images and lossless floats are written as before.
+        auto write_nan_as_null = [&](auto* src, auto null_value, int ctype) {
+            using T = std::remove_const_t<std::remove_pointer_t<decltype(src)>>;
+            if (!std::any_of(src, src + nelements, [](T v) { return std::isnan(v); }))
+                return false;
+            std::vector<T> nulled(src, src + nelements);
+            for (T& v : nulled) if (std::isnan(v)) v = null_value;
+            fits_write_imgnull(fptr_, ctype, 1, nelements, nulled.data(), &null_value, &status);
+            return true;
+        };
+        bool wrote = false;
+        if (quantize_level != 0.0f && datatype == TFLOAT)
+            wrote = write_nan_as_null(static_cast<const float*>(data_ptr), FLOATNULLVALUE, TFLOAT);
+        else if (quantize_level != 0.0f && datatype == TDOUBLE)
+            wrote = write_nan_as_null(static_cast<const double*>(data_ptr), DOUBLENULLVALUE, TDOUBLE);
+        if (!wrote) fits_write_img(fptr_, datatype, 1, nelements, data_ptr, &status);
         if (status != 0) {
             char err_text[31];
             fits_get_errstatus(status, err_text);
@@ -1214,7 +1272,7 @@ native::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     double dnullval = NAN;
     const bool compressed = file_.is_compressed_image_cached(hdu_num_);
     void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix_, compressed, datatype_, &fnullval, &dnullval);
+        bitpix_, compressed, datatype_, &fnullval, &dnullval, file_.get_fptr());
     fits_read_subset(file_.get_fptr(), datatype_, fpixel.data(), lpixel.data(), inc.data(),
                      nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {

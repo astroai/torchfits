@@ -136,6 +136,12 @@ torchfits compress science.fits /tmp/science.fits.fz
 # Select Rice or Hcompress explicitly (lossy for floating-point images)
 torchfits compress science.fits /tmp/science.fits.fz --algorithm RICE_1
 
+# fpack-style controls: 100x100 tiles, finer quantization, reproducible dither
+torchfits compress science.fits /tmp/science.fits.fz --algorithm RICE_1 --tile 100,100 -q 16 --dither-seed 42
+
+# fpack -i2f: quantize an integer image as floats
+torchfits compress raw.fits /tmp/raw.fits.fz --algorithm RICE_1 --int-to-float
+
 # Decompress a tile-compressed file back to standard FITS
 torchfits decompress /tmp/science.fits.fz /tmp/science_decompressed.fits
 

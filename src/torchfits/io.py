@@ -11,6 +11,7 @@ import atexit
 import logging as _stdlib_logging
 import os
 import sys
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -309,6 +310,12 @@ def write(
     compress: bool | str = False,
     quantize: Any = None,
     checksum: bool = False,
+    *,
+    tile_shape: Sequence[int] | None = None,
+    quantize_level: float | None = None,
+    quantize_method: str | None = None,
+    dither_seed: int | None = None,
+    int_to_float: bool = False,
 ) -> None:
     """Write a tensor or numpy array to a FITS file (primary or image extension).
 
@@ -324,6 +331,19 @@ def write(
 
     ``checksum=True`` writes CFITSIO DATASUM/CHECKSUM keywords for every HDU
     after the payload lands; verify later with :func:`verify_checksums`.
+
+    ``tile_shape`` sets the compression tile per image axis (tensor axis
+    order, trailing axes; ``-1`` = whole axis), like ``fpack -t``. Default:
+    one row per tile (16 rows for ``HCOMPRESS_1``). Requires ``compress=``.
+
+    ``quantize_level`` / ``quantize_method`` / ``dither_seed`` control how
+    float images are quantized in a tile-compressed write (``fpack -q``):
+    ``quantize_level > 0`` is noise-relative, ``< 0`` an absolute step and
+    ``0`` lossless (``GZIP_1``/``GZIP_2``); ``quantize_method`` is
+    ``"subtractive_dither_1"`` (default), ``"subtractive_dither_2"`` or
+    ``"no_dither"``; ``dither_seed`` (1..10000) makes the output reproducible.
+    ``int_to_float=True`` compresses integer images as quantized float32
+    (``fpack -i2f``; lossy, the image reads back as ``float32``).
     """
     from ._io_engine.write_api import write as _write_impl
 
@@ -335,6 +355,11 @@ def write(
         compress=compress,
         quantize=quantize,
         checksum=checksum,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
     )
 
 

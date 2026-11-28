@@ -46,8 +46,6 @@ the notes. The changes that matter for what you call:
 
 ## Later
 
-- More `fpack` controls on `torchfits compress`: tile geometry,
-  dither/quantization settings, and `-i2f`.
 - Lazy, map-style table access (rows fetched on index instead of read up front).
 - Shaped cells for `TDIM` columns.
 
