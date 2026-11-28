@@ -437,3 +437,70 @@ def test_iraf_bad_geometry_raises(tmp_path: Path, geometry: dict) -> None:
     """iraffits-bounds: pixel offset, zero axis and size overflow checks."""
     imh = _write_iraf(tmp_path, "bad", **geometry)
     _assert_read_raises(imh + "[0]", cwd=tmp_path)
+
+
+# --------------------------------------------------------------------------
+# drvrfile-outfile-tls
+
+_OUTFILE_RACE = textwrap.dedent(
+    """
+    import os, sys, threading
+    import numpy as np
+    import torchfits
+    import torchfits._C as c
+
+    d, n = sys.argv[1], int(sys.argv[2])
+    a = os.path.join(d, "a.fits")
+    b = os.path.join(d, "b.fits")
+    torchfits.write(a, np.full((4, 4), 1, np.int16), overwrite=True)
+    torchfits.write(b, np.full((4, 4), 2, np.int16), overwrite=True)
+    want = open(a, "rb").read()
+    stop = False
+
+    def plain_opens():
+        while not stop:
+            c.open_fits_file(b, "r").close()
+
+    threads = [threading.Thread(target=plain_opens) for _ in range(3)]
+    for t in threads:
+        t.start()
+    bad = []
+    try:
+        for k in range(n):
+            out = os.path.join(d, f"out{k % 4}.fits")
+            if os.path.exists(out):
+                os.remove(out)
+            try:
+                c.open_fits_file(f"{a}({out})[0]", "r").close()
+            except Exception as exc:  # noqa: BLE001
+                bad.append(repr(exc))
+                continue
+            if not os.path.exists(out) or open(out, "rb").read() != want:
+                bad.append(f"iteration {k}: {out} is not a copy of a.fits")
+    finally:
+        stop = True
+        for t in threads:
+            t.join()
+    print("bad", len(bad), bad[:3])
+    """
+)
+
+
+def test_outfile_copy_request_is_not_consumed_by_another_thread(
+    tmp_path: Path,
+) -> None:
+    """drvrfile-outfile-tls: ``in.fits(out.fits)`` passed the output name
+    from file_checkfile() (outside CFITSIO's lock) to file_open() (inside it)
+    through one static buffer. torchfits opens files without the GIL, so a
+    plain open on another thread could consume the request: out.fits got a
+    copy of the wrong file, or none at all. The interleaving cannot be forced
+    from Python; this stress loop hit it in about 6% of iterations on a
+    4-core host before the fix (and never after)."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _OUTFILE_RACE, str(tmp_path), "2000"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.startswith("bad 0 "), proc.stdout
