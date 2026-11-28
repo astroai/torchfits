@@ -378,6 +378,31 @@ def test_iraf_image_reads_through_extended_syntax(tmp_path: Path) -> None:
     _assert_iraf_reads(tmp_path, _write_iraf(tmp_path, "plain"))
 
 
+def test_iraf_long_path_reads(tmp_path: Path) -> None:
+    """iraffits-header-limits: IMHFILE/PIXFILE values of 66+ characters made
+    hputcom() strncpy with a negative length."""
+    name = "n" * 62  # "<name>.imh" is 66 characters
+    imh = _write_iraf(tmp_path, name)
+    assert len(imh) == 66
+    _assert_iraf_reads(tmp_path, imh)
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        pytest.param(
+            b"".join(f"KEY{i:05d}= {i}\n".encode() for i in range(1000)), id="cards"
+        ),
+        pytest.param(b"\n" * 2_000_000, id="newlines"),
+    ],
+)
+def test_iraf_header_with_many_lines_reads(tmp_path: Path, user: bytes) -> None:
+    """iraffits-bounds: more user-area lines than the converted header was
+    sized for overflowed it; iraffits-header-limits: past 720 cards
+    ksearch() lost the END card (NULL + 80)."""
+    _assert_iraf_reads(tmp_path, _write_iraf(tmp_path, "long", user=user))
+
+
 @pytest.mark.parametrize(
     "geometry",
     [
