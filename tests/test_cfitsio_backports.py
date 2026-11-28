@@ -172,6 +172,28 @@ def test_truncated_rice_tile_raises(tmp_path: Path, dtype: torch.dtype) -> None:
     _assert_read_raises(str(path), hdu=1)
 
 
+@pytest.mark.parametrize("dtype", [torch.int16, torch.int32])
+def test_truncated_hcompress_tile_raises(tmp_path: Path, dtype: torch.dtype) -> None:
+    """hdecompress-input-bounds: int16 -> fits_hdecompress, int32 ->
+    fits_hdecompress64."""
+    path = _write_compressed(tmp_path / "hcomp.fits", dtype, "HCOMPRESS_1")
+    _truncate_tile(path)
+    _assert_read_raises(str(path), hdu=1)
+
+
+@pytest.mark.parametrize("dtype", [torch.int16, torch.int32])
+def test_hcompress_tile_with_zero_ny_raises(tmp_path: Path, dtype: torch.dtype) -> None:
+    """hdecompress-input-bounds: an H-compress stream is magic(2) nx(4) ny(4)
+    ...; ny == 0 divided by zero in decode() (SIGFPE on x86)."""
+    path = _write_compressed(tmp_path / "hcomp-ny0.fits", dtype, "HCOMPRESS_1")
+    _, _, tile, _ = _compressed_tile(path)
+    buf = bytearray(path.read_bytes())
+    assert buf[tile : tile + 2] == b"\xdd\x99"
+    buf[tile + 6 : tile + 10] = b"\0\0\0\0"
+    path.write_bytes(bytes(buf))
+    _assert_read_raises(str(path), hdu=1)
+
+
 def test_intact_compressed_tiles_still_read(tmp_path: Path) -> None:
     """The decoder checks must not reject valid tiles."""
     for algorithm in ("RICE_1", "HCOMPRESS_1", "GZIP_1", "GZIP_2"):
