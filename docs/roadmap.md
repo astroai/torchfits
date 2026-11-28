@@ -25,7 +25,7 @@ the notes. The changes that matter for what you call:
 
 **1.1** added checksummed writes, streaming `where=` filters, and the remote downloader. **1.0** (2026-08-09) was memory-mapped image reads, table filters, the datasets, and the CLI.
 
-**1.4** (unreleased, on `main`) is implemented:
+**1.4.0** (unreleased) is in progress on `main`. Implemented so far:
 
 - **Correctness and data integrity**: a sweep of silent-wrong-result and
   partial-output bugs across reads, writes, the CLI and the datasets. String
@@ -56,9 +56,11 @@ the notes. The changes that matter for what you call:
 
 ## Next
 
-The **1.4.x** line aims to be the FITS release to beat: faster than every
-earlier torchfits release and every other FITS library on each benchmark case,
-and complete on the FITS 4.0 format. Planned work, in order:
+**1.4.0** aims to be the FITS release to beat: faster than every earlier
+torchfits release and every other FITS library on each benchmark case, and
+complete on the FITS 4.0 format. All of the work below ships in 1.4.0; later
+1.4.x releases carry only bug fixes and newer bundled CFITSIO. Remaining work
+before 1.4.0, in order:
 
 - **ML pre-processing**: batched transforms that run on the GPU without host
   round trips, fast robust statistics (percentiles, zscale, sigma clipping,

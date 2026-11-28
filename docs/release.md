@@ -2,6 +2,13 @@
 
 Maintainer runbook for cutting a release.
 
+**What each release may contain.** A minor release (`X.Y.0`) carries the new
+features, public API and behaviour changes. Patch releases (`X.Y.1` and
+later) carry only bug fixes, each with a regression test, and newer bundled
+CFITSIO: a new upstream release re-vendored with the local patches re-checked,
+or a security backport. No new features, public API or unrelated behaviour
+changes go into a patch release; they wait for the next minor release.
+
 ## 0. Supported PyTorch range
 
 The native extension links no libtorch (results reach PyTorch as DLPack
