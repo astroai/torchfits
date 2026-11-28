@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - contributing: Keep temporary plans in docs/work, not dot-directories
 - roadmap: Ship the whole plan in 1.4.0; 1.4.x patches are fixes and CFITSIO only
 - work: Recommend obstore, both cache layouts and a loader-overhead target
+- work: Keep the 1.4.0 release-notes draft with the plan
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
