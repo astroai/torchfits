@@ -6,7 +6,6 @@ import logging
 from typing import Any, Callable, Iterator, Optional
 
 from .._io_engine.device import validate_device
-from .._table.cache import _acquire_cpp_reader
 from .._table.utils import _normalize_row_slice, _require_pyarrow
 from .._table.arrow_convert import _chunk_to_record_batch
 from .._table_engine import validate_table_backend
@@ -22,13 +21,14 @@ from ._read_schema import (
     _unsigned_column_dtypes,
 )
 
+from ._read_strategies import (
+    _reraise_invalid_geometry as _reraise_invalid_geometry,
+    read_full_raw,
+    read_row_window,
+    read_selected_rows,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def _reraise_invalid_geometry(exc: BaseException) -> None:
-    message = str(exc)
-    if "Invalid table geometry" in message or "Invalid VLA geometry" in message:
-        raise exc
 
 
 def _iter_chunks_cpp_table(
@@ -834,12 +834,9 @@ def _read_cpp_table_chunk(
     else:
         preferred_order = None
 
-    col_list = columns if columns else []
-
-    from .engine import _read_selected_rows
-
     # One chunk holds whole columns straight from the C++ engine, so the value
-    # type is the union of what the native and numpy paths return.
+    # type is the union of what the native and numpy paths return; each
+    # strategy returns None when the next one should be tried.
     chunk: dict[str, Any] | None = None
     prefer_raw_full_path = (
         rows is None
@@ -853,26 +850,7 @@ def _read_cpp_table_chunk(
         )
     )
     if prefer_raw_full_path:
-        if mmap and _can_use_mmap_row_path_for_full_read(
-            path, hdu, columns, header=_get_hdr()
-        ):
-            try:
-                chunk = cpp.read_fits_table_raw(path, hdu, col_list, True)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("mmap full table read failed; retrying: %s", exc)
-                chunk = None
-        if chunk is None:
-            try:
-                if not col_list:
-                    reader = _acquire_cpp_reader(path, hdu, cpp)
-                    chunk = reader.read_rows_raw([], 1, -1)
-                else:
-                    chunk = cpp.read_fits_table_raw(path, hdu, col_list, False)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("full table read failed; falling back: %s", exc)
-                chunk = None
+        chunk = read_full_raw(cpp, path, hdu, columns, mmap=mmap, get_header=_get_hdr)
 
     if chunk is None and rows is not None:
         # Convert through _row_index_0 so the non-negativity guard sees the
@@ -890,35 +868,10 @@ def _read_cpp_table_chunk(
         # A rows= selection has no fallback that could honor it: the scan
         # fallback would silently return the full table (r5a-01), so ranged
         # read failures propagate untouched.
-        hdr = _get_hdr()
-        try:
-            row_bytes = int(hdr.get("NAXIS1", 0)) if hdr is not None else 0
-        except (TypeError, ValueError):
-            row_bytes = 0
-        reader = _acquire_cpp_reader(path, hdu, cpp)
-        chunk = _read_selected_rows(reader, col_list, rows_arr, row_bytes=row_bytes)
+        chunk = read_selected_rows(cpp, path, hdu, columns, rows_arr, _get_hdr())
 
     if chunk is None:
-        if mmap:
-            try:
-                chunk = cpp.read_fits_table_rows_raw(
-                    path, hdu, col_list, start_row, num_rows, True
-                )
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                # VLA, scaled, and ASCII tables cannot use the mmap layout.
-                # Retry the buffered reader before falling back to the
-                # row-by-row Python scan, which is an order of magnitude slower.
-                logger.debug("mmap row-slice read failed; retrying buffered: %s", exc)
-                chunk = None
-        if chunk is None:
-            try:
-                reader = _acquire_cpp_reader(path, hdu, cpp)
-                chunk = reader.read_rows_raw(col_list, start_row, num_rows)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("row-slice table read failed: %s", exc)
-                chunk = None
+        chunk = read_row_window(cpp, path, hdu, columns, start_row, num_rows, mmap=mmap)
     if chunk is None:
         return None
 
