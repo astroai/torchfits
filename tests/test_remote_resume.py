@@ -618,7 +618,9 @@ def test_resume_restarts_when_if_range_validator_is_stale(tmp_path):
     assert dest.read_bytes() == new
 
 
-@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+@pytest.mark.filterwarnings(
+    "ignore:This process .* is multi-threaded:DeprecationWarning"
+)
 def test_make_loader_workers_fetch_each_remote_once(tmp_path, monkeypatch):
     """Map-style and staged datasets under multi-worker make_loader share one
     download per URL (flock-serialized cache, no duplicate transfer)."""

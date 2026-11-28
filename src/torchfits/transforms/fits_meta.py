@@ -193,14 +193,17 @@ class FITSHeaderScale(FITSTransform):
         return cls(bscale=vals["BSCALE"], bzero=vals["BZERO"], state=state)
 
     def forward(self, x: Any, mask: torch.Tensor | None = None) -> Any:
-        check_state(x, self.expects, type(self).__name__, state=self.state)
+        identity = self.bscale == 1.0 and self.bzero == 0.0
+        if identity or not is_payload(x):
+            # The payload path below validates the state once, in view().
+            check_state(x, self.expects, type(self).__name__, state=self.state)
         # Stamp here, not only in FITSTransform.__call__: this class exists to
         # catch a payload that was scaled twice, and forward() is a public
         # entry point (every transform test calls it directly). Stamping only
         # on the __call__ path meant `scaler.forward(p)` returned a PHYSICAL
         # payload still labelled STORED, so a second forward() scaled it again
         # with no error -- the exact silent double-scaling this class guards.
-        if self.bscale == 1.0 and self.bzero == 0.0:
+        if identity:
             return stamp_state(x, self.produces)
         if is_payload(x):
             view = self.view(x, mask=mask, state=self.state)
@@ -218,8 +221,10 @@ class FITSHeaderScale(FITSTransform):
         # No state= prior here: the prior describes forward() inputs, while an
         # inverse() input carries whatever forward() produced. Injecting the
         # forward prior would reject the transform's own output.
-        check_state(x, self.inverse_expects(), type(self).__name__)
-        if self.bscale == 1.0 and self.bzero == 0.0:
+        identity = self.bscale == 1.0 and self.bzero == 0.0
+        if identity or not is_payload(x):
+            check_state(x, self.inverse_expects(), type(self).__name__)
+        if identity:
             return stamp_state(x, DataState.STORED)
         if is_payload(x):
             view = self.view(x, mask=mask, expects=self.inverse_expects())

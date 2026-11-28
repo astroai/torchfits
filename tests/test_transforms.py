@@ -816,6 +816,37 @@ class TestFITSHeaderScale:
         assert torch.allclose(physical, torch.tensor([101.0, 102.0]))
         assert torch.allclose(t.inverse(physical), x)
 
+    @pytest.mark.parametrize("scale", [(2.0, 10.0), (1.0, 0.0)])
+    def test_state_is_checked_once_per_call(self, monkeypatch, scale) -> None:
+        """r2a-16: forward() validated a payload's state in forward() and again
+        in view(); each forward/inverse now checks it exactly once."""
+        import torchfits.transforms.base as base_mod
+        import torchfits.transforms.fits_meta as meta_mod
+
+        calls: list[str] = []
+        real = meta_mod.check_state
+
+        def counting(*args, **kwargs):
+            calls.append(args[2])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(meta_mod, "check_state", counting)
+        monkeypatch.setattr(base_mod, "check_state", counting)
+        t = FITSHeaderScale(bscale=scale[0], bzero=scale[1])
+        payload = {"flux": torch.tensor([1.0, 2.0]), "state": "stored"}
+        out = t.forward(payload)
+        assert len(calls) == 1
+        calls.clear()
+        t.inverse(out)
+        assert len(calls) == 1
+        calls.clear()
+        t.forward(torch.tensor([1.0]))
+        assert len(calls) == 1
+        from torchfits.transforms import DataStateError
+
+        with pytest.raises(DataStateError):
+            t.forward({"flux": torch.tensor([1.0]), "state": "physical"})
+
 
 # ---------------------------------------------------------------------------
 # Edge cases
