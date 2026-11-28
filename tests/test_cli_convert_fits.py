@@ -167,3 +167,58 @@ def test_convert_fits_ascii_table(tmp_path):
         "a": [2, 3],
         "b": [2.5, 3.5],
     }
+
+
+@pytest.fixture
+def complex_table(tmp_path):
+    src = tmp_path / "cx.fits"
+    torchfits.table.write(
+        str(src),
+        {
+            "a": np.arange(5, dtype=np.float64),
+            "z": (np.arange(5) + 1j).astype(np.complex64),
+        },
+        overwrite=True,
+    )
+    return src
+
+
+@pytest.mark.parametrize(
+    "extra, rows",
+    [
+        (["-c", "a,z"], [0, 1, 2, 3, 4]),
+        (["-w", "a > 1"], [2, 3, 4]),
+        (["-c", "z", "-w", "a > 1"], [2, 3, 4]),
+    ],
+)
+def test_convert_fits_selection_keeps_complex_columns(
+    complex_table, tmp_path, extra, rows
+):
+    # --columns / --where were validated through the Arrow schema, which
+    # refuses a complex column, so the selection failed (exit 3) although the
+    # FITS -> FITS copy carries complex columns as stored.
+    out = tmp_path / "out.fits"
+    assert main(["convert", str(complex_table), str(out), *extra]) == 0
+    got = torchfits.table.read_torch(str(out))
+    assert got["z"].tolist() == [complex(r, 1) for r in rows]
+    assert _header(out)["TFORM" + str(list(got).index("z") + 1)].lstrip("1") == "C"
+
+
+def test_convert_parquet_projecting_past_a_complex_column(complex_table, tmp_path):
+    import pyarrow.parquet as pq
+
+    out = tmp_path / "out.parquet"
+    assert (
+        main(["convert", str(complex_table), str(out), "-c", "a", "-w", "a > 2"]) == 0
+    )
+    assert pq.read_table(str(out)).to_pydict() == {"a": [3.0, 4.0]}
+
+
+@pytest.mark.parametrize("extra", [["-w", "z > 1"], ["-c", "nope"]])
+def test_convert_complex_table_bad_selection_is_usage_error(
+    complex_table, tmp_path, extra
+):
+    out = tmp_path / "out.fits"
+    out.write_bytes(b"keep")
+    assert main(["convert", str(complex_table), str(out), *extra]) == 2
+    assert out.read_bytes() == b"keep"

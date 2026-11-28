@@ -578,21 +578,48 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
 def _validate_selection(
     path: str, hdu: int, columns: list[str] | None, where: str | None
 ) -> None:
-    """Check --columns / --where against the table schema without reading rows."""
+    """Check --columns / --where against the table schema without reading rows.
+
+    Complex (``C``/``M``) columns have no Arrow type, so the Arrow schema is
+    taken over the other columns; they can still be selected with --columns
+    (a FITS output copies them as stored), but not filtered on.
+    """
+    import torchfits
+    from torchfits import fits_schema
     from torchfits import table as tf_table
     from torchfits._table._read_where import _where_mask_for_table
-    from torchfits._where import parse_where_expression
+    from torchfits._where import parse_where_expression, where_columns_from_ast
 
     # Reading the schema first keeps an unreadable file or HDU an I/O error.
-    arrow_schema = tf_table.schema(path, hdu=hdu)
+    try:
+        arrow_schema = tf_table.schema(path, hdu=hdu)
+        complex_names: set[str] = set()
+        known = set(arrow_schema.names)
+    except NotImplementedError:
+        header = torchfits.read_header(path, hdu)
+        complex_names = fits_schema.complex_column_names(header)
+        names = fits_schema.table_column_names(header)
+        known = set(names)
+        plain = [name for name in names if name not in complex_names]
+        if plain:
+            arrow_schema = tf_table.schema(path, hdu=hdu, columns=plain)
+        else:
+            import pyarrow as pa
+
+            arrow_schema = pa.schema([])
     if columns:
-        try:
-            tf_table.schema(path, hdu=hdu, columns=columns)
-        except KeyError as exc:
-            raise UsageError(f"--columns: {exc.args[0] if exc.args else exc}") from exc
+        missing = [name for name in columns if name not in known]
+        if missing:
+            raise UsageError(f"--columns: Column '{missing[0]}' not found")
     if where:
         try:
             ast = parse_where_expression(where)
+            touching = sorted(set(where_columns_from_ast(ast)) & complex_names)
+            if touching:
+                raise ValueError(
+                    "complex columns cannot be compared in a predicate: "
+                    + ", ".join(touching)
+                )
             # Evaluating on a zero-row table of the same schema surfaces
             # unknown columns and type mismatches as well as syntax errors.
             _where_mask_for_table(arrow_schema.empty_table(), where, parsed_ast=ast)
