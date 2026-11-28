@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - data: Document remote completeness checks and dataset edge cases
 
 - cli: Fpack controls recipes; drop them from the roadmap
+- transforms: List every exported name in the import block
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
@@ -40,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Write Arrow IPC without the deprecated write_feather
 - compress: Keep NaN pixels of quantized float images
 - native: Lock the shared handle in TableReader(file_obj, hdu) reads
+- io: Cache negative image-meta lookups
+- transforms: Typed Payloads carry their own inverse statistics
+- hdu: Table num_rows no longer turns header errors into 0 rows
+- native: Type a zero-row VLA column from its schema TFORM
+- cli: Strict JSON for complex and byte values in table preview
+- cli: Let convert --columns/--where select from a table with complex columns
+- table: Warn when a whole-table write clips a string to its schema width
+- table: Wait out a concurrent read before a mutation's read-write open
+- cli: Report VOSpace handle close failures in probe
+- native: Close a partial CFITSIO handle when a write open fails
+- cli: Explain truncated-file CFITSIO read errors
+- cli: Exact arith for float operands on integer images; refuse NaN
+- native: Stop a table write at the first failed column
+- table: Narrow the rewrite temp cleanup and TFORM parse excepts
+- table: Read a native width-1 scalar column as a scalar Arrow array
 ### Performance
 - native: Release the GIL while deleting table rows
 - cli: Stream convert --columns/--where for non-FITS output
@@ -47,12 +63,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cli: Stream convert --to fits through table.writer
 - data: Read each FitsTableIterableDataset where= chunk once
 
+- table: Read the stream_table header at most once
+- io: Cache the host tensor in the fallback image read
+- io: Move large batch tensors to the device one by one
+- transforms: FITSHeaderScale validates the payload state once
+- cli: Walk remote HDU headers once for an HTTP box cutout
+- data: Read FitsTableDataset where= rows in a single pass
+- native: Tiled parallel pread for buffered table projections
 ### Added
 - Compress integer images as quantized floats (fpack -i2f)
 - compress: Explicit float quantization and dither controls
 - compress: Tile geometry for tile-compressed image writes
 - table: Native, torch-free, windowed where= filtering
 - table: Stream batches into FITS tables with table.writer()
+- table: Read and write TDIM-shaped N-D table cells
+- data: Lazy block-cached mode for FitsTableDataset
+- table: Accept decode_errors= in the interop converters
+- table: Raise UnknownColumnError for an unknown column name
+- io: Tile-compression options on write_tensor/insert_hdu/replace_hdu
 
 ## [1.3.3] — 2026-11-20
 
