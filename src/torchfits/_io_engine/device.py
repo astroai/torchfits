@@ -60,6 +60,11 @@ def to_device(
     return tensor.to(dev_str, non_blocking=non_blocking)
 
 
+# Per-tensor size above which batch_to_device transfers tensors one by one
+# instead of through one stacked copy.
+_STACK_TRANSFER_MAX_BYTES = 1 << 20
+
+
 def batch_to_device(tensors: list[Tensor], device: str | torch.device) -> list[Tensor]:
     """Move a list of tensors to a device, stacking when shapes match."""
     import torch
@@ -93,6 +98,13 @@ def batch_to_device(tensors: list[Tensor], device: str | torch.device) -> list[T
     shape = first.shape
     dtype = first.dtype
 
-    if all(t.shape == shape and t.dtype == dtype for t in tensors):
+    if first.numel() * first.element_size() <= _STACK_TRANSFER_MAX_BYTES and all(
+        t.shape == shape and t.dtype == dtype for t in tensors
+    ):
+        # Small same-shape tensors: one transfer beats many per-call
+        # latencies, and the host copy / shared device storage is cheap.
         return list(torch.stack(tensors).to(device, non_blocking=True).unbind(0))
+    # Large tensors move one by one: stacking first copies the whole batch on
+    # the host, and unbind() views keep the whole stacked batch resident on
+    # the device for as long as any one of them is alive.
     return [t.to(device, non_blocking=True) for t in tensors]

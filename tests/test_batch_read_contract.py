@@ -396,3 +396,30 @@ def test_disabled_cache_selects_nocache_for_single_cpu_image(monkeypatch, cache_
 def test_read_rejects_removed_options_object():
     with pytest.raises(TypeError, match="unexpected keyword argument 'options'"):
         torchfits.read("unused.fits", options=ReadOptions())
+
+
+def test_batch_to_device_moves_large_tensors_individually(monkeypatch):
+    """P3: stacking large frames copied the whole batch on the host and kept
+    it resident on the device while any unbind() view lived."""
+    import torch
+
+    from torchfits._io_engine import device as device_mod
+
+    stacks: list[int] = []
+    real_stack = torch.stack
+
+    def spy(tensors, *args, **kwargs):
+        stacks.append(len(tensors))
+        return real_stack(tensors, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "stack", spy)
+    big = [torch.zeros(512, 1024) for _ in range(3)]  # 2 MiB each
+    out = device_mod.batch_to_device(big, "meta")
+    assert stacks == []
+    assert [t.shape for t in out] == [t.shape for t in big]
+    assert all(t.device.type == "meta" for t in out)
+
+    small = [torch.zeros(8, 8) for _ in range(3)]
+    out = device_mod.batch_to_device(small, "meta")
+    assert stacks == [3]
+    assert [t.shape for t in out] == [(8, 8)] * 3
