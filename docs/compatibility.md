@@ -189,7 +189,11 @@ CFITSIO's create, data write (including tile compression) and close; four
 threads writing separate 64 MB images finish about 2× sooner than with the
 GIL held, and compressed writes about 2.4×. Header cards are still written
 with the GIL. Calls under ~100 µs (headers, tiny images) are bound by Python
-overhead and do not speed up with more threads.
+overhead and do not speed up with more threads. Because the payload is
+written without a copy, do not resize, `set_()` or otherwise mutate a tensor
+from another thread while it is being written (the same contract as torch's
+own operations): a resize frees the buffer being written and can crash the
+process.
 
 ---
 

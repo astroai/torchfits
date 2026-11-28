@@ -609,8 +609,18 @@ torchfits.write(
 !!! note "Errors from `write()`"
     Invalid arguments raise `ValueError` or `TypeError` unchanged (for
     example `compress=3` raises `TypeError`). A failure inside the writer
-    raises `RuntimeError("Failed to write FITS file '<path>': ...")`. Either
-    way nothing is created or replaced at `path`.
+    raises `RuntimeError("Failed to write FITS file '<path>': ...")`, including
+    a failure to flush the last buffered blocks when the file is closed
+    (disk full, quota, `RLIMIT_FSIZE`). Either way nothing is created or
+    replaced at `path`.
+
+!!! warning "Do not mutate a tensor while it is being written"
+    The pixel data is written without the GIL and without a copy. Another
+    thread must not resize, `set_()` or modify a tensor (or the array it
+    came from) while `write()`, `write_tensor()`, `insert_hdu()` or
+    `replace_hdu()` is writing it: a resize frees the buffer CFITSIO is
+    reading and can crash the process. This is the same contract as
+    PyTorch's own operations. NumPy arrays refuse a resize while exported.
 
 !!! note "The `write()` data-type convention"
     `write()` dispatches on the *type* of `data`: a `dict` (of tensors or
