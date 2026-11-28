@@ -189,8 +189,21 @@ def test_release_wheels_are_tested_at_the_floor_and_torch_tested() -> None:
     job = _job("build_wheels.yml", "test_wheels")
     assert "needs: build_wheels" in job
     assert "torch: [min, tested]" in job
-    for artifact in ("cibw-wheels-ubuntu-latest-x86_64", "cibw-wheels-macos-15-arm64"):
+    for artifact in (
+        "cibw-wheels-ubuntu-latest-x86_64",
+        "cibw-wheels-ubuntu-24.04-arm-aarch64",
+        "cibw-wheels-macos-15-arm64",
+    ):
         assert f"artifact: {artifact}" in job
+    # Both wheel kinds: 3.11 installs the cp311 wheel, 3.13 the cp312-abi3 one,
+    # and the job asserts which one it got.
+    assert 'python-version: ["3.11", "3.13"]' in job
+    assert "python-version: ${{ matrix.python-version }}" in job
+    assert '"cp311-cp311-"' in job and '"cp312-abi3-"' in job
+    # Every wheel artifact build_wheels uploads is one test_wheels installs.
+    build = _job("build_wheels.yml", "build_wheels")
+    for os_name, arch in re.findall(r"- os: (\S+)\n\s+arch: (\S+)", build):
+        assert f"artifact: cibw-wheels-{os_name}-{arch}" in job, (os_name, arch)
     assert "--no-index --no-deps --find-links wheels torchfits" in job
     assert '"$TORCH_MIN_PIN"' in job and '"$TORCH_TESTED_PIN"' in job
     assert "TORCHFITS_TEST_TORCH_SPEC" in job

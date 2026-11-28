@@ -54,7 +54,39 @@ class UsageError(CliError):
 
 
 class IoError(CliError):
+    """I/O or FITS-structure failure (exit 3).
+
+    Raw CFITSIO read failures (``status=107``/``108``, "error reading data
+    buffer") get a plain-language note: they almost always mean the file is
+    shorter than its headers declare.
+    """
+
     exit_code = EXIT_IO
+
+    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
+        super().__init__(_clarify_io_message(message), exit_code=exit_code)
+
+
+_TRUNCATION_MARKERS = (
+    "status=107",
+    "status=108",
+    "error reading from fits file",
+    "tried to move past end of file",
+    "error reading data buffer",
+)
+_TRUNCATION_NOTE = (
+    " [truncated or unreadable FITS file: it is shorter than its headers declare]"
+)
+
+
+def _clarify_io_message(message: str) -> str:
+    text = str(message)
+    if _TRUNCATION_NOTE in text:
+        return text
+    lowered = text.lower()
+    if any(marker in lowered for marker in _TRUNCATION_MARKERS):
+        return text + _TRUNCATION_NOTE
+    return text
 
 
 def is_remote_path(path: str) -> bool:
@@ -235,16 +267,22 @@ def json_default(value: Any) -> Any:
 
 
 def _json_safe(value: Any) -> Any:
-    """Replace NaN/Inf with None so dumps(..., allow_nan=False) is valid JSON.
+    """Make ``value`` valid JSON for dumps(..., allow_nan=False).
 
-    NumPy scalars/arrays normalize via ``tolist()`` first, so numpy-typed
-    non-finite values (e.g. ``np.float32("nan")``) also become ``null``
-    instead of tripping ``allow_nan=False``.
+    NaN/Inf become ``null``; NumPy scalars/arrays normalize via ``tolist()``
+    first, so numpy-typed non-finite values (e.g. ``np.float32("nan")``) also
+    become ``null`` instead of tripping ``allow_nan=False``. Complex numbers
+    become ``{"re": ..., "im": ...}`` and bytes a UTF-8 decoded string with
+    undecodable bytes replaced by U+FFFD (not their Python ``str()`` repr).
     """
     if hasattr(value, "tolist"):
         value = value.tolist()
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, complex):
+        return {"re": _json_safe(value.real), "im": _json_safe(value.imag)}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
     if isinstance(value, dict):
         return {key: _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

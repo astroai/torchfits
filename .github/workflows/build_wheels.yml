@@ -99,19 +99,25 @@ jobs:
   # wheels it built (not a source build) and run the installed-wheel tests at
   # the supported floor (TORCH_MIN_PIN) and at the newest tested minor
   # (TORCH_TESTED_PIN), from outside the checkout so the wheel is what imports.
+  # Every published platform (linux x86_64, linux aarch64 on native arm
+  # runners, macOS arm64) and both wheel kinds are covered: CPython 3.11
+  # installs the cp311 wheel, 3.13 the cp312-abi3 wheel.
   # Publishing needs this job.
   test_wheels:
-    name: Wheel tests (${{ matrix.os }}, torch ${{ matrix.torch }})
+    name: Wheel tests (${{ matrix.os }}, py${{ matrix.python-version }}, torch ${{ matrix.torch }})
     needs: build_wheels
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
+        python-version: ["3.11", "3.13"]
         torch: [min, tested]
         include:
           - os: ubuntu-latest
             artifact: cibw-wheels-ubuntu-latest-x86_64
+          - os: ubuntu-24.04-arm
+            artifact: cibw-wheels-ubuntu-24.04-arm-aarch64
           - os: macos-15
             artifact: cibw-wheels-macos-15-arm64
     steps:
@@ -120,7 +126,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - name: Resolve supported torch range
         run: python scripts/release_lane.py --print-pins | tee -a "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -144,6 +150,8 @@ jobs:
             export TORCHFITS_TEST_TORCH_SPEC="$TORCH_TESTED_PIN"
           fi
           python -c 'import pathlib, torchfits; p = pathlib.Path(torchfits.__file__).resolve(); print(p); assert "site-packages" in p.parts, "not the installed wheel"'
+          # The wheel kind this cell exists for: cp311 on 3.11, abi3 otherwise.
+          python -c 'import sys; from importlib.metadata import distribution; tags = [line.split(":", 1)[1].strip() for line in distribution("torchfits").read_text("WHEEL").splitlines() if line.startswith("Tag:")]; want = "cp311-cp311-" if sys.version_info[:2] == (3, 11) else "cp312-abi3-"; print(tags); assert any(tag.startswith(want) for tag in tags), (want, tags)'
           bash "$GITHUB_WORKSPACE/scripts/cibw_test.sh" "$GITHUB_WORKSPACE"
 
   build_sdist:

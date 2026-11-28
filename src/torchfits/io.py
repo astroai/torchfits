@@ -371,8 +371,17 @@ def write_tensor(
     compress: bool | str = False,
     quantize: Any = None,
     checksum: bool = False,
+    *,
+    tile_shape: Sequence[int] | None = None,
+    quantize_level: float | None = None,
+    quantize_method: str | None = None,
+    dither_seed: int | None = None,
+    int_to_float: bool = False,
 ) -> None:
-    """Write a single PyTorch Tensor directly to a FITS image extension."""
+    """Write a single PyTorch Tensor directly to a FITS image extension.
+
+    Takes the same tile-compression keywords as :func:`write`.
+    """
     import torch
 
     if not isinstance(tensor, torch.Tensor):
@@ -385,6 +394,11 @@ def write_tensor(
         compress=compress,
         quantize=quantize,
         checksum=checksum,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
     )
 
 
@@ -394,11 +408,32 @@ def insert_hdu(
     index: int = 1,
     header: dict[str, Any] | None = None,
     compress: bool | str = False,
+    *,
+    tile_shape: Sequence[int] | None = None,
+    quantize_level: float | None = None,
+    quantize_method: str | None = None,
+    dither_seed: int | None = None,
+    int_to_float: bool = False,
 ) -> None:
-    """Insert a new image HDU into an existing FITS file at the given index."""
+    """Insert a new image HDU into an existing FITS file at the given index.
+
+    ``compress=`` and the tile-compression keywords of :func:`write`
+    (``tile_shape``, ``quantize_level``, ...) apply to the new HDU only.
+    """
     from ._io_engine.write_api import insert_hdu as _insert_hdu_impl
 
-    return _insert_hdu_impl(path, data, index=index, header=header, compress=compress)
+    return _insert_hdu_impl(
+        path,
+        data,
+        index=index,
+        header=header,
+        compress=compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
 
 
 def replace_hdu(
@@ -407,11 +442,32 @@ def replace_hdu(
     data: Any,
     header: dict[str, Any] | None = None,
     compress: bool | str = False,
+    *,
+    tile_shape: Sequence[int] | None = None,
+    quantize_level: float | None = None,
+    quantize_method: str | None = None,
+    dither_seed: int | None = None,
+    int_to_float: bool = False,
 ) -> None:
-    """Replace an existing HDU in a FITS file with new data."""
+    """Replace an existing HDU in a FITS file with new data.
+
+    ``compress=`` and the tile-compression keywords of :func:`write`
+    (``tile_shape``, ``quantize_level``, ...) apply to the replacement only.
+    """
     from ._io_engine.write_api import replace_hdu as _replace_hdu_impl
 
-    return _replace_hdu_impl(path, hdu, data, header=header, compress=compress)
+    return _replace_hdu_impl(
+        path,
+        hdu,
+        data,
+        header=header,
+        compress=compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
 
 
 def delete_hdu(

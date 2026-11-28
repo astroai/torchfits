@@ -167,67 +167,158 @@ def _exact_int_op(
     return torch.from_numpy(out), n_clipped
 
 
+def _two_sum(x: Any, y: Any) -> tuple[Any, Any]:
+    """Knuth TwoSum: ``s + e == x + y`` exactly (float64, no overflow)."""
+    s = x + y
+    bv = s - x
+    av = s - bv
+    return s, (x - av) + (y - bv)
+
+
+def _split(x: Any) -> tuple[Any, Any]:
+    c = 134217729.0 * x  # 2**27 + 1 (Dekker/Veltkamp split)
+    hi = c - (c - x)
+    return hi, x - hi
+
+
+def _two_product(x: Any, y: Any) -> tuple[Any, Any]:
+    """Dekker TwoProduct: ``p + e == x * y`` exactly (float64, no FMA)."""
+    p = x * y
+    xh, xl = _split(x)
+    yh, yl = _split(y)
+    return p, ((xh * yh - p) + xh * yl + xl * yh) + xl * yl
+
+
+def _exact_float_operand_op(
+    op: str,
+    left: torch.Tensor,
+    right: torch.Tensor | float,
+    out_dtype: torch.dtype,
+) -> tuple[torch.Tensor, int, int]:
+    """Integer image ``op`` float operand into an integer ``out_dtype``, exactly.
+
+    The result is the exact rational value (pixel and float operand taken
+    at their exact values), truncated toward zero and saturated to
+    ``out_dtype``; ``+inf``/``-inf`` results saturate. A NaN result (a NaN
+    operand, or ``0 * inf``) has no integer value and is refused with a
+    :class:`UsageError`.
+
+    Elements whose pixel and float64 estimate are below 2**53 / 2**52 are
+    resolved vectorized from an error-free TwoSum/TwoProduct; elements with a
+    result past 2**65 saturate by sign; only the rest (64-bit pixels near the
+    type limits) use Python :class:`~fractions.Fraction` arithmetic.
+
+    Returns the result, the number of saturated elements and the number of
+    in-range elements whose fractional part was dropped.
+    """
+    from fractions import Fraction
+
+    import numpy as np
+    import torch
+
+    a = left.detach().cpu().contiguous().numpy()
+    if isinstance(right, torch.Tensor):
+        b: Any = right.detach().cpu().to(torch.float64).contiguous().numpy()
+        shape = np.broadcast_shapes(a.shape, b.shape)
+    else:
+        b = np.float64(right)
+        shape = a.shape
+    info = torch.iinfo(out_dtype)
+    lo, hi = int(info.min), int(info.max)
+    np_out = torch.empty(0, dtype=out_dtype).numpy().dtype
+
+    af = np.broadcast_to(a.astype(np.float64), shape)
+    bf = np.broadcast_to(b, shape)
+    with np.errstate(all="ignore"):
+        if op == "mul":
+            est = af * bf
+        else:
+            est = af + (bf if op == "add" else -bf)
+    nan = np.isnan(est)
+    if nan.any():
+        raise UsageError(
+            f"arith: {int(np.count_nonzero(nan))} result pixel(s) are NaN "
+            f"(NaN operand or 0 * inf) and cannot be stored in an {out_dtype} "
+            "image; use --dtype float32/float64"
+        )
+
+    abs_est = np.abs(est)
+    trusted = (np.abs(af) <= 2.0**53) & (abs_est < 2.0**52)
+    huge = abs_est >= 2.0**65  # includes +-inf: saturates whatever the rounding
+    out = np.empty(shape, dtype=np_out)
+    n_clipped = 0
+    n_frac = 0
+
+    if trusted.any():
+        x = af[trusted]
+        y = bf[trusted]
+        with np.errstate(all="ignore"):
+            if op == "mul":
+                # x == 0 gives an exact 0 (y finite here); skip the split,
+                # which would overflow for a huge y.
+                y_safe = np.where(x == 0, 0.0, y)
+                p, e = _two_product(x, y_safe)
+            else:
+                p, e = _two_sum(x, y if op == "add" else -y)
+        t = np.trunc(p)
+        integral = t == p
+        # p is integral: the exact p + e lies just below/above it.
+        t = np.where(integral & (p > 0) & (e < 0), t - 1, t)
+        t = np.where(integral & (p < 0) & (e > 0), t + 1, t)
+        fractional = ~integral | (e != 0)
+        ti = t.astype(np.int64)
+        in_range = (ti >= lo) & (ti <= hi) if hi <= 2**63 - 1 else (ti >= lo)
+        n_clipped += int(np.count_nonzero(~in_range))
+        n_frac += int(np.count_nonzero(fractional & in_range))
+        clipped = np.clip(ti, max(lo, -(2**63)), min(hi, 2**63 - 1))
+        out[trusted] = clipped.astype(np_out)
+
+    if huge.any():
+        out[huge & (est > 0)] = hi
+        out[huge & (est < 0)] = lo
+        n_clipped += int(np.count_nonzero(huge))
+
+    rest = np.flatnonzero(~(trusted | huge))
+    if rest.size:
+        a_flat = np.broadcast_to(a, shape).reshape(-1)
+        b_flat = bf.reshape(-1)
+        values = []
+        for flat_index in rest.tolist():
+            pixel = Fraction(int(a_flat[flat_index]))
+            operand = Fraction(float(b_flat[flat_index]))
+            if op == "mul":
+                exact = pixel * operand
+            elif op == "add":
+                exact = pixel + operand
+            else:
+                exact = pixel - operand
+            value = int(exact)  # truncates toward zero
+            if value < lo or value > hi:
+                n_clipped += 1
+                value = lo if value < lo else hi
+            elif value != exact:
+                n_frac += 1
+            values.append(value)
+        out.reshape(-1)[rest] = np.array(values, dtype=np_out)
+    return torch.from_numpy(out), n_clipped, n_frac
+
+
 def _saturate_to(t: torch.Tensor, dtype: torch.dtype) -> tuple[torch.Tensor, int]:
     """Cast *t* to *dtype* clamping to the representable range.
 
     Returns the cast tensor and the number of elements that required clamping
-    (i.e. wrapped values a naive cast would have corrupted).
+    (i.e. wrapped values a naive cast would have corrupted). *t* holds
+    integral values (an int64 accumulator, or float64 products of <= 32-bit
+    integers); float operands go through :func:`_exact_float_operand_op`.
     """
     import torch
 
     if not t.dtype.is_floating_point and dtype.is_floating_point:
         return t.to(dtype), 0
     info = torch.iinfo(dtype)
-    if t.dtype.is_floating_point and dtype in (torch.int64, torch.uint64):
-        return _saturate_float_to_64(t, dtype)
     clipped = torch.clamp(t, info.min, info.max)
     n_clipped = int((clipped != t).sum())
-    out = clipped.to(dtype)
-    if t.dtype.is_floating_point:
-        n_frac = int((out.to(t.dtype) != clipped).sum())
-        if n_frac:
-            warnings.warn(
-                f"arith: {n_frac} pixel value(s) lost fractional parts casting "
-                f"to {dtype} (use --dtype float32/float64 to keep full precision)",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-    return out, n_clipped
-
-
-def _saturate_float_to_64(
-    t: torch.Tensor, dtype: torch.dtype
-) -> tuple[torch.Tensor, int]:
-    """Float -> int64/uint64 saturation.
-
-    float64 cannot represent the type maximum (``2**63 - 1`` rounds up to
-    ``2**63``), so clamping to it and casting overflows and wraps. Values at
-    or beyond the bound are set to the exact maximum after the cast.
-    """
-    import numpy as np
-    import torch
-
-    info = torch.iinfo(dtype)
-    lo, hi = int(info.min), int(info.max)
-    arr = t.detach().cpu().to(torch.float64).numpy()
-    np_out = torch.empty(0, dtype=dtype).numpy().dtype
-    top = float(hi + 1)  # exactly 2**63 or 2**64
-    over = arr >= top
-    under = arr < float(lo)
-    clipped = np.clip(arr, float(lo), np.nextafter(top, 0.0))
-    out = clipped.astype(np_out)
-    out[over] = hi
-    out[under] = lo
-    in_range = ~(over | under)
-    n_frac = int(np.count_nonzero(in_range & (out.astype(np.float64) != arr)))
-    if n_frac:
-        warnings.warn(
-            f"arith: {n_frac} pixel value(s) lost fractional parts casting "
-            f"to {dtype} (use --dtype float32/float64 to keep full precision)",
-            RuntimeWarning,
-            stacklevel=4,
-        )
-    return torch.from_numpy(out), int(np.count_nonzero(over | under))
+    return clipped.to(dtype), n_clipped
 
 
 def _compute(
@@ -239,9 +330,10 @@ def _compute(
 ) -> torch.Tensor:
     """Run one arithmetic op without silent integer wraparound/truncation.
 
-    Integer inputs are accumulated in int64 (or float64 when the operand is a
-    float scalar) and saturating-cast back to ``out_dtype``; out-of-range
-    pixels raise a RuntimeWarning instead of wrapping silently.
+    Integer inputs are accumulated exactly (int64, Python ints for 64-bit
+    overflow, exact rationals for a float operand) and saturating-cast back
+    to ``out_dtype``; out-of-range pixels and dropped fractions raise a
+    RuntimeWarning instead of wrapping silently, and NaN results are refused.
     """
     import torch
 
@@ -257,13 +349,19 @@ def _compute(
         return op_fn(left, right)
 
     # Integer input: accumulate wide so 65535 + 1 cannot wrap uint16.
-    if isinstance(right, float):
-        result = op_fn(left.to(torch.float64), float(right))
+    if isinstance(right, float) or (
+        isinstance(right, torch.Tensor) and right.dtype.is_floating_point
+    ):
+        # A float operand: compute the exact rational result, then truncate
+        # and saturate (float64 alone rounds 64-bit pixels and can carry a
+        # result across an integer boundary before the truncation).
+        out, n_clipped, n_frac = _exact_float_operand_op(op, left, right, out_dtype)
+        _warn_fractional(n_frac, out_dtype)
+        _warn_saturated(n_clipped, out_dtype)
+        return out
     else:
         right_t = right if isinstance(right, torch.Tensor) else None
-        if right_t is not None and right_t.dtype.is_floating_point:
-            result = op_fn(left.to(torch.float64), right_t.to(torch.float64))
-        elif _needs_exact_int(left, right, out_dtype):
+        if _needs_exact_int(left, right, out_dtype):
             # 64-bit operands or output: an int64 accumulator would wrap and
             # float64 would round, so compute exactly and saturate.
             out, n_clipped = _exact_int_op(op, left, right, out_dtype)
@@ -285,6 +383,16 @@ def _compute(
     out, n_clipped = _saturate_to(result, out_dtype)
     _warn_saturated(n_clipped, out_dtype)
     return out
+
+
+def _warn_fractional(n_frac: int, out_dtype: torch.dtype) -> None:
+    if n_frac:
+        warnings.warn(
+            f"arith: {n_frac} pixel value(s) lost fractional parts casting "
+            f"to {out_dtype} (use --dtype float32/float64 to keep full precision)",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _warn_saturated(n_clipped: int, out_dtype: torch.dtype) -> None:

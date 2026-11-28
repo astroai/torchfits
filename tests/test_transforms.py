@@ -12,6 +12,7 @@ from transforms_reference import (
     sigma_clip_naive,
 )
 
+from torchfits.transforms.base import INVERSE_STATS_META_KEY
 from torchfits.transforms import (
     ArcsinhStretch,
     AsymmetricSigmaClip,
@@ -815,6 +816,37 @@ class TestFITSHeaderScale:
         physical = t.forward(x)
         assert torch.allclose(physical, torch.tensor([101.0, 102.0]))
         assert torch.allclose(t.inverse(physical), x)
+
+    @pytest.mark.parametrize("scale", [(2.0, 10.0), (1.0, 0.0)])
+    def test_state_is_checked_once_per_call(self, monkeypatch, scale) -> None:
+        """r2a-16: forward() validated a payload's state in forward() and again
+        in view(); each forward/inverse now checks it exactly once."""
+        import torchfits.transforms.base as base_mod
+        import torchfits.transforms.fits_meta as meta_mod
+
+        calls: list[str] = []
+        real = meta_mod.check_state
+
+        def counting(*args, **kwargs):
+            calls.append(args[2])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(meta_mod, "check_state", counting)
+        monkeypatch.setattr(base_mod, "check_state", counting)
+        t = FITSHeaderScale(bscale=scale[0], bzero=scale[1])
+        payload = {"flux": torch.tensor([1.0, 2.0]), "state": "stored"}
+        out = t.forward(payload)
+        assert len(calls) == 1
+        calls.clear()
+        t.inverse(out)
+        assert len(calls) == 1
+        calls.clear()
+        t.forward(torch.tensor([1.0]))
+        assert len(calls) == 1
+        from torchfits.transforms import DataStateError
+
+        with pytest.raises(DataStateError):
+            t.forward({"flux": torch.tensor([1.0]), "state": "physical"})
 
 
 # ---------------------------------------------------------------------------
@@ -2237,3 +2269,82 @@ def test_compose_accepts_plain_callables() -> None:
     torch.testing.assert_close(out, expected)
     with pytest.raises(TypeError, match="no inverse"):
         pipeline.inverse(out)
+
+
+# ---------------------------------------------------------------------------
+# Inverse statistics travel with a typed Payload (r2a-17 / r2b-12)
+# ---------------------------------------------------------------------------
+
+
+def _payload_inverse_cases():
+    from torchfits.transforms import (
+        BackgroundSubtract,
+        GlobalScalarNorm,
+        InterquantileScale,
+        MeshBackgroundSubtract,
+        MinMaxNormalize,
+        RobustNormalize,
+        SigmaNormalize,
+        ZScaleNormalize,
+    )
+
+    return [
+        ZScaleNormalize(),
+        RobustNormalize(),
+        BackgroundSubtract(),
+        MinMaxNormalize(),
+        SigmaNormalize(),
+        GlobalScalarNorm(),
+        InterquantileScale(),
+        MeshBackgroundSubtract(mesh=(2, 2)),
+    ]
+
+
+@pytest.mark.parametrize("t", _payload_inverse_cases(), ids=lambda t: type(t).__name__)
+def test_payload_inverse_uses_its_own_forward_statistics(t) -> None:
+    from torchfits.transforms import Payload
+
+    g = torch.Generator().manual_seed(0)
+    a = torch.randn(16, 16, generator=g) * 3 + 10
+    b = torch.randn(16, 16, generator=g) * 50 - 200
+    fa = t.forward(Payload(flux=a))
+    fb = t.forward(Payload(flux=b))
+    # Interleaved: a's inverse must not use b's (the instance's latest) stats.
+    assert torch.allclose(t.inverse(fa).flux, a, atol=1e-3)
+    assert torch.allclose(t.inverse(fb).flux, b, atol=1e-2)
+    # The statistics are consumed: the restored payload carries none.
+    assert INVERSE_STATS_META_KEY not in t.inverse(fa).meta
+
+
+def test_payload_inverse_stats_do_not_mutate_input_and_pickle() -> None:
+    from torchfits.transforms import Payload, ZScaleNormalize
+
+    t = ZScaleNormalize()
+    src = Payload(flux=torch.arange(16.0).reshape(4, 4), meta={"id": 7})
+    out = t(src)
+    assert src.meta == {"id": 7}
+    assert out.meta["id"] == 7 and INVERSE_STATS_META_KEY in out.meta
+    clone = pickle.loads(pickle.dumps(out))
+    assert torch.allclose(t.inverse(clone).flux, src.flux, atol=1e-4)
+
+
+def test_payload_stats_unwind_a_transform_used_twice() -> None:
+    from torchfits.transforms import Compose, Payload, RobustNormalize
+
+    t = RobustNormalize()
+    pipeline = Compose([t, t])
+    x = torch.randn(8, 8, generator=torch.Generator().manual_seed(1)) * 7 + 3
+    y = pipeline(Payload(flux=x))
+    pipeline(Payload(flux=x * 100))  # a later sample must not leak in
+    assert torch.allclose(pipeline.inverse(y).flux, x, atol=1e-4)
+
+
+def test_dict_payload_inverse_keeps_instance_statistics() -> None:
+    """Dict payloads keep their exact shape: no stats key, instance mirror."""
+    from torchfits.transforms import ZScaleNormalize
+
+    t = ZScaleNormalize()
+    a = {"flux": torch.arange(16.0).reshape(4, 4)}
+    fa = t(a)
+    assert set(fa) == {"flux"}
+    assert torch.allclose(t.inverse(fa)["flux"], a["flux"], atol=1e-4)

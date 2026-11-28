@@ -212,8 +212,11 @@ Publishing triggers `.github/workflows/build_wheels.yml`, which:
    the 2.12–2.14 cp315 macOS wheels are ABI-broken —
    [pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)). An
    sdist is attached to the GitHub Release only — **not** uploaded to PyPI.
-3. Installs the built Linux x86_64 and macOS arm64 wheels (job `test_wheels`,
-   Python 3.13) with PyTorch pinned to the floor (`TORCH_MIN_PIN`) and to
+3. Installs the built wheels of every platform — Linux x86_64, Linux aarch64
+   (native `ubuntu-24.04-arm` runners) and macOS arm64 — on Python 3.11 (the
+   `cp311` wheel) and Python 3.13 (the `cp312-abi3` wheel) (job `test_wheels`,
+   which asserts the installed wheel's tag) with PyTorch pinned to the floor
+   (`TORCH_MIN_PIN`) and to
    `torch_tested` (`TORCH_TESTED_PIN`) and runs `scripts/cibw_test.sh` on them
    from outside the checkout. Nothing is published unless every cell passes.
 4. Uploads **wheels** to [PyPI](https://pypi.org/project/torchfits/) via

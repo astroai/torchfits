@@ -1735,3 +1735,18 @@ def test_env_var_table_names_every_forced_example() -> None:
                     f"examples/test_examples.py force-sets it for"
                 )
     assert not offenders, "\n".join(offenders)
+
+
+def test_api_transforms_import_list_covers_all_exports() -> None:
+    """The "Importing" block of api-transforms.md lists every public name
+    (it omitted FITSTransform, safe_arcsinh and safe_log)."""
+    import torchfits.transforms
+
+    text = (
+        Path(__file__).resolve().parents[1] / "docs" / "api-transforms.md"
+    ).read_text()
+    block = text[text.index("## Importing") :]
+    block = block[block.index("import (") :]
+    block = block[: block.index(")")]
+    listed = set(re.findall(r"\b(\w+),", block))
+    assert listed == set(torchfits.transforms.__all__)

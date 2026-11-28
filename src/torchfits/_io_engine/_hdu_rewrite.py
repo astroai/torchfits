@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Iterator
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -37,6 +37,7 @@ from ._file_ops import (
 )
 from ._tile_compression import (
     CompressionOptions,
+    compression_options,
     integer_image_as_float,
     require_quantizable_image,
 )
@@ -444,7 +445,11 @@ def _require_primary_capable(new_hdu: Any, compress: Union[bool, str]) -> None:
 
 @contextlib.contextmanager
 def _scratch_hdu(
-    new_hdu: Any, *, primary: bool, compress: Union[bool, str]
+    new_hdu: Any,
+    *,
+    primary: bool,
+    compress: Union[bool, str],
+    options: Optional[CompressionOptions] = None,
 ) -> Iterator[Tuple[str, int, int]]:
     """Write ``new_hdu`` alone to a scratch file; yield ``(path, start, end)``
     of its bytes (the primary HDU, or the extension behind an empty primary).
@@ -460,7 +465,7 @@ def _scratch_hdu(
         from . import write_api
 
         write_api._write_hdus_with_optional_compression(  # type: ignore[attr-defined]
-            scratch, hdus, compress=compress, overwrite=False
+            scratch, hdus, compress=compress, overwrite=False, options=options
         )
         start, _data, end = hdu_byte_spans(scratch)[0 if primary else 1]
         yield scratch, start, end
@@ -475,15 +480,30 @@ def insert_hdu(
     index: int = 1,
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Insert a new HDU into an existing FITS file.
 
-    Only the new HDU is written (``compress=`` applies to it alone); every
-    other HDU is copied byte-for-byte. Inserting at index 0 turns the old
+    Only the new HDU is written (``compress=`` and the tile-compression
+    keywords of :func:`torchfits.write` apply to it alone); every other HDU
+    is copied byte-for-byte. Inserting at index 0 turns the old
     primary into an IMAGE extension (header cards converted, data unchanged).
     """
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError("index must be an integer HDU position")
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
     new_hdu = _new_hdu_from_args(data, header)
     hdus = _file_hdus(path, len(_file_headers(path)))
     if index < 0 or index > len(hdus):
@@ -509,7 +529,9 @@ def insert_hdu(
         return
 
     cut = hdus[index - 1][2]
-    with _scratch_hdu(new_hdu, primary=False, compress=compress) as new_piece:
+    with _scratch_hdu(
+        new_hdu, primary=False, compress=compress, options=options
+    ) as new_piece:
         publish_spliced(
             path,
             _nonempty([(path, 0, cut), new_piece, (path, cut, end)]),
@@ -523,12 +545,27 @@ def replace_hdu(
     data: Any,
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Replace an HDU by index or EXTNAME.
 
-    Only the replacement is written (``compress=`` applies to it alone); every
-    other HDU is copied byte-for-byte.
+    Only the replacement is written (``compress=`` and the tile-compression
+    keywords of :func:`torchfits.write` apply to it alone); every other HDU
+    is copied byte-for-byte.
     """
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
     preserve_header = header is None and not isinstance(data, (TableHDU, TensorHDU))
     new_hdu = _new_hdu_from_args(data, header)
     headers = _file_headers(path)
@@ -564,7 +601,9 @@ def replace_hdu(
     if primary:
         _require_primary_capable(new_hdu, compress)
     start, _data, stop, _raw = hdus[target]
-    with _scratch_hdu(new_hdu, primary=primary, compress=compress) as new_piece:
+    with _scratch_hdu(
+        new_hdu, primary=primary, compress=compress, options=options
+    ) as new_piece:
         publish_spliced(
             path,
             _nonempty([(path, 0, start), new_piece, (path, stop, None)]),

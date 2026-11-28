@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import functools
 import warnings
 import weakref
 from dataclasses import dataclass
@@ -145,6 +147,114 @@ class PayloadView:
         )
 
 
+# Payload.meta key holding the inverse statistics forward() passes computed
+# on that payload: a tuple of ``(owner, {attr: value})`` entries, used as a
+# stack so a transform applied twice unwinds in order.
+INVERSE_STATS_META_KEY = "torchfits.inverse_stats"
+
+
+def _threaded_attr_names(cls: type) -> tuple[str, ...]:
+    """Names of the ``_ThreadedAttr`` inverse caches a transform class keeps."""
+    cached = cls.__dict__.get("_inverse_cache_names")
+    if cached is not None:
+        return tuple(cached)
+    from .helpers import _ThreadedAttr
+
+    names = tuple(
+        sorted(
+            {
+                name
+                for klass in cls.__mro__
+                for name, value in vars(klass).items()
+                if isinstance(value, _ThreadedAttr)
+            }
+        )
+    )
+    type.__setattr__(cls, "_inverse_cache_names", names)
+    return names
+
+
+def _stats_owner(transform: Any) -> tuple[str, int]:
+    # id(), not a token in __dict__: __call__ must leave the instance's
+    # __dict__ untouched (shared -J worker threads), and a weakref would make
+    # the payload unpicklable for DataLoader worker queues. The class name
+    # guards against an id recycled by an unrelated transform.
+    return (type(transform).__qualname__, id(transform))
+
+
+def _push_inverse_stats(out: Any, transform: Any, names: tuple[str, ...]) -> Any:
+    from .state import Payload
+
+    if not isinstance(out, Payload):
+        return out
+    snapshot = {name: getattr(transform, name) for name in names}
+    if all(value is None for value in snapshot.values()):
+        return out
+    meta = dict(out.meta)
+    stack = tuple(meta.get(INVERSE_STATS_META_KEY, ()))
+    meta[INVERSE_STATS_META_KEY] = stack + ((_stats_owner(transform), snapshot),)
+    # A new Payload: forward() may hand back its own input (identity paths),
+    # which must never be mutated.
+    return dataclasses.replace(out, meta=meta)
+
+
+def _pop_inverse_stats(x: Any, transform: Any) -> tuple[dict[str, Any] | None, Any]:
+    from .state import Payload
+
+    if not isinstance(x, Payload):
+        return None, x
+    stack = tuple(x.meta.get(INVERSE_STATS_META_KEY, ()))
+    owner = _stats_owner(transform)
+    for position in range(len(stack) - 1, -1, -1):
+        entry_owner, snapshot = stack[position]
+        if tuple(entry_owner) == owner:
+            rest = stack[:position] + stack[position + 1 :]
+            meta = dict(x.meta)
+            if rest:
+                meta[INVERSE_STATS_META_KEY] = rest
+            else:
+                meta.pop(INVERSE_STATS_META_KEY, None)
+            return dict(snapshot), dataclasses.replace(x, meta=meta)
+    return None, x
+
+
+def _wrap_forward(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def forward(self: Any, x: Any, *args: Any, **kwargs: Any) -> Any:
+        out = fn(self, x, *args, **kwargs)
+        names = _threaded_attr_names(type(self))
+        return _push_inverse_stats(out, self, names) if names else out
+
+    forward._torchfits_inverse_stats = True  # type: ignore[attr-defined]
+    return forward
+
+
+def _wrap_inverse(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def inverse(self: Any, x: Any, *args: Any, **kwargs: Any) -> Any:
+        names = _threaded_attr_names(type(self))
+        if not names:
+            return fn(self, x, *args, **kwargs)
+        snapshot, x = _pop_inverse_stats(x, self)
+        if snapshot is None:
+            return fn(self, x, *args, **kwargs)
+        # The caches are per-(instance, thread), so swapping the payload's
+        # statistics in for the duration of this call is invisible to other
+        # threads; the previous values (the instance's last forward) return
+        # afterwards.
+        previous = {name: getattr(self, name) for name in names}
+        try:
+            for name in names:
+                setattr(self, name, snapshot.get(name))
+            return fn(self, x, *args, **kwargs)
+        finally:
+            for name, value in previous.items():
+                setattr(self, name, value)
+
+    inverse._torchfits_inverse_stats = True  # type: ignore[attr-defined]
+    return inverse
+
+
 class FITSTransform:
     """Protocol for astronomy transforms with forward and inverse passes.
 
@@ -191,6 +301,19 @@ class FITSTransform:
     expects: frozenset[DataState] | None = None
     produces: DataState | None = None
     propagates_ivar: bool = False
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Data-dependent transforms keep their inverse statistics in
+        # per-thread ``_last_*`` caches, so ``forward(a); forward(b);
+        # inverse(a)`` restored ``a`` with ``b``'s statistics. For a typed
+        # :class:`Payload` the statistics now also travel with the output
+        # (``meta[INVERSE_STATS_META_KEY]``) and ``inverse()`` uses those;
+        # tensors and dict payloads keep using the instance caches.
+        super().__init_subclass__(**kwargs)
+        for name, wrap in (("forward", _wrap_forward), ("inverse", _wrap_inverse)):
+            fn = cls.__dict__.get(name)
+            if callable(fn) and not getattr(fn, "_torchfits_inverse_stats", False):
+                setattr(cls, name, wrap(fn))
 
     def forward(self, x: Any, mask: torch.Tensor | None = None) -> Any:
         raise NotImplementedError

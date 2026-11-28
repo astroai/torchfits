@@ -91,7 +91,7 @@ iterators and deep learning training pipelines), use the in-process Python API
 | `0` | Success | Command completed successfully |
 | `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
 | `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
-| `3` | I/O error | File not found, permission denied, or invalid FITS structure |
+| `3` | I/O error | File not found, permission denied, or invalid FITS structure (a truncated file is reported as such, not as a bare CFITSIO status) |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
 | `5` | Internal error | Unexpected exception; traceback printed to stderr |
 | `130` | Interrupted | `KeyboardInterrupt` / Ctrl-C |
@@ -237,6 +237,18 @@ torchfits table catalog.fits -e 1 -n 0
 ```
 
 `-n` / `--rows` takes a non-negative count; a negative value is a usage error (exit `2`).
+
+The preview (in every output format) is strict JSON:
+
+- non-finite floats (`NaN`, `±inf`) are `null`;
+- complex values (`TFORM` `C` / `M`) are objects `{"re": 1.0, "im": -2.0}`
+  (a non-finite part is `null`); the schema lists them as `complex64` /
+  `complex128` (Arrow has no complex type, so these columns are read with
+  `torchfits.table.read_torch`);
+- strings decode as ASCII like `torchfits.table.read`, but a byte that does
+  not decode becomes U+FFFD (`"\ufffd"`) instead of failing the listing;
+  any raw `bytes` value is emitted as its UTF-8 decoding with the same
+  replacement.
 
 ---
 
@@ -389,8 +401,16 @@ Integer `add` / `sub` / `mul` are exact for every integer width, including
 64-bit (`int64`, `uint64`) images and operands: results outside the output
 dtype saturate to its minimum or maximum with a `RuntimeWarning` naming how
 many pixels were clamped, instead of wrapping or being rounded through
-float64. A fractional scalar or a floating-point image B is applied in
-float64.
+float64. A fractional scalar or a floating-point image B on an integer A (with
+`--dtype auto`) is applied exactly too: each pixel's exact result is truncated
+toward zero (warning how many pixels lost a fraction) and saturated to A's
+dtype, so 64-bit pixels near `2**63` are never rounded through float64.
+Non-finite results into an integer output: `+inf` / `-inf` (an infinite
+operand) saturate to the dtype's maximum / minimum; a NaN result (a NaN
+operand, or `0 * inf`) has no integer value and is refused as a usage error
+(exit `2`, nothing written) — use `--dtype float32/float64` to keep it. (An
+integer A with a `BLANK` keyword already reads as floating point, with NaN at
+its blank pixels, so its results are floating point.)
 
 ---
 

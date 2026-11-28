@@ -91,13 +91,19 @@ def _probe_vos_now(path: str, *, header_bytes: int) -> dict[str, Any]:
         handle = client.open(uri, mode="rb")
         chunk = handle.read(header_bytes)
     except Exception as exc:
-        raise IoError(f"{path}: {exc}") from exc
-    finally:
+        error = IoError(f"{path}: {exc}")
         if handle is not None:
             try:
                 handle.close()
-            except Exception:
-                pass
+            except Exception as close_exc:
+                error.add_note(f"closing the VOSpace handle also failed: {close_exc}")
+        raise error from exc
+    # The vos client can report a failed transfer only when the handle is
+    # closed: a close error means the bytes read may not be trustworthy.
+    try:
+        handle.close()
+    except Exception as exc:
+        raise IoError(f"{path}: closing the VOSpace handle failed: {exc}") from exc
     if not chunk or len(chunk) < 2880:
         raise IoError(f"{path}: could not read FITS header from VOSpace")
     cards = _cards_map(_complete_header_text(chunk, path))
