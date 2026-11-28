@@ -598,6 +598,7 @@ def _scan_iter(
             chunk_rows=batch_size,
             mmap=mmap,
             total_rows=total_rows,
+            header=_hdr,
         )
 
     for chunk in chunk_iter:
@@ -1036,6 +1037,7 @@ def _scan_torch_iter(
         chunk_rows=batch_size,
         mmap=use_mmap,
         total_rows=total_rows,
+        header=_hdr,
     ):
         yield _move(chunk)
 
