@@ -300,3 +300,44 @@ def test_ascii_insert_column_infers_ascii_tform(tmp_path):
     with pytest.raises(ValueError, match="format="):
         torchfits.table.insert_column(path, "v", np.zeros((3, 2)))
     assert open(path, "rb").read() == before
+
+
+def test_rewrite_temp_cleanup_failure_is_logged_not_swallowed(
+    tmp_path, monkeypatch, caplog
+):
+    # r5b-08: a temp file the rewrite cannot remove used to vanish into a
+    # bare ``except Exception``; it is now a logged warning, and the edit
+    # itself still lands.
+    import logging
+    import os
+
+    path = str(tmp_path / "t.fits")
+    torchfits.table.write(path, {"a": np.arange(3, dtype=np.int32)}, overwrite=True)
+    import tempfile
+
+    real_unlink = os.unlink
+    real_ntf = tempfile.NamedTemporaryFile
+    staged: list[str] = []
+    refused: list[str] = []
+
+    def ntf(*args, **kwargs):
+        handle = real_ntf(*args, **kwargs)
+        staged.append(handle.name)
+        return handle
+
+    def unlink(target, *args, **kwargs):
+        if str(target) in staged:
+            refused.append(str(target))
+            raise PermissionError(13, "denied", str(target))
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", ntf)
+    monkeypatch.setattr(os, "unlink", unlink)
+    with caplog.at_level(logging.WARNING, logger="torchfits._table.write"):
+        torchfits.table.insert_column(path, "b", np.arange(3, dtype=np.int16))
+    monkeypatch.undo()
+    for leftover in refused:
+        os.unlink(leftover)
+    assert torchfits.table.read(path).column_names == ["a", "b"]
+    assert refused
+    assert any("could not remove temp file" in r.message for r in caplog.records)

@@ -255,10 +255,7 @@ def _check_numeric_coercion(
     """
     if not tform:
         return
-    try:
-        is_vla, code, _repeat = _parse_tform(str(tform))
-    except Exception:
-        return
+    is_vla, code, _repeat = _parse_tform(str(tform))
     if is_vla or code not in {"B", "I", "J", "K"}:
         return
     if arr.dtype.kind not in {"f", "i", "u"}:
@@ -359,10 +356,7 @@ def _fills_as_undefined(tform: str, tnull: Any) -> bool:
     """
     if not tform:
         return False
-    try:
-        is_vla, code, _repeat = _parse_tform(tform)
-    except Exception:
-        return False
+    is_vla, code, _repeat = _parse_tform(tform)
     if is_vla:
         return False
     if code in {"E", "D", "C", "M"}:
