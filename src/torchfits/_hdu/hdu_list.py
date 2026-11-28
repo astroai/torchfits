@@ -251,8 +251,16 @@ class HDUList:
         self.close()
 
     def __del__(self) -> None:
+        # Only drop the registry entry: HDUs taken from this list
+        # (``torchfits.open(path)[1]``) share its lazy handle and must keep
+        # reading after the list itself is collected. The native handle
+        # closes the file when the last object using it is collected.
         try:
-            self.close()
+            target = self._file_handle or self._lazy_handle
+            if target:
+                from .._io_engine.caches import _unregister_open_hdulist
+
+                _unregister_open_hdulist(self._registry_key, target)
         except Exception:
             pass  # finalizer: exceptions here are only printed as noise
 

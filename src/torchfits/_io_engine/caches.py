@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import weakref
 import warnings
 from collections import OrderedDict
 from types import MappingProxyType
@@ -442,12 +443,26 @@ def _register_open_hdulist(path: str, handle: Any, hdulist: Any) -> None:
         real = os.path.realpath(path)
     except (OSError, ValueError):
         real = os.path.abspath(path)
+    # Weak references: the registry exists so a mutation can close a list's
+    # handle, not to keep the list alive. Strong ones pinned every HDUList
+    # torchfits.open() returned (and its file descriptor) for the life of
+    # the process unless the caller closed it explicitly.
     with cache_lock:
-        _open_hdulist_registry.setdefault(real, []).append((handle, hdulist))
+        _open_hdulist_registry.setdefault(real, []).append(
+            (_weak(handle), _weak(hdulist))
+        )
     try:
         hdulist._registry_key = real
     except AttributeError:  # an object with __slots__ / read-only attributes
         pass
+
+
+def _weak(obj: Any) -> Any:
+    """A zero-argument callable returning *obj* (a weakref when possible)."""
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return lambda: obj
 
 
 def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
@@ -460,7 +475,7 @@ def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
     with cache_lock:
         if key is not None:
             entries = _open_hdulist_registry.get(key, [])
-            remaining = [entry for entry in entries if entry[0] is not handle]
+            remaining = [entry for entry in entries if entry[0]() is not handle]
             if len(remaining) != len(entries):
                 if remaining:
                     _open_hdulist_registry[key] = remaining
@@ -469,7 +484,7 @@ def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
             return
         for real_path in list(_open_hdulist_registry.keys()):
             entries = _open_hdulist_registry.get(real_path, [])
-            remaining = [entry for entry in entries if entry[0] is not handle]
+            remaining = [entry for entry in entries if entry[0]() is not handle]
             if len(remaining) == len(entries):
                 continue
             if remaining:
@@ -493,7 +508,10 @@ def _close_hdulist_for_path(path: str) -> None:
         entries = _open_hdulist_registry.pop(real, [])
     if not entries:
         return
-    for handle, hdulist in entries:
+    for handle_ref, hdulist_ref in entries:
+        handle, hdulist = handle_ref(), hdulist_ref()
+        if handle is None:
+            continue  # collected with its HDUs: nothing holds the file open
         try:
             handle.close()
         except Exception:
@@ -503,6 +521,8 @@ def _close_hdulist_for_path(path: str) -> None:
                 "closing an open HDUList handle for %r failed", path, exc_info=True
             )
         # Prevent double-close when HDUList.__exit__ calls close() later.
+        if hdulist is None:
+            continue
         try:
             hdulist._file_handle = None
             hdulist._lazy_handle = None
