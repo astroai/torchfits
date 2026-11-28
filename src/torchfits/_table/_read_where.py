@@ -304,7 +304,7 @@ def _try_torch_tensor_where_filter(
         for col in _all_table_columns(header, selected):
             if col.tform_info.is_string or col.tform_info.is_bit:
                 return None
-    elif decode_bytes and header is None:
+    elif header is None:
         return None
 
     pred_cols = [col for col, _op, _lit in predicates]
@@ -381,6 +381,13 @@ def _try_torch_tensor_where_filter(
     if mask is None:
         return None
 
+    # The TFORM tells a numeric byte ('B') vector from a character matrix:
+    # both arrive as 2-D uint8 tensors.
+    tforms = (
+        {col.name: col.tform for col in _all_table_columns(header)}
+        if header is not None
+        else {}
+    )
     arrays = []
     names_out = []
     for name in output_cols:
@@ -397,7 +404,7 @@ def _try_torch_tensor_where_filter(
                     encoding,
                     strip,
                     null_sentinel=tnull_map.get(name),
-                    fits_tform=None,
+                    fits_tform=tforms.get(name),
                 )
             )
         names_out.append(name)
@@ -416,7 +423,7 @@ def _try_torch_tensor_where_filter(
                         encoding,
                         strip,
                         null_sentinel=tnull_map.get(name),
-                        fits_tform=None,
+                        fits_tform=tforms.get(name),
                     )
                 )
             else:

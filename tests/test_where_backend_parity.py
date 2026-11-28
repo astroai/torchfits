@@ -448,3 +448,25 @@ def test_repeated_projection_column_is_returned_once(tmp_path):
                     path, columns=["ID", "ID"], where=where, backend=backend, mmap=mmap
                 )
                 assert got.column_names == ["ID"], (where, backend, mmap)
+
+
+@pytest.mark.parametrize("mmap", [True, False])
+@pytest.mark.parametrize("decode_bytes", [True, False])
+def test_byte_vector_column_is_not_decoded_as_text(tmp_path, mmap, decode_bytes):
+    # A scaled predicate column takes the torch-mask filter, which converted a
+    # numeric byte ('2B') vector without its TFORM and decoded it as a string
+    # (UnicodeDecodeError on bytes >= 0x80).
+    path = str(tmp_path / "bvec.fits")
+    torchfits.table.write(
+        path,
+        {
+            "S": np.arange(4, dtype=np.int32),
+            "V": np.full((4, 2), 255, dtype=np.uint8),
+        },
+        schema={"S": {"format": "J", "bscale": 0.5, "bzero": 1.0}},
+    )
+    out = torchfits.table.read(
+        path, where="S > 1", mmap=mmap, decode_bytes=decode_bytes
+    )
+    assert out.schema.field("V").type == pa.list_(pa.uint8(), 2)
+    assert out["V"].to_pylist() == [[255, 255]] * 3
