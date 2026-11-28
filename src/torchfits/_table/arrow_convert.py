@@ -323,18 +323,21 @@ def _decode_uint8_matrix_to_arrow(
     if (
         strip
         and codec in {"ascii", "utf-8"}
-        and not np.any(arr[:, -1] == 32)
         # Arrow's cast validates UTF-8, not ASCII: it decoded UTF-8 bytes
         # under encoding='ascii', so ASCII takes it only for 7-bit data.
-        and (codec == "utf-8" or not np.any(arr >= 0x80))
+        and (codec == "utf-8" or int(arr.max(initial=0)) < 0x80)
     ):
-        # Fast path: if no row ends with a space, Arrow cast handles NUL
-        # trimming correctly. Invalid data falls through to the decode below,
-        # which applies the decode_errors policy like every other path.
+        # Fast path: the S-dtype view already drops trailing NULs and Arrow
+        # trims the trailing blanks FITS pads strings with (the same " \x00"
+        # set as the rstrip below). Invalid data falls through to the decode
+        # below, which applies the decode_errors policy like every other path.
         try:
             import pyarrow.compute as pc
 
-            return pc.cast(_pa_array(pa, byte_view), pa.string())
+            out = pc.cast(_pa_array(pa, byte_view), pa.string())
+            if np.any(arr[:, -1] == 32):
+                out = pc.utf8_rtrim(out, characters=" \x00")
+            return out
         except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError):
             pass
     if strip:

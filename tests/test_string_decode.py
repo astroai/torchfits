@@ -34,3 +34,24 @@ def test_decode_byte_tensor_strided_view_and_width_zero():
     t[2, 0:3] = ord("B")
     assert decode_byte_tensor(t[::2]) == ["AAA", "BBB"]
     assert decode_byte_tensor(torch.zeros((3, 0), dtype=torch.uint8)) == ["", "", ""]
+
+
+def test_space_padded_ascii_columns_decode_in_arrow(monkeypatch):
+    # FITS pads strings with blanks, so nearly every real string column has a
+    # row ending in a space; that used to send the whole column through numpy's
+    # per-element rstrip + decode. Arrow trims the same " \x00" set.
+    import numpy as np
+    import pyarrow as pa
+
+    from torchfits._table import arrow_convert
+
+    rows = [b"ab  ", b"c\x00\x00\x00", b"  d ", b"e\x00 \x00", b"    ", b"wxyz"]
+    matrix = np.frombuffer(b"".join(rows), dtype=np.uint8).reshape(len(rows), 4)
+
+    def no_numpy_decode(*_args, **_kwargs):
+        raise AssertionError("numpy decode used for 7-bit, space-padded data")
+
+    monkeypatch.setattr(np.char, "decode", no_numpy_decode)
+    for encoding in ("ascii", "utf-8"):
+        out = arrow_convert._decode_uint8_matrix_to_arrow(pa, matrix, encoding, True)
+        assert out.to_pylist() == ["ab", "c", "  d", "e", "", "wxyz"]
