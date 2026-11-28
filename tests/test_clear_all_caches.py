@@ -9,6 +9,29 @@ import torch
 import torchfits
 
 
+@pytest.fixture(autouse=True)
+def _private_cache_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here clears disk caches, so none may reach the real root.
+
+    clear_all_caches() deletes cache_root(), which is ~/.cache/torchfits by
+    default -- including samples/, where scripts/fetch_example_samples.sh puts
+    the example data. Tests that did not set TORCHFITS_CACHE_DIR themselves
+    deleted the developer's (and a parallel run's) downloaded samples on
+    every `pixi run test`. A test that sets its own override still wins: its
+    setenv runs after this fixture.
+    """
+    monkeypatch.setenv("TORCHFITS_CACHE_DIR", str(tmp_path / "default_cache_root"))
+    monkeypatch.delenv("TORCHFITS_REMOTE_CACHE", raising=False)
+    monkeypatch.delenv("TORCHFITS_SAMPLE_CACHE", raising=False)
+
+
+def test_module_never_clears_the_real_cache_root(tmp_path: Path) -> None:
+    from torchfits.cache import cache_root, remote_cache_root, sample_cache_root
+
+    for root in (cache_root(), remote_cache_root(), sample_cache_root()):
+        assert root.is_relative_to(tmp_path), root
+
+
 def test_clear_all_caches_smoke(tmp_path: Path) -> None:
     """clear_all_caches() should not raise and should leave torchfits usable."""
     # Write and read a file to populate caches.
