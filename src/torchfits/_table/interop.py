@@ -649,6 +649,33 @@ def _arrow_column_to_astropy(
     unit = meta.get("unit")
     arr_type = chunked_arr.type
 
+    if pa.types.is_fixed_size_list(arr_type) and pa.types.is_fixed_size_list(
+        arr_type.value_type
+    ):
+        # N-D cells (``shape_cells=True``): convert the flat cells, then give
+        # each row its (nested) cell shape.
+        from ._cell_shape import arrow_unnest
+
+        shape: list[int] = []
+        inner = arr_type
+        while pa.types.is_fixed_size_list(inner):
+            shape.append(int(inner.list_size))
+            inner = inner.value_type
+        flat = _fixed_size_list_to_astropy(
+            pa, Column, MaskedColumn, arrow_unnest(pa, chunked_arr), name, meta
+        )
+        if flat.dtype == np.object_:
+            return flat
+        rows = (len(flat), *shape)
+        if isinstance(flat, MaskedColumn):
+            return MaskedColumn(
+                data=np.asarray(flat.data).reshape(rows),
+                mask=np.asarray(flat.mask).reshape(rows),
+                name=name,
+                unit=unit,
+            )
+        return Column(np.asarray(flat).reshape(rows), name=name, unit=unit)
+
     if pa.types.is_fixed_size_list(arr_type):
         return _fixed_size_list_to_astropy(
             pa, Column, MaskedColumn, chunked_arr, name, meta

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .._errors import UnknownColumnError
+from ._cell_shape import flatten_cells
 from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
 from ..fits_schema import unsigned_column_dtype_names_from_header
@@ -86,6 +87,10 @@ def insert_column(
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
+    # (nrows, *cell) values are stored flat with TDIM.
+    values, cell_tdim = flatten_cells(name, values, dim)
+    if dim is None:
+        dim = cell_tdim
 
     fmt = (
         str(format).strip().upper()
@@ -162,6 +167,9 @@ def replace_column(
         raise UnknownColumnError(f"Column '{name}' not found")
 
     num_rows = _naxis2_row_count(header_map, path)
+    values, cell_tdim = flatten_cells(name, values, dim)
+    if dim is None:
+        dim = cell_tdim
 
     existing_schema = _extract_table_schema_from_header(header_map, columns)
     existing_meta = dict(existing_schema.get(name, {}))

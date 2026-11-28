@@ -417,16 +417,38 @@ def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
     return tensor.contiguous()
 
 
-def _arrow_column_values(column: Any) -> Any:
+def _arrow_column_values(column: Any, field: Any = None) -> Any:
     """One Arrow column as the writer's column value.
 
     A fixed-size list of numbers or booleans with no nulls -- how every
     torchfits reader returns a vector column (TFORM ``rX``) -- becomes a 2-D
     array, so it is written back as a fixed-width vector column instead of a
-    variable-length one. Anything else goes through ``to_numpy`` (nullable
+    variable-length one. Nested fixed-size lists and ``fixed_shape_tensor``
+    columns (N-D cells) become ``(nrows, *cell)`` arrays, as does a vector
+    column whose ``field`` carries ``fits_tdim`` metadata; the writer stores
+    those with ``TDIM``. Anything else goes through ``to_numpy`` (nullable
     integers widen to float with NaN, string nulls are blank) or, failing
     that, ``to_pylist``.
     """
+    from .._table._cell_shape import (
+        arrow_cell_values,
+        arrow_metadata_cells,
+        arrow_unnest,
+    )
+
+    try:
+        import pyarrow as pa
+
+        cells = arrow_cell_values(pa, column)
+        if cells is not None:
+            return cells
+        column = arrow_unnest(pa, column)
+    except ImportError:
+        pass
+    return arrow_metadata_cells(_arrow_flat_column_values(column), field)
+
+
+def _arrow_flat_column_values(column: Any) -> Any:
     try:
         import pyarrow as pa
 
@@ -465,7 +487,13 @@ def _normalize_table_input(data: Any) -> Any:
         return {str(col): data[col] for col in data.colnames}
     # PyArrow Table / RecordBatch
     if hasattr(data, "column_names") and hasattr(data, "column"):
-        return {name: _arrow_column_values(data[name]) for name in data.column_names}
+        fields = getattr(data, "schema", None)
+        return {
+            name: _arrow_column_values(
+                data.column(i), fields.field(i) if fields is not None else None
+            )
+            for i, name in enumerate(data.column_names)
+        }
     # Polars DataFrame
     if hasattr(data, "columns") and hasattr(data, "to_dict"):
         try:

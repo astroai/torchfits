@@ -22,6 +22,7 @@ _TABLE_IO_KEYS = {
     "include_fits_metadata",
     "apply_fits_nulls",
     "backend",
+    "shape_cells",
 }
 
 

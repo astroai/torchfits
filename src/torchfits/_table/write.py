@@ -82,6 +82,10 @@ def write(
         raise ValueError("table_type must be 'binary' or 'ascii'")
     if schema is not None and not isinstance(schema, dict):
         raise TypeError("schema must be a dictionary when provided")
+    from ._cell_shape import shape_cells_for_write
+
+    # (nrows, *cell) columns are stored flat with TDIM.
+    data, schema = shape_cells_for_write(data, schema)
     if quantize is not None and table_kind == "ascii":
         raise ValueError("quantize= is only supported for binary tables")
     hdr: dict[str, Any] | None = None

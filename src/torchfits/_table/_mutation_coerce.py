@@ -604,8 +604,9 @@ def _coerce_table_column_array(
             tensor = tensor.reshape(1)
         if tensor.dim() == 2 and not allow_2d:
             raise ValueError(f"Column '{name}' must be 1D for this operation")
-        if tensor.dim() > 2:
-            raise ValueError(f"Column '{name}' must be 1D or 2D, got {tensor.dim()}D")
+        if tensor.dim() > 2 and allow_2d:
+            # N-D cells (a TDIM column) are stored flat, row by row.
+            tensor = tensor.reshape(tensor.shape[0], -1)
         if not tensor.is_contiguous():
             tensor = tensor.contiguous()
         arr = tensor.numpy()
@@ -623,6 +624,8 @@ def _coerce_table_column_array(
 
     if arr.ndim == 2 and not allow_2d:
         raise ValueError(f"Column '{name}' must be 1D for this operation")
+    if arr.ndim > 2 and allow_2d:
+        arr = arr.reshape(arr.shape[0], -1)
     if arr.ndim > 2:
         raise ValueError(f"Column '{name}' must be 1D or 2D, got {arr.ndim}D")
     if expected_rows is not None and arr.shape[0] != expected_rows:
@@ -773,8 +776,9 @@ def _coerce_table_complex_values(
             tensor = tensor.reshape(1)
         if tensor.dim() == 2 and not allow_2d:
             raise ValueError(f"Column '{name}' must be 1D for this operation")
-        if tensor.dim() > 2:
-            raise ValueError(f"Column '{name}' must be 1D or 2D, got {tensor.dim()}D")
+        if tensor.dim() > 2 and allow_2d:
+            # N-D cells (a TDIM column) are stored flat, row by row.
+            tensor = tensor.reshape(tensor.shape[0], -1)
         arr = tensor.numpy().astype(dtype, copy=False)
     else:
         arr = np.asarray(value, dtype=dtype)
@@ -783,6 +787,8 @@ def _coerce_table_complex_values(
 
     if arr.ndim == 2 and not allow_2d:
         raise ValueError(f"Column '{name}' must be 1D for this operation")
+    if arr.ndim > 2 and allow_2d:
+        arr = arr.reshape(arr.shape[0], -1)
     if arr.ndim > 2:
         raise ValueError(f"Column '{name}' must be 1D or 2D, got {arr.ndim}D")
     if expected_rows is not None and arr.shape[0] != expected_rows:

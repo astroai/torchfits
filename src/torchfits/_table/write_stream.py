@@ -334,7 +334,9 @@ class TableWriter:
             ):
                 out[name] = np.array([], dtype="S1")
                 continue
-            out[name] = _canonical_column(_arrow_column_values(col))
+            out[name] = _canonical_column(
+                _arrow_column_values(col, batch.schema.field(i))
+            )
         return out
 
     def _write(self, batch: Any) -> None:
@@ -378,8 +380,11 @@ class TableWriter:
         )
         from .write import _resolve_table_hdu_index_and_columns
 
+        from ._cell_shape import shape_cells_for_write
+
+        flat, self._schema = shape_cells_for_write(dict(cols), self._schema)
         prepared, schema, _ = _prepare_unsigned_table_data_for_write(
-            dict(cols), self._schema, ascii_table=self._ascii
+            flat, self._schema, ascii_table=self._ascii
         )
         if self._schema is None and not _can_use_cpp_table_writer(prepared):
             raise ValueError(
@@ -450,6 +455,9 @@ class TableWriter:
                     f"column was laid out for {want[0]} values by the first batch"
                 )
 
+        from ._cell_shape import flatten_cells
+
+        cols = {name: flatten_cells(name, value)[0] for name, value in cols.items()}
         prepared, _, _ = _prepare_unsigned_table_data_for_write(
             cols, ascii_table=self._ascii
         )

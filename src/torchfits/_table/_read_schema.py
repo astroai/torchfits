@@ -528,6 +528,46 @@ def schema(
     backend: str = "auto",
     *,
     decode_errors: str = "strict",
+    shape_cells: bool = False,
+) -> Any:
+    result = _schema_unshaped(
+        path,
+        hdu,
+        columns,
+        where,
+        decode_bytes,
+        encoding,
+        strip,
+        include_fits_metadata,
+        apply_fits_nulls,
+        backend,
+        decode_errors=decode_errors,
+    )
+    if not shape_cells or not result.names:
+        return result
+    import torchfits
+
+    from ._cell_shape import header_cell_shapes, shape_arrow_schema
+
+    if isinstance(hdu, str):
+        hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
+    shapes = header_cell_shapes(torchfits.read_header(path, hdu), set(result.names))
+    return shape_arrow_schema(_require_pyarrow(), result, shapes)
+
+
+def _schema_unshaped(
+    path: str,
+    hdu: int | str = 1,
+    columns: Optional[list[str]] = None,
+    where: Optional[str] = None,
+    decode_bytes: bool = True,
+    encoding: str = "ascii",
+    strip: bool = True,
+    include_fits_metadata: bool = False,
+    apply_fits_nulls: bool = False,
+    backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
     from .._string_decode import DecodeSpec
 

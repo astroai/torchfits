@@ -75,6 +75,7 @@ torchfits.table.read(
     backend="auto",
     *,
     decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -95,6 +96,7 @@ torchfits.table.read(
 | `include_fits_metadata` | `bool` | `False` | Attach FITS column metadata on the Arrow schema |
 | `apply_fits_nulls` | `bool` | `True` | Honor `TNULL` as nulls |
 | `backend` | `str` | `"auto"` | `"auto"`, `"cpp"`, or `"torch"` |
+| `shape_cells` | `bool` | `False` | Read a column with a multi-axis `TDIMn` as N-D cells; see [N-D cells](#n-d-cells-tdim) |
 
 **Returns:** `pyarrow.Table`
 
@@ -143,6 +145,8 @@ torchfits.table.read_torch(
     mmap="auto",
     return_header=False,
     where=None,
+    *,
+    shape_cells=False,
 )
 ```
 
@@ -157,6 +161,7 @@ torchfits.table.read_torch(
 | `mmap` | `bool` or `str` | `"auto"` | `True` / `False` / `"auto"` (`"auto"` → mmap on) |
 | `return_header` | `bool` | `False` | Also return the HDU `Header` |
 | `where` | `str` or `None` | `None` | Simple numeric filter (see below) |
+| `shape_cells` | `bool` | `False` | Return a multi-axis `TDIMn` column as `(N, *cell)`; see [N-D cells](#n-d-cells-tdim) |
 
 `cache_capacity` controls the read cache (`0` disables it) and `fast_header`
 only affects the unified-reader fallback. The Arrow path (`table.read`) takes
@@ -194,6 +199,52 @@ For many unfiltered column reads on one file, use
 
 ---
 
+### N-D cells (TDIM)
+
+A vector column with a `TDIMn` card holds an N-D array per row. `TDIM` lists
+the axes fastest-varying first (FITS / Fortran order), so `TDIM = '(a,b)'` on
+a `TFORM = '<a*b>E'` column is a `(b, a)` array in C order (numpy, torch).
+
+By default every reader returns such a column flat, as any vector column:
+`(N, a*b)` from `read_torch`, `FixedSizeList<T>[a*b]` from `read`, with the
+`TDIM` available through `include_fits_metadata=True` or `schema()`. Pass
+`shape_cells=True` (on `read`, `read_torch`, `scan`, `scan_torch`, `reader`,
+`schema`, and the converters that read a path) to get the cells shaped:
+
+| Reader | `TDIM = '(3,2)'`, `TFORM = '6E'` |
+|---|---|
+| `read_torch`, `scan_torch` | `float32` tensor of shape `(N, 2, 3)` |
+| `read`, `scan`, `reader`, `schema` | `FixedSizeList<FixedSizeList<float>[3]>[2]` (Polars: `Array(Float32, shape=(2, 3))`) |
+| `to_astropy` / `read_astropy` | column of shape `(N, 2, 3)` (masked where `TNULL` matches) |
+
+Only numeric, logical and bit columns are shaped, and only when the `TDIM`
+has two or more axes whose product is the column's repeat count. A
+string (`A`) column's `TDIM` describes an array of fixed-width strings; the
+column still reads as one string per row.
+
+Writing works the other way round, with no option: a column of shape
+`(N, d1, d2, ...)` -- numpy or torch, a nested Arrow `FixedSizeList`, an
+Arrow `fixed_shape_tensor`, a Polars `Array` column -- is stored with
+`TFORM = '<d1*d2*...><code>'` and `TDIM = '(..., d2, d1)'`, by `table.write`,
+`table.writer`, `insert_column` and `replace_column` (a `dim=` you pass must
+describe the same cell, else `ValueError`). `update_rows`, `append_rows` and
+`insert_rows` take `(N, d1, d2, ...)` values for such a column too. A flat
+vector column whose Arrow field carries `fits_tdim` metadata (a
+`read(include_fits_metadata=True)` result) keeps that `TDIM` when written.
+
+```python
+import numpy as np
+import torchfits
+
+cube = np.zeros((100, 2, 3), dtype=np.float32)
+torchfits.table.write("cells.fits", {"img": cube}, overwrite=True)
+# TFORM1 = '6E', TDIM1 = '(3,2)'
+torchfits.table.read_torch("cells.fits", shape_cells=True)["img"].shape  # (100, 2, 3)
+torchfits.table.read_torch("cells.fits")["img"].shape  # (100, 6)
+```
+
+---
+
 ## `table.scan()`
 
 Streaming dataframe scanner yielding `pyarrow.RecordBatch` objects without
@@ -216,6 +267,7 @@ torchfits.table.scan(
     backend="auto",
     *,
     decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -254,6 +306,7 @@ torchfits.table.scan_torch(
     pin_memory=False,
     *,
     where=None,
+    shape_cells=False,
 )
 ```
 
@@ -293,6 +346,7 @@ torchfits.table.reader(
     backend="auto",
     *,
     decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -765,6 +819,7 @@ torchfits.table.schema(
     backend="auto",
     *,
     decode_errors="strict",
+    shape_cells=False,
 )
 ```
 

@@ -61,6 +61,19 @@ def _reject_complex_columns(
         raise NotImplementedError(f"{_COMPLEX_ERR} (columns: {sorted(touching)})")
 
 
+def _cell_shapes(
+    path: str, hdu: Any, header: Any, columns: Optional[list[str]]
+) -> dict[str, tuple[int, ...]]:
+    """TDIM cell shapes of the projected columns (``shape_cells=True``)."""
+    from ._cell_shape import header_cell_shapes
+
+    if header is None:
+        import torchfits
+
+        header = torchfits.read_header(path, hdu)
+    return header_cell_shapes(header, set(columns) if columns else None)
+
+
 def _read_prelude(
     path: str,
     hdu: int | str,
@@ -121,6 +134,7 @@ def scan(
     backend: str = "auto",
     *,
     decode_errors: str = "strict",
+    shape_cells: bool = False,
 ) -> Iterator[Any]:
     # Eager guard: a generator body would defer this until first next().
     path = coerce_fits_path(path)
@@ -130,6 +144,29 @@ def scan(
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
     header, columns = _read_prelude(path, hdu, columns, where)
+    if shape_cells:
+        shapes = _cell_shapes(path, hdu, header, columns)
+        if shapes:
+            from ._cell_shape import shape_arrow_data
+
+            pa = _require_pyarrow()
+            batches = scan(
+                path,
+                hdu=hdu,
+                columns=columns,
+                row_slice=row_slice,
+                where=where,
+                batch_size=batch_size,
+                mmap=mmap,
+                decode_bytes=decode_bytes,
+                encoding=encoding,
+                strip=strip,
+                include_fits_metadata=include_fits_metadata,
+                apply_fits_nulls=apply_fits_nulls,
+                backend=backend,
+                decode_errors=decode_errors,
+            )
+            return (shape_arrow_data(pa, batch, shapes) for batch in batches)
     return _scan_iter(
         path,
         hdu=hdu,
@@ -165,6 +202,7 @@ def read(
     backend: str = "auto",
     *,
     decode_errors: str = "strict",
+    shape_cells: bool = False,
 ) -> Any:
     path = coerce_fits_path(path)
     guard_fits_path(path)
@@ -174,6 +212,31 @@ def read(
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
     header, columns = _read_prelude(path, hdu, columns, where)
+    if shape_cells:
+        from ._cell_shape import shape_arrow_data
+
+        shapes = _cell_shapes(path, hdu, header, columns)
+        return shape_arrow_data(
+            pa,
+            read(
+                path,
+                hdu=hdu,
+                columns=columns,
+                row_slice=row_slice,
+                rows=rows,
+                where=where,
+                batch_size=batch_size,
+                mmap=mmap,
+                decode_bytes=decode_bytes,
+                encoding=encoding,
+                strip=strip,
+                include_fits_metadata=include_fits_metadata,
+                apply_fits_nulls=apply_fits_nulls,
+                backend=backend,
+                decode_errors=decode_errors,
+            ),
+            shapes,
+        )
 
     # rows= is a scatter selection only the C++ range engine can honor —
     # route it there for every backend (r5a-01).
@@ -247,6 +310,8 @@ def read_torch(
     fast_header: bool = True,
     return_header: bool = False,
     where: str | None = None,
+    *,
+    shape_cells: bool = False,
 ) -> Any:
     """Read a FITS table as dataframe columns mapped to ``torch.Tensor`` values.
 
@@ -261,6 +326,10 @@ def read_torch(
     TNULL is *not* applied to the returned values: a torch integer tensor has no
     null, so the sentinel comes back verbatim (astropy's ``getdata`` behaves the
     same way). Use :func:`torchfits.table.read` when TNULL must read as null.
+
+    ``shape_cells=True`` reads a column with a multi-axis ``TDIMn`` as a
+    tensor of shape ``(nrows, *cell)``: ``TDIM = '(a,b)'`` gives
+    ``(nrows, b, a)``.
     """
     path = coerce_fits_path(path)
     guard_fits_path(path)
@@ -271,7 +340,7 @@ def read_torch(
     # Lazy import: table_api path must not pull hdu during _table.read import.
     from .._io_engine.table_api import read_table as _engine_read_table
 
-    return _engine_read_table(
+    result = _engine_read_table(
         torchfits.read,
         path,
         hdu=hdu,
@@ -285,6 +354,14 @@ def read_torch(
         return_header=return_header,
         where=where,
     )
+    if not shape_cells:
+        return result
+    from ._cell_shape import shape_torch_columns
+
+    shapes = _cell_shapes(path, hdu, None, columns)
+    if isinstance(result, tuple):
+        return (shape_torch_columns(result[0], shapes), *result[1:])
+    return shape_torch_columns(result, shapes)
 
 
 def scan_torch(
@@ -299,6 +376,7 @@ def scan_torch(
     pin_memory: bool = False,
     *,
     where: Optional[str] = None,
+    shape_cells: bool = False,
 ) -> Iterator[dict[str, Any]]:
     # Eager guard: a generator body would defer this until first next().
     path = coerce_fits_path(path)
@@ -313,7 +391,8 @@ def scan_torch(
     # Torch dict scans serve complex columns, so only the projection is
     # validated here (r5a-03).
     header, columns = _read_prelude(path, hdu, columns, None, arrow_api=False)
-    return _scan_torch_iter(
+    shapes = _cell_shapes(path, hdu, header, columns) if shape_cells else {}
+    batches = _scan_torch_iter(
         path,
         hdu=hdu,
         columns=columns,
@@ -326,6 +405,11 @@ def scan_torch(
         header=header,
         where=where,
     )
+    if not shapes:
+        return batches
+    from ._cell_shape import shape_torch_columns
+
+    return (shape_torch_columns(batch, shapes) for batch in batches)
 
 
 def reader(
@@ -344,6 +428,7 @@ def reader(
     backend: str = "auto",
     *,
     decode_errors: str = "strict",
+    shape_cells: bool = False,
 ) -> Any:
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
@@ -367,6 +452,7 @@ def reader(
         apply_fits_nulls=apply_fits_nulls,
         backend=scan_backend,
         decode_errors=decode_errors,
+        shape_cells=shape_cells,
     )
     it = iter(batches)
     first = next(it, None)
@@ -380,6 +466,12 @@ def reader(
             include_fits_metadata,
         )
         schema = empty.schema if empty is not None else pa.schema([])
+        if shape_cells:
+            from ._cell_shape import shape_arrow_schema
+
+            schema = shape_arrow_schema(
+                pa, schema, _cell_shapes(path, int(hdu), None, columns)
+            )
         return pa.RecordBatchReader.from_batches(schema, [])
     return pa.RecordBatchReader.from_batches(first.schema, itertools.chain([first], it))
 
