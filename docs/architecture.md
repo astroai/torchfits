@@ -466,6 +466,8 @@ CFITSIO code that torchfits runs on untrusted files:
 - tile decompression: truncated or corrupt `RICE_1` and `HCOMPRESS_1` tiles
   (out-of-bounds reads, division by zero), truncated `GZIP_1`/`GZIP_2` tiles
   (an endless buffer-growing loop) and the `PLIO_1` compression buffer;
+- tile compression: the `HCOMPRESS_1` encoder writing past its tile buffer on
+  small high-entropy tiles (it now reports the full buffer instead);
 - image headers: `NAXIS` above 99, and image sections (`f.fits[1:10,1:10]`)
   of images with more than 9 axes;
 - ASCII tables with `TFIELDS` above 999, which now fail to open;
