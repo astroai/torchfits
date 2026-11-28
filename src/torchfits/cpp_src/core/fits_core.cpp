@@ -14,10 +14,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <climits>
 #include <fcntl.h>
 #include <list>
-#include <pthread.h>
 #include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -26,13 +26,6 @@
 #include "core/parallel.h"
 #include "internal_utils.h"
 #include "security.h"
-
-// CFITSIO's global lock (cfileio.c). The vendored library is built
-// thread-safe (USE_PTHREADS / _REENTRANT); this translation unit is not
-// compiled with _REENTRANT, so fitsio2.h would not declare it. Weak: an
-// environment CFITSIO built without pthreads has no lock, and the HDU-offset
-// cache below is then simply off.
-extern "C" pthread_mutex_t Fitsio_Lock __attribute__((weak));
 
 namespace torchfits {
 namespace detail {
@@ -282,8 +275,7 @@ void reset_cached_metadata(const std::shared_ptr<SharedReadMeta>& meta) {
     meta->colnames_cache.clear();
     meta->hdu_type_cache.clear();
     meta->num_hdus = -1;
-    meta->hdu_headstart.reset();
-    meta->hdu_headstart_filesize = -1;
+    meta->hdu_offsets.reset();
     // Rotate identity so per-thread caches keyed by {uid, hdu} cannot
     // pair stale shape/dtype/scale metadata with the replaced file
     // (R7-CPP2). In-flight readers keep their own shared_ptr and the
@@ -379,59 +371,222 @@ int open_readonly_fd(const std::string& filename) {
     return ::open(filename.c_str(), O_RDONLY);
 }
 
-// Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
+// ---------------------------------------------------------------------------
+// Learned HDU offsets
+// ---------------------------------------------------------------------------
+//
+// CFITSIO reaches HDU n by reading every header in front of it unless the
+// handle already knows where HDU n starts (FITSfile::headstart[]). A read-only
+// handle publishes the offsets it learned when it closes, and the next
+// open_fits_readonly() of the *same file version* is handed them, which is the
+// state it would have reached by walking those headers itself.
+//
+// "Same file version" is the whole correctness argument, because a wrong
+// offset silently reads a different HDU: a same-size rewrite can move HDU n to
+// where HDU n-1 used to start. A version is (st_dev, st_ino, size, mtime,
+// ctime). ctime is what makes it a content version: every write, truncate,
+// rename or link change sets it to the current time and userspace cannot set
+// it back (unlike mtime: cp -p, touch -d). It is still only as fine as the
+// filesystem's timestamps -- jiffies on most local filesystems, 1 s on some,
+// 2 s on FAT -- so two writes in one tick can leave it unchanged. Hence the
+// age rule: a version is only recorded when its ctime and mtime are at least
+// kHduOffsetMinAgeNs in the past at the moment it is captured. Any write after
+// that moment gets a timestamp in a later tick and so a different version;
+// a version captured while the file is still being written is never recorded.
+//
+// The protocol:
+//   * open: the version is fstat() of the descriptor CFITSIO actually reads
+//     through (fits_get_diskfile_fd, a vendored-CFITSIO patch). Built against
+//     a CFITSIO without it, the path is stat()ed before and after
+//     fits_open_diskfile() instead and must agree: swapping the file under
+//     the name and back would change its ctime (link count or rename), and an
+//     inode cannot be reused while it is open -- the one gap is swapping a
+//     symlink or a parent directory away and back within the open call. Seed
+//     only from a table recorded for exactly this version, never on the
+//     strength of SharedReadMeta's validation window.
+//   * the version and the SharedReadMeta generation seen at open are kept per
+//     handle (open_handles()) when the version is old enough;
+//   * close: publish only if the opened file still has that version (nothing
+//     changed what the handle read), the path still names it, and the
+//     generation is still current (no in-process writer invalidated it).
+//
+// Residual cases the version cannot see, all needing the writer to defeat
+// ctime: a filesystem that does not maintain ctime at all (some FUSE mounts);
+// a network filesystem whose server clock runs behind the client's by more
+// than the age margin; a single write() call, or writes through a shared
+// mapping, that keep modifying the file for longer than the margin while a
+// reader opens it. TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES=0 turns the cache off.
+//
+// A read-only open never shares CFITSIO's FITSfile with another open
+// (fits_already_open() returns early for READONLY, and a READWRITE open of a
+// file open READONLY is refused), so the handle's headstart[] is private to it
+// and needs no lock beyond the caller's own use of the handle.
+
+namespace {
+
+// How old a file version must be before its offsets are recorded: above the 2 s mtime granularity of FAT, the coarsest filesystem
+// in common use, plus a clock tick.
+const int64_t kHduOffsetMinAgeNs = torchfits::internal::env_nonnegative_int(
+    "TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS", 3000) * 1000000LL;
+
+// Process-wide budget for published offset tables (8 bytes per HDU). Up to
+// kMaxSharedMetaEntries paths can each hold one; without a cap a scan over
+// thousands of many-HDU files kept every table alive. 0 disables the cache.
+const size_t kHduOffsetCacheMaxBytes = static_cast<size_t>(torchfits::internal::env_nonnegative_int(
+    "TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES", 64LL << 20));
+
+std::atomic<size_t> g_hdu_offset_bytes{0};
+
+}  // namespace
+
+struct FileVersion {
+    dev_t dev = 0;
+    ino_t ino = 0;
+    off_t size = 0;
+    int64_t mtime_ns = 0;
+    int64_t ctime_ns = 0;
+
+    static FileVersion of(const struct stat& st) {
+        FileVersion v;
+        v.dev = st.st_dev;
+        v.ino = st.st_ino;
+        v.size = st.st_size;
+        v.mtime_ns = torchfits::internal::mtime_ns_from_stat(st);
+#if defined(__APPLE__)
+        v.ctime_ns = static_cast<int64_t>(st.st_ctimespec.tv_sec) * 1000000000LL +
+                     static_cast<int64_t>(st.st_ctimespec.tv_nsec);
+#else
+        v.ctime_ns = static_cast<int64_t>(st.st_ctim.tv_sec) * 1000000000LL +
+                     static_cast<int64_t>(st.st_ctim.tv_nsec);
+#endif
+        return v;
+    }
+
+    bool operator==(const FileVersion& o) const {
+        return dev == o.dev && ino == o.ino && size == o.size && mtime_ns == o.mtime_ns &&
+               ctime_ns == o.ctime_ns;
+    }
+
+    // See the age rule above. A timestamp in the future (clock skew) is not
+    // old enough either.
+    bool settled() const {
+        struct timespec now {};
+        if (clock_gettime(CLOCK_REALTIME, &now) != 0) return false;
+        const int64_t now_ns =
+            static_cast<int64_t>(now.tv_sec) * 1000000000LL + static_cast<int64_t>(now.tv_nsec);
+        return now_ns - ctime_ns >= kHduOffsetMinAgeNs && now_ns - mtime_ns >= kHduOffsetMinAgeNs;
+    }
+};
+
+// headstart[0 .. maxhdu + 1] of one file version. Charged against
+// kHduOffsetCacheMaxBytes for as long as it lives.
+struct HduOffsetTable {
+    FileVersion version;
+    std::vector<LONGLONG> headstart;
+    size_t charged = 0;
+
+    HduOffsetTable() = default;
+    HduOffsetTable(const HduOffsetTable&) = delete;
+    HduOffsetTable& operator=(const HduOffsetTable&) = delete;
+    ~HduOffsetTable() {
+        if (charged != 0) g_hdu_offset_bytes.fetch_sub(charged, std::memory_order_relaxed);
+    }
+};
+
 namespace {
 
 // Only plain local paths: a URL has no stat identity to validate offsets
 // against, and an extended-syntax name may open a filtered or virtual file.
 bool hdu_offsets_cacheable(const std::string& path) {
-    return &Fitsio_Lock != nullptr && !has_cfitsio_extended_filename_syntax(path) &&
+    return kHduOffsetCacheMaxBytes != 0 && !has_cfitsio_extended_filename_syntax(path) &&
            path.find("://") == std::string::npos;
 }
 
-// CFITSIO attaches a second open of an already-open file to the same FITSfile
-// (fits_already_open, under this lock), so headstart[] is only ours to touch
-// while open_count is 1 *and* the lock keeps another open from attaching. The
-// lock is recursive (fits_init_cfitsio). Never take a SharedReadMeta mutex
-// while holding it: CFITSIO calls made under a meta lock take it too.
-struct CfitsioGlobalLock {
-    CfitsioGlobalLock() { pthread_mutex_lock(&Fitsio_Lock); }
-    ~CfitsioGlobalLock() { pthread_mutex_unlock(&Fitsio_Lock); }
-    CfitsioGlobalLock(const CfitsioGlobalLock&) = delete;
-    CfitsioGlobalLock& operator=(const CfitsioGlobalLock&) = delete;
+// What a handle saw when it was opened; see the protocol above.
+struct OpenedVersion {
+    FileVersion version;
+    uint64_t meta_uid = 0;
 };
 
-// Hand a freshly opened read-only handle the HDU offsets an earlier handle on
-// the same file generation learned. CFITSIO's fits_movabs_hdu() jumps straight
-// to any HDU whose headstart[] entry is known and otherwise reads every header
-// in between; seeding headstart[]/maxhdu is exactly the state the handle would
-// have reached by walking those headers itself.
-void seed_hdu_offsets(fitsfile* fptr, const std::string& path) {
-    if (fptr == nullptr || fptr->Fptr == nullptr) return;
-    std::shared_ptr<const std::vector<LONGLONG>> known;
-    LONGLONG known_filesize = -1;
-    {
-        auto meta = get_shared_meta_for_path(path);
-        if (!meta) return;
-        std::shared_lock<std::shared_mutex> lock(meta->mutex);
-        if (!meta->has_stat) return;
-        known = meta->hdu_headstart;
-        known_filesize = meta->hdu_headstart_filesize;
-    }
-    if (!known || known->size() < 3) return;
-    CfitsioGlobalLock cfitsio_lock;
-    FITSfile* file = fptr->Fptr;
-    if (file->open_count != 1 || file->writemode != READONLY ||
-        file->logfilesize != known_filesize) {
+// Keyed by handle address. Every open_fits_readonly() of a cacheable path
+// overwrites or erases its handle's entry and remember_hdu_offsets() erases
+// it, so an entry left behind by a handle closed some other way can only be
+// read by a later handle at the same address that was not opened through
+// open_fits_readonly(); that entry's version predates the later handle, so it
+// still only publishes when nothing changed the file since. The map is capped;
+// losing entries only loses publications.
+constexpr size_t kMaxTrackedHandles = 1 << 16;
+
+std::mutex& open_handles_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::unordered_map<const fitsfile*, OpenedVersion>& open_handles() {
+    static std::unordered_map<const fitsfile*, OpenedVersion> handles;
+    return handles;
+}
+
+void track_open_handle(const fitsfile* fptr, const OpenedVersion* opened) {
+    std::lock_guard<std::mutex> lock(open_handles_mutex());
+    auto& handles = open_handles();
+    if (opened == nullptr) {
+        handles.erase(fptr);
         return;
     }
+    if (handles.size() >= kMaxTrackedHandles) handles.clear();
+    handles[fptr] = *opened;
+}
+
+bool take_open_handle(const fitsfile* fptr, OpenedVersion* out) {
+    std::lock_guard<std::mutex> lock(open_handles_mutex());
+    auto& handles = open_handles();
+    auto it = handles.find(fptr);
+    if (it == handles.end()) return false;
+    *out = it->second;
+    handles.erase(it);
+    return true;
+}
+
+std::shared_ptr<const HduOffsetTable> make_offset_table(
+    const FileVersion& version, const LONGLONG* headstart, size_t count) {
+    auto table = std::make_shared<HduOffsetTable>();
+    table->version = version;
+    table->headstart.assign(headstart, headstart + count);
+    const size_t bytes = count * sizeof(LONGLONG);
+    size_t used = g_hdu_offset_bytes.load(std::memory_order_relaxed);
+    do {
+        if (bytes > kHduOffsetCacheMaxBytes || used > kHduOffsetCacheMaxBytes - bytes) {
+            return nullptr;
+        }
+    } while (!g_hdu_offset_bytes.compare_exchange_weak(used, used + bytes,
+                                                       std::memory_order_relaxed));
+    table->charged = bytes;
+    return table;
+}
+
+// Hand a freshly opened read-only handle the offsets recorded for the exact
+// version it opened. CFITSIO's fits_movabs_hdu() jumps straight to any HDU
+// whose headstart[] entry is known and otherwise reads every header in between;
+// seeding headstart[]/maxhdu is exactly the state the handle would have
+// reached by walking those headers itself.
+void seed_hdu_offsets(fitsfile* fptr, const HduOffsetTable& table) {
+    FITSfile* file = fptr->Fptr;
+    const std::vector<LONGLONG>& known = table.headstart;
+    if (file->writemode != READONLY || file->logfilesize != table.version.size ||
+        known.size() < 3 || file->maxhdu < 0) {
+        return;
+    }
+    // The handle has read its primary header: it must agree with the table on
+    // where HDU 1 starts, or this is not the file the table describes.
+    if (known[0] != file->headstart[0] || known[1] != file->headstart[1]) return;
     // headstart[maxhdu + 1] (the start of the next HDU) is known whenever HDU
     // maxhdu's header has been read, so `known` covers maxhdu = size - 2.
-    const int known_max = static_cast<int>(known->size()) - 2;
+    const int known_max = static_cast<int>(known.size()) - 2;
     if (known_max <= file->maxhdu) return;
-    if (known->size() > static_cast<size_t>(file->MAXHDU) + 1) {
+    if (known.size() > static_cast<size_t>(file->MAXHDU) + 1) {
         // Same growth rule as ffmahd(): MAXHDU + 1 entries are allocated.
-        const size_t entries = known->size() + 1000;
+        const size_t entries = known.size() + 1000;
         auto* grown = static_cast<LONGLONG*>(
             realloc(file->headstart, entries * sizeof(LONGLONG)));
         if (grown == nullptr) return;
@@ -439,23 +594,93 @@ void seed_hdu_offsets(fitsfile* fptr, const std::string& path) {
         file->MAXHDU = static_cast<int>(entries) - 1;
     }
     // Entries 0 .. maxhdu + 1 are the handle's own; only extend past them.
-    for (size_t i = static_cast<size_t>(file->maxhdu) + 2; i < known->size(); ++i) {
-        file->headstart[i] = (*known)[i];
+    for (size_t i = static_cast<size_t>(file->maxhdu) + 2; i < known.size(); ++i) {
+        file->headstart[i] = known[i];
     }
     file->maxhdu = known_max;
 }
 
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+constexpr bool kVersionFromDescriptor = true;
+#else
+constexpr bool kVersionFromDescriptor = false;
+#endif
+
+// Version of the regular file an open handle reads, from its own descriptor.
+bool descriptor_version(fitsfile* fptr, FileVersion* out) {
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+    const int fd = fits_get_diskfile_fd(fptr);
+    struct stat st {};
+    if (fd < 0 || ::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    *out = FileVersion::of(st);
+    return true;
+#else
+    (void)fptr;
+    (void)out;
+    return false;
+#endif
+}
+
+// The version a just-opened handle reads (see the protocol above). `before`
+// is the pre-open stat of the path when there is no descriptor accessor.
+bool opened_version(fitsfile* fptr, const std::string& path, const struct stat* before,
+                    FileVersion* out) {
+    if (kVersionFromDescriptor) return descriptor_version(fptr, out);
+    struct stat after {};
+    if (before == nullptr || ::stat(path.c_str(), &after) != 0) return false;
+    const FileVersion version = FileVersion::of(after);
+    if (!(version == FileVersion::of(*before))) return false;
+    *out = version;
+    return true;
+}
+
+// After a successful open of a cacheable path: record what the handle opened
+// and seed it from a table recorded for that version.
+void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat* before) {
+    track_open_handle(fptr, nullptr);
+    FileVersion version;
+    if (fptr->Fptr == nullptr || !opened_version(fptr, path, before, &version)) return;
+    auto meta = get_shared_meta_for_path(path);
+    if (!meta) return;
+    OpenedVersion opened;
+    opened.version = version;
+    std::shared_ptr<const HduOffsetTable> table;
+    {
+        std::shared_lock<std::shared_mutex> lock(meta->mutex);
+        opened.meta_uid = meta->uid.load(std::memory_order_relaxed);
+        table = meta->hdu_offsets;
+    }
+    if (table && table->version == version) seed_hdu_offsets(fptr, *table);
+    if (version.settled()) track_open_handle(fptr, &opened);
+}
+
 }  // namespace
 
+// Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
 int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     int status = 0;
     // Drop stale messages so open_failure_message() reports this open only.
     fits_clear_errmsg();
     if (has_cfitsio_extended_filename_syntax(path) || path.find("://") != std::string::npos) {
         fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
-    } else {
-        fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
-        if (status == 0 && hdu_offsets_cacheable(path)) seed_hdu_offsets(*fptr, path);
+        return status;
+    }
+    const bool cacheable = hdu_offsets_cacheable(path);
+    struct stat before {};
+    const bool have_before = cacheable && !kVersionFromDescriptor &&
+                             ::stat(path.c_str(), &before) == 0 && S_ISREG(before.st_mode);
+    fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
+    if (status == 0 && cacheable && *fptr != nullptr) {
+        try {
+            after_cacheable_open(*fptr, path, have_before ? &before : nullptr);
+        } catch (...) {
+            // A cache miss is never worth failing an open over; make sure the
+            // handle is not left with a record it did not earn.
+            try {
+                track_open_handle(*fptr, nullptr);
+            } catch (...) {
+            }
+        }
     }
     return status;
 }
@@ -464,33 +689,46 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
     try {
         if (fptr == nullptr || fptr->Fptr == nullptr) return;
         if (!hdu_offsets_cacheable(path)) return;
-        std::vector<LONGLONG> offsets;
-        LONGLONG filesize = -1;
-        {
-            CfitsioGlobalLock cfitsio_lock;
-            FITSfile* file = fptr->Fptr;
-            // Fewer than three known HDUs is nothing a fresh open does not
-            // already learn from its first header.
-            if (file->open_count != 1 || file->writemode != READONLY || file->maxhdu < 2) {
-                return;
-            }
-            offsets.assign(file->headstart,
-                           file->headstart + static_cast<size_t>(file->maxhdu) + 2);
-            filesize = file->logfilesize;
-        }
-        auto meta = get_shared_meta_for_path(path);
-        if (!meta) return;
-        std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        // Offsets are only good for the file generation the stat identity
-        // describes; a handle that saw a different size saw a different file.
-        if (!meta->has_stat || filesize != static_cast<LONGLONG>(meta->size)) return;
-        if (meta->hdu_headstart && meta->hdu_headstart_filesize == filesize &&
-            meta->hdu_headstart->size() >= offsets.size()) {
+        OpenedVersion opened;
+        if (!take_open_handle(fptr, &opened)) return;
+        FITSfile* file = fptr->Fptr;
+        // Fewer than three known HDUs is nothing a fresh open does not
+        // already learn from its first header.
+        if (file->writemode != READONLY || file->maxhdu < 2 ||
+            file->logfilesize != opened.version.size) {
             return;
         }
-        meta->hdu_headstart =
-            std::make_shared<const std::vector<LONGLONG>>(std::move(offsets));
-        meta->hdu_headstart_filesize = filesize;
+        // Nothing changed the file the handle read (a write moves its ctime)...
+        FileVersion read_now;
+        if (kVersionFromDescriptor &&
+            (!descriptor_version(fptr, &read_now) || !(read_now == opened.version))) {
+            return;
+        }
+        // ...and the path still names it (a replacement has another inode).
+        struct stat now {};
+        if (::stat(path.c_str(), &now) != 0 || !(FileVersion::of(now) == opened.version)) return;
+        const size_t count = static_cast<size_t>(file->maxhdu) + 2;
+        auto meta = get_shared_meta_for_path(path);
+        if (!meta) return;
+        auto already_known = [&]() {
+            return meta->hdu_offsets && meta->hdu_offsets->version == opened.version &&
+                   meta->hdu_offsets->headstart.size() >= count;
+        };
+        {
+            std::shared_lock<std::shared_mutex> lock(meta->mutex);
+            if (meta->uid.load(std::memory_order_relaxed) != opened.meta_uid || already_known()) {
+                return;
+            }
+        }
+        auto table = make_offset_table(opened.version, file->headstart, count);
+        if (!table) return;
+        std::unique_lock<std::shared_mutex> lock(meta->mutex);
+        // Same generation the handle started in: an in-process writer's
+        // invalidation (or a validation that saw the file change) rotates it.
+        if (meta->uid.load(std::memory_order_relaxed) != opened.meta_uid || already_known()) {
+            return;
+        }
+        meta->hdu_offsets = std::move(table);
     } catch (...) {
         // A cache fill is never worth failing a close over.
     }
