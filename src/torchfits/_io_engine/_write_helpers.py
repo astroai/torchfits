@@ -482,6 +482,17 @@ def _arrow_flat_column_values(column: Any) -> Any:
     except conversion_errors:
         _log.debug("fixed-size-list fast path failed; using to_numpy", exc_info=True)
     try:
+        if len(column) == 0 and (
+            pa.types.is_string(column.type)
+            or pa.types.is_large_string(column.type)
+            or pa.types.is_binary(column.type)
+            or pa.types.is_large_binary(column.type)
+        ):
+            # to_numpy gives an empty object array, from which the writer
+            # cannot tell a character column (std::bad_cast before).
+            import numpy
+
+            return numpy.array([], dtype="<U1")
         return column.to_numpy(zero_copy_only=False)
     except conversion_errors:
         return column.to_pylist()

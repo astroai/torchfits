@@ -1396,6 +1396,18 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             continue;
         }
 
+      if (!nb::isinstance<nb::ndarray<>>(obj)) {
+          // An empty list (a zero-row column of unknown type) or another
+          // non-array value: say what is missing instead of std::bad_cast.
+          throw std::invalid_argument(
+              "column '" + col_key + "': cannot infer a FITS format from " +
+              (nb::isinstance<nb::list>(obj) || nb::isinstance<nb::tuple>(obj)
+                   ? std::string("an empty sequence")
+                   : std::string("a value of type ") +
+                         nb::cast<std::string>(nb::type_name(obj.type()))) +
+              "; pass a numpy array or schema={'" + col_key +
+              "': {'format': ...}}");
+      }
       nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(obj);
       require_cpu_ndarray(tensor, "column " + col_key);
       int ndim = tensor.ndim();

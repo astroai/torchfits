@@ -174,3 +174,21 @@ def test_column_rewrites_of_a_zero_row_table_with_strings(tmp_path):
         table.write(
             path, {"S": np.arange(3)}, schema={"S": {"format": "6A"}}, overwrite=True
         )
+
+
+def test_zero_row_arrow_string_column_writes(tmp_path):
+    # A zero-row Arrow string column became an empty object array, which the
+    # native writer could not type: RuntimeError('std::bad_cast'), so
+    # table.write(table.read(empty_file)) failed for any table with strings.
+    import pyarrow as pa
+
+    path = str(tmp_path / "empty_arrow.fits")
+    src = pa.table({"S": pa.array([], pa.string()), "I": pa.array([], pa.int32())})
+    table.write(path, src)
+    out = table.read(path)
+    assert out.num_rows == 0
+    assert out.schema.field("S").type == pa.string()
+    assert out.schema.field("I").type == pa.int32()
+    # A column with no rows and no type to infer is an argument error now.
+    with pytest.raises(ValueError, match="cannot infer a FITS format"):
+        table.write(path, {"S": np.array([], dtype=object)}, overwrite=True)
