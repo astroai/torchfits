@@ -129,7 +129,7 @@ def _default_column_name(index: int) -> str:
     """Name every reader uses for a column with no (or an empty) ``TTYPE`` card.
 
     FITS permits a column without a ``TTYPE`` card.  The native readers
-    (``cpp_src/table_reader.h``) and the metadata API
+    (``cpp_src/table_reader_layout.cpp``) and the metadata API
     (``cpp_src/core/metadata_api.cpp``) synthesize ``COL<i>`` in that case, so
     the Python schema has to agree: naming the column ``""`` here made
     ``schema`` disagree with ``read``/``read_torch`` and left no way to address

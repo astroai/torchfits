@@ -26,6 +26,8 @@
 #include "fits_rw.h"
 #include "fits_detail.h"
 #include "fits_handle.h"
+#include "hardware.h"
+#include "nb_ndarray_utils.h"
 #include "table_types.h"
 #include "table_reader.h"
 #include "table_ops.h"

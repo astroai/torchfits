@@ -495,6 +495,12 @@ set(SOURCES
     fits_file.cpp
     table_bindings.cpp
     table_ops.cpp
+    table_reader_buffered.cpp
+    table_reader_filter.cpp
+    table_reader_layout.cpp
+    table_reader_mmap.cpp
+    table_reader_read.cpp
+    table_reader_vla.cpp
 )
 
 # A dlopen'd Python extension is an MH_BUNDLE, and dyld does not expand
