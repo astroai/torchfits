@@ -137,6 +137,8 @@ void clear_shared_read_meta_cache();
 // from the cache-conflict meaning. That mismatch is why this retry used to carry
 // a bare 104 and a comment naming a constant that does not exist.
 void evict_cached_reader(const std::string& filename);
+// Drop every thread's cached TableReaders (clear_shared_read_meta_cache).
+void evict_all_cached_readers();
 
 // Open `path` for writing, retrying if a cached READONLY handle for it was
 // registered in-process. The retry drops that handle and re-opens, so

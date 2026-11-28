@@ -277,7 +277,9 @@ DataLoaders and concurrent reads without lock contention.
 ### L1 — SharedReadMeta
 
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
-resolution, raw fd. Validated via `stat()`. Lives in a global map protected
+resolution, raw fd, and the HDU header offsets a read-only handle learned
+(seeded into the next private handle so reaching HDU *n* is one seek instead
+of a walk over the *n*-1 headers before it). Validated via `stat()`. Lives in a global map protected
 by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
 and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
 repeated header probing for hot files without sharing CFITSIO CHDU state.

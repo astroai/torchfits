@@ -184,6 +184,20 @@ struct ThreadLocalReaderCache {
         }
     }
 
+    // Drop every idle cached reader (and its two descriptors) in this cache.
+    void evict_all() {
+        std::lock_guard<std::mutex> l(mu_);
+        map_.clear();
+        lru_.clear();
+    }
+
+    static void evict_all_everywhere() {
+        std::lock_guard<std::mutex> g(g_registry_mu);
+        for (ThreadLocalReaderCache* cache : g_registry) {
+            cache->evict_all();
+        }
+    }
+
     static void evict_everywhere(const std::string& filename) {
         const std::string canonical = canonical_reader_path(filename);
         std::lock_guard<std::mutex> g(g_registry_mu);
@@ -724,6 +738,10 @@ void evict_cached_reader(const std::string& filename) {
     ThreadLocalReaderCache::evict_everywhere(filename);
 }
 
+void evict_all_cached_readers() {
+    ThreadLocalReaderCache::evict_all_everywhere();
+}
+
 }  // namespace torchfits
 
 // Forward declare invalidation (defined in fits_bindings.cpp).
@@ -1184,7 +1202,12 @@ void bind_table(nb::module_& m) {
         // Persistent TableReader for batch mmap scans: opens + parses the
         // header once; each read_rows call maps/unmaps per batch but never
         // re-opens the file.
-        torchfits::TableReader* reader = new torchfits::TableReader(path, hdu_num);
+        torchfits::TableReader* reader = nullptr;
+        {
+            // Opening inflates a .gz file / fetches a URL: no GIL needed.
+            nb::gil_scoped_release release;
+            reader = new torchfits::TableReader(path, hdu_num);
+        }
         return nb::capsule(reader, kTableReaderCapsuleName, [](void* p) noexcept {
             delete static_cast<torchfits::TableReader*>(p);
         });

@@ -28,3 +28,25 @@ def _clear_env_profile(monkeypatch):
     for var in CACHE_ENV_SENTINELS:
         monkeypatch.delenv(var, raising=False)
     yield
+
+
+# ``performance`` tests are the large-scale probes (multi-GB sparse files,
+# 10,000-HDU / 10,000-file sets): minutes of I/O and several GB of address
+# space. ``pixi run test`` runs all of tests/, so they skip unless asked for
+# with --run-performance (`pixi run test-scale`); CI also deselects the marker.
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-performance",
+        action="store_true",
+        default=False,
+        help="run tests marked performance (large-scale file probes)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-performance"):
+        return
+    skip = pytest.mark.skip(reason="large-scale probe: pass --run-performance")
+    for item in items:
+        if "performance" in item.keywords:
+            item.add_marker(skip)

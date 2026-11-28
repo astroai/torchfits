@@ -8,6 +8,7 @@ and written files.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 import torchfits
@@ -420,3 +421,43 @@ def test_arith_huge_integral_scalar_saturates(tmp_path):
     result = torchfits.read_tensor(str(out), hdu=0)
     assert result.dtype == torch.int16
     assert torch.equal(result, torch.tensor([[32767, 32767]], dtype=torch.int16))
+
+
+def test_stats_memory_is_bounded_by_the_image_not_float64_copies():
+    """stats on a big uint8 image peaked at ~9x the image (float64 copy, mask,
+    float64 median copy): `torchfits stats` on a 4.5 GB int16 image asked for
+    17.8 GB. Chunked float64 sums + one native-dtype median copy keep it ~2x."""
+    import tracemalloc
+
+    from torchfits.cli.cmds_stats import _pixel_stats
+
+    rng = np.random.default_rng(0)
+    image = torch.from_numpy(rng.integers(0, 255, size=(4096, 4096), dtype=np.uint8))
+    tracemalloc.start()
+    try:
+        record = _pixel_stats(image)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 * image.numel()
+    ref = image.numpy().astype(np.float64)
+    assert record["min"] == int(ref.min()) and record["max"] == int(ref.max())
+    assert record["mean"] == pytest.approx(ref.mean(), rel=1e-12)
+    assert record["std"] == pytest.approx(ref.std(), rel=1e-12)
+    assert record["median"] == np.median(ref)
+
+
+def test_stats_chunked_matches_numpy_with_nonfinite_pixels(monkeypatch):
+    from torchfits.cli import cmds_stats
+
+    monkeypatch.setattr(cmds_stats, "_STATS_CHUNK", 7)  # many partial chunks
+    data = np.random.default_rng(1).normal(size=(33, 9)).astype(np.float32)
+    data[0, 0] = np.nan
+    data[5, 3] = np.inf
+    record = cmds_stats._pixel_stats(torch.from_numpy(data))
+    finite = data[np.isfinite(data)].astype(np.float64)
+    assert record["nbad"] == 2
+    assert record["min"] == finite.min() and record["max"] == finite.max()
+    assert record["mean"] == pytest.approx(finite.mean(), rel=1e-12)
+    assert record["std"] == pytest.approx(finite.std(), rel=1e-12)
+    assert record["median"] == np.median(finite)

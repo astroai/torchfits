@@ -138,6 +138,55 @@ except for a `where=` predicate that compares a string column.
 
 ---
 
+## Scale limits
+
+Supported platforms are 64-bit Linux and macOS: file offsets, row counts and
+element counts are 64-bit throughout. These numbers come from
+`pixi run test-scale` (`tests/test_scale_large.py`, sparse files) and probes
+on a shared 4-core Linux host; treat them as orders of magnitude.
+
+| Case | Tested | Measured |
+|---|---|---|
+| Image HDU larger than 4 GiB | 4.46 GB int16 primary + extension past the 4 GiB offset | extension read, cutout at the last pixel: < 1 ms; `write_checksums` 3.7 s, `verify_checksums` 1.9 s |
+| Image with more than 2^31 pixels | 2.15 GB uint8, `mmap=True` and `False` | full read 1.6 s, peak RSS ≈ image size |
+| Tile compression of a > 2 GiB image | `torchfits compress --algorithm RICE_1` / `decompress` | ~6 s each, peak RSS ≈ image size + 0.2 GB |
+| Table with more than 2^31 rows | 2^31 + 1000 one-byte rows | `row_slice` / `rows=` / `start_row` at the end: < 0.2 s; `where=` over every row 4.7 s; `scan(where=)` 4.6 s at 0.3 GB RSS |
+| Table larger than 4 GiB | 600 M rows × 12 bytes (7.2 GB) | last-row reads < 1 ms; full `scan` / `scan_torch` 3–4 s at 0.2–0.3 GB RSS |
+| Streaming write across 2^31 rows | `table.writer()` in 16 Mi-row batches, then `append_rows`, checksums | peak RSS 0.3 GB |
+| Many HDUs | 10,000-extension file | `torchfits.open` 0.34 s; read of any HDU after the first visit ~0.04 ms; `torchfits info` 0.7 s, `verify` 1.1 s, `stats` 3.7 s; `insert_hdu` / `replace_hdu` / `delete_hdu` rewrite the file: ~0.8 s |
+| Many files | 10,000 files under `ulimit -n 256` | `read`, `read_batch`, datasets and a 4-worker `DataLoader` keep a handful of descriptors open |
+| Repeated calls | 10,000 reads / writes / `where=` / `scan` / streaming writes / compressed reads | no RSS or descriptor growth |
+
+Memory follows the result, not the file, except where a whole object is
+materialized:
+
+- `table.scan()` / `scan_torch()` (with or without `where=`) and
+  `table.writer()` hold one batch at a time; use them for tables larger
+  than RAM.
+- `table.read(where=)` keeps the matching rows only. `table.read_torch(where=)`
+  reads the predicate columns whole and builds a boolean mask (a 2.1 GB
+  one-byte column peaked at 4.4 GB).
+- `FitsTableDataset` loads the table at construction; `lazy=True` keeps
+  `cache_blocks × block_rows` rows per process (per `DataLoader` worker). With
+  4 workers over a 5 M-row table: ~100 MB PSS per worker eager (copy-on-write
+  shares the table), ~80 MB lazy.
+- `torchfits stats` peaks at about twice the image; `compress` /
+  `decompress` hold the decoded image once.
+- `mmap=True` reads count mapped file pages in RSS; the kernel reclaims them
+  like page cache.
+
+Open descriptors are bounded by `TORCHFITS_MAX_CACHED_FDS` (default 32 raw
+descriptors, see [Environment variables](architecture.md#environment-variables))
+plus up to 8 cached table readers per thread (two descriptors each).
+`clear_all_caches()` closes all of them.
+
+Threads: reads, cutouts, table reads, checksums and file opens run without
+the GIL. Image and table *writes* (`write`, `table.write`, `append_rows`)
+hold it while CFITSIO writes. Calls under ~100 µs (headers, tiny images) are
+bound by Python overhead and do not speed up with more threads.
+
+---
+
 ## Verification
 
 To verify that your installation matches your current Python and PyTorch runtime:

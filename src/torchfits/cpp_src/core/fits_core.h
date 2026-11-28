@@ -104,6 +104,15 @@ struct TORCHFITS_CORE_API SharedReadMeta {
     std::unordered_map<int, std::vector<std::string>> colnames_cache;
     std::unordered_map<int, std::string> hdu_type_cache;
     int num_hdus = -1;
+    // CFITSIO header start offsets (FITSfile::headstart[0 .. k]) a closed
+    // read-only handle learned for this file generation, and the logical file
+    // size it saw. A fresh handle seeded with them reaches HDU n with one seek
+    // instead of re-reading the n-1 headers before it, which made every
+    // path-level read of HDU n O(n) and a loop over a many-HDU file O(n^2).
+    // Immutable once published, so a reader can keep its snapshot after the
+    // lock is released.
+    std::shared_ptr<const std::vector<LONGLONG>> hdu_headstart;
+    LONGLONG hdu_headstart_filesize = -1;
     bool has_stat = false;
     off_t size = 0;
     int64_t mtime_ns = 0;
@@ -127,6 +136,11 @@ TORCHFITS_CORE_API std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(cons
 TORCHFITS_CORE_API int open_readonly_fd(const std::string& filename);
 // Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
 TORCHFITS_CORE_API int open_fits_readonly(fitsfile** fptr, const std::string& path);
+// Publish the HDU offsets a read-only handle on `path` has learned so the next
+// open_fits_readonly() of the same file generation can skip the header walk.
+// Call it just before closing the handle; it is a no-op for handles that saw
+// fewer than three HDUs, writable handles, URLs and extended-syntax names.
+TORCHFITS_CORE_API void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept;
 // "Could not open FITS file: <path> (<CFITSIO error stack>)". Drains CFITSIO's
 // error-message stack so the cause (404, no libcurl, bad URL, ...) reaches the
 // caller instead of being discarded; call it before closing a failed handle.

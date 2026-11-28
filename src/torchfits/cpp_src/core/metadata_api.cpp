@@ -68,11 +68,13 @@ auto with_open(const std::string& path, F&& body) -> decltype(body(std::declval<
     }
     struct Guard {
         fitsfile* fptr;
+        const std::string& path;
         ~Guard() {
+            d::remember_hdu_offsets(fptr, path);
             int close_status = 0;
             fits_close_file(fptr, &close_status);
         }
-    } guard{fptr};
+    } guard{fptr, path};
     return body(fptr);
 }
 
@@ -644,6 +646,7 @@ FitsReader::~FitsReader() { close(); }
 void FitsReader::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (fptr_ != nullptr) {
+        d::remember_hdu_offsets(fptr_, path_);
         int status = 0;
         fits_close_file(fptr_, &status);
         fptr_ = nullptr;
