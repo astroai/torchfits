@@ -496,14 +496,18 @@ CFITSIO code that torchfits runs on untrusted files:
   (out-of-bounds reads, division by zero), truncated `GZIP_1`/`GZIP_2` tiles
   (an endless buffer-growing loop) and the `PLIO_1` compression buffer;
 - tile compression: the `HCOMPRESS_1` encoder writing past its tile buffer on
-  small high-entropy tiles (it now reports the full buffer instead);
+  small high-entropy tiles (it now reports the full buffer instead), and a
+  tile buffer sized so that lossless `HCOMPRESS_1` of full-range noise fits
+  (it used to fail with status 413);
 - image headers: `NAXIS` above 99, and image sections (`f.fits[1:10,1:10]`)
   of images with more than 9 axes;
 - ASCII tables with `TFIELDS` above 999, which now fail to open;
 - the IRAF `.imh` converter that CFITSIO runs for names such as `x.imh[0]`
   (header and pixel-size bounds, long paths, long headers);
 - the `http://` driver: redirects that leave the host, `user@` inside the
-  path, and responses without a status line.
+  path, and responses without a status line;
+- concurrent opens: an `in.fits(out.fits)` copy request is kept per thread,
+  so a plain open on another thread cannot consume it.
 
 Such a file now raises `RuntimeError` (or `OSError` from header-only calls)
 instead of crashing the process; `tests/test_cfitsio_backports.py` holds the
