@@ -70,6 +70,10 @@ def _canonical_column(value: Any) -> Any:
         return value
     if isinstance(value, (list, tuple)):
         items = list(value)
+        if any(isinstance(v, (list, tuple, np.ndarray, torch.Tensor)) for v in items):
+            # A sequence of arrays is a VLA column for table.write even when
+            # every cell has the same length; lay it out the same way.
+            return items
         if items and not _is_string_list(items):
             try:
                 arr = np.asarray(items)

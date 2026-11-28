@@ -279,6 +279,20 @@ def test_vla_and_ascii_streams(tmp_path) -> None:
     assert out["S"].to_pylist() == ["a", "bb", "c", "dd", "e"]
 
 
+def test_equal_length_vla_first_batch_stays_vla(tmp_path) -> None:
+    # A first batch whose VLA cells all have the same length was laid out as
+    # a fixed-width vector (table.write makes it a VLA), so a later batch with
+    # other lengths was refused.
+    path = str(tmp_path / "vla_eq.fits")
+    one_shot = str(tmp_path / "one_shot.fits")
+    first = [np.arange(2, dtype=np.int32), np.arange(2, dtype=np.int32)]
+    table.write(one_shot, {"V": first})
+    table.write(path, [{"V": first}, {"V": [np.arange(3, dtype=np.int32)]}])
+    assert torchfits.read_table_info(path)["tforms"][0].startswith("1PJ")
+    assert torchfits.read_table_info(one_shot)["tforms"][0].startswith("1PJ")
+    assert table.read(path)["V"].to_pylist() == [[0, 1], [0, 1], [0, 1, 2]]
+
+
 def test_gzip_target_is_gzip(tmp_path) -> None:
     path = str(tmp_path / "t.fits.gz")
     table.write(path, _batches(2, 50))
