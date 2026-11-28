@@ -25,7 +25,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Iterable, Iterator
+from typing import Iterable, Iterator
 
 try:
     import fcntl as _fcntl
@@ -42,6 +42,8 @@ from torchfits.vos_uri import is_vos_path as is_vos_path
 from torchfits.vos_uri import normalize_vos_uri as normalize_vos_uri
 
 from torchfits.cache import remote_cache_root
+from torchfits._fits_structure import FitsStructureError as _FitsStructureError
+from torchfits._fits_structure import walk_fits_hdus as _walk_fits_hdus
 
 _REMOTE_PREFIXES = ("http://", "https://")
 # Prefetch/download bookkeeping is keyed by (cache key, destination path):
@@ -218,116 +220,6 @@ def _looks_like_fits_payload(path: Path) -> bool:
     except OSError:
         return False
     return any(head.startswith(magic) for magic in _FITS_PAYLOAD_MAGIC)
-
-
-_FITS_BLOCK = 2880
-_FITS_CARD = 80
-_ByteStream = IO[bytes] | gzip.GzipFile | bz2.BZ2File
-
-
-class _FitsStructureError(ValueError):
-    """A body that does not hold every HDU its own headers declare."""
-
-
-def _header_int(cards: dict[str, bytes], key: str, default: int | None = None) -> int:
-    raw = cards.get(key)
-    if raw is None:
-        if default is None:
-            raise _FitsStructureError(f"header lacks {key}")
-        return default
-    text = raw.split(b"/", 1)[0].strip()
-    try:
-        return int(text)
-    except ValueError:
-        raise _FitsStructureError(f"header {key} is not an integer: {text!r}") from None
-
-
-def _hdu_data_size(cards: dict[str, bytes], primary: bool) -> int:
-    """Data-unit byte count from BITPIX/NAXISn/PCOUNT/GCOUNT (FITS 4.0 §4.4.1)."""
-    bitpix = _header_int(cards, "BITPIX")
-    naxis = _header_int(cards, "NAXIS")
-    if bitpix not in (8, 16, 32, 64, -32, -64) or not 0 <= naxis <= 999:
-        raise _FitsStructureError(f"invalid BITPIX={bitpix} / NAXIS={naxis}")
-    if naxis == 0:
-        return 0
-    axes = [_header_int(cards, f"NAXIS{i}") for i in range(1, naxis + 1)]
-    if any(n < 0 for n in axes):
-        raise _FitsStructureError(f"negative axis length in {axes}")
-    groups = cards.get("GROUPS", b"").split(b"/", 1)[0].strip() == b"T"
-    if primary and groups and axes[0] == 0:
-        axes = axes[1:]  # random groups: NAXIS1 = 0 is not a real axis
-    count = 1
-    for n in axes:
-        count *= n
-    pcount = _header_int(cards, "PCOUNT", 0)
-    gcount = _header_int(cards, "GCOUNT", 1)
-    return abs(bitpix) // 8 * gcount * (pcount + count)
-
-
-def _skip_bytes(handle: _ByteStream, n: int, size: int | None) -> int:
-    """Advance *n* bytes; return how many were actually there."""
-    if n <= 0:
-        return 0
-    if size is not None:
-        pos = handle.tell()
-        got = max(0, min(n, size - pos))
-        handle.seek(pos + got)
-        return got
-    got = 0
-    while got < n:
-        chunk = handle.read(min(n - got, 1 << 20))
-        if not chunk:
-            break
-        got += len(chunk)
-    return got
-
-
-def _walk_fits_hdus(handle: _ByteStream, size: int | None) -> None:
-    """Check that *handle* covers every HDU its headers declare.
-
-    Header blocks are read up to each ``END`` card and each data unit is
-    sized from the header; a body that ends inside a header or a data unit
-    raises :class:`_FitsStructureError`. A missing final 2880-byte pad is
-    tolerated (CFITSIO reads such files), and bytes after the last HDU that
-    do not start an ``XTENSION`` header are ignored as trailing junk.
-    *size* is the byte length for seekable files, ``None`` for streams.
-    """
-    index = 0
-    while True:
-        block = handle.read(_FITS_BLOCK)
-        if index == 0:
-            if not block.startswith(b"SIMPLE  ="):
-                raise _FitsStructureError("no primary header")
-        elif not block or not b"XTENSION=".startswith(block[:9]):
-            return
-        cards: dict[str, bytes] = {}
-        found_end = False
-        while not found_end:
-            for off in range(0, len(block) - _FITS_CARD + 1, _FITS_CARD):
-                card = block[off : off + _FITS_CARD]
-                key = card[:8].rstrip().decode("ascii", "replace")
-                if key == "END":
-                    found_end = True
-                    break
-                if card[8:10] == b"= " and key not in cards:
-                    cards[key] = card[10:]
-            if found_end:
-                break
-            if len(block) < _FITS_BLOCK:
-                raise _FitsStructureError(f"HDU {index}: header ends before END card")
-            block = handle.read(_FITS_BLOCK)
-        if len(block) < _FITS_BLOCK:
-            # CFITSIO refuses a header whose last 2880-byte record is short,
-            # even when the END card itself arrived.
-            raise _FitsStructureError(f"HDU {index}: header record truncated")
-        data_size = _hdu_data_size(cards, index == 0)
-        got = _skip_bytes(handle, data_size, size)
-        if got < data_size:
-            raise _FitsStructureError(
-                f"HDU {index}: data truncated ({got} of {data_size} bytes)"
-            )
-        _skip_bytes(handle, -data_size % _FITS_BLOCK, size)
-        index += 1
 
 
 def _verify_fits_payload(path: Path, *, framed: bool) -> None:

@@ -180,6 +180,13 @@ Output statuses:
 - `OK (no checksum keywords)`: File has no checksum keywords (returns exit code 0).
 - `FAIL`: Checksum does not match data (returns exit code 4).
 
+Before checking checksums, `verify` makes sure a local, uncompressed file is as
+long as its headers say: every header and every data unit must be present (a
+missing final 2880-byte pad is tolerated, as CFITSIO tolerates it). A truncated
+file is an I/O error (exit code 3) naming the HDU that is cut short, even when
+it carries no checksum keywords or `--hdu` selects a different HDU. Compressed
+(`.gz`, `.bz2`, ...) files are not decompressed for this size check.
+
 ---
 
 ### `diff`

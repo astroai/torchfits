@@ -215,6 +215,39 @@ def test_verify_truncated_checksummed_is_io_error(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+def test_verify_truncated_without_checksums_is_io_error(tmp_path, capsys):
+    """A data-truncated file with no checksum keywords is not "OK".
+
+    The structural walk sees every HDU's declared extent, so a file cut in
+    its last data unit (which ``torchfits.open`` still accepts) exits 3
+    instead of reporting "OK (no checksum keywords)". Compressed and
+    complete files keep their verdicts.
+    """
+    from torchfits.cli.main import main
+
+    full = tmp_path / "full.fits"
+    torchfits.write(
+        str(full), [torch.zeros(10, 10), torch.ones(100, 100)], overwrite=True
+    )
+    raw = full.read_bytes()
+    cut = tmp_path / "cut.fits"
+    cut.write_bytes(raw[: len(raw) - 5000])
+    assert main(["verify", str(cut)]) == 3
+    err = capsys.readouterr().err
+    assert "truncated or unreadable FITS file" in err
+    assert "HDU 1: data truncated" in err
+    assert "Traceback" not in err
+    # Selecting another HDU does not hide a truncated file.
+    assert main(["verify", str(cut), "--hdu", "0"]) == 3
+    capsys.readouterr()
+    # An unpadded final block is tolerated, as CFITSIO tolerates it.
+    unpadded = tmp_path / "unpadded.fits"
+    unpadded.write_bytes(raw[: len(raw) - (-(100 * 100 * 4) % 2880)])
+    for path in (full, unpadded):
+        assert main(["verify", str(path)]) == 0
+        assert "OK (no checksum keywords)" in capsys.readouterr().out
+
+
 def test_verify_one_corrupt_file_exits_4_under_file_jobs(tmp_path):
     """Any failing HDU across the batch exits 4 even with -J fan-out."""
     good = tmp_path / "good.fits"
