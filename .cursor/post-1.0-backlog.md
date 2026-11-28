@@ -10,8 +10,8 @@ hygiene pass.
 
 - **1.4.x plan.** Every remaining FITS performance, format, usability, docs,
   reliability and harness item is tracked in
-  [`harness/plans/1.4.x-best-in-class.md`](harness/plans/1.4.x-best-in-class.md)
-  (IDs PF-*, FN-*, US-*, DO-*, RE-*, H*). Status: proposed, awaiting the
+  [`docs/work/1.4.x-best-in-class.md`](../docs/work/1.4.x-best-in-class.md)
+  (IDs ML-*, RC-*, PF-*, FN-*, US-*, DO-*, RE-*, H*). Status: proposed, awaiting the
   maintainer decisions listed at its end.
 - **`imexpr` / STILTS-style expression CLI.** Status: not started; a feature
   idea, not a defect. If done, it stays on the torchfits HTTP stack (with its

@@ -60,6 +60,14 @@ The **1.4.x** line aims to be the FITS release to beat: faster than every
 earlier torchfits release and every other FITS library on each benchmark case,
 and complete on the FITS 4.0 format. Planned work, in order:
 
+- **ML pre-processing**: batched transforms that run on the GPU without host
+  round trips, fast robust statistics (percentiles, zscale, sigma clipping,
+  background) on the device, `torch.compile`-friendly pipelines, and loaders
+  that prefetch into device memory so data loading never stalls training.
+- **Remote and cached fetching**: S3 and other object stores alongside HTTP,
+  VOSpace and shared filesystems such as `$PROJECT`, staged into a managed
+  local cache on node NVMe (`$SLURM_TMPDIR`, CANFAR `/scratch`), with an
+  optional decoded, device-ready cache layout and a staging API.
 - **Native throughput**: parallel tile decompression and compression,
   64-bit heap descriptors on write, faster variable-length columns, and
   native `where=` for `read_torch`.
