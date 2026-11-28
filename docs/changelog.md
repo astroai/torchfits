@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - roadmap: Plan the 1.4.x line as the FITS release to beat
 - roadmap: Make ML pre-processing and remote caching the 1.4.x flagships
 - contributing: Keep temporary plans in docs/work, not dot-directories
+- roadmap: Ship the whole plan in 1.4.0; 1.4.x patches are fixes and CFITSIO only
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
