@@ -392,6 +392,24 @@ def _write_hdus_with_optional_compression(
                 # PLIO only stores values in [0, 2**24): hand CFITSIO the
                 # physical uint16 pixels instead of the signed -32768 codes.
                 hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
+            stored = hdu_dict.get("data")
+            # int8 and uint8/uint16 pixels always land in range (CFITSIO
+            # offsets signed bytes itself); int16/int32 storage may not.
+            if (
+                isinstance(stored, Tensor)
+                and stored.dtype in (torch.int16, torch.int32)
+                and stored.numel()
+            ):
+                lo, hi = int(stored.min()), int(stored.max())
+                if lo < 0 or hi >= 2**24:
+                    # CFITSIO fails mid-write with a bare "error compressing
+                    # image" (status 413); say why before anything is written.
+                    raise ValueError(
+                        "PLIO_1 can only store pixel values 0..2**24-1, but "
+                        f"HDU {idx} holds stored values {lo}..{hi} (uint32 "
+                        "images are stored offset by -2**31); use RICE_1 or "
+                        "GZIP_1"
+                    )
         if options is not None:
             data = hdu_dict["data"]
             any_float = any_float or data.is_floating_point()
