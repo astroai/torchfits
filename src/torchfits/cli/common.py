@@ -267,16 +267,22 @@ def json_default(value: Any) -> Any:
 
 
 def _json_safe(value: Any) -> Any:
-    """Replace NaN/Inf with None so dumps(..., allow_nan=False) is valid JSON.
+    """Make ``value`` valid JSON for dumps(..., allow_nan=False).
 
-    NumPy scalars/arrays normalize via ``tolist()`` first, so numpy-typed
-    non-finite values (e.g. ``np.float32("nan")``) also become ``null``
-    instead of tripping ``allow_nan=False``.
+    NaN/Inf become ``null``; NumPy scalars/arrays normalize via ``tolist()``
+    first, so numpy-typed non-finite values (e.g. ``np.float32("nan")``) also
+    become ``null`` instead of tripping ``allow_nan=False``. Complex numbers
+    become ``{"re": ..., "im": ...}`` and bytes a UTF-8 decoded string with
+    undecodable bytes replaced by U+FFFD (not their Python ``str()`` repr).
     """
     if hasattr(value, "tolist"):
         value = value.tolist()
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, complex):
+        return {"re": _json_safe(value.real), "im": _json_safe(value.imag)}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
     if isinstance(value, dict):
         return {key: _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

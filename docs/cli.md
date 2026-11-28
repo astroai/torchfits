@@ -238,6 +238,18 @@ torchfits table catalog.fits -e 1 -n 0
 
 `-n` / `--rows` takes a non-negative count; a negative value is a usage error (exit `2`).
 
+The preview (in every output format) is strict JSON:
+
+- non-finite floats (`NaN`, `±inf`) are `null`;
+- complex values (`TFORM` `C` / `M`) are objects `{"re": 1.0, "im": -2.0}`
+  (a non-finite part is `null`); the schema lists them as `complex64` /
+  `complex128` (Arrow has no complex type, so these columns are read with
+  `torchfits.table.read_torch`);
+- strings decode as ASCII like `torchfits.table.read`, but a byte that does
+  not decode becomes U+FFFD (`"\ufffd"`) instead of failing the listing;
+  any raw `bytes` value is emitted as its UTF-8 decoding with the same
+  replacement.
+
 ---
 
 ### `cutout`

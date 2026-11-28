@@ -235,3 +235,59 @@ def test_verify_one_corrupt_file_exits_4_under_file_jobs(tmp_path):
     bad.write_bytes(raw)
     result = _run_cli("verify", str(good), str(bad), "-J", "2", "-f", "jsonl")
     assert result.returncode == 4, result.stderr
+
+
+def _table_with_odd_values(path):
+    tf_table.write(
+        str(path),
+        {
+            "C": np.array([1 + 2j, np.nan - 4j], dtype=np.complex64),
+            "V": np.ones((2, 3), dtype=np.complex128),
+            "S": np.array(["ab", "Qz"]),
+            "I": np.array([7, 8], dtype=np.int32),
+        },
+        overwrite=True,
+    )
+    raw = path.read_bytes()
+    at = raw.rfind(b"Qz")
+    path.write_bytes(raw[:at] + b"\xff\xfe" + raw[at + 2 :])
+
+
+def test_table_preview_json_complex_and_undecodable_strings(tmp_path, capsys):
+    import json
+
+    from torchfits.cli.main import main
+
+    path = tmp_path / "odd.fits"
+    _table_with_odd_values(path)
+    assert main(["table", str(path), "-n", "5", "-f", "json"]) == 0
+    (record,) = json.loads(capsys.readouterr().out)
+    assert record["schema"] == [
+        {"name": "C", "type": "complex64"},
+        {"name": "V", "type": "fixed_size_list<item: complex128>[3]"},
+        {"name": "S", "type": "string"},
+        {"name": "I", "type": "int32"},
+    ]
+    first, second = record["preview"]
+    assert first == {
+        "C": {"re": 1.0, "im": 2.0},
+        "V": [{"re": 1.0, "im": 0.0}] * 3,
+        "S": "ab",
+        "I": 7,
+    }
+    assert second["C"] == {"re": None, "im": -4.0}
+    assert second["S"] == "��"
+
+    # Text mode prints the same JSON preview block.
+    assert main(["table", str(path), "-n", "1"]) == 0
+    out = capsys.readouterr().out
+    assert '"re": 1.0' in out
+    assert "(1+2j)" not in out
+
+
+def test_json_safe_bytes_and_complex():
+    from torchfits.cli.common import _json_safe
+
+    assert _json_safe(b"ok\xff") == "ok�"
+    assert _json_safe(np.complex64(1 - 2j)) == {"re": 1.0, "im": -2.0}
+    assert _json_safe([complex(float("inf"), 0)]) == [{"re": None, "im": 0.0}]
