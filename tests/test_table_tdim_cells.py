@@ -192,3 +192,18 @@ def test_tdim_not_describing_the_whole_cell_stays_flat(tmp_path):
 def test_to_astropy_shape_cells(cells):
     pytest.importorskip("astropy")
     assert T.to_astropy(cells, shape_cells=True)["img"].shape == (4, 2, 3)
+
+
+def test_zero_row_mutations_of_nd_cells(tmp_path):
+    # reshape(N, -1) cannot infer -1 when N == 0: appending or inserting an
+    # explicit (0, d1, d2) block raised "cannot reshape array of size 0".
+    path = str(tmp_path / "zero_cells.fits")
+    torchfits.table.write(
+        path, {"img": np.zeros((3, 2, 3), dtype=np.float32), "id": np.arange(3)}
+    )
+    empty = np.zeros((0, 2, 3), dtype=np.float32)
+    torchfits.table.append_rows(path, {"img": empty})
+    torchfits.table.insert_rows(path, {"img": torch.from_numpy(empty)}, row=1)
+    assert torchfits.read_nrows(path, 1) == 3
+    out = torchfits.table.read_torch(path, shape_cells=True)
+    assert out["img"].shape == (3, 2, 3)

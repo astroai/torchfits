@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import torch
@@ -25,6 +27,12 @@ _UNSIGNED_TZERO = {"B": -128, "I": 32768, "J": 2**31, "K": 2**63}
 # Fixed-width dtypes FITS stores through the TZERO convention (numpy dtype
 # str without byte order -> stored TFORM code).
 _OFFSET_CONVENTION_CODE = {"i1": "B", "u2": "I", "u4": "J", "u8": "K"}
+
+
+def _flat_cells(value: Any) -> Any:
+    """``(N, d1, d2, ...)`` -> ``(N, d1*d2*...)``; unlike ``reshape(N, -1)``
+    this also works for ``N == 0`` (a zero-row append of N-D cells)."""
+    return value.reshape(value.shape[0], math.prod(value.shape[1:]))
 
 
 def _ensure_dtype_maps() -> None:
@@ -138,7 +146,7 @@ def _prepare_array_for_column(arr: "np.ndarray", fmt: str) -> "np.ndarray":
         )
 
     if arr.ndim > 2:
-        return arr.reshape(arr.shape[0], -1)
+        return _flat_cells(arr)
 
     return arr
 
@@ -707,7 +715,7 @@ def _coerce_table_column_array(
             raise ValueError(f"Column '{name}' must be 1D for this operation")
         if tensor.dim() > 2 and allow_2d:
             # N-D cells (a TDIM column) are stored flat, row by row.
-            tensor = tensor.reshape(tensor.shape[0], -1)
+            tensor = _flat_cells(tensor)
         if not tensor.is_contiguous():
             tensor = tensor.contiguous()
         arr = tensor.numpy()
@@ -726,7 +734,7 @@ def _coerce_table_column_array(
     if arr.ndim == 2 and not allow_2d:
         raise ValueError(f"Column '{name}' must be 1D for this operation")
     if arr.ndim > 2 and allow_2d:
-        arr = arr.reshape(arr.shape[0], -1)
+        arr = _flat_cells(arr)
     if arr.ndim > 2:
         raise ValueError(f"Column '{name}' must be 1D or 2D, got {arr.ndim}D")
     if expected_rows is not None and arr.shape[0] != expected_rows:
@@ -879,7 +887,7 @@ def _coerce_table_complex_values(
             raise ValueError(f"Column '{name}' must be 1D for this operation")
         if tensor.dim() > 2 and allow_2d:
             # N-D cells (a TDIM column) are stored flat, row by row.
-            tensor = tensor.reshape(tensor.shape[0], -1)
+            tensor = _flat_cells(tensor)
         arr = tensor.numpy().astype(dtype, copy=False)
     else:
         arr = np.asarray(value, dtype=dtype)
@@ -889,7 +897,7 @@ def _coerce_table_complex_values(
     if arr.ndim == 2 and not allow_2d:
         raise ValueError(f"Column '{name}' must be 1D for this operation")
     if arr.ndim > 2 and allow_2d:
-        arr = arr.reshape(arr.shape[0], -1)
+        arr = _flat_cells(arr)
     if arr.ndim > 2:
         raise ValueError(f"Column '{name}' must be 1D or 2D, got {arr.ndim}D")
     if expected_rows is not None and arr.shape[0] != expected_rows:
