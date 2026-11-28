@@ -13,7 +13,6 @@ from .._table.utils import (
     _column_tnull_map,
     _naxis2_row_count,
     _normalize_row_slice,
-    _parse_tform,
 )
 from .._table.write import (
     _scaled_columns_as_stored,
@@ -26,24 +25,18 @@ from .._table.write import (
 )
 
 from ._mutation_coerce import (
-    _COMPLEX_TFORM_CODES,
-    _check_numeric_coercion,
     _column_scaling_map,
-    _clip_strings_to_width,
     _coerce_rows_from_arrow,
-    _coerce_table_column_array,
-    _coerce_table_complex_values,
-    _coerce_table_string_values,
-    _coerce_table_vla_values,
-    _ensure_dtype_maps,
     _exact_int_list,
     _infer_column_format_for_insert,
     _mutation_cache_barrier,
     _normalize_column_values_for_format,
     _normalize_mutation_rows,
+    _normalize_update_rows,
     _physical_to_stored_column,
     _read_table_for_rewrite,
     _replacement_column_layout,
+    _update_column_codes,
 )
 
 
@@ -422,86 +415,15 @@ def update_rows(
     unsigned_names = unsigned_column_dtype_names_from_header(header_map)
     scaling = _column_scaling_map(header_map, unsigned_names)
 
-    string_widths: dict[str, int] = {}
-    vla_codes: dict[str, str] = {}
-    complex_codes: dict[str, str] = {}
-    _ensure_dtype_maps()
-    for name, tform in tform_map.items():
-        if not tform:
-            continue
-        is_vla, code, repeat = _parse_tform(tform)
-        if is_vla:
-            vla_codes[name] = code
-        elif code in _COMPLEX_TFORM_CODES:
-            complex_codes[name] = code
-        elif code == "A":
-            string_widths[name] = repeat
+    codes = _update_column_codes(tform_map)
 
     start_row, num_rows = _normalize_row_slice(row_slice)
     if num_rows == 0:
         return
 
-    normalized: dict[str, Any] = {}
-    expected_rows: Optional[int] = None
-    for name, value in rows.items():
-        col_name = str(name)
-        if col_name in vla_codes:
-            values = _coerce_table_vla_values(
-                col_name, value, vla_codes[col_name], expected_rows=expected_rows
-            )
-            if expected_rows is None:
-                expected_rows = len(values)
-            normalized[col_name] = values
-        elif col_name in string_widths:
-            width = string_widths[col_name]
-            texts = _clip_strings_to_width(
-                col_name,
-                _coerce_table_string_values(
-                    col_name, value, expected_rows=expected_rows
-                ),
-                width,
-            )
-            if expected_rows is None:
-                expected_rows = len(texts)
-            import numpy as _np
-
-            arr = _np.full((expected_rows, width), 0x20, dtype=_np.uint8)
-            for i, text in enumerate(texts):
-                if text:
-                    arr[i, : len(text)] = _np.frombuffer(
-                        text.encode("ascii"), dtype=_np.uint8
-                    )
-            normalized[col_name] = arr
-        elif col_name in complex_codes:
-            arr = _coerce_table_complex_values(
-                col_name,
-                value,
-                complex_codes[col_name],
-                expected_rows=expected_rows,
-                allow_2d=True,
-            )
-            if expected_rows is None:
-                expected_rows = int(arr.shape[0])
-            normalized[col_name] = arr
-        else:
-            arr = _coerce_table_column_array(
-                col_name, value, expected_rows=expected_rows, allow_2d=True
-            )
-            if expected_rows is None:
-                expected_rows = int(arr.shape[0])
-            _check_numeric_coercion(
-                col_name,
-                arr,
-                tform_map.get(col_name),
-                unsigned_names.get(col_name),
-                scaling.get(col_name),
-            )
-            if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
-                # Physical uint64 values (negatives refused above): send them
-                # as uint64 so every writer applies the TZERO = 2**63 offset.
-                arr = arr.astype("uint64")
-            normalized[col_name] = arr
-
+    normalized, expected_rows = _normalize_update_rows(
+        rows, codes, tform_map, unsigned_names, scaling
+    )
     if expected_rows is None:
         return
     if num_rows < 0:
@@ -542,13 +464,37 @@ def update_rows(
             "use append_rows to add rows"
         )
 
+    _write_row_update(
+        path,
+        target_hdu,
+        header_map,
+        normalized,
+        start_row,
+        num_rows,
+        mmap=mmap,
+        vla_names=set(codes.vla),
+    )
+
+
+def _write_row_update(
+    path: str,
+    target_hdu: int,
+    header_map: dict[str, Any],
+    normalized: dict[str, Any],
+    start_row: int,
+    num_rows: int,
+    *,
+    mmap: bool | str,
+    vla_names: set[str],
+) -> None:
+    """Write a validated, normalized update window (mmap writer, then CFITSIO)."""
     import torchfits._C as cpp
 
     _mutation_cache_barrier(path)
 
     use_mmap = mmap in (True, "auto", "mmap")
     forced_mmap = mmap in (True, "mmap")
-    unsupported_mmap = sorted(name for name in normalized if name in vla_codes)
+    unsupported_mmap = sorted(name for name in normalized if name in vla_names)
     if forced_mmap and unsupported_mmap:
         raise ValueError(
             "mmap table updates do not support variable-length-array columns; "

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import torch
 
@@ -490,6 +490,107 @@ def _normalize_mutation_rows(
             expected_rows,
         )
 
+    return normalized, expected_rows
+
+
+class _UpdateColumnCodes(NamedTuple):
+    """Per-column storage class for an ``update_rows`` payload."""
+
+    vla: dict[str, str]  # name -> VLA element code
+    complex: dict[str, str]  # name -> complex TFORM code (C / M)
+    string_widths: dict[str, int]  # name -> fixed A width
+
+
+def _update_column_codes(tform_map: dict[str, Any]) -> _UpdateColumnCodes:
+    """Classify the table's columns by how ``update_rows`` coerces them."""
+    codes = _UpdateColumnCodes({}, {}, {})
+    _ensure_dtype_maps()
+    for name, tform in tform_map.items():
+        if not tform:
+            continue
+        is_vla, code, repeat = _parse_tform(tform)
+        if is_vla:
+            codes.vla[name] = code
+        elif code in _COMPLEX_TFORM_CODES:
+            codes.complex[name] = code
+        elif code == "A":
+            codes.string_widths[name] = repeat
+    return codes
+
+
+def _normalize_update_rows(
+    rows: dict[str, Any],
+    codes: _UpdateColumnCodes,
+    tform_map: dict[str, Any],
+    unsigned_names: dict[str, str],
+    scaling: dict[str, Any],
+) -> tuple[dict[str, Any], Optional[int]]:
+    """Coerce an ``update_rows`` payload to the writer's column layout.
+
+    Returns ``(normalized, expected_rows)``; ``expected_rows`` is ``None``
+    when the payload has no columns. Every column must have the same row
+    count as the first one.
+    """
+    normalized: dict[str, Any] = {}
+    expected_rows: Optional[int] = None
+    for name, value in rows.items():
+        col_name = str(name)
+        if col_name in codes.vla:
+            values = _coerce_table_vla_values(
+                col_name, value, codes.vla[col_name], expected_rows=expected_rows
+            )
+            if expected_rows is None:
+                expected_rows = len(values)
+            normalized[col_name] = values
+        elif col_name in codes.string_widths:
+            width = codes.string_widths[col_name]
+            texts = _clip_strings_to_width(
+                col_name,
+                _coerce_table_string_values(
+                    col_name, value, expected_rows=expected_rows
+                ),
+                width,
+            )
+            if expected_rows is None:
+                expected_rows = len(texts)
+            import numpy as _np
+
+            arr = _np.full((expected_rows, width), 0x20, dtype=_np.uint8)
+            for i, text in enumerate(texts):
+                if text:
+                    arr[i, : len(text)] = _np.frombuffer(
+                        text.encode("ascii"), dtype=_np.uint8
+                    )
+            normalized[col_name] = arr
+        elif col_name in codes.complex:
+            arr = _coerce_table_complex_values(
+                col_name,
+                value,
+                codes.complex[col_name],
+                expected_rows=expected_rows,
+                allow_2d=True,
+            )
+            if expected_rows is None:
+                expected_rows = int(arr.shape[0])
+            normalized[col_name] = arr
+        else:
+            arr = _coerce_table_column_array(
+                col_name, value, expected_rows=expected_rows, allow_2d=True
+            )
+            if expected_rows is None:
+                expected_rows = int(arr.shape[0])
+            _check_numeric_coercion(
+                col_name,
+                arr,
+                tform_map.get(col_name),
+                unsigned_names.get(col_name),
+                scaling.get(col_name),
+            )
+            if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
+                # Physical uint64 values (negatives refused above): send them
+                # as uint64 so every writer applies the TZERO = 2**63 offset.
+                arr = arr.astype("uint64")
+            normalized[col_name] = arr
     return normalized, expected_rows
 
 
