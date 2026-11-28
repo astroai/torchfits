@@ -281,8 +281,9 @@ resolution, raw fd, and the HDU header offsets a read-only handle learned
 (seeded into the next private handle so reaching HDU *n* is one seek instead
 of a walk over the *n*-1 headers before it). Validated via `stat()`. The HDU
 offsets are tied to the exact file version they were read from (device, inode,
-size, mtime and ctime of the file the handle opened, bracketed by a `stat()`
-before and after the open) rather than to the validation window: a handle is
+size, mtime and ctime of the file the handle opened: `fstat()` of the
+descriptor CFITSIO reads through, or with an environment CFITSIO a `stat()` of
+the path before and after the open) rather than to the validation window: a handle is
 only seeded from offsets recorded for its own version, and a handle only
 records them if the path still names that version when it closes and no
 in-process writer invalidated the path meanwhile. A version is recorded only

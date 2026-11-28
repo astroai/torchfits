@@ -550,6 +550,10 @@ if(TARGET cfitsio)
         target_include_directories(torchfits_core PRIVATE ${_core_cfitsio_iface_inc})
     endif()
     target_link_libraries(torchfits_core PRIVATE cfitsio)
+    # fits_get_diskfile_fd() comes from extern/patches/cfitsio-4.7.0-diskfile-fd
+    # .patch; an environment CFITSIO does not have it (fits_core.cpp then falls
+    # back to stat()ing the path around each open).
+    target_compile_definitions(torchfits_core PRIVATE TORCHFITS_CFITSIO_HAS_DISKFILE_FD=1)
     # A static archive only contributes the members something references, so
     # the core would export just the subset its own sources happen to call --
     # ffpcks/ffvcks (the checksum paths _C owns) would be missing and _C would

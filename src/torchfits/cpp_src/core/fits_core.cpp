@@ -395,18 +395,20 @@ int open_readonly_fd(const std::string& filename) {
 // a version captured while the file is still being written is never recorded.
 //
 // The protocol:
-//   * open: stat the path before and after fits_open_diskfile(). Equal
-//     versions mean the descriptor CFITSIO opened is that version: replacing
-//     the path in between and back would change the inode's ctime (link count
-//     or rename), and an inode cannot be reused while it is open. Seed only
-//     from a table recorded for exactly this version -- never on the strength
-//     of SharedReadMeta's validation window.
+//   * open: the version is fstat() of the descriptor CFITSIO actually reads
+//     through (fits_get_diskfile_fd, a vendored-CFITSIO patch). Built against
+//     a CFITSIO without it, the path is stat()ed before and after
+//     fits_open_diskfile() instead and must agree: swapping the file under
+//     the name and back would change its ctime (link count or rename), and an
+//     inode cannot be reused while it is open -- the one gap is swapping a
+//     symlink or a parent directory away and back within the open call. Seed
+//     only from a table recorded for exactly this version, never on the
+//     strength of SharedReadMeta's validation window.
 //   * the version and the SharedReadMeta generation seen at open are kept per
-//     handle (g_open_handles) when the version is old enough;
-//   * close: publish only if the path still stats to that version (the
-//     handle's reads all fell between the two stats, and nothing changed the
-//     file meanwhile) and the generation is still current (no in-process
-//     writer invalidated the path).
+//     handle (open_handles()) when the version is old enough;
+//   * close: publish only if the opened file still has that version (nothing
+//     changed what the handle read), the path still names it, and the
+//     generation is still current (no in-process writer invalidated it).
 //
 // Residual cases the version cannot see, all needing the writer to defeat
 // ctime: a filesystem that does not maintain ctime at all (some FUSE mounts);
@@ -598,14 +600,46 @@ void seed_hdu_offsets(fitsfile* fptr, const HduOffsetTable& table) {
     file->maxhdu = known_max;
 }
 
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+constexpr bool kVersionFromDescriptor = true;
+#else
+constexpr bool kVersionFromDescriptor = false;
+#endif
+
+// Version of the regular file an open handle reads, from its own descriptor.
+bool descriptor_version(fitsfile* fptr, FileVersion* out) {
+#if defined(TORCHFITS_CFITSIO_HAS_DISKFILE_FD)
+    const int fd = fits_get_diskfile_fd(fptr);
+    struct stat st {};
+    if (fd < 0 || ::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    *out = FileVersion::of(st);
+    return true;
+#else
+    (void)fptr;
+    (void)out;
+    return false;
+#endif
+}
+
+// The version a just-opened handle reads (see the protocol above). `before`
+// is the pre-open stat of the path when there is no descriptor accessor.
+bool opened_version(fitsfile* fptr, const std::string& path, const struct stat* before,
+                    FileVersion* out) {
+    if (kVersionFromDescriptor) return descriptor_version(fptr, out);
+    struct stat after {};
+    if (before == nullptr || ::stat(path.c_str(), &after) != 0) return false;
+    const FileVersion version = FileVersion::of(after);
+    if (!(version == FileVersion::of(*before))) return false;
+    *out = version;
+    return true;
+}
+
 // After a successful open of a cacheable path: record what the handle opened
 // and seed it from a table recorded for that version.
-void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat& before) {
+void after_cacheable_open(fitsfile* fptr, const std::string& path, const struct stat* before) {
     track_open_handle(fptr, nullptr);
-    struct stat after {};
-    if (fptr->Fptr == nullptr || ::stat(path.c_str(), &after) != 0) return;
-    const FileVersion version = FileVersion::of(after);
-    if (!(version == FileVersion::of(before))) return;
+    FileVersion version;
+    if (fptr->Fptr == nullptr || !opened_version(fptr, path, before, &version)) return;
     auto meta = get_shared_meta_for_path(path);
     if (!meta) return;
     OpenedVersion opened;
@@ -633,20 +667,19 @@ int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     }
     const bool cacheable = hdu_offsets_cacheable(path);
     struct stat before {};
-    const bool have_before =
-        cacheable && ::stat(path.c_str(), &before) == 0 && S_ISREG(before.st_mode);
+    const bool have_before = cacheable && !kVersionFromDescriptor &&
+                             ::stat(path.c_str(), &before) == 0 && S_ISREG(before.st_mode);
     fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
     if (status == 0 && cacheable && *fptr != nullptr) {
-        if (have_before) {
+        try {
+            after_cacheable_open(*fptr, path, have_before ? &before : nullptr);
+        } catch (...) {
+            // A cache miss is never worth failing an open over; make sure the
+            // handle is not left with a record it did not earn.
             try {
-                after_cacheable_open(*fptr, path, before);
+                track_open_handle(*fptr, nullptr);
             } catch (...) {
-                // A cache miss is never worth failing an open over; make sure
-                // the handle is not left with a record it did not earn.
-                try { track_open_handle(*fptr, nullptr); } catch (...) {}
             }
-        } else {
-            track_open_handle(*fptr, nullptr);
         }
     }
     return status;
@@ -665,8 +698,13 @@ void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
             file->logfilesize != opened.version.size) {
             return;
         }
-        // The path must still name the version the handle opened: a rewrite
-        // in place changes its ctime, a replacement its inode.
+        // Nothing changed the file the handle read (a write moves its ctime)...
+        FileVersion read_now;
+        if (kVersionFromDescriptor &&
+            (!descriptor_version(fptr, &read_now) || !(read_now == opened.version))) {
+            return;
+        }
+        // ...and the path still names it (a replacement has another inode).
         struct stat now {};
         if (::stat(path.c_str(), &now) != 0 || !(FileVersion::of(now) == opened.version)) return;
         const size_t count = static_cast<size_t>(file->maxhdu) + 2;
