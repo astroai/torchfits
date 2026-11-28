@@ -26,9 +26,14 @@ when to introduce a Dataset / `make_loader`.
 All transforms implement the `FITSTransform` callable protocol
 (`forward` / `inverse` / `__call__`). They are **not**
 `torch.nn.Module` subclasses — wrap with :func:`as_module` (or
-:class:`AsModule`) for `nn.Sequential`. Inverse state (the statistics a forward pass keeps for `inverse()`) is
-**instance-local**; construct one pipeline per worker when
-`num_workers > 0`.
+:class:`AsModule`) for `nn.Sequential`. Inverse state (the statistics a forward pass keeps for
+`inverse()`) is cached per instance **and per thread**: for a bare tensor or a
+dict payload, `inverse()` uses the calling thread's latest `forward()` on that
+instance, so `forward(a); forward(b); inverse(...)` restores with `b`'s
+statistics. A typed `Payload` carries its own: `forward()` records them in
+`meta["torchfits.inverse_stats"]` and `inverse()` of that payload uses (and
+removes) them, so several samples can be in flight on one instance.
+Construct one pipeline per worker when `num_workers > 0`.
 
 ```python
 from torchfits.transforms import (
@@ -145,7 +150,7 @@ invent one.
 | Kind | `inverse()` |
 |---|---|
 | Stretches, `AffineTransform`, `FITSHeaderScale`, `FITSScaleColumns` | Yes |
-| Normalizers (`ZScale`, `Robust`, `MinMax`, `GlobalScalar`, `InterquantileScale`, `SigmaNormalize`, `BackgroundSubtract`, `MeshBackgroundSubtract`) | Yes (the affine coefficients are cached on the instance during `forward`) |
+| Normalizers (`ZScale`, `Robust`, `MinMax`, `GlobalScalar`, `InterquantileScale`, `SigmaNormalize`, `BackgroundSubtract`, `MeshBackgroundSubtract`) | Yes (the affine coefficients are cached on the instance during `forward`, and carried by a `Payload` output) |
 | `PercentileClipNormalize` | Approximate only — forward clips to `[lower, upper]`, so clipped pixels cannot be recovered exactly |
 | `SigmaClip`, `AsymmetricSigmaClip`, `TNullToNan` | No — lossy / many-to-one |
 | Any transform you instantiate but never call `forward()` on | Raises `RuntimeError` (there are no cached limits yet) |
