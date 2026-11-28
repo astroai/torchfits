@@ -114,6 +114,19 @@ def stream_table(
                 if (tscal != 1.0 or tzero != 0.0) and not is_unsigned:
                     scaled_columns = True
                     break
+                # Identity TSCAL/TZERO cards next to a TNULL still make the
+                # column scaled for the native reader (TNULL decodes to NaN),
+                # and its raw mmap route rejects it.
+                if (
+                    col.tnull is not None
+                    and not is_unsigned
+                    and (
+                        header.get(f"TSCAL{col.index}") is not None
+                        or header.get(f"TZERO{col.index}") is not None
+                    )
+                ):
+                    scaled_columns = True
+                    break
         except (KeyError, TypeError, ValueError):
             # Schema/decode failure reading TSCAL/TZERO: raw mmap bytes cannot
             # be trusted to carry physical values, so force the buffered path.

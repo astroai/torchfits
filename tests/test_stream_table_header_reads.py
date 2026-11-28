@@ -80,3 +80,23 @@ def test_mmap_reads_the_header_once(table_path, monkeypatch):
     )
     assert _rows(chunks) == list(range(10))
     assert calls == ["header"]
+
+
+def test_identity_scaled_tnull_column_streams_buffered(tmp_path: Path) -> None:
+    # TSCAL = 1 / TZERO = 0 next to a TNULL makes the native reader scale the
+    # column (TNULL -> NaN); the probe treated it as raw and sent it to the
+    # mmap route, which raised "Scaled columns not supported for mmap".
+    path = str(tmp_path / "s.fits")
+    torchfits.table.write(
+        path,
+        {"S": np.arange(5, dtype=np.int32)},
+        schema={"S": {"format": "J", "bscale": 1.0, "bzero": 0.0, "tnull": 2}},
+    )
+    expected = [0.0, 1.0, None, 3.0, 4.0]
+    assert (
+        torchfits.table.read(path, backend="torch").column("S").to_pylist() == expected
+    )
+    batches = list(torchfits.table.scan(path, backend="torch", batch_size=2))
+    assert [v for b in batches for v in b.column("S").to_pylist()] == expected
+    rows = [r["S"] for r in torchfits.open(path)[1].iter_rows()]
+    assert torch.isnan(torch.cat(rows)).tolist() == [False, False, True, False, False]
