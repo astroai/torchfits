@@ -382,7 +382,8 @@ if __name__ == "__main__":
 ## `FitsTableDataset`
 
 Map-style dataset for row-indexable FITS catalogs. Loads the full filtered
-table at `__init__` — use only when the catalog fits in RAM.
+table at `__init__` — use only when the catalog fits in RAM — unless
+`lazy=True`, which reads rows on demand in cached blocks.
 
 ```python
 from torchfits.data import FitsTableDataset
@@ -408,6 +409,9 @@ ds = FitsTableDataset(
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
 | `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(row_dict, label)`; `False`: the row dict alone (cannot be combined with `labels`) |
+| `lazy` | `bool` | `False` | Keyword-only. Read aligned row blocks on demand instead of loading the table at `__init__` (see below) |
+| `block_rows` | `int` | `256` | Keyword-only. Rows per block in lazy mode |
+| `cache_blocks` | `int` | `64` | Keyword-only. Blocks kept per process in lazy mode (least recently used evicted first) |
 
 **Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and
 `torch.long` label, which is `tensor(0)` for every row when `labels` is
@@ -434,7 +438,35 @@ ds = FitsTableDataset(
 
 !!! info "When to use"
     Use for catalogs up to a few million rows that fit in memory. For
-    larger catalogs, use `FitsTableIterableDataset`.
+    larger catalogs, use `FitsTableIterableDataset`, or `lazy=True` when you
+    need indexed (shuffled) access.
+
+### Lazy mode
+
+`FitsTableDataset(..., lazy=True)` reads nothing at `__init__` but the row
+count (and, with `where=`, the selected row numbers, resolved 64k rows at a
+time and kept as one `int64` per selected row). Each `ds[i]` reads the
+`block_rows`-row block holding row `i` in one native call and keeps the last
+`cache_blocks` blocks. Rows are identical to eager mode. The cache is per
+process: each DataLoader worker (forked or spawned) builds its own, so memory
+stays at roughly `workers × block_rows × cache_blocks` rows.
+`mmap="auto"` reads blocks with the buffered reader, since one mmap of the
+whole file per small block costs more than a `pread` of the block.
+
+Measured on a 2M-row, 8-column (84 MB) table, one process, warm page cache,
+`__getitem__` in a Python loop:
+
+| Mode | Peak RSS growth | Uniform random | Sequential | Shuffled within 64k-row windows |
+|---|---|---|---|---|
+| eager | 89–162 MB | ~90–110k rows/s | ~100k rows/s | ~80–105k rows/s |
+| `lazy=True` (256 × 64) | ~9 MB | ~22k rows/s | ~80–95k rows/s | ~50–55k rows/s |
+| `lazy=True`, `block_rows=1024` | ~12 MB | ~18k rows/s | ~95–100k rows/s | ~100k rows/s |
+
+Uniformly random access misses the cache on almost every row, so it costs
+one small block read per row (about 4–5× slower than eager); access with
+locality (sequential, sharded, or a windowed shuffle) runs at eager speed
+with larger blocks. Use lazy mode when the table does not fit in memory, or
+to avoid a long load before the first batch.
 
 ---
 
