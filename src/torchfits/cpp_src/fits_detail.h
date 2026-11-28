@@ -164,6 +164,27 @@ inline void ensure_image_data_within_file(fitsfile* fptr, int bitpix, LONGLONG n
 
 
 
+// "status=<n> msg=<text>" for a failed image (or cutout) read. CFITSIO has
+// no text for NO_COMPRESSED_TILE (415: "unknown error status") and only a
+// bare "error uncompressing image" for DATA_DECOMPRESSION_ERR (414), which
+// is what a truncated or corrupt tile reports (vendored bounds patches).
+// The Rice decoder reports a short or corrupt stream as status 1 ("non-CFITSIO
+// program error"); on a tile-compressed HDU (`fptr` positioned on it) that
+// status can only come from a decoder, so it gets the same note.
+inline std::string image_read_status(int status, fitsfile* fptr = nullptr) {
+    char err_text[FLEN_STATUS];
+    fits_get_errstatus(status, err_text);
+    std::string msg = err_text;
+    const bool compressed_hdu =
+        fptr != nullptr && fptr->Fptr != nullptr && fptr->Fptr->compressimg != 0;
+    if (status == NO_COMPRESSED_TILE) {
+        msg = "compressed tile data is truncated or corrupt (tile missing)";
+    } else if (status == DATA_DECOMPRESSION_ERR || (status == 1 && compressed_hdu)) {
+        msg += ": compressed tile data is truncated or corrupt";
+    }
+    return "status=" + std::to_string(status) + " msg=" + msg;
+}
+
 // ---------------------------------------------------------------------------
 // ResolvedFITSMeta — flattened metadata for canonical image read
 // ---------------------------------------------------------------------------
@@ -446,10 +467,7 @@ inline native::Tensor read_tensor_canonical(
     }
 
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading image data: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading image data: " + image_read_status(status, fptr));
     }
 
     return tensor;

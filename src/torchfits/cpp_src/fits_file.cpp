@@ -537,10 +537,7 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
         bitpix, compressed, datatype, &fnullval, &dnullval, fptr_);
     fits_read_img(fptr_, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading image data: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading image data: " + detail::image_read_status(status, fptr_));
     }
     return tensor;
 }
@@ -714,10 +711,7 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
     fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
                      nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading subset: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, fptr_));
     }
     return tensor;
 }
@@ -1370,10 +1364,7 @@ native::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     fits_read_subset(file_.get_fptr(), datatype_, fpixel.data(), lpixel.data(), inc.data(),
                      nullval_ptr, tensor.data_ptr(), &anynul, &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading subset: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, file_.get_fptr()));
     }
     return tensor;
 }

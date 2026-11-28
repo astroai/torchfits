@@ -706,11 +706,8 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
                 fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
             if (status != 0) {
                 close_guard();
-                char err_text[31];
-                fits_get_errstatus(status, err_text);
                 throw std::runtime_error(
-                    "Error reading image data: status=" + std::to_string(status) +
-                    " msg=" + std::string(err_text));
+                    "Error reading image data: " + d::image_read_status(status, fptr));
             }
             close_guard();
             return tensor;
