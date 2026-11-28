@@ -105,7 +105,7 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
         out.reserve(rows.size());
         for (auto& kv : rows) {
             if (kv.second.is_vla) {
-                throw std::runtime_error("VLA columns not supported for mmap");
+                throw TableReaderUnsupported("VLA columns not supported for mmap");
             }
             out.emplace_back(kv.first, std::move(kv.second.fixed_data));
         }
@@ -134,10 +134,10 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
             // ASCII tables store numeric fields as text; the mmap layout
             // (binary cells, byte-swap) does not apply. Route to the
             // buffered path, which uses fits_read_col and handles ASCII.
-            throw std::runtime_error("ASCII tables are not supported for mmap reads");
+            throw TableReaderUnsupported("ASCII tables are not supported for mmap reads");
         }
         if (col.type == FITSColumnType::VARIABLE) {
-            throw std::runtime_error("VLA columns not supported for mmap");
+            throw TableReaderUnsupported("VLA columns not supported for mmap");
         }
         if (col.type == FITSColumnType::BIT) {
             // BIT columns are read as uint8 from mmap; converted to bool below.

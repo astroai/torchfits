@@ -790,6 +790,8 @@ void with_handle_table_reader(nb::object file_obj, int hdu_num, F&& fn) {
 }  // namespace
 
 void bind_table(nb::module_& m) {
+    nb::exception<torchfits::TableReaderUnsupported>(
+        m, "TableReaderUnsupportedError", PyExc_RuntimeError);
     nb::class_<torchfits::TableReader>(m, "TableReader")
         .def("__init__", [](torchfits::TableReader* self, const std::string& filename, int hdu_num) {
             new (self) torchfits::TableReader(filename, hdu_num);

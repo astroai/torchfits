@@ -18,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -33,6 +34,15 @@
 namespace nb = nanobind;
 
 namespace torchfits {
+
+// A reader that cannot handle this table at all (the mmap reader and VLA
+// or ASCII columns), as opposed to a table it found corrupt. Bound as
+// _C.TableReaderUnsupportedError (a RuntimeError), so the Python reader
+// chain moves on to the next reader without reporting this as the
+// diagnosis when every reader fails.
+struct TableReaderUnsupported : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 class TableReader {
 public:

@@ -152,6 +152,9 @@ def read_table_info(filename: str, hdu_num: int) -> dict[str, Any]: ...
 
 def clear_shared_read_meta_cache() -> None: ...
 
+class TableReaderUnsupportedError(RuntimeError):
+    pass
+
 class TableReader:
     @overload
     def __init__(self, filename: str, hdu_num: int = 1) -> None: ...

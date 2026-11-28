@@ -322,6 +322,12 @@ def read_fallback_table(
     col_list = columns if columns else []
     table_result = None
     decode_errors: list[BaseException] = []
+    # A reader that cannot handle this table at all (the mmap reader and VLA
+    # or ASCII columns) has no diagnosis to offer: when every reader fails,
+    # the first real decode error is reported instead of "VLA columns not
+    # supported for mmap".
+    unsupported_type = getattr(cpp_module, "TableReaderUnsupportedError", ())
+    unsupported: list[BaseException] = []
     table_mmap = mmap if isinstance(mmap, bool) else True
 
     # Opportunistic single-open read (r5a-11) for the mmap stage below: the
@@ -358,7 +364,10 @@ def read_fallback_table(
             # decode error is kept so an all-readers failure (e.g. truncated
             # data) surfaces the primary reader's diagnosis, not a slower
             # reader's replacement message.
-            decode_errors.append(exc)
+            if isinstance(exc, unsupported_type):
+                unsupported.append(exc)
+            else:
+                decode_errors.append(exc)
             table_result = None
 
     if table_result is None:
@@ -389,10 +398,10 @@ def read_fallback_table(
         except (RuntimeError, TypeError, ValueError) as exc:
             decode_errors.append(exc)
             table_result = None
-    if table_result is None and decode_errors:
+    if table_result is None and (decode_errors or unsupported):
         # Every reader failed with a decode error: surface the first one so
         # truncation and other primary-reader diagnoses keep their identity.
-        raise decode_errors[0]
+        raise (decode_errors or unsupported)[0]
 
     table_data = table_result
     # C++ already applies BIT→bool and unsigned TZERO offsets. Skip the extra
