@@ -1945,6 +1945,9 @@ void bind_fits(nb::module_& m) {
           nb::arg("algorithm") = std::string("RICE_1"));
 
     m.def("write_hdu_checksums", [](const std::string& path, int hdu_num) {
+        // ffpcks reads the whole HDU to sum it and touches no Python object:
+        // let other threads run meanwhile.
+        nb::gil_scoped_release release;
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(path);
@@ -1958,14 +1961,10 @@ void bind_fits(nb::module_& m) {
         }
         FitsHandleGuard guard;
         guard.fptr = fptr;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
-            int status = 0;
-            fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
-            if (status != 0) {
-                throw std::runtime_error("Could not move to HDU");
-            }
-        };
-        move_to_hdu(fptr, hdu_num);
+        fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
+        if (status != 0) {
+            throw std::runtime_error("Could not move to HDU");
+        }
         ffpcks(fptr, &status);
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS checksums");
@@ -1973,29 +1972,30 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
 
     m.def("verify_hdu_checksums", [](const std::string& path, int hdu_num) {
-        fitsfile* fptr = nullptr;
-        int status = 0;
-        check_fits_filename_security(path);
-        status = d::open_fits_readonly(&fptr, path);
-        if (status != 0 || !fptr) {
-            throw std::runtime_error("Could not open FITS file for checksum verification");
-        }
-        FitsHandleGuard guard;
-        guard.fptr = fptr;
-        guard.remember_path = path;
         int datastatus = -1;
         int hdustatus = -1;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
+        {
+            // ffvcks reads the whole HDU (seconds on a multi-GB image) and
+            // touches no Python object: let other threads run meanwhile.
+            nb::gil_scoped_release release;
+            fitsfile* fptr = nullptr;
             int status = 0;
+            check_fits_filename_security(path);
+            status = d::open_fits_readonly(&fptr, path);
+            if (status != 0 || !fptr) {
+                throw std::runtime_error("Could not open FITS file for checksum verification");
+            }
+            FitsHandleGuard guard;
+            guard.fptr = fptr;
+            guard.remember_path = path;
             fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
             if (status != 0) {
                 throw std::runtime_error("Could not move to HDU");
             }
-        };
-        move_to_hdu(fptr, hdu_num);
-        ffvcks(fptr, &datastatus, &hdustatus, &status);
-        if (status != 0) {
-            throw std::runtime_error("Failed to verify FITS checksums");
+            ffvcks(fptr, &datastatus, &hdustatus, &status);
+            if (status != 0) {
+                throw std::runtime_error("Failed to verify FITS checksums");
+            }
         }
         return nb::make_tuple(datastatus, hdustatus);
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
