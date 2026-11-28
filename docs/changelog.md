@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - transforms: List every exported name in the import block
 - roadmap: Record the implemented 1.4 work and what is left
 - cache: Document the cache layers and clear native metadata once
+- io: State that a tensor must not be mutated while it is written
+- architecture: List the HCOMPRESS encoder bounds patch
+- architecture: Describe the vendored CFITSIO patches
+- compatibility: Document tested scale limits and memory knobs
+- api: Keep the HDU edit and streaming-write snippets runnable
+- compatibility: Add an upgrading-from-1.3 note
+- api: Match signatures to the code and link the 1.4 features
+- examples: Add runnable examples for the 1.4 table, compression and dataset features
+- roadmap: Close the narrow-table read and table-reader split items
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
@@ -59,6 +68,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Narrow the rewrite temp cleanup and TFORM parse excepts
 - table: Read a native width-1 scalar column as a scalar Arrow array
 - cli: Report data-truncated files from verify as I/O errors
+- cfitsio: Size the HCOMPRESS_1 tile buffer for full-range noise
+- table: Release a failed read's descriptors without waiting for gc
+- cli: Exit 2 for a missing -e HDU in cutout, convert and transform
+- table: Refuse a zero-width vector column with a clear ValueError
+- cli: Refuse vector columns in a CSV/TSV convert as a usage error
+- table: Report a corrupt VLA table's real error from torchfits.read
+- image: Say "compressed tile data is truncated or corrupt" on bad tiles
+- cfitsio: Keep the in.fits(out.fits) copy request per thread
+- core: Stop learning HDU offsets after a clock step or on FUSE/FAT
+- io: Refuse writes through a closed native FITS handle
+- io: Raise when the final flush of a written FITS file fails
+- image: Refuse an image header that declares more data than the file
+- io: Keep the declared shape of a zero-size tensor in a compressed write
+- table: Keep MemoryError from an Arrow column conversion propagating
+- io: Take a handle's file version from the descriptor it reads
+- hdu: Stop pinning every unclosed HDUList and its file descriptor
+- io: Tie learned HDU offsets to the exact file version they came from
+- io: Refuse HCOMPRESS_1 default tiles smaller than 4x4 up front
+- io: Refuse PLIO_1 pixels outside 0..2**24-1 before writing
+- table: Write zero-row Arrow string columns instead of std::bad_cast
+- io: Store a zero-size image HDU uncompressed instead of dying of SIGFPE
+- table: Name a non-numeric TSCAL/TZERO card instead of a bare float() error
+- metadata: Drop stray bytes from TTYPE/TFORM in read_colnames and read_table_info
+- checksum: Refuse an HDU whose declared data runs past the end of file
+- table: Accept zero-row N-D cell blocks in row mutations
+- table: Write a zero-row character column instead of std::bad_cast
+- cfitsio: Stop the RICE_1 decoders reading past a corrupt tile
+- data: Let make_loader(batch_size=None) pass samples through
+- data: Raise HDUNotFoundError from an eager FitsTableDataset
+- cache: Close cached table readers on clear_all_caches
+- cfitsio: Bound the HCOMPRESS encoder's writes by its tile buffer
+- cli: Bound torchfits stats memory to about twice the image
+- table: Size the where= match index by matches, not by the window
+- hdu: Report a compressed image's own shape and dtype
+- where: Treat IN literals outside a numeric column's range as non-matches
+- where: Keep byte vector columns numeric in the torch-mask filter
+- table: Lay out an equal-length VLA first batch as VLA in table.writer
+- table: Type identity-scaled TNULL columns as float64 in schema()
+- table: Stream identity-scaled TNULL columns through the buffered reader
+- native: Pin TableReader raw reads to one descriptor opened at construction
 ### Performance
 - native: Release the GIL while deleting table rows
 - cli: Stream convert --columns/--where for non-FITS output
@@ -73,6 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cli: Walk remote HDU headers once for an HTTP box cutout
 - data: Read FitsTableDataset where= rows in a single pass
 - native: Tiled parallel pread for buffered table projections
+- table: Evaluate read_torch(where=) one row window at a time
+- io: Write images and HDU lists without holding the GIL
+- io: Open FITS handles and table readers without the GIL
+- io: Release the GIL while writing and verifying checksums
+- io: Reuse learned HDU offsets so reading HDU n is O(1)
+- hdu: List a many-HDU file through one open handle
+- native: Specialized column gathers and one output block for table reads
 ### Added
 - Compress integer images as quantized floats (fpack -i2f)
 - compress: Explicit float quantization and dither controls
