@@ -150,3 +150,27 @@ def test_schema_with_where_on_zero_row_table_is_typed(tmp_path):
     # A bad predicate fails the same way as the read it describes.
     with pytest.raises(ValueError, match="unknown column"):
         table.schema(path, where="NOPE > 1")
+
+
+def test_column_rewrites_of_a_zero_row_table_with_strings(tmp_path):
+    # An empty character column reached the native writer as an empty float
+    # array and failed with RuntimeError('std::bad_cast'), so insert_column /
+    # replace_column refused every zero-row table with an 'A' column.
+    path = str(tmp_path / "empty_str.fits")
+    table.write(
+        path,
+        {"A": np.zeros(0, dtype=np.int16), "S": np.array([], dtype="<U6")},
+        schema={"S": {"format": "6A"}},
+    )
+    table.replace_column(path, "A", np.zeros(0, dtype=np.int16))
+    table.insert_column(path, "B", np.zeros(0, dtype=np.int32))
+    info = torchfits.read_table_info(path)
+    assert info["colnames"] == ["A", "S", "B"]
+    assert info["tforms"][1] == "6A"
+    assert info["nrows"] == 0
+    table.write(path, {"S": []}, schema={"S": {"format": "6A"}}, overwrite=True)
+    assert table.read(path).schema.field("S").type == "string"
+    with pytest.raises(ValueError, match="character TFORM"):
+        table.write(
+            path, {"S": np.arange(3)}, schema={"S": {"format": "6A"}}, overwrite=True
+        )

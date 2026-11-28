@@ -1335,6 +1335,16 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                             nb::cast<std::string>(elem), "table string value"));
                     }
                 }
+            } else if (nb::isinstance<nb::ndarray<>>(obj)) {
+                // A string column with no rows normalises to an empty
+                // (float) ndarray: it has no values to write. Any other
+                // array cannot fill a character column.
+                nb::ndarray<> arr = nb::cast<nb::ndarray<>>(obj);
+                if (arr.size() != 0) {
+                    throw std::invalid_argument(
+                        "column '" + col.name +
+                        "' has a character TFORM ('A') but non-string values");
+                }
             } else {
                 values.emplace_back(d::require_fits_ascii(
                     nb::cast<std::string>(obj), "table string value"));
