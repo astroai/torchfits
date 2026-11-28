@@ -64,8 +64,8 @@ Repository = "https://github.com/astroai/torchfits"
 dev = [
     "pytest>=9.0",
     "pytest-cov>=7.0",
-    "ruff>=0.16.7",
-    "mypy>=2.3.1",
+    "ruff>=0.17.6",
+    "mypy>=2.4.1",
     "pandas>=2.2",
     "matplotlib>=3.11",
 ]
@@ -75,7 +75,7 @@ test = [
     "psutil",
 ]
 docs = [
-    "zensical>=0.0.61",
+    "zensical>=0.1.4",
 ]
 examples = [
     "matplotlib>=3.11",

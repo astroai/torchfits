@@ -57,8 +57,8 @@ zlib = ">=1.2.13"
 # torchfits = { path = "." }  # Don't add self-dependency - causes circular dependency
 pytest = ">=9.0"
 pytest-cov = ">=7.0"
-ruff = ">=0.16.7"
-mypy = ">=2.3.1"
+ruff = ">=0.17.6"
+mypy = ">=2.4.1"
 pip = ">=24.0"
 scikit-build-core = ">=1.0.3"
 cmake = ">=3.21"
@@ -136,5 +136,5 @@ default = { features = ["prod"] }
 test = { features = ["prod", "test"] }
 
 [pypi-dependencies]
-zensical = ">=0.0.61"
+zensical = ">=0.1.4"
 vos = ">=3.7, <4"
