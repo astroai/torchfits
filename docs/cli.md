@@ -389,8 +389,16 @@ Integer `add` / `sub` / `mul` are exact for every integer width, including
 64-bit (`int64`, `uint64`) images and operands: results outside the output
 dtype saturate to its minimum or maximum with a `RuntimeWarning` naming how
 many pixels were clamped, instead of wrapping or being rounded through
-float64. A fractional scalar or a floating-point image B is applied in
-float64.
+float64. A fractional scalar or a floating-point image B on an integer A (with
+`--dtype auto`) is applied exactly too: each pixel's exact result is truncated
+toward zero (warning how many pixels lost a fraction) and saturated to A's
+dtype, so 64-bit pixels near `2**63` are never rounded through float64.
+Non-finite results into an integer output: `+inf` / `-inf` (an infinite
+operand) saturate to the dtype's maximum / minimum; a NaN result (a NaN
+operand, or `0 * inf`) has no integer value and is refused as a usage error
+(exit `2`, nothing written) — use `--dtype float32/float64` to keep it. (An
+integer A with a `BLANK` keyword already reads as floating point, with NaN at
+its blank pixels, so its results are floating point.)
 
 ---
 
