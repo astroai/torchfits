@@ -16,6 +16,7 @@ If you are migrating from astropy or fitsio, see [Evaluation](evaluation.md).
 | **Filter & load catalogs** | `table.read(path, where="MAG < 20")` | PyArrow table with C++ pushdown filtering | [Tables & Catalogs](#tables-as-dataframes) |
 | **Catalog columns as Tensors** | `table.read_torch(path, columns=[...])` | Dictionary of PyTorch tensors ready for model inputs | [Tables as Tensors](#tables-as-tensors) |
 | **Stream huge catalogs** | `table.scan(path, batch_size=50_000)` | Out-of-core chunked reader for datasets larger than RAM | [Streaming Large Catalogs](#streaming-large-catalogs) |
+| **Write huge catalogs** | `table.writer(path)` / `table.write(path, batches)` | Out-of-core, atomic table writes (e.g. Parquet → FITS) | [Writing Large Catalogs](#writing-large-catalogs) |
 | **Extract image cutouts** | `read_subset(path, x1, y1, x2, y2)` | Fast bounding box extraction without loading full frame | [Cutouts](#cutouts-and-mefs) |
 | **High-throughput cutouts** | `open_subset_reader(path)` | Reuses open file handle across thousands of crops | [Subset Reader](#reusable-subset-reader) |
 | **Multi-Extension FITS (MEF)** | `with torchfits.open(path) as hdul:` | Pythonic HDUList navigation by index or EXTNAME | [HDULists](#mef) |
@@ -59,7 +60,23 @@ torchfits.write("output.fits", tensor, overwrite=True)
 
 # Write tile-compressed FITS using RICE_1 (creates smaller, fast-reading files)
 torchfits.write("compressed.fits", tensor, compress="RICE_1", overwrite=True)
+
+# fpack-style controls: tile size, quantization step, reproducible dither
+torchfits.write(
+    "tuned.fits",
+    tensor,
+    compress="RICE_1",
+    tile_shape=(128, 128),
+    quantize_level=16,
+    dither_seed=42,
+    overwrite=True,
+)
 ```
+
+`RICE_1` and the other non-`GZIP_1` codecs quantize float images (lossy);
+`GZIP_1` keeps them exact. The tile-compression keywords are described under
+[`write()`](api-core-io.md#write); [`example_fpack_compression.py`](published-examples/example_fpack_compression.py)
+runs them next to the matching `torchfits compress` flags.
 
 ---
 
@@ -169,6 +186,33 @@ for batch in torchfits.table.scan(
     process_batch(batch)
 ```
 
+`where=` filters each batch window as it streams, and
+`table.scan_torch(path, where=...)` yields the matching rows as tensors.
+
+### Writing Large Catalogs {#writing-large-catalogs}
+
+`torchfits.table.writer` is the write-side counterpart: it writes a table one
+batch at a time and publishes the file only when the stream completes, so a
+failure leaves no partial file. `table.write` takes a stream of batches the
+same way:
+
+```python
+import pyarrow.parquet as pq
+import torchfits
+
+# Parquet -> FITS without loading the Parquet file
+batches = pq.ParquetFile("huge.parquet").iter_batches(batch_size=100_000)
+torchfits.table.write("huge.fits", batches, overwrite=True)
+
+# Filter one FITS table into another, batch by batch
+with torchfits.table.writer("bright.fits", extname="BRIGHT") as w:
+    for batch in torchfits.table.scan("huge.fits", where="MAG < 18"):
+        w.write(batch)
+```
+
+See [`table.writer()`](api-tables.md#tablewriter) for the layout and null
+rules, and [`example_table_streaming_write.py`](published-examples/example_table_streaming_write.py).
+
 ---
 
 ## 4. Fast Image Cutouts {#cutouts-and-mefs}
@@ -268,6 +312,12 @@ loader = make_loader(
 for batch_images, batch_labels in loader:
     pass
 ```
+
+Catalogs have their own datasets: `FitsTableDataset` for shuffled row access
+(`lazy=True` reads cached row blocks on demand instead of loading the table)
+and `FitsTableIterableDataset` for streaming passes; both take `where=`. See
+[Data](api-data.md#fitstabledataset) and
+[`example_lazy_table_dataset.py`](published-examples/example_lazy_table_dataset.py).
 
 ---
 

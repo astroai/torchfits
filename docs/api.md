@@ -61,7 +61,10 @@ For step-by-step code tutorials, see [Python Workflows](python-workflows.md) and
 | Read dataframe (Arrow) | `table.read(path, hdu=1, columns=None, where=None)` | [Tables](api-tables.md#tableread) |
 | Stream dataframe batches | `table.scan(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan) |
 | Dataframe columns as tensors | `table.read_torch(path, hdu=1, columns=None)` | [Tables](api-tables.md#tableread_torch) |
-| Stream tensor-column chunks | `table.scan_torch(path, hdu=1, batch_size=65536)` | [Tables](api-tables.md#tablescan_torch) |
+| Stream tensor-column chunks | `table.scan_torch(path, hdu=1, batch_size=65536, where=None)` | [Tables](api-tables.md#tablescan_torch) |
+| Write a table | `table.write(path, data, overwrite=False)` | [Tables](api-tables.md#tablewrite) |
+| Stream batches into a new table | `table.writer(path)` / `table.write(path, batches)` | [Tables](api-tables.md#tablewriter) |
+| N-D cells (`TDIM`) | `table.read_torch(path, shape_cells=True)` | [Tables](api-tables.md#n-d-cells-tdim) |
 | Astropy Table | `table.read_astropy(path, hdu=1)` | [Tables](api-tables.md#astropy) |
 | Native Polars dataframe | `table.read_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
 | Streaming Polars batches | `table.scan_polars(path, hdu=1)` | [Tables](api-tables.md#polars) |
@@ -102,7 +105,7 @@ and [Transforms](api-transforms.md). Runnable scripts are indexed in
 | 3D+ cube iterable peer | `FitsCubeIterableDataset(paths, hdu=0, slice_index=None)` | [Data](api-data.md#fitscubeiterabledataset) |
 | 1D / multi-arm spectrum (map-style) | `FitsSpectrumDataset(paths, hdu=0, layout="dict")` | [Data](api-data.md#fitsspectrumdataset) |
 | 1D / multi-arm spectrum (iterable) | `FitsSpectrumIterableDataset(paths, hdu=0, layout="dict")` | [Data](api-data.md#fitsspectrumiterabledataset) |
-| Table map-style (fits in RAM) | `FitsTableDataset(path, hdu=1)` | [Data](api-data.md#fitstabledataset) |
+| Table map-style (fits in RAM, or `lazy=True` block cache) | `FitsTableDataset(path, hdu=1, lazy=False)` | [Data](api-data.md#fitstabledataset) |
 | Table streaming (large) | `FitsTableIterableDataset(path, hdu=1, batch_size=65536)` | [Data](api-data.md#fitstableiterabledataset) |
 | Cutout patches | `FitsCutoutDataset(cutouts)` | [Data](api-data.md#fitscutoutdataset) |
 | Survey mosaic staged cutouts | `FitsStagedCutoutIterableDataset(paths, cutouts_per_file=500)` | [Data](api-data.md#fitsstagedcutoutiterabledataset) |

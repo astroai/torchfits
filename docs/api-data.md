@@ -342,13 +342,17 @@ ds = FitsTensorIterableDataset(
 |---|---|---|---|
 | `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
 | `hdu` | `int` or `str` or `sequence` | `0` | Flux HDU(s) |
+| `ivar_hdu` / `mask_hdu` | same arity as `hdu` | `None` | Companion HDUs (not flux channels) |
 | `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `True` | Memory-mapped reads |
 | `shuffle` | `bool` | `False` | Shuffle file order; a **different permutation each epoch** |
+| `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle buffer (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 | `seed` | `int` | `0` | Base seed for shuffling — the same `seed` replays the same *sequence* of epochs |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
+| `mask_is_dq` / `bad_bits` | `bool` / `int` or sequence or `None` | `False` / `None` | Keyword-only. Decode `mask_hdu` as a FITS `DQ` bitfield, as in `FitsTensorDataset` |
 | `label_key` | `str` or `None` | `None` | Keyword-only. Header keyword of the first flux HDU holding each file's integer label |
 | `labels` | `list[int]`, `Tensor` or `None` | `None` | Keyword-only. Explicit per-file labels (overrides `label_key`); length must match the files |
 
@@ -511,6 +515,9 @@ ds = FitsTableIterableDataset(
 | `transform` | `callable` or `None` | `None` | Applied to each row dict (or each chunk when `as_batches=True`) |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
+| `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle of rows (per-row mode only) |
+| `seed` | `int` | `0` | Base seed for the shuffle buffer |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 
 **Returns per item:** `dict[str, Tensor | Any]` — one row, or one chunk of
 `batch_size` rows when `as_batches=True`.
@@ -674,6 +681,7 @@ ds = FitsCubeIterableDataset(
 | `hdu` | `int` or `str` or `sequence` | `0` | Primary datacube HDU(s) |
 | `slice_index` | `int` or `None` | `None` | Optional index along the leading channel/spectral axis; must be `>= 0` (a negative index would silently pick a channel from the far end) |
 | `spectral_slice` | `(int, int)` or `None` | `None` | Half-open spectral window on the leading axis (mutually exclusive with `slice_index`) |
+| `add_channel_dim` | `bool` | `False` | Keyword-only. Prepend a channel dimension |
 | `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `shuffle` | `bool` | `False` | Shuffle file order per epoch |
 | `shuffle_buffer_size` | `int` or `None` | `None` | Rolling reservoir buffer for in-flight random mixing |
@@ -711,7 +719,10 @@ ds = FitsSpectrumIterableDataset(
 | `mask_column` / `wavelength_column` / `wavelength_hdu` | `str` / `str` / HDU spec or `None` | `None` | Same companions as `FitsSpectrumDataset` |
 | `mask_is_dq` / `bad_bits` | `bool` / sequence or `None` | `False` / `None` | Interpret the mask source as a `DQ` bitfield |
 | `label_key` / `labels` | `str` / `list[int]` or `None` | `None` | Per-file labels; items become `(payload, label)` |
+| `transform` / `device` / `mmap` / `cache_dir` | | `None` / `"cpu"` / `True` / `None` | As in `FitsSpectrumDataset` |
+| `shuffle` / `seed` | `bool` / `int` | `False` / `0` | Shuffle file order per epoch, from this base seed |
 | `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle buffer size |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 
 ---
 
@@ -746,8 +757,12 @@ ds = FitsStagedCutoutIterableDataset(
 | `cleanup` | `bool` | `True` | Automatically delete downloaded mosaic after sampling |
 | `cutout_generator` | `callable` or `None` | `None` | Custom spatial coordinate sampler `(height, width, ch, cw) -> (x1, y1, x2, y2)` |
 | `transform` | `callable` or `None` | `None` | Applied to each cutout tensor or companion dict |
+| `device` | `str` | `"cpu"` | Torch device |
+| `add_channel_dim` | `bool` | `True` | Prepend a channel dimension to each cutout |
 | `shuffle_files` | `bool` | `False` | Shuffle mosaic order per epoch |
 | `shuffle_buffer_size` | `int` or `None` | `None` | In-flight reservoir shuffle across mosaic stamps |
+| `seed` | `int` | `0` | Base seed for the shuffles and the default cutout sampler |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 
 Every flux band and every `ivar_hdu` / `mask_hdu` companion must have the
 same shape as the first flux band; a misaligned file raises `ValueError` when
