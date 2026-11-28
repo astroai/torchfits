@@ -423,3 +423,45 @@ def test_batch_to_device_moves_large_tensors_individually(monkeypatch):
     out = device_mod.batch_to_device(small, "meta")
     assert stacks == [3]
     assert [t.shape for t in out] == [(8, 8)] * 3
+
+
+def test_fallback_image_cache_keeps_host_tensor(monkeypatch):
+    """P11: the device read path cached ``data.cpu()`` -- a synchronizing
+    device-to-host copy of the tensor it had just uploaded."""
+    import torch
+
+    from torchfits._io_engine import _read_pipeline_fallback as fb
+
+    host = torch.arange(6.0).reshape(2, 3)
+    stored = {}
+
+    class _Cpp:
+        @staticmethod
+        def read_full(handle, hdu, mmap):
+            return host
+
+    monkeypatch.setattr(fb, "to_device", lambda t, d: t.to("meta"))
+    monkeypatch.setattr(
+        fb, "store_cached_read", lambda key, value, cap: stored.update(v=value)
+    )
+    monkeypatch.setattr(fb, "set_cached_hdu_type", lambda *a, **k: None)
+    out = fb.read_fallback_image(
+        cpp_module=_Cpp,
+        file_handle=None,
+        path="x.fits",
+        hdu_num=0,
+        device="cuda",
+        mmap=True,
+        fp16=False,
+        bf16=False,
+        cache_capacity=4,
+        fast_header=True,
+        return_header=False,
+        cache_key=("k",),
+        use_cache=True,
+        resolve_image_mmap=lambda *a: True,
+        read_header=lambda *a: {},
+        signature=None,
+    )
+    assert out.device.type == "meta"
+    assert stored["v"][0] is host

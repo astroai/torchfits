@@ -270,6 +270,10 @@ def read_fallback_image(
     elif bf16:
         data = data.to(torch.bfloat16)
 
+    # The cache keeps the host tensor as read: copying the device result
+    # back with .cpu() cost a synchronizing device-to-host transfer per read
+    # (P11). The table path below already caches before its device move.
+    host_data = data
     if str(device) != "cpu":
         data = to_device(data, device)
 
@@ -279,15 +283,7 @@ def read_fallback_image(
             header = Header(header_data)
 
     if use_cache and cache_key is not None:
-        store_cached_read(
-            cache_key,
-            (
-                data.cpu() if device != "cpu" else data,
-                header,
-                signature,
-            ),
-            cache_capacity,
-        )
+        store_cached_read(cache_key, (host_data, header, signature), cache_capacity)
 
     if isinstance(hdu_num, int):
         set_cached_hdu_type(path, hdu_num, "IMAGE", signature)
