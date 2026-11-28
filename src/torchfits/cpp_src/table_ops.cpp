@@ -97,7 +97,7 @@ void rollback_inserted_rows(fitsfile* fptr, long start_row, long num_rows) {
 // or throw. Touches no Python object, so it runs without the GIL.
 fitsfile* open_table_hdu_for_write(const char* filename, int hdu_num) {
     fitsfile* fptr = nullptr;
-    int status = torchfits::open_fits_for_write(&fptr, filename ? filename : "");
+    int status = torchfits::open_fits_for_write(&fptr, filename ? filename : "", /*wait_for_readers=*/true);
     if (status != 0) {
         char err_msg[FLEN_STATUS];
         fits_get_errstatus(status, err_msg);
@@ -961,7 +961,7 @@ void delete_rows(const char* filename, int hdu_num, long start_row, long num_row
 
     constexpr int kFitsReadWrite = 1;
     torchfits::check_fits_filename_security(filename ? filename : "");
-    status = torchfits::open_fits_for_write(&fptr, filename);
+    status = torchfits::open_fits_for_write(&fptr, filename, /*wait_for_readers=*/true);
     if (status != 0) {
         char err_msg[FLEN_STATUS];
         fits_get_errstatus(status, err_msg);
@@ -1057,7 +1057,7 @@ void rename_columns(const char* filename, int hdu_num,
 
     constexpr int kFitsReadWrite = 1;
     torchfits::check_fits_filename_security(filename ? filename : "");
-    status = torchfits::open_fits_for_write(&fptr, filename);
+    status = torchfits::open_fits_for_write(&fptr, filename, /*wait_for_readers=*/true);
     if (status != 0) {
         char err_msg[FLEN_STATUS];
         fits_get_errstatus(status, err_msg);
@@ -1159,7 +1159,7 @@ void drop_columns(const char* filename, int hdu_num, const std::vector<std::stri
 
     constexpr int kFitsReadWrite = 1;
     torchfits::check_fits_filename_security(filename ? filename : "");
-    status = torchfits::open_fits_for_write(&fptr, filename);
+    status = torchfits::open_fits_for_write(&fptr, filename, /*wait_for_readers=*/true);
     if (status != 0) {
         char err_msg[FLEN_STATUS];
         fits_get_errstatus(status, err_msg);
@@ -1213,7 +1213,7 @@ void drop_columns(const char* filename, int hdu_num, const std::vector<std::stri
 TableStreamWriter::TableStreamWriter(const std::string& filename, int hdu_num)
     : filename_(filename) {
     torchfits::check_fits_filename_security(filename_);
-    int status = torchfits::open_fits_for_write(&fptr_, filename_);
+    int status = torchfits::open_fits_for_write(&fptr_, filename_, /*wait_for_readers=*/true);
     if (status != 0 || fptr_ == nullptr) {
         char err_msg[FLEN_STATUS];
         fits_get_errstatus(status, err_msg);

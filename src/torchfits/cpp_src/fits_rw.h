@@ -1,8 +1,12 @@
 #pragma once
 
+#include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
+#include <sys/stat.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
@@ -134,9 +138,12 @@ void clear_shared_read_meta_cache();
 // a bare 104 and a comment naming a constant that does not exist.
 void evict_cached_reader(const std::string& filename);
 
-// Open `path` for writing, retrying once if a cached READONLY handle for it
-// was registered in-process. The retry drops that handle and re-opens, so
+// Open `path` for writing, retrying if a cached READONLY handle for it was
+// registered in-process. The retry drops that handle and re-opens, so
 // read-then-mutate sequences work without the caller knowing about the cache.
+// A read in flight on another thread holds its handle until the read ends, so
+// for a writable regular file the evict-and-retry repeats with a short backoff
+// for up to kWriteOpenRetryBudget (see open_fits_for_write below).
 //
 // Known limitation, measured: CFITSIO reuses FILE_NOT_OPENED for the
 // READONLY-blocks-READWRITE refusal, so this retry also fires on any *ordinary*
@@ -189,27 +196,62 @@ inline void drop_failed_open(fitsfile** fptr, int status) {
     }
 }
 
-inline int open_fits_for_write(fitsfile** fptr, const std::string& path) {
+// Whether `path` names an existing regular file this process may write: the
+// only case in which FILE_NOT_OPENED can be a READONLY handle that is still
+// open in another thread, and so worth waiting out.
+inline bool is_writable_regular_file(const std::string& path) {
+    struct stat st;
+    return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+           ::access(path.c_str(), W_OK) == 0;
+}
+
+// A read on another thread holds its cached reader's READONLY handle for the
+// length of the read, out of reach of the eviction. Waiting out such a read
+// costs at most this long before the conflict is reported.
+constexpr std::chrono::milliseconds kWriteOpenRetryBudget{2000};
+
+// ``wait_for_readers`` lets the retry sleep, so only a caller that runs
+// without the GIL may pass true: a reader thread needs the GIL to finish its
+// read and hand its handle back, so waiting while holding it only delays the
+// failure.
+inline int open_fits_for_write(fitsfile** fptr, const std::string& path,
+                               bool wait_for_readers = false) {
     int status = 0;
     *fptr = nullptr;
     open_fits_readwrite_raw(fptr, path, &status);
     drop_failed_open(fptr, status);
     if (status == FILE_NOT_OPENED) {
-        evict_cached_reader(path);
-        status = 0;
-        *fptr = nullptr;
-        open_fits_readwrite_raw(fptr, path, &status);
-        drop_failed_open(fptr, status);
+        // Evict and retry. A reader busy on another thread re-caches its
+        // handle when its read ends, so keep evicting and retrying with a
+        // short backoff while the path is a writable file (any other
+        // FILE_NOT_OPENED cannot clear by waiting, and fails after one retry).
+        const bool may_wait = wait_for_readers && is_writable_regular_file(path);
+        const auto deadline = std::chrono::steady_clock::now() + kWriteOpenRetryBudget;
+        std::chrono::milliseconds delay{1};
+        for (;;) {
+            evict_cached_reader(path);
+            status = 0;
+            *fptr = nullptr;
+            open_fits_readwrite_raw(fptr, path, &status);
+            drop_failed_open(fptr, status);
+            if (status != FILE_NOT_OPENED || !may_wait ||
+                std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+            std::this_thread::sleep_for(delay);
+            delay = std::min(delay * 2, std::chrono::milliseconds{50});
+        }
         if (status == FILE_NOT_OPENED) {
             throw std::runtime_error(
                 "Failed to open '" + path + "' for writing: CFITSIO still reports "
                 "the file as already open after every cached reader was dropped. "
                 "The usual cause is a reader that is still open -- one obtained "
-                "from torchfits.open_table_reader() holds its own CFITSIO handle, "
-                "which cache eviction cannot release; close it (or drop the "
-                "reference) and retry. Otherwise the path is probably not "
-                "writable: a missing parent directory, or insufficient "
-                "permissions.");
+                "from torchfits.open_table_reader() holds its "
+                "own CFITSIO handle, which cache eviction cannot release, and a "
+                "read running on another thread for the whole retry window holds "
+                "one too; close it (or drop the reference) and retry. Otherwise "
+                "the path is probably not writable: a missing parent directory, "
+                "or insufficient permissions.");
         }
     }
     return status;

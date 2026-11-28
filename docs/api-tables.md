@@ -630,6 +630,12 @@ column's original `TTYPE` card (or its absence) while it stays at position
 `i`; when `insert_column` moves it, it is written with `TTYPE = 'COL<i>'` (its
 old name) so reads keep returning the same name.
 
+A mutation opens the file read-write. A table read running on another thread
+at that moment holds the file open read-only; the mutation waits for it (up
+to about two seconds) instead of failing. A reader you keep open yourself
+(`torchfits.open_table_reader(...)`) is not released by waiting: close it
+before mutating the file, or the mutation raises `RuntimeError`.
+
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
 `None` is written as a blank value, and a value longer than the column width
