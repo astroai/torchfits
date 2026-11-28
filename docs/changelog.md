@@ -108,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Type identity-scaled TNULL columns as float64 in schema()
 - table: Stream identity-scaled TNULL columns through the buffered reader
 - native: Pin TableReader raw reads to one descriptor opened at construction
+- io: Keep Inf and -0.0 in lossless tiles of ZBLANK float images
 ### Performance
 - native: Release the GIL while deleting table rows
 - cli: Stream convert --columns/--where for non-FITS output
