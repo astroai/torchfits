@@ -220,6 +220,72 @@ def _write_many_axis_image(path: Path, naxis: int) -> Path:
 # Tables
 
 
+@pytest.mark.parametrize("mmap", [True, False])
+def test_ascii_string_column_ignores_narrower_tdisp(tmp_path: Path, mmap: bool) -> None:
+    """getcols-vla-strings: upstream 113781d cuts ffgcls2 strings to the
+    TDISPn width; the vendored patch keeps whole fields (a display hint must
+    not truncate data)."""
+    cards = [
+        _card("XTENSION", "TABLE"),
+        _card("BITPIX", 8),
+        _card("NAXIS", 2),
+        _card("NAXIS1", 14),
+        _card("NAXIS2", 2),
+        _card("PCOUNT", 0),
+        _card("GCOUNT", 1),
+        _card("TFIELDS", 2),
+        _card("TTYPE1", "NAME"),
+        _card("TBCOL1", 1),
+        _card("TFORM1", "A10"),
+        _card("TDISP1", "A5"),
+        _card("TTYPE2", "N"),
+        _card("TBCOL2", 11),
+        _card("TFORM2", "I4"),
+    ]
+    path = tmp_path / "tdisp.fits"
+    rows = b"abcdefghij   1" + b"klmnopqrst   2"
+    path.write_bytes(_PRIMARY_NULL + _header(cards) + _pad(rows, b" "))
+    table = torchfits.table.read(str(path), hdu=1, mmap=mmap)
+    assert table.column("NAME").to_pylist() == ["abcdefghij", "klmnopqrst"]
+    tensors = torchfits.table.read_torch(str(path), hdu=1, mmap=mmap)
+    assert bytes(tensors["NAME"][1].tolist()) == b"klmnopqrst"
+
+
+def test_vla_string_descriptor_past_heap_raises(tmp_path: Path) -> None:
+    """getcols-vla-strings: a 1PA string whose descriptor points past the
+    heap. torchfits reads it as bytes through its own descriptor checks, not
+    through the ffgcls2 path the patch hardens."""
+    heap = b"abcdefgh"
+    cards = [
+        _card("XTENSION", "BINTABLE"),
+        _card("BITPIX", 8),
+        _card("NAXIS", 2),
+        _card("NAXIS1", 8),
+        _card("NAXIS2", 2),
+        _card("PCOUNT", len(heap)),
+        _card("GCOUNT", 1),
+        _card("TFIELDS", 1),
+        _card("TTYPE1", "S"),
+        _card("TFORM1", "1PA(8)"),
+    ]
+    rows = struct.pack(">ii", 3, 0) + struct.pack(">ii", 5, 4096)
+    path = tmp_path / "vla-string.fits"
+    path.write_bytes(_PRIMARY_NULL + _header(cards) + _pad(rows + heap))
+    script = """
+    import sys
+    import torchfits
+    for kwargs in ({}, {"mmap": False}):
+        try:
+            torchfits.table.read(sys.argv[1], hdu=1, **kwargs)
+        except (RuntimeError, OSError, ValueError) as exc:
+            print("RAISED", type(exc).__name__, exc)
+        else:
+            print("READ")
+    """
+    out = _run_child(script, str(path))
+    assert out.count("RAISED") == 2, out
+
+
 # --------------------------------------------------------------------------
 # IRAF .imh/.pix (CFITSIO converts them when the name ends in ".imh" and
 # goes through the extended filename syntax, e.g. "x.imh[0]")
