@@ -158,3 +158,31 @@ def test_clear_all_caches_never_removes_dir_containing_root(
 
     assert (home / "thesis.fits").read_bytes() == b"precious"
     assert home.is_dir()
+
+
+def test_clear_cache_is_the_engine_clear_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """torchfits.cache.clear_cache() delegates the in-process layer once.
+
+    It used to clear the native SharedReadMeta itself and then again through
+    clear_file_cache(); the engine call now does it once, and the cached read
+    results and counters are cleared with it.
+    """
+    import torchfits._C as cpp
+
+    path = str(tmp_path / "t.fits")
+    torchfits.write(path, torch.ones((2, 2)), overwrite=True)
+    torchfits.read(path, hdu=0)
+    torchfits.read(path, hdu=0)
+    assert torchfits.get_cache_performance()["total_requests"] > 0
+
+    calls: list[None] = []
+    real = cpp.clear_shared_read_meta_cache
+    monkeypatch.setattr(
+        cpp, "clear_shared_read_meta_cache", lambda: (calls.append(None), real())[1]
+    )
+    torchfits.cache.clear_cache()
+    assert len(calls) == 1
+    assert torchfits.cache.get_cache_stats() == torchfits.get_cache_performance()
+    assert torchfits.get_cache_performance()["total_requests"] == 0

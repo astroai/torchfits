@@ -240,12 +240,28 @@ Header and metadata probes go through `torchfits._core` and do not load
 PyTorch. `torchfits.open()` lists HDUs and reads headers through the same core;
 the torch-linked reader is opened lazily when an HDU first touches its data.
 
-`torchfits.cache.clear_cache()` clears policy state and I/O metadata.
-`clear_file_cache(...)` clears the in-process I/O caches: cached read results,
-header/meta and HDU-type caches, counters, and the native shared metadata.
-There is no shared pool of open FITS handles for either call to drain.
-`clear_all_caches()` (or `clear_cache(disk=True)`) also removes
-`cache_root()`; override directories outside it are never removed wholesale. See
+The two Python modules are layers, not rival caches:
+
+- `torchfits.cache` (`src/torchfits/cache.py`) is the public, torch-free
+  façade. It owns only the disk layer: where downloads and samples live
+  (`TORCHFITS_CACHE_DIR`, `TORCHFITS_REMOTE_CACHE`, `TORCHFITS_SAMPLE_CACHE`)
+  and how they are removed. The remote downloader takes its directory from
+  here. `clear_cache()` and `get_cache_stats()` delegate the in-process part
+  to the engine.
+- The engine caches (`src/torchfits/_io_engine/caches.py`) hold every piece
+  of in-process state: cached read results, header/meta and HDU-type LRUs
+  validated against the file's size, mtime and inode, the open-`HDUList`
+  registry that mutations close before writing, and the counters behind
+  `get_cache_performance()`. `clear_file_cache(...)` clears them and the
+  native shared metadata; `invalidate_path_caches(path)` drops one file's
+  entries after every write.
+
+So `torchfits.cache.clear_cache()` is `clear_file_cache()` (in-process
+only), `clear_all_caches()` (or `clear_cache(disk=True)`) is that plus the
+disk layer, and `torchfits.cache.get_cache_stats()` returns the same
+counters as `get_cache_performance()`. There is no shared pool of open FITS
+handles for any of them to drain. `clear_all_caches()` removes `cache_root()`;
+override directories outside it are never removed wholesale. See
 [Cache Utilities](api-core-io.md#cache-utilities).
 
 Native in-process tiers:
