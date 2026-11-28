@@ -225,6 +225,16 @@ def test_image_section_of_many_axis_image_raises(tmp_path: Path) -> None:
     assert "dimensions" in out
 
 
+def test_ten_axis_image_reads_raise(tmp_path: Path) -> None:
+    """getcol-ndim: fits_read_subset/fits_read_pix walked NAXIS > 9 past a
+    naxes[9] array; torchfits also refuses such images before calling them."""
+    path = _write_many_axis_image(tmp_path / "axes10.fits", 10)
+    with pytest.raises(RuntimeError, match="at most 9 axes"):
+        torchfits.read(str(path))
+    with pytest.raises(RuntimeError):
+        torchfits.read_subset(str(path), 0, 0, 0, 1, 1)
+
+
 # --------------------------------------------------------------------------
 # Tables
 
