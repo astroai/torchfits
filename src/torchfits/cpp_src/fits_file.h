@@ -80,6 +80,12 @@ public:
     // not captured, and a path that no longer exists (nothing to mix in).
     bool path_names_open_file() const;
 
+    // The same test for an already-resolved file: false when st (an fstat of
+    // a descriptor opened on this handle's path) is not the file this
+    // read-only handle opened. A TableReader on this handle vets the
+    // descriptor it pins for its raw reads with it.
+    bool names_open_file(const struct stat& st) const;
+
     void ensure_hdu(int hdu_num, int* status);
     // Same move, but throws naming the query that needed it. Used by the
     // HDU-keyed cache lookups below, which read the CFITSIO current-HDU cursor:

@@ -48,7 +48,7 @@ void TableReader::read_columns_buffered(
     // anonymous memory on every call (kernel rusage shows ~2930 minor
     // faults per read), which dominates the pread cost on a busy host.
     int data_fd = -1;
-    if (direct_io_ok()) {
+    if (data_fd_ >= 0) {
         if (data_offset_ < 0) {
             LONGLONG headstart = 0, dataend = 0;
             int addr_status = 0;
@@ -58,10 +58,7 @@ void TableReader::read_columns_buffered(
             }
         }
         if (data_offset_ > 0) {
-            if (data_fd_cached_ < 0) {
-                data_fd_cached_ = ::open(filename_.c_str(), O_RDONLY);
-            }
-            data_fd = data_fd_cached_;
+            data_fd = data_fd_;
         }
     }
 
@@ -244,10 +241,8 @@ void TableReader::read_columns_pread_tiled(
         core::parallel_for(0, ntiles, 1, run_tiles);
     }
     if (failed.load()) {
-        ::close(data_fd);
-        if (data_fd_cached_ == data_fd) {
-            data_fd_cached_ = -1;
-        }
+        // The descriptor stays open: it is the reader's file, and read_columns
+        // retries this window through CFITSIO.
         throw std::runtime_error("Failed to pread table bytes");
     }
 }

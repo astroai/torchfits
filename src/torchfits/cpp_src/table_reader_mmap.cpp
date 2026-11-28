@@ -236,16 +236,13 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
         return out;
     }
 
-    // Open file with mmap
-    int fd = open(filename_.c_str(), O_RDONLY);
+    // Map the reader's own descriptor (open_data_fd), never the path: a
+    // persistent reader must not map a file that replaced the one its
+    // geometry came from.
+    const int fd = data_fd_;
     if (fd == -1) {
         throw std::runtime_error("Failed to open file for mmap");
     }
-    // Adopt the descriptor immediately: the two statements below can both
-    // throw, and a raw int on the stack is not closed by unwinding. A
-    // truncated table used to leak one descriptor per rejected call
-    // (R2-011) -- exactly the case this check exists to catch.
-    MMapHandle fd_owner(nullptr, 0, fd);
 
     // Get file size
     struct stat sb;
@@ -261,9 +258,10 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
     }
 
     // RAII mmap guard — tensors are copies (not views) so the mmap only
-    // needs to survive for the duration of this function.
+    // needs to survive for the duration of this function. It unmaps only;
+    // the descriptor belongs to the reader.
     // size must match the original mmap() length (full file) passed to munmap().
-    MMapHandle mmap_guard(map_ptr, sb.st_size, fd_owner.detach_fd());
+    MMapHandle mmap_guard(map_ptr, sb.st_size, -1);
 
     std::unordered_map<int, native::Tensor> result;
     const uint8_t* base_ptr = static_cast<const uint8_t*>(map_ptr) + data_offset;
@@ -604,6 +602,14 @@ void TableReader::update_rows_mmap(nb::dict tensor_dict, long start_row, long nu
     struct stat sb;
     if (fstat(fd, &sb) == -1) {
         throw std::runtime_error("Failed to stat file for mmap update");
+    }
+    // The writable descriptor has to be resolved by name (data_fd_ is
+    // read-only); it must still be the file this reader's geometry describes.
+    struct stat pinned;
+    if (data_fd_ >= 0 && fstat(data_fd_, &pinned) == 0 &&
+        (pinned.st_dev != sb.st_dev || pinned.st_ino != sb.st_ino)) {
+        throw std::runtime_error(
+            "FITS file was replaced on disk while it was being updated");
     }
     ensure_extent_within_file(sb.st_size, data_offset, start_row - 1, num_rows);
 

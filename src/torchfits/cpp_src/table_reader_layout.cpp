@@ -29,15 +29,20 @@ TableReader::TableReader(const std::string& filename, int hdu_num)
     if (status != 0 || !fptr_) {
         throw std::runtime_error("Failed to open FITS file");
     }
-    // Capture the file identity for stale-reader detection: a cached
-    // reader may outlive a writer on another thread replacing the file
-    // (thread-local caches can only be evicted by their own thread).
-    stat_valid_ = (::stat(filename_.c_str(), &file_stat_) == 0);
-
     // If HDU move or analysis fails, the destructor will not run (the object
-    // is not fully constructed), so close the handle we opened before
-    // rethrowing to avoid leaking the fitsfile*.
+    // is not fully constructed), so close the handle (and descriptor) we
+    // opened before rethrowing to avoid leaking them.
     try {
+        open_data_fd(nullptr);
+        // Capture the file identity for stale-reader detection: a cached
+        // reader may outlive a writer on another thread replacing the file
+        // (thread-local caches can only be evicted by their own thread).
+        // With a data fd, the identity is that of the file it pins.
+        if (data_fd_ >= 0) {
+            stat_valid_ = (::fstat(data_fd_, &file_stat_) == 0);
+        } else {
+            stat_valid_ = (::stat(filename_.c_str(), &file_stat_) == 0);
+        }
         status = 0;
         fits_movabs_hdu(fptr_, target_hdu_, nullptr, &status);
         if (status != 0) {
@@ -49,6 +54,7 @@ TableReader::TableReader(const std::string& filename, int hdu_num)
         }
         analyze_table();
     } catch (...) {
+        close_data_fd();
         int close_status = 0;
         fits_close_file(fptr_, &close_status);
         fptr_ = nullptr;
@@ -56,7 +62,7 @@ TableReader::TableReader(const std::string& filename, int hdu_num)
     }
 }
 
-TableReader::TableReader(fitsfile* fptr, int hdu_num)
+TableReader::TableReader(fitsfile* fptr, int hdu_num, const FileIdentityCheck& same_file)
     : fptr_(fptr), hdu_num_(hdu_num), owns_fptr_(false) {
     int status = 0;
     target_hdu_ = hdu_num + 1;
@@ -76,21 +82,66 @@ TableReader::TableReader(fitsfile* fptr, int hdu_num)
         int flush_status = 0;
         fits_flush_buffer(fptr_, 0, &flush_status);
     }
-    // Needed for VLA heap pread coalesce (diskfile path).
+    // The name is resolved once, here: the data fd opened from it is what
+    // every later raw read uses, so a persistent reader never re-resolves the
+    // path per read.
     char fname[FLEN_FILENAME] = {0};
     int name_status = 0;
     fits_file_name(fptr_, fname, &name_status);
     if (name_status == 0 && fname[0] != '\0') {
         filename_ = fname;
     }
-    analyze_table();
+    open_data_fd(same_file ? &same_file : nullptr);
+    try {
+        analyze_table();
+    } catch (...) {
+        close_data_fd();
+        throw;
+    }
+}
+
+// Open the descriptor every raw read of this reader uses (buffered pread,
+// mmap, filtered scans, the VLA heap pread, the physical-extent check). It is
+// opened once, so the bytes those paths read come from the file this reader
+// opened even if the path is later replaced; CFITSIO's own handle keeps that
+// file open too, so both views stay consistent. Only plain local files get
+// one (direct_io_ok); a non-regular file is left to CFITSIO. same_file, when
+// given, must accept the descriptor's fstat -- a borrowed handle passes its
+// own open identity, so a replace that landed between the handle's open and
+// this one is refused instead of mixing two files.
+void TableReader::open_data_fd(const FileIdentityCheck* same_file) {
+    if (!direct_io_ok()) {
+        return;
+    }
+    // O_NONBLOCK: a FIFO must not block the open; it is a no-op for the
+    // regular files kept below.
+    const int fd = ::open(filename_.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        return;
+    }
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return;
+    }
+    if (same_file != nullptr && !(*same_file)(st)) {
+        ::close(fd);
+        throw std::runtime_error(
+            "FITS file was replaced on disk after this handle was opened; "
+            "reopen it to read the current file");
+    }
+    data_fd_ = fd;
+}
+
+void TableReader::close_data_fd() noexcept {
+    if (data_fd_ >= 0) {
+        ::close(data_fd_);
+        data_fd_ = -1;
+    }
 }
 
 TableReader::~TableReader() {
-    if (data_fd_cached_ >= 0) {
-        ::close(data_fd_cached_);
-        data_fd_cached_ = -1;
-    }
+    close_data_fd();
     if (fptr_ && owns_fptr_) {
         int status = 0;
         fits_close_file(fptr_, &status);
@@ -560,8 +611,10 @@ void TableReader::validate_physical_table_extent() const {
     if (!direct_io_ok()) {
         return;
     }
+    // The size of the file the raw paths will read (open_data_fd keeps
+    // regular files only); without a descriptor nothing reads the file raw.
     struct stat st;
-    if (::stat(filename_.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (data_fd_ < 0 || ::fstat(data_fd_, &st) != 0) {
         return;
     }
     LONGLONG data_offset = 0;

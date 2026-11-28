@@ -274,7 +274,8 @@ std::pair<native::Tensor, native::Tensor> TableReader::read_vla_column_flat(
                 internal::checked_nonnegative_cast<LONGLONG>(
                     nbytes, "Invalid VLA geometry for column " + col.name + " pread size"),
                 "Invalid VLA geometry for column " + col.name + " pread range") <= data_extent) {
-            int fd = ::open(filename_.c_str(), O_RDONLY);
+            // The reader's own descriptor (open_data_fd), never the path.
+            const int fd = data_fd_;
             if (fd >= 0) {
                 struct stat file_stat;
                 if (::fstat(fd, &file_stat) != 0 || file_stat.st_size < 0 ||
@@ -287,7 +288,6 @@ std::pair<native::Tensor, native::Tensor> TableReader::read_vla_column_flat(
                                 nbytes,
                                 "Invalid VLA geometry for column " + col.name + " pread size"),
                             "Invalid VLA geometry for column " + col.name + " pread range")) {
-                    ::close(fd);
                     throw std::runtime_error(
                         "Invalid VLA geometry for column " + col.name +
                         ": pread range exceeds file extent");
@@ -317,7 +317,6 @@ std::pair<native::Tensor, native::Tensor> TableReader::read_vla_column_flat(
                     }
                     got += static_cast<size_t>(n);
                 }
-                ::close(fd);
                 if (ok) {
                     uint8_t* dst = static_cast<uint8_t*>(values.data_ptr());
                     if (elem_bytes == 1 || !host_is_little_endian()) {

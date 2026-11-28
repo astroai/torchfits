@@ -36,11 +36,16 @@ namespace torchfits {
 
 class TableReader {
 public:
+    // Accepts the fstat of the descriptor a reader opens for its raw reads:
+    // false when it is not the file the borrowed handle opened.
+    using FileIdentityCheck = std::function<bool(const struct stat&)>;
+
     // Opens a private handle on filename (never shared across threads).
     TableReader(const std::string& filename, int hdu_num = 1);
     // Borrows fptr. The caller keeps it open (hold_fptr_owner) and serializes
-    // every use of its CFITSIO cursor (set_io_guard).
-    TableReader(fitsfile* fptr, int hdu_num = 1);
+    // every use of its CFITSIO cursor (set_io_guard). same_file, when given,
+    // vets the descriptor the reader pins for its raw reads (open_data_fd).
+    TableReader(fitsfile* fptr, int hdu_num = 1, const FileIdentityCheck& same_file = {});
     ~TableReader();
 
     TableReader(const TableReader&) = delete;
@@ -51,9 +56,11 @@ public:
     void hold_fptr_owner(std::shared_ptr<void> owner) { fptr_owner_ = std::move(owner); }
 
     // A reader built on a borrowed handle shares that handle's CFITSIO
-    // cursor (and reads its file by name) with every other borrower, so each
-    // read must run under the handle's own guard: its I/O lock plus the
-    // replaced-file check. Path readers own their fitsfile and have none.
+    // cursor with every other borrower, so each read must run under the
+    // handle's own guard: its I/O lock plus the replaced-file check (the
+    // pinned data fd keeps raw reads on the handle's file, but a same-inode
+    // rewrite changes the bytes behind both). Path readers own their
+    // fitsfile and have none.
     using IoGuard = std::function<void(const std::function<void()>&)>;
     void set_io_guard(IoGuard guard) { io_guard_ = std::move(guard); }
 
@@ -145,6 +152,8 @@ private:
                                    long long rows_before, long long nrows) const;
     void validate_physical_table_extent() const;
     bool direct_io_ok() const;
+    void open_data_fd(const FileIdentityCheck* same_file);
+    void close_data_fd() noexcept;
     void ensure_table_hdu();
 
     // --- value conventions (table_reader_read.cpp) ---
@@ -190,11 +199,12 @@ private:
     // Cached byte offset of the table data section (fits_get_hduaddrll
     // refaults ~12 MiB of anonymous memory per call on this host).
     LONGLONG data_offset_ = -1;
-    // Persistent raw fd for pread of the table heap (avoids re-opening the
-    // file on every buffered read).
-    int data_fd_cached_ = -1;
-    // File identity captured at construction (stat of filename_) for the
-    // stale-reader check in file_unchanged().
+    // Read-only descriptor on the reader's file, opened once at construction
+    // (open_data_fd) and used by every raw read; -1 when the input is not a
+    // plain local file, and those reads go through CFITSIO instead.
+    int data_fd_ = -1;
+    // File identity captured at construction (fstat of data_fd_, else stat
+    // of filename_) for the stale-reader check in file_unchanged().
     struct stat file_stat_ {};
     bool stat_valid_ = false;
 };

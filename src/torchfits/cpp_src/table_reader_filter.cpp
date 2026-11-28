@@ -43,17 +43,18 @@ std::vector<std::pair<std::string, native::Tensor>> TableReader::read_columns_mm
             "filtered mmap scans require an uncompressed local file; "
             "the caller falls back to the Arrow predicate engine");
     }
-    // Map file
-    int fd = open(filename_.c_str(), O_RDONLY);
+    // Map the reader's own descriptor (open_data_fd), never the path.
+    const int fd = data_fd_;
     if (fd == -1) throw std::runtime_error("Failed to open file");
 
     struct stat sb;
-    if (fstat(fd, &sb) == -1) { close(fd); throw std::runtime_error("Failed to stat file"); }
+    if (fstat(fd, &sb) == -1) { throw std::runtime_error("Failed to stat file"); }
 
     void* map_ptr = mmap(nullptr, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    if (map_ptr == MAP_FAILED) { close(fd); throw std::runtime_error("Failed to mmap"); }
+    if (map_ptr == MAP_FAILED) { throw std::runtime_error("Failed to mmap"); }
 
-    MMapHandle guard(map_ptr, (size_t)sb.st_size, fd);
+    // Unmaps only; the descriptor belongs to the reader.
+    MMapHandle guard(map_ptr, (size_t)sb.st_size, -1);
 
     uint8_t* base_ptr = static_cast<uint8_t*>(map_ptr);
 

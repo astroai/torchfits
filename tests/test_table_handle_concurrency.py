@@ -346,3 +346,37 @@ def test_table_reader_refuses_replaced_file(two_table_file) -> None:
     # Still refused once the handle is closed (the reader keeps it alive).
     with pytest.raises(RuntimeError, match="replaced"):
         reader.read_rows_numpy([], 1, -1)
+
+
+# A persistent path reader (TableReader(path) and the open_fits_mmap_reader
+# capsule) holds a CFITSIO handle on the file it opened, and used to reopen the
+# path by name for its raw reads (the buffered pread fd on first use, a fresh
+# open per mmap call). After an atomic replace those reads took the new file's
+# bytes under the old geometry: with an equal-size replacement, the new values
+# came back silently. Raw reads now go through one descriptor opened at
+# construction, so the reader keeps reading the file it opened.
+PINNED_PATH_READERS = {
+    "rows": lambda path: (lambda r: lambda: r.read_rows([], 1, -1))(
+        cpp.TableReader(path, 1)
+    ),
+    "raw": lambda path: (lambda r: lambda: r.read_rows_raw([], 1, -1))(
+        cpp.TableReader(path, 1)
+    ),
+    "mmap_capsule": lambda path: (
+        lambda cap: lambda: cpp.read_fits_table_rows_mmap_from_reader(cap, [], 1, -1)
+    )(cpp.open_fits_mmap_reader(path, 1)),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(PINNED_PATH_READERS))
+def test_persistent_path_reader_keeps_reading_the_file_it_opened(
+    two_table_file, kind
+) -> None:
+    read = PINNED_PATH_READERS[kind](two_table_file)
+    # Same geometry, different values: nothing but the bytes tells them apart.
+    _write_two_tables(two_table_file, N_A, N_B, a_value=-7)
+    result = read()
+    _check(_raw_values(result, 1) if kind == "raw" else result, 1)
+    # A fresh reader sees the replacement.
+    fresh = cpp.TableReader(two_table_file, 1).read_rows([], 1, -1)
+    np.testing.assert_array_equal(np.asarray(fresh["A"]), np.full(N_A, -7))
