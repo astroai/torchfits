@@ -56,8 +56,10 @@ def test_high_entropy_int32_tiles_fail_cleanly(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not sys.platform.startswith("linux") or not _MALLOC_DEBUG.exists(),
-    reason="needs glibc's libc_malloc_debug to detect heap corruption",
+    not sys.platform.startswith("linux")
+    or not _MALLOC_DEBUG.exists()
+    or "asan" in os.environ.get("LD_PRELOAD", ""),
+    reason="needs glibc's libc_malloc_debug (and no ASan, which checks this itself)",
 )
 def test_high_entropy_int32_tiles_do_not_corrupt_the_heap(tmp_path: Path) -> None:
     env = dict(os.environ)
