@@ -2011,6 +2011,7 @@ void bind_fits(nb::module_& m) {
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS checksums");
         }
+        guard.close_checked("writing FITS checksums");
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
 
     m.def("verify_hdu_checksums", [](const std::string& path, int hdu_num) {
@@ -2143,6 +2144,7 @@ void bind_fits(nb::module_& m) {
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS header cards");
         }
+        guard.close_checked("writing FITS header cards");
     }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("cards"));
 
     m.def("delete_hdu_header_key", [](const std::string& path, int hdu_num, const std::string& key) {
@@ -2176,6 +2178,7 @@ void bind_fits(nb::module_& m) {
         if (status != 0) {
             throw std::runtime_error("Failed to delete FITS header keyword: " + sanitized);
         }
+        guard.close_checked("deleting a FITS header keyword");
     }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("key"));
 
     m.def("open_and_read_headers", [](const std::string& path, int mode) {

@@ -16,6 +16,7 @@
 
 #include <fitsio.h>
 
+#include <stdexcept>
 #include <string>
 
 #include "core/fits_core.h"
@@ -47,6 +48,25 @@ struct FitsHandleGuard {
     }
 
     ~FitsHandleGuard() { release(); }
+
+    // Close a handle that wrote, and throw when CFITSIO could not flush its
+    // last buffered blocks (disk full, quota, EIO, RLIMIT_FSIZE): the file is
+    // then incomplete. The destructor's release() ignores the status, so
+    // write paths call this on success.
+    void close_checked(const char* what) {
+        if (!fptr) return;
+        int status = 0;
+        fits_close_file(fptr, &status);
+        fptr = nullptr;
+        if (status != 0) {
+            char err_text[FLEN_STATUS];
+            fits_get_errstatus(status, err_text);
+            throw std::runtime_error(
+                std::string("Failed to finish ") + what + ": status=" +
+                std::to_string(status) + " msg=" + err_text +
+                " (the file is incomplete: disk full, quota or file-size limit?)");
+        }
+    }
 
     void release() {
         if (!fptr) return;

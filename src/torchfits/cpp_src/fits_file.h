@@ -33,6 +33,9 @@ public:
 
     FITSFile(const char* filename, int mode);
     ~FITSFile();
+    // Closes (or, with borrowers, flushes) the file. For a write handle a
+    // failed final flush/close throws std::runtime_error: the file on disk is
+    // incomplete. Read handles never throw here.
     void close();
 
     fitsfile* get_fptr() const { return fptr_; }
@@ -148,6 +151,10 @@ private:
     fitsfile* fptr_ = nullptr;
     // Owns fptr_; its deleter closes the file. Shared with borrowers.
     std::shared_ptr<fitsfile> fptr_owner_;
+    // Write handles: the deleter's fits_close_file status. CFITSIO flushes
+    // its last buffered blocks there, so a full disk, quota, EIO or
+    // RLIMIT_FSIZE failure shows up only in this status (close() throws).
+    std::shared_ptr<int> write_close_status_;
     int start_hdu_ = 1;
     int current_hdu_ = 1;
     int raw_fd_ = -1;

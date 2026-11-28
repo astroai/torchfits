@@ -89,9 +89,11 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
             fits_close_file(f, &close_status);
         });
     } else {
-        fptr_owner_.reset(fptr_, [](fitsfile* f) {
+        write_close_status_ = std::make_shared<int>(0);
+        fptr_owner_.reset(fptr_, [result = write_close_status_](fitsfile* f) {
             int close_status = 0;
             fits_close_file(f, &close_status);
+            *result = close_status;
         });
     }
     if (mode == 0) {
@@ -109,7 +111,13 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
     }
 }
 
-FITSFile::~FITSFile() { close(); }
+FITSFile::~FITSFile() {
+    try {
+        close();
+    } catch (...) {
+        // Destructors never throw; an explicit close() reports the failure.
+    }
+}
 
 void FITSFile::capture_open_identity() {
     struct stat st {};
@@ -181,16 +189,35 @@ void FITSFile::publish_compressed(int hdu_num, bool compressed) const {
 void FITSFile::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     close_raw_fd();
-    if (fptr_ && fptr_owner_ && fptr_owner_.use_count() > 1) {
+    const bool was_open = fptr_ != nullptr && fptr_owner_ != nullptr;
+    const bool borrowed = was_open && fptr_owner_.use_count() > 1;
+    int flush_status = 0;
+    if (borrowed) {
         // A borrower (share_fptr) defers fits_close_file, but close() must
         // still put everything written so far on disk: another process
         // reading the file after close() saw it truncated.
-        int flush_status = 0;
         fits_flush_file(fptr_, &flush_status);
     }
     fptr_ = nullptr;
     // Closes the file now, or when the last borrower (share_fptr) lets go.
     fptr_owner_.reset();
+    if (!was_open || mode_ == 0) {
+        return;
+    }
+    // CFITSIO writes its final buffered blocks in the flush/close: a full
+    // disk, quota, EIO or RLIMIT_FSIZE failure there used to be dropped, so
+    // a truncated file was reported as written (and published over the
+    // destination by the atomic write).
+    const int failed = borrowed ? flush_status
+                                : (write_close_status_ ? *write_close_status_ : 0);
+    if (failed != 0) {
+        char err_text[FLEN_STATUS];
+        fits_get_errstatus(failed, err_text);
+        throw std::runtime_error(
+            "Failed to finish writing FITS file '" + filename_ + "': status=" +
+            std::to_string(failed) + " msg=" + std::string(err_text) +
+            " (the file is incomplete: disk full, quota or file-size limit?)");
+    }
 }
 
 void FITSFile::ensure_hdu(int hdu_num, int* status) {
