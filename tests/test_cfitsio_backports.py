@@ -225,6 +225,17 @@ def test_image_section_of_many_axis_image_raises(tmp_path: Path) -> None:
     assert "dimensions" in out
 
 
+@pytest.mark.parametrize("naxis", [100, 999])
+def test_image_with_more_axes_than_cfitsio_caches_raises(
+    tmp_path: Path, naxis: int
+) -> None:
+    """image-naxis-cache: ffpinit cached every NAXISn in
+    FITSfile.imgnaxis[99]."""
+    path = _write_many_axis_image(tmp_path / f"axes{naxis}.fits", naxis)
+    out = _assert_read_raises(str(path))
+    assert "NAXIS > 99" in out
+
+
 def test_ten_axis_image_reads_raise(tmp_path: Path) -> None:
     """getcol-ndim: fits_read_subset/fits_read_pix walked NAXIS > 9 past a
     naxes[9] array; torchfits also refuses such images before calling them."""
