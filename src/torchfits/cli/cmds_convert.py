@@ -548,6 +548,8 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
     if fmt == "fits":
         _convert_table_to_fits(path, args.output, hdu, columns, where)
         return EXIT_OK
+    if fmt in ("csv", "tsv"):
+        _refuse_vector_columns_for_csv(path, hdu, columns, fmt)
     selection: dict[str, Any] = {"hdu": hdu, "columns": columns, "where": where}
     try:
         # Streamed batch by batch: --columns/--where never materialize the
@@ -573,6 +575,34 @@ def _convert_table(args: argparse.Namespace, fmt: str) -> int:
         # could reveal; the atomic writers left the output untouched.
         raise UsageError(f"--where: {exc}") from exc
     return EXIT_OK
+
+
+def _refuse_vector_columns_for_csv(
+    path: str, hdu: int, columns: list[str] | None, fmt: str
+) -> None:
+    """CSV/TSV cells are scalars: refuse vector and VLA columns up front.
+
+    Arrow's CSV writer cannot express a list cell, so such a table failed
+    mid-write with "Unsupported Type" (exit 3). Name the columns instead
+    (a usage error, exit 2) before the output is touched.
+    """
+    import pyarrow as pa
+
+    from torchfits import table as tf_table
+
+    try:
+        schema = tf_table.schema(path, hdu=hdu, columns=columns)
+    except NotImplementedError:
+        # Complex columns have no Arrow type; the writer reports them.
+        return
+    nested = [field.name for field in schema if pa.types.is_nested(field.type)]
+    if nested:
+        raise UsageError(
+            f"{fmt} cells hold one value, but column(s) "
+            f"{', '.join(nested)} hold arrays (vector or variable-length "
+            "columns); select scalar columns with --columns, or convert to "
+            "parquet or arrow"
+        )
 
 
 def _validate_selection(

@@ -318,6 +318,12 @@ An unknown `--columns` name or an invalid `--where` predicate (unknown column,
 syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
 HDU stays an I/O error (exit `3`).
 
+CSV/TSV cells hold one value each: a selection that includes a vector
+(`repeat > 1`, `TDIMn`) or variable-length (`P`/`Q`) column is refused as a
+usage error (exit `2`) naming those columns, before the output is touched.
+Select scalar columns with `--columns`, or convert to Parquet or Arrow, which
+store array cells natively.
+
 An OUTPUT that names the same file as an INPUT — the same path, a symlink, or
 a hard link — is refused (exit `2`) before anything is written.
 
