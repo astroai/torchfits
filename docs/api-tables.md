@@ -25,6 +25,43 @@ file and `torchfits.HDUNotFoundError` (a `KeyError`, `IndexError`,
 `ValueError` and `RuntimeError`) for an `hdu` index or EXTNAME the file does not have; see
 [Missing files and HDUs](api-core-io.md#missing-files-and-hdus).
 
+A column name the table does not have raises `torchfits.UnknownColumnError`
+(a `KeyError` and a `ValueError`) from every reader's `columns=`, every
+mutation helper, and the `TableHDU` / `TableHDURef` column accessors
+(`hdu[name]`, `select`, `drop_columns`, `rename_column`, `append_rows`):
+
+```python
+try:
+    torchfits.table.drop_columns("catalog.fits", ["NOPE"])
+except torchfits.UnknownColumnError as exc:
+    print(exc)  # Column(s) not found for drop_columns: ['NOPE']
+```
+
+A new column name the table already has raises `torchfits.ColumnExistsError`
+(also a `KeyError` and a `ValueError`) from `insert_column`, from
+`rename_columns` when a target name collides with a column that is not being
+renamed, and from `TableHDU.add_column` / `TableHDU.rename_column`:
+
+```python
+try:
+    torchfits.table.insert_column("catalog.fits", "RA", ra, hdu=1)
+except torchfits.ColumnExistsError as exc:
+    print(exc)  # Column 'RA' already exists
+```
+
+### Column names
+
+A column is named by its `TTYPEn` card. Column `n` is named `COL<n>` instead
+when it has no `TTYPEn`, an empty one, or one that repeats the name of an
+earlier column. With `TTYPE1 = TTYPE2 = 'AA'`, every reader, `schema()`,
+`columns=` / `where=` and the mutation helpers see `AA` (column 1) and
+`COL2` (column 2), so no column is dropped and each has one name:
+
+```python
+torchfits.table.read("dup.fits").column_names  # ['AA', 'COL2', ...]
+torchfits.table.read("dup.fits", columns=["COL2"])  # the second 'AA'
+```
+
 ---
 
 ## `table.read()`
@@ -48,6 +85,9 @@ torchfits.table.read(
     include_fits_metadata=False,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -63,12 +103,33 @@ torchfits.table.read(
 | `mmap` | `bool` | `True` | Memory-mapped reads |
 | `decode_bytes` | `bool` | `True` | Decode byte-string columns |
 | `encoding` | `str` | `"ascii"` | Byte decoding encoding |
+| `decode_errors` | `str` | `"strict"` | `"strict"`, `"replace"` or `"ignore"`; see below |
 | `strip` | `bool` | `True` | Strip trailing spaces on strings |
 | `include_fits_metadata` | `bool` | `False` | Attach FITS column metadata on the Arrow schema |
 | `apply_fits_nulls` | `bool` | `True` | Honor `TNULL` as nulls |
 | `backend` | `str` | `"auto"` | `"auto"`, `"cpp"`, or `"torch"` |
+| `shape_cells` | `bool` | `False` | Read a column with a multi-axis `TDIMn` as N-D cells; see [N-D cells](#n-d-cells-tdim) |
 
 **Returns:** `pyarrow.Table`
+
+String (`A`) columns are decoded with `encoding` (FITS strings are ASCII).
+By default a byte the encoding cannot decode raises `UnicodeDecodeError`
+naming the column, on every read path and in `where=` string comparisons.
+Pass the encoding the file really uses (for example `encoding="latin-1"`),
+or opt into a lossy decode with `decode_errors="replace"` (U+FFFD for each
+bad byte) or `decode_errors="ignore"` (bad bytes dropped). `table.scan`,
+`table.reader`, `table.schema` and `TableHDU.get_string_column` take the same
+`decode_errors=` keyword, and so do the converters that read a path
+(`table.to_pandas`, `table.to_polars`, `table.read_polars`,
+`table.read_astropy`, ...) and the tensor-dict converters `torchfits.to_arrow`,
+`to_pandas`, `to_polars` and `to_astropy` (for `decode_bytes=True`).
+
+```python
+torchfits.table.read("legacy.fits", encoding="latin-1")
+torchfits.table.read("legacy.fits", decode_errors="replace")
+```
+
+Runnable: [`example_decode_errors.py`](published-examples/example_decode_errors.py).
 
 ```python
 df = torchfits.table.read(
@@ -98,6 +159,8 @@ torchfits.table.read_torch(
     mmap="auto",
     return_header=False,
     where=None,
+    *,
+    shape_cells=False,
 )
 ```
 
@@ -112,6 +175,7 @@ torchfits.table.read_torch(
 | `mmap` | `bool` or `str` | `"auto"` | `True` / `False` / `"auto"` (`"auto"` → mmap on) |
 | `return_header` | `bool` | `False` | Also return the HDU `Header` |
 | `where` | `str` or `None` | `None` | Simple numeric filter (see below) |
+| `shape_cells` | `bool` | `False` | Return a multi-axis `TDIMn` column as `(N, *cell)`; see [N-D cells](#n-d-cells-tdim) |
 
 `cache_capacity` controls the read cache (`0` disables it) and `fast_header`
 only affects the unified-reader fallback. The Arrow path (`table.read`) takes
@@ -132,8 +196,9 @@ string columns stay `(N, width)` uint8 matrices.
 `where=` on `read_torch` accepts only **simple** predicates: comparisons
 (`==`, `!=`, `<`, `<=`, `>`, `>=`), `BETWEEN`, and `AND` of those. Expressions
 with `OR`, `IN`, `IS NULL`, or `NOT` raise `ValueError` — use
-`table.read(..., where=...)` for the full dialect. Matching rows are kept by
-reading the needed columns and applying a torch mask. When combined with a
+`table.read(..., where=...)` for the full dialect. The needed columns are
+read and masked one row window (about 64 MB) at a time and only matching rows
+are kept, so memory follows the result, not the table. When combined with a
 row window (`start_row` / `num_rows`), the window selects file rows first and
 the predicate filters inside it — identical to `table.read(row_slice=..., where=...)`.
 
@@ -146,6 +211,54 @@ bright = torchfits.table.read_torch(
 
 For many unfiltered column reads on one file, use
 `torchfits.open_table_reader(path, hdu=1)` (no `where=` on the handle).
+
+---
+
+### N-D cells (TDIM)
+
+A vector column with a `TDIMn` card holds an N-D array per row. `TDIM` lists
+the axes fastest-varying first (FITS / Fortran order), so `TDIM = '(a,b)'` on
+a `TFORM = '<a*b>E'` column is a `(b, a)` array in C order (numpy, torch).
+
+By default every reader returns such a column flat, as any vector column:
+`(N, a*b)` from `read_torch`, `FixedSizeList<T>[a*b]` from `read`, with the
+`TDIM` available through `include_fits_metadata=True` or `schema()`. Pass
+`shape_cells=True` (on `read`, `read_torch`, `scan`, `scan_torch`, `reader`,
+`schema`, and the converters that read a path) to get the cells shaped:
+
+| Reader | `TDIM = '(3,2)'`, `TFORM = '6E'` |
+|---|---|
+| `read_torch`, `scan_torch` | `float32` tensor of shape `(N, 2, 3)` |
+| `read`, `scan`, `reader`, `schema` | `FixedSizeList<FixedSizeList<float>[3]>[2]` (Polars: `Array(Float32, shape=(2, 3))`) |
+| `to_astropy` / `read_astropy` | column of shape `(N, 2, 3)` (masked where `TNULL` matches) |
+
+Only numeric, logical and bit columns are shaped, and only when the `TDIM`
+has two or more axes whose product is the column's repeat count. A
+string (`A`) column's `TDIM` describes an array of fixed-width strings; the
+column still reads as one string per row.
+
+Writing works the other way round, with no option: a column of shape
+`(N, d1, d2, ...)` -- numpy or torch, a nested Arrow `FixedSizeList`, an
+Arrow `fixed_shape_tensor`, a Polars `Array` column -- is stored with
+`TFORM = '<d1*d2*...><code>'` and `TDIM = '(..., d2, d1)'`, by `table.write`,
+`table.writer`, `insert_column` and `replace_column` (a `dim=` you pass must
+describe the same cell, else `ValueError`). `update_rows`, `append_rows` and
+`insert_rows` take `(N, d1, d2, ...)` values for such a column too. A flat
+vector column whose Arrow field carries `fits_tdim` metadata (a
+`read(include_fits_metadata=True)` result) keeps that `TDIM` when written.
+
+```python
+import numpy as np
+import torchfits
+
+cube = np.zeros((100, 2, 3), dtype=np.float32)
+torchfits.table.write("cells.fits", {"img": cube}, overwrite=True)
+# TFORM1 = '6E', TDIM1 = '(3,2)'
+torchfits.table.read_torch("cells.fits", shape_cells=True)["img"].shape  # (100, 2, 3)
+torchfits.table.read_torch("cells.fits")["img"].shape  # (100, 6)
+```
+
+Runnable: [`example_tdim_cells.py`](published-examples/example_tdim_cells.py).
 
 ---
 
@@ -169,6 +282,9 @@ torchfits.table.scan(
     include_fits_metadata=False,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -190,8 +306,9 @@ for batch in torchfits.table.scan("survey.fits", hdu=1, batch_size=50_000):
 
 ## `table.scan_torch()`
 
-Stream row chunks as `dict[str, torch.Tensor]`. No `where=` — filter with
-`table.scan(..., where=...)` or mask batches yourself.
+Stream row chunks as `dict[str, torch.Tensor]`. With `where=`, each
+`batch_size` window is read once and only its matching rows are yielded;
+windows with no match are skipped.
 
 ```python
 torchfits.table.scan_torch(
@@ -204,15 +321,30 @@ torchfits.table.scan_torch(
     device="cpu",
     non_blocking=True,
     pin_memory=False,
+    *,
+    where=None,
+    shape_cells=False,
 )
 ```
 
 **Yields:** `dict[str, torch.Tensor]`
 
+`where=` (keyword-only) takes the full `table.read` dialect and its defaults
+(a `TNULL` cell never matches; character columns compare as strict ASCII). It
+only selects rows: a yielded row has exactly the representation an unfiltered
+`scan_torch` gives it (stored `TNULL` sentinels, `uint8` character bytes).
+A malformed predicate raises `ValueError` at the call.
+
 ```python
 for batch in torchfits.table.scan_torch("survey.fits", hdu=1, batch_size=10000):
     print(batch.keys())  # dict[str, torch.Tensor]
+
+for batch in torchfits.table.scan_torch("survey.fits", where="MAG < 20"):
+    ...  # only the matching rows of each window
 ```
+
+Runnable: [`example_table_where_streaming.py`](published-examples/example_table_where_streaming.py)
+(native `where=` on `read` / `scan` / `scan_torch` and the table datasets).
 
 ---
 
@@ -235,6 +367,9 @@ torchfits.table.reader(
     include_fits_metadata=True,
     apply_fits_nulls=True,
     backend="auto",
+    *,
+    decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -244,24 +379,26 @@ torchfits.table.reader(
 
 ## `table.write()`
 
-Write a columnar dictionary as a FITS binary or ASCII table.
+Write a columnar dictionary, a table, or a stream of batches as a FITS
+binary or ASCII table.
 
 ```python
 torchfits.table.write(path, data, *, schema=None, header=None,
                       overwrite=False, extname=None, table_type="binary",
-                      quantize=None)
+                      quantize=None, checksum=False)
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `path` | `str` | *(required)* | Output path |
-| `data` | `dict`, `Table`, or DataFrame | *(required)* | Column dictionary, Astropy Table, PyArrow Table, or DataFrame |
+| `data` | `dict`, `Table`, DataFrame, or batch stream | *(required)* | Column dictionary, Astropy Table, PyArrow Table/RecordBatch, or DataFrame; or a stream of batches -- a `pyarrow.RecordBatchReader`, or an iterable / generator of `RecordBatch`, `pyarrow.Table` or column dicts -- written incrementally (see [`table.writer()`](#tablewriter)) |
 | `schema` | `dict[str, dict[str, Any]]` or `None` | `None` | Per-column FITS layout overrides: `format`/`tform` (e.g. `{"bits": {"format": "4X"}}`), `unit`/`tunit`, `null`/`tnull`, `bscale`, `bzero`, `dim`/`tdim` |
 | `header` | `dict` or `None` | `None` | FITS header key-value pairs |
 | `extname` | `str` or `None` | `None` | `EXTNAME` for the written table HDU (merged into `header`) |
 | `overwrite` | `bool` | `False` | Overwrite existing file |
 | `table_type` | `str` | `"binary"` | `"binary"` or `"ascii"` |
-| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. |
+| `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `TFORM=I` + `TSCAL`/`TZERO` for float columns (`"robust"` for all floats, `{"FLUX": "robust"}` per column, or options `{"lo_q","hi_q","keep_zero"}`). Integer columns are left alone. Default keeps native float `TFORM`. Not supported for batch streams (`ValueError`). |
+| `checksum` | `bool` | `False` | Stamp `DATASUM`/`CHECKSUM` on every HDU of the new file (as `torchfits.write(..., checksum=True)`) |
 
 `schema` scaling and nulls describe **stored** values:
 
@@ -280,6 +417,10 @@ torchfits.table.write(path, data, *, schema=None, header=None,
   so do the `tnull=` / `tscal=` / `tzero=` arguments of `insert_column` and
   `replace_column`.
 
+A string value longer than the width `schema` gives its column (`"8A"`, or
+`"A8"` in an ASCII table) is clipped to that width with a `RuntimeWarning`,
+as in the row mutations; without a `format`, the width fits the longest value.
+
 `quantize` applies to binary tables only (`ValueError` when `table_type="ascii"`).
 If it is set and no floating-point column qualifies, `QuantizeError` is raised
 instead of writing those columns unpacked.
@@ -292,7 +433,73 @@ torchfits.table.write(
     quantize={"FLUX": "robust"},
     overwrite=True,
 )
+# Out-of-core: filter a large table into a new one, one batch at a time.
+torchfits.table.write(
+    "bright.fits", torchfits.table.reader("big.fits", where="MAG < 18")
+)
 ```
+
+An Arrow table or batch converts its columns as follows: a fixed-size list of
+numbers or booleans with no nulls (how the readers return a vector column)
+is written as a fixed-width vector column (`TFORM rX`); float nulls are
+written as NaN and string nulls as blanks.
+
+---
+
+## `table.writer()`
+
+Open an incremental writer: the write-side counterpart of `table.reader()`.
+`table.write()` uses it for batch streams.
+
+```python
+torchfits.table.writer(path, *, schema=None, header=None, overwrite=False,
+                       extname=None, table_type="binary", checksum=False)
+```
+
+**Returns:** a `TableWriter` with `write(batch)`, `close()`, `abort()`,
+`num_rows` and `closed`; it is a context manager (`close()` on a clean exit,
+`abort()` on an exception). A batch is anything `table.write()` accepts as a
+single table: a `pyarrow.RecordBatch` or `Table`, a column dict, or a
+pandas/polars/astropy table.
+
+```python
+with torchfits.table.writer("out.fits", extname="CAT", checksum=True) as w:
+    for batch in torchfits.table.scan("big.fits", columns=["ID", "FLUX"]):
+        w.write(batch)
+```
+
+- **Atomic.** Rows go to a temp file next to `path`, published only when
+  `close()` succeeds. An exception in the producer, a batch that fails to
+  write (which abandons the stream), or `abort()` leaves an existing `path`
+  byte-identical and no partial file behind. `overwrite=False` refuses an
+  existing `path` up front, before any batch is consumed.
+- **Bounded memory.** One batch is converted and written at a time on a
+  single open file handle (the native writes run without the GIL); `NAXIS2`
+  is fixed up when the stream closes, and `checksum=True` stamps
+  `DATASUM`/`CHECKSUM` then.
+- **Layout.** The first batch with rows fixes the FITS layout exactly as
+  `table.write()` would lay out that batch (`schema=` overrides it the same
+  way); zero-row batches before it are skipped. Every later batch must have
+  the same column names in the same order (`ValueError`), values whose dtype
+  casts safely to the first batch's (`TypeError`; e.g. `int16` into an
+  `int64` column is accepted, `float64` into it is not) and the same cell
+  shape. String widths are fixed too: a longer string raises `ValueError`
+  naming the column -- pass `schema={"NAME": {"format": "32A"}}` to size it
+  up front.
+- **Nulls.** As `table.write()`: float nulls become NaN, string nulls
+  blanks. An integer column cannot widen to float mid-stream the way the
+  one-shot writer widens a nullable integer column, so nulls in an integer
+  column need a sentinel: `schema={"ID": {"tnull": -1}}` (else `ValueError`).
+  Boolean nulls raise `ValueError`.
+- **Empty streams.** A stream with no rows writes a zero-row table when a
+  schema is known (a `RecordBatchReader`'s, or a zero-row batch); with no
+  batches at all `close()` raises `ValueError` and nothing is written.
+- Streams always create a new file (`overwrite=` as for `write()`); appending
+  a table HDU to an existing file is not supported -- use
+  `torchfits.insert_hdu` -- and `quantize=` is not available.
+
+Runnable: [`example_table_streaming_write.py`](published-examples/example_table_streaming_write.py)
+(Parquet → FITS out of core, filtered FITS → FITS, and a failed stream).
 
 ---
 
@@ -302,10 +509,23 @@ Pass `where=` to keep matching rows.
 
 | Call | Dialect | How it filters |
 |---|---|---|
-| `table.read` / `table.scan` | Full (see operators below) | C++ mmap scan when safe (`backend="auto"` + `mmap=True`, no VLA in the projection) and PyTorch is already imported; otherwise read then Arrow filter. `where=` never imports PyTorch itself |
-| `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns, then torch mask. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
+| `table.read` / `table.scan` / `table.scan_torch` | Full (see operators below) | Native filtered scan when eligible (see below); otherwise read then Arrow filter. Arrow `where=` reads never import PyTorch |
+| `table.read_torch` | Simple only: compare / `BETWEEN` / `AND` | Read projected columns and torch-mask them one row window at a time. `OR` / `IN` / `IS NULL` / `NOT` raise `ValueError` |
 
 Root `torchfits.read()` has no `where=` parameter.
+
+**Native filtered scan.** A predicate that is a conjunction (`AND`,
+`BETWEEN`) of comparisons between a scalar numeric column (`B`/`I`/`J`/`K`/
+`E`/`D`, including the unsigned and signed-byte `TZERO` conventions) and a
+finite number is evaluated by the C++ mmap scan, which returns the selected
+rows as raw NumPy/Arrow-ready buffers without importing PyTorch. It applies
+inside the requested window (`row_slice=`, and each `table.scan` /
+`scan_torch` batch window), so every window is read once and only its
+matching rows are gathered. It needs `mmap=True` (or `backend="cpp"`), an
+uncompressed local binary table, and a projection without VLA or scaled
+(`TSCAL`/`TZERO`) columns. Anything else -- string, logical or vector
+predicates, `OR` / `IN` / `NOT` / `IS NULL`, `rows=`, `mmap=False` -- uses
+the Arrow evaluator; both give the same rows and values.
 
 **Operators on `table.read` / `table.scan`:**
 
@@ -365,7 +585,7 @@ Root `torchfits.read()` has no `where=` parameter.
 
 | Value | Behavior |
 |---|---|
-| `"auto"` (default) | With `where=` and `mmap=True`, C++ pushdown when the header is readable, the projection has no VLA columns, and PyTorch is already imported; otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
+| `"auto"` (default) | With `where=` and `mmap=True`, the native filtered scan when eligible (see Row filters), otherwise Arrow filter. With `mmap=False`, buffered read then filter. |
 | `"cpp"` | Prefer C++ column / pushdown paths when safe |
 | `"torch"` | Chunked path via `table.scan_torch` |
 
@@ -437,10 +657,20 @@ torchfits.table.drop_columns(path, ["col_a", "col_b"], hdu=1)
 `row_slice` is a `slice` or `(start, stop)` tuple (0-based Python style for
 update/delete). `insert_rows` requires keyword `row=` (0-based insert index).
 
-`update_rows` raises `ValueError`, before writing anything, when an integer
-value does not fit the column (for example `70000` into a `uint16` column);
-float values written into an integer column only warn that they are
-truncated toward zero.
+`append_rows` / `insert_rows` accept a subset of the columns. On a binary
+table an omitted column is filled with its undefined value: `TNULL` for an
+integer column that has one (stored as-is, so it reads back as null whatever
+its `TSCAL` / `TZERO`), NaN for a floating-point or complex column. Other
+omitted columns get zeros (blank strings, empty variable-length arrays).
+
+`update_rows`, `append_rows` and `insert_rows` raise `ValueError`, before
+writing anything, when a value does not fit an integer column (for example
+`70000` into a `uint16` column, or `2.0**40` into an `int32` one). Float values
+are judged as they will be stored: a plain integer column truncates them
+toward zero (with a `RuntimeWarning` when a fraction is dropped), while a
+`TSCAL` / `TZERO` column (unsigned conventions included) stores
+`(value - TZERO) / TSCAL` rounded half away from zero, and that stored value
+must fit the column's `TFORM`.
 
 Without `format=`, `insert_column` / `replace_column` infer the TFORM from
 the values. As in `table.write`, `uint16` / `uint32` / `uint64` values become
@@ -492,6 +722,18 @@ torchfits.table.replace_column("t.fits", "a", u16)  # now TFORM 'I', TZERO 32768
 assert torchfits.read("t.fits", hdu=1)["a"].dtype.is_floating_point is False
 torchfits.table.replace_column("t.fits", "a", u16, format="1J")  # plain int32
 ```
+
+Every mutation takes the `COL<i>` name of a column with no (or a repeated)
+`TTYPE` card (see [Column names](#column-names)). Column rewrites keep such a
+column's original `TTYPE` card (or its absence) while it stays at position
+`i`; when `insert_column` moves it, it is written with `TTYPE = 'COL<i>'` (its
+old name) so reads keep returning the same name.
+
+A mutation opens the file read-write. A table read running on another thread
+at that moment holds the file open read-only; the mutation waits for it (up
+to about two seconds) instead of failing. A reader you keep open yourself
+(`torchfits.open_table_reader(...)`) is not released by waiting: close it
+before mutating the file, or the mutation raises `RuntimeError`.
 
 String (`A`) columns take ASCII text in every row and column mutation:
 non-ASCII `str` or `bytes` values raise `ValueError` (as `table.write` does),
@@ -578,6 +820,8 @@ result = torchfits.table.duckdb_query(
 ```python
 arrow_table = torchfits.to_arrow(table_dict, decode_bytes=False)
 pandas_df = torchfits.to_pandas(table_dict, decode_bytes=False)
+# Decode uint8 string columns, replacing bytes ASCII cannot decode:
+arrow_table = torchfits.to_arrow(table_dict, decode_bytes=True, decode_errors="replace")
 ```
 
 ---
@@ -599,6 +843,9 @@ torchfits.table.schema(
     include_fits_metadata=False,
     apply_fits_nulls=False,
     backend="auto",
+    *,
+    decode_errors="strict",
+    shape_cells=False,
 )
 ```
 
@@ -624,6 +871,7 @@ torchfits.table.write_parquet("out.parquet", "catalog.fits", hdu=1)
 torchfits.table.write_parquet("bright.parquet", "catalog.fits", where="MAG < 20")
 torchfits.table.write_csv("bright.csv", "catalog.fits", where="MAG < 20")
 torchfits.table.write_ipc("bright.arrow", "catalog.fits", where="MAG < 20")
+torchfits.table.write_parquet("cols.parquet", {"RA": [10.0, 11.0], "ID": [1, 2]})
 
 # Cache cleanup
 torchfits.table.clear_cache()
@@ -634,7 +882,13 @@ backend names for callers that select an explicit backend.
 
 `torchfits.table.write_ipc(dest, data, *, stream=False, compression="zstd",
 **read_kwargs)` writes Arrow IPC/Feather V2. `data` may be a FITS path, Arrow
-table, record-batch reader, or batch iterable. For a FITS path, read keywords
+table, record-batch reader, batch iterable, or a column dict as accepted by
+`table.write` (same for `write_parquet` and `write_csv`). For a FITS path, read keywords
 such as `hdu`, `columns`, and `where` are forwarded to `table.read` or
 `table.reader`; keywords are rejected for already-materialized input. Set
 `stream=True` to write batches without materializing the full table.
+
+`write_parquet`, `write_csv`, and `write_ipc` write a local `dest` to a
+hidden temp file beside it and rename it into place only once the write
+finishes, so a failed export leaves an existing `dest` unchanged. The bytes
+are published as written (a `.gz` name is not gzip-wrapped).

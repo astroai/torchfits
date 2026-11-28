@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import numpy as np
+import pytest
 import torch
 
 import torchfits
@@ -156,6 +157,49 @@ def test_stats_truncated_image_is_io_error(tmp_path):
     result = _run_cli("stats", str(path))
     assert result.returncode == 3, result.stderr
     assert "Traceback" not in result.stderr
+    # The raw CFITSIO status (108) is explained, not left bare.
+    assert "truncated or unreadable FITS file" in result.stderr
+
+
+def test_truncated_file_errors_are_explained_exit_3(tmp_path, capsys):
+    from torchfits.cli.main import main
+
+    full = tmp_path / "full.fits"
+    torchfits.write(
+        str(full),
+        [torch.zeros(10, 10), torch.ones(100, 100), torch.ones(50, 50)],
+        overwrite=True,
+    )
+    raw = full.read_bytes()
+    data_cut = tmp_path / "data_cut.fits"
+    data_cut.write_bytes(raw[: 2880 * 3 + 1000])  # inside HDU 1's data
+    header_cut = tmp_path / "header_cut.fits"
+    header_cut.write_bytes(raw[:1000])  # inside the primary header
+    scan_cut = tmp_path / "scan_cut.fits"
+    scan_cut.write_bytes(raw[: 5760 + 1000])  # inside HDU 1's header
+    cases = [
+        (["diff", str(data_cut), str(full)], "truncated or unreadable"),
+        (
+            [
+                "arith",
+                str(data_cut),
+                "--op",
+                "add",
+                "--value",
+                "1",
+                "-o",
+                str(tmp_path / "o.fits"),
+            ],
+            "truncated or unreadable",
+        ),
+        (["info", str(header_cut)], "truncated or unreadable"),
+        (["header", str(scan_cut)], "appears truncated or corrupt"),
+    ]
+    for argv, message in cases:
+        assert main(argv) == 3, argv
+        err = capsys.readouterr().err
+        assert message in err, (argv, err)
+        assert "Traceback" not in err
 
 
 def test_verify_truncated_checksummed_is_io_error(tmp_path):
@@ -170,6 +214,39 @@ def test_verify_truncated_checksummed_is_io_error(tmp_path):
     result = _run_cli("verify", str(path))
     assert result.returncode == 3, result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_verify_truncated_without_checksums_is_io_error(tmp_path, capsys):
+    """A data-truncated file with no checksum keywords is not "OK".
+
+    The structural walk sees every HDU's declared extent, so a file cut in
+    its last data unit (which ``torchfits.open`` still accepts) exits 3
+    instead of reporting "OK (no checksum keywords)". Compressed and
+    complete files keep their verdicts.
+    """
+    from torchfits.cli.main import main
+
+    full = tmp_path / "full.fits"
+    torchfits.write(
+        str(full), [torch.zeros(10, 10), torch.ones(100, 100)], overwrite=True
+    )
+    raw = full.read_bytes()
+    cut = tmp_path / "cut.fits"
+    cut.write_bytes(raw[: len(raw) - 5000])
+    assert main(["verify", str(cut)]) == 3
+    err = capsys.readouterr().err
+    assert "truncated or unreadable FITS file" in err
+    assert "HDU 1: data truncated" in err
+    assert "Traceback" not in err
+    # Selecting another HDU does not hide a truncated file.
+    assert main(["verify", str(cut), "--hdu", "0"]) == 3
+    capsys.readouterr()
+    # An unpadded final block is tolerated, as CFITSIO tolerates it.
+    unpadded = tmp_path / "unpadded.fits"
+    unpadded.write_bytes(raw[: len(raw) - (-(100 * 100 * 4) % 2880)])
+    for path in (full, unpadded):
+        assert main(["verify", str(path)]) == 0
+        assert "OK (no checksum keywords)" in capsys.readouterr().out
 
 
 def test_verify_one_corrupt_file_exits_4_under_file_jobs(tmp_path):
@@ -192,3 +269,104 @@ def test_verify_one_corrupt_file_exits_4_under_file_jobs(tmp_path):
     bad.write_bytes(raw)
     result = _run_cli("verify", str(good), str(bad), "-J", "2", "-f", "jsonl")
     assert result.returncode == 4, result.stderr
+
+
+def _table_with_odd_values(path):
+    tf_table.write(
+        str(path),
+        {
+            "C": np.array([1 + 2j, np.nan - 4j], dtype=np.complex64),
+            "V": np.ones((2, 3), dtype=np.complex128),
+            "S": np.array(["ab", "Qz"]),
+            "I": np.array([7, 8], dtype=np.int32),
+        },
+        overwrite=True,
+    )
+    raw = path.read_bytes()
+    at = raw.rfind(b"Qz")
+    path.write_bytes(raw[:at] + b"\xff\xfe" + raw[at + 2 :])
+
+
+def test_table_preview_json_complex_and_undecodable_strings(tmp_path, capsys):
+    import json
+
+    from torchfits.cli.main import main
+
+    path = tmp_path / "odd.fits"
+    _table_with_odd_values(path)
+    assert main(["table", str(path), "-n", "5", "-f", "json"]) == 0
+    (record,) = json.loads(capsys.readouterr().out)
+    assert record["schema"] == [
+        {"name": "C", "type": "complex64"},
+        {"name": "V", "type": "fixed_size_list<item: complex128>[3]"},
+        {"name": "S", "type": "string"},
+        {"name": "I", "type": "int32"},
+    ]
+    first, second = record["preview"]
+    assert first == {
+        "C": {"re": 1.0, "im": 2.0},
+        "V": [{"re": 1.0, "im": 0.0}] * 3,
+        "S": "ab",
+        "I": 7,
+    }
+    assert second["C"] == {"re": None, "im": -4.0}
+    assert second["S"] == "��"
+
+    # Text mode prints the same JSON preview block.
+    assert main(["table", str(path), "-n", "1"]) == 0
+    out = capsys.readouterr().out
+    assert '"re": 1.0' in out
+    assert "(1+2j)" not in out
+
+
+def test_json_safe_bytes_and_complex():
+    from torchfits.cli.common import _json_safe
+
+    assert _json_safe(b"ok\xff") == "ok�"
+    assert _json_safe(np.complex64(1 - 2j)) == {"re": 1.0, "im": -2.0}
+    assert _json_safe([complex(float("inf"), 0)]) == [{"re": None, "im": 0.0}]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["info", "{img}", "-e", "99"],
+        ["header", "{img}", "-e", "99"],
+        ["stats", "{img}", "-e", "99"],
+        ["verify", "{img}", "-e", "99"],
+        ["probe", "{img}", "-e", "99"],
+        ["table", "{tbl}", "-e", "99"],
+        ["cutout", "{img}", "-o", "{out}.fits", "-e", "99", "--box", "0,0,2,2"],
+        ["convert", "{tbl}", "{out}.csv", "-e", "99"],
+        ["convert", "{tbl}", "{out}.fits", "-e", "99"],
+        ["convert", "{img}", "-o", "{out}.png", "--to", "png", "--bands", "99"],
+        [
+            "arith",
+            "{img}",
+            "--op",
+            "add",
+            "--value",
+            "1",
+            "-o",
+            "{out}.fits",
+            "-e",
+            "99",
+        ],
+        ["transform", "{img}", "-o", "{out}.fits", "-e", "99", "--name", "LogStretch"],
+        ["compress", "{img}", "-e", "99", "--split", "hdu", "--out-dir", "{dir}"],
+        ["decompress", "{img}", "-e", "99", "--split", "hdu", "--out-dir", "{dir}"],
+    ],
+    ids=lambda argv: "-".join(a for a in argv[:4] if not a.startswith("{")),
+)
+def test_every_subcommand_reports_a_missing_hdu_as_usage_error(tmp_path, argv, capsys):
+    # cutout, convert and transform used to exit 3 for an -e index the file
+    # does not have; info/header/stats/table/verify/... exit 2.
+    from torchfits.cli.main import main
+
+    img = tmp_path / "img.fits"
+    torchfits.write(str(img), torch.zeros((4, 4)))
+    tbl = tmp_path / "tbl.fits"
+    tf_table.write(str(tbl), {"A": np.array([1.0, 2.0])})
+    fields = {"img": img, "tbl": tbl, "out": tmp_path / "out", "dir": tmp_path / "d"}
+    assert main([a.format(**fields) for a in argv]) == 2
+    assert "out of range" in capsys.readouterr().err

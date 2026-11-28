@@ -20,7 +20,7 @@ _log = logging.getLogger(__name__)
 
 def write(
     path: str,
-    data: dict[str, Any],
+    data: Any,
     *,
     schema: dict[str, dict[str, Any]] | None = None,
     header: dict[str, Any] | None = None,
@@ -28,19 +28,44 @@ def write(
     extname: str | None = None,
     table_type: str = "binary",
     quantize: Any = None,
+    checksum: bool = False,
 ) -> None:
-    """Write a columnar dict as a FITS table.
+    """Write a columnar dict, table/dataframe, or stream of batches as a FITS table.
+
+    ``data`` is a column dict, an Arrow/pandas/polars/astropy table, or a
+    stream of batches -- a ``pyarrow.RecordBatchReader`` or an iterable of
+    record batches / tables / column dicts -- which is written incrementally
+    with memory bounded by the batch size (see :func:`writer`).
 
     ``quantize=\"robust\"`` packs all float columns to ``TFORM=I`` with
     ``TSCAL``/``TZERO``. Pass ``{\"col\": \"robust\"}`` (or per-column option
     dicts) to select columns. Default keeps native float ``TFORM``.  When
     ``quantize`` is set but no column qualifies (e.g. an integer-only table),
     a ``QuantizeError`` is raised rather than silently writing unpacked.
+    ``quantize`` is not supported for streams. ``checksum=True`` stamps
+    DATASUM/CHECKSUM on every HDU of the new file.
     """
     from .._io_engine._write_helpers import _normalize_table_input
     from .._io_engine.paths import guard_write_path
+    from .write_stream import is_batch_stream, write_batches
 
     guard_write_path(path)
+    if is_batch_stream(data):
+        if quantize is not None:
+            raise ValueError(
+                "quantize= is not supported when writing a stream of batches"
+            )
+        write_batches(
+            path,
+            data,
+            schema=schema,
+            header=header,
+            extname=extname,
+            overwrite=overwrite,
+            checksum=checksum,
+            table_type=table_type,
+        )
+        return
     if str(path).lower().endswith(".bz2"):
         # CFITSIO would create a plain, uncompressed FITS under this name.
         raise ValueError(
@@ -57,6 +82,10 @@ def write(
         raise ValueError("table_type must be 'binary' or 'ascii'")
     if schema is not None and not isinstance(schema, dict):
         raise TypeError("schema must be a dictionary when provided")
+    from ._cell_shape import shape_cells_for_write
+
+    # (nrows, *cell) columns are stored flat with TDIM.
+    data, schema = shape_cells_for_write(data, schema)
     if quantize is not None and table_kind == "ascii":
         raise ValueError("quantize= is only supported for binary tables")
     hdr: dict[str, Any] | None = None
@@ -90,6 +119,9 @@ def write(
 
         _invalidate_path_caches(path)
         data = _normalize_cpp_table_data(data)
+        from .._io_engine._write_helpers import _warn_clipped_string_columns
+
+        _warn_clipped_string_columns(data, schema)
         # This branch talks to cpp.write_fits_table directly, so it never passes
         # through write()'s temp-file-and-rename wrapper -- and the C++ writer
         # reaches fits_create_file("!path"), which unlinks the target before the
@@ -108,6 +140,10 @@ def write(
             )
             if hdr:
                 _write_header_cards_if_supported(write_path, 1, hdr)
+            if checksum:
+                from .._io_engine.write_api import _write_all_checksums
+
+                _write_all_checksums(write_path)
         _invalidate_path_caches(path)
         return
 
@@ -117,6 +153,38 @@ def write(
         header=hdr if hdr else None,
         overwrite=overwrite,
         quantize=quantize,
+        checksum=checksum,
+    )
+
+
+def writer(
+    path: str,
+    *,
+    schema: dict[str, dict[str, Any]] | None = None,
+    header: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    extname: str | None = None,
+    table_type: str = "binary",
+    checksum: bool = False,
+) -> Any:
+    """Open an incremental FITS table writer (the write-side ``reader()``).
+
+    Returns a :class:`~torchfits._table.write_stream.TableWriter`; call its
+    ``write(batch)`` per batch and ``close()``, or use it as a context
+    manager. The table is built in a temp file next to ``path`` and published
+    atomically on a clean close; an exception or ``abort()`` leaves ``path``
+    untouched. The first batch with rows (or ``schema=``) fixes the layout.
+    """
+    from .write_stream import TableWriter
+
+    return TableWriter(
+        path,
+        schema=schema,
+        header=header,
+        extname=extname,
+        overwrite=overwrite,
+        checksum=checksum,
+        table_type=table_type,
     )
 
 
@@ -152,27 +220,30 @@ def _column_tform_map(header_map: dict[str, Any]) -> dict[str, str]:
 
 
 def _column_name_index_map(header_map: dict[str, Any]) -> dict[int, str]:
-    out: dict[int, str] = {}
+    """Column index -> name, as every reader names the columns.
 
-    try:
-        tfields = int(header_map.get("TFIELDS", 0))
-    except (ValueError, TypeError):
-        tfields = 0
+    A column with no (or an empty) ``TTYPE`` card is named ``COL<i>`` like the
+    readers do; skipping it here made the column rewrites (insert/replace
+    column) silently drop it and the row mutations refuse its name.
+    """
+    from ..fits_schema import _iter_tfields_indexed
 
-    if tfields > 0:
-        for i in range(1, tfields + 1):
-            val = header_map.get(f"TTYPE{i}")
-            if val is not None:
-                out[i] = str(val)
-        return out
+    return {idx: name for idx, name, _tform, _tdim in _iter_tfields_indexed(header_map)}
 
-    for key, value in header_map.items():
-        key_u = str(key).upper()
-        if not key_u.startswith("TTYPE"):
-            continue
-        suffix = key_u[5:]
-        if suffix.isdigit():
-            out[int(suffix)] = str(value)
+
+def _synthesized_column_ttypes(header_map: dict[str, Any]) -> dict[str, str | None]:
+    """``{read name: original TTYPE}`` of the columns readers call ``COL<i>``.
+
+    That is a column with no (``None``), an empty, or a repeated ``TTYPE``.
+    """
+    from ..fits_schema import _iter_tfields_indexed, _kw_lookup
+
+    get = _kw_lookup(header_map)
+    out: dict[str, str | None] = {}
+    for idx, name, _tform, _tdim in _iter_tfields_indexed(header_map):
+        ttype = get(f"TTYPE{idx}")
+        if ttype is None or str(ttype) != name:
+            out[name] = None if ttype is None or not str(ttype) else str(ttype)
     return out
 
 
@@ -301,6 +372,45 @@ _BINTABLE_CELL_BYTES = {
 }
 
 
+def _table_column_spans(
+    header_map: dict[str, Any],
+) -> dict[str, tuple[int, int]] | None:
+    """``{name: (byte offset, byte width)}`` of each column in a stored row.
+
+    Binary-table cells follow one another in TFORM order (a variable-length
+    column holds its descriptor); ASCII-table fields sit at ``TBCOLn``.
+    ``None`` when a column's width cannot be told from its TFORM.
+    """
+    import re
+
+    from .. import fits_schema
+
+    ascii_table = str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
+    out: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for col in fits_schema.iter_table_columns(header_map):
+        info = col.tform_info
+        if ascii_table:
+            tbcol = header_map.get(f"TBCOL{col.index}")
+            match = re.match(r"^[A-Z]\s*(\d+)", str(col.tform).strip().upper())
+            if tbcol is None or match is None:
+                return None
+            out[col.name] = (int(tbcol) - 1, int(match.group(1)))
+            continue
+        code = info.code or ""
+        if info.vla:
+            width = _BINTABLE_CELL_BYTES[info.vla_descriptor or "P"]
+        elif code == "X":
+            width = (info.repeat + 7) // 8
+        elif code in _BINTABLE_CELL_BYTES:
+            width = info.repeat * _BINTABLE_CELL_BYTES[code]
+        else:
+            return None
+        out[col.name] = (offset, width)
+        offset += width
+    return out
+
+
 def _scaled_columns_as_stored(
     path: str, hdu: int, header_map: dict[str, Any]
 ) -> dict[str, Any]:
@@ -395,8 +505,19 @@ def _rewrite_table_hdu_with_schema(
     table_type: str,
     *,
     restamp_checksums: bool = False,
+    source_ttypes: dict[str, str | None] | None = None,
 ) -> None:
+    """Splice a rewritten table over HDU ``target_hdu`` of ``path``.
+
+    ``source_ttypes`` maps the ``COL<i>`` read names of columns with no, an
+    empty or a repeated ``TTYPE`` to that original card value (``None`` when
+    absent); see ``_synthesized_column_ttypes``. Such a column keeps its
+    original card while it keeps its position; a column that moved is written
+    with its old read name as ``TTYPE`` so the name a read returns does not
+    change under the caller.
+    """
     from .._io_engine._hdu_splice import Piece, hdu_byte_spans, publish_spliced
+    from .._io_engine._write_helpers import _delete_header_key_if_supported
 
     # Stage the single-HDU file in a temp path so building it never races with
     # CFITSIO's internal file-locking on the real file when another handle
@@ -418,6 +539,14 @@ def _rewrite_table_hdu_with_schema(
         # Replayed card by card: the mapping write path re-emits HISTORY and
         # COMMENT as valued cards and collapses repeated lines.
         _write_header_cards_if_supported(tmp_path, 1, header)
+        for pos, col_name in enumerate(data, start=1):
+            if col_name not in (source_ttypes or {}) or col_name != f"COL{pos}":
+                continue
+            original = (source_ttypes or {})[col_name]
+            if original is None:
+                _delete_header_key_if_supported(tmp_path, 1, f"TTYPE{pos}")
+            else:
+                _write_header_cards_if_supported(tmp_path, 1, {f"TTYPE{pos}": original})
         new_start, _new_data, new_end = hdu_byte_spans(tmp_path)[1]
         spans = hdu_byte_spans(path)
         old_start, _old_data, old_end = spans[target_hdu]
@@ -434,8 +563,14 @@ def _rewrite_table_hdu_with_schema(
     finally:
         try:
             os.unlink(tmp_path)
-        except Exception:
+        except FileNotFoundError:
             pass
+        except OSError as exc:
+            # The rewrite itself succeeded (or its error is propagating);
+            # a stray temp file is worth a warning, not a failure.
+            _log.warning(
+                "table rewrite: could not remove temp file %r: %s", tmp_path, exc
+            )
 
 
 def _resolve_table_hdu_index_and_columns(

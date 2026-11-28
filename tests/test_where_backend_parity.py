@@ -310,9 +310,13 @@ def padded_string_table(tmp_path):
 @pytest.mark.parametrize(
     ("expr", "kwargs", "expected"),
     [
-        ("S == 'ab'", {"strip": False}, []),
-        ("S == 'ab  '", {"strip": False}, [0]),
-        ("S == 'ab'", {}, [0]),
+        # The table holds a latin-1 cell, which the default strict ASCII
+        # decode refuses (test_strict_decode_refuses_the_latin1_cell).
+        ("S == 'ab'", {"strip": False, "encoding": "latin-1"}, []),
+        ("S == 'ab  '", {"strip": False, "encoding": "latin-1"}, [0]),
+        ("S == 'ab'", {"encoding": "latin-1"}, [0]),
+        ("S == 'ab'", {"decode_errors": "replace"}, [0]),
+        ("S == 'caf'", {"decode_errors": "ignore"}, [1]),
         ("S == 'café'", {"encoding": "latin-1"}, [1]),
         ("S == 'caf'", {"encoding": "latin-1"}, []),
     ],
@@ -331,6 +335,14 @@ def test_string_predicate_uses_callers_decoding(
                 **kwargs,
             )
             assert got["ID"].to_pylist() == expected, (backend, mmap)
+
+
+def test_strict_decode_refuses_the_latin1_cell(padded_string_table):
+    for backend in ("auto", "cpp", "torch"):
+        with pytest.raises(UnicodeDecodeError, match="column 'S'"):
+            torchfits.table.read(
+                padded_string_table, where="S == 'ab'", backend=backend
+            )
 
 
 def test_vector_column_predicate_is_refused_on_every_backend(tmp_path):
@@ -436,3 +448,56 @@ def test_repeated_projection_column_is_returned_once(tmp_path):
                     path, columns=["ID", "ID"], where=where, backend=backend, mmap=mmap
                 )
                 assert got.column_names == ["ID"], (where, backend, mmap)
+
+
+@pytest.mark.parametrize("mmap", [True, False])
+@pytest.mark.parametrize("decode_bytes", [True, False])
+def test_byte_vector_column_is_not_decoded_as_text(tmp_path, mmap, decode_bytes):
+    # A scaled predicate column takes the torch-mask filter, which converted a
+    # numeric byte ('2B') vector without its TFORM and decoded it as a string
+    # (UnicodeDecodeError on bytes >= 0x80).
+    path = str(tmp_path / "bvec.fits")
+    torchfits.table.write(
+        path,
+        {
+            "S": np.arange(4, dtype=np.int32),
+            "V": np.full((4, 2), 255, dtype=np.uint8),
+        },
+        schema={"S": {"format": "J", "bscale": 0.5, "bzero": 1.0}},
+    )
+    out = torchfits.table.read(
+        path, where="S > 1", mmap=mmap, decode_bytes=decode_bytes
+    )
+    assert out.schema.field("V").type == pa.list_(pa.uint8(), 2)
+    assert out["V"].to_pylist() == [[255, 255]] * 3
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        ("K IN (9223372036854775808)", []),
+        ("K IN (99999999999999999999999, 1)", [0]),
+        ("K NOT IN (9223372036854775808, 1)", [1, 2]),
+        ("K IN (1e30, 2)", [1]),
+        ("K IN (2.5, 3)", [2]),
+        ("F IN (99999999999999999999999, 2.5)", [2]),
+    ],
+)
+@pytest.mark.parametrize("mmap", [True, False])
+def test_in_list_literal_outside_column_range(tmp_path, expr, expected, mmap):
+    # IN built an Arrow value set from the literals, so one outside int64
+    # raised OverflowError / ArrowInvalid instead of matching nothing.
+    path = str(tmp_path / "in.fits")
+    torchfits.table.write(
+        path,
+        {
+            "ID": np.arange(3, dtype=np.int64),
+            "K": np.array([1, 2, 3], dtype=np.int64),
+            "F": np.array([1.0, 2.0, 2.5]),
+        },
+    )
+    out = torchfits.table.read(path, where=expr, mmap=mmap)
+    assert out["ID"].to_pylist() == expected
+    data = {"K": np.array([1, 2, 3]), "F": np.array([1.0, 2.0, 2.5])}
+    mask = evaluate_where(parse_where_expression(expr), data)
+    assert np.flatnonzero(mask).tolist() == expected

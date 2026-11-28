@@ -131,3 +131,64 @@ def test_negative_num_rows_other_than_minus_one_still_raises(fixed):
         table.read_torch(full, hdu=1, num_rows=-2)
     with pytest.raises(ValueError, match="num_rows"):
         torchfits.read(full, hdu=1, num_rows=-2)
+
+
+def test_schema_with_where_on_zero_row_table_is_typed(tmp_path):
+    """schema(where=...) on NAXIS2 = 0 used to return an empty schema.
+
+    The scan it reads yields no batch for a table with no rows, and only the
+    where=None case fell back to a typed read; read(where=...) and schema()
+    both return the typed columns.
+    """
+    path = str(tmp_path / "empty.fits")
+    table.write(path, {"AA": np.zeros(0, np.int32), "BB": np.zeros(0)})
+    expected = table.schema(path)
+    assert [f.name for f in expected] == ["AA", "BB"]
+    assert table.schema(path, where="AA > 1") == expected
+    assert table.schema(path, where="AA > 1") == table.read(path, where="AA > 1").schema
+    assert table.schema(path, columns=["BB"], where="AA > 1").names == ["BB"]
+    # A bad predicate fails the same way as the read it describes.
+    with pytest.raises(ValueError, match="unknown column"):
+        table.schema(path, where="NOPE > 1")
+
+
+def test_column_rewrites_of_a_zero_row_table_with_strings(tmp_path):
+    # An empty character column reached the native writer as an empty float
+    # array and failed with RuntimeError('std::bad_cast'), so insert_column /
+    # replace_column refused every zero-row table with an 'A' column.
+    path = str(tmp_path / "empty_str.fits")
+    table.write(
+        path,
+        {"A": np.zeros(0, dtype=np.int16), "S": np.array([], dtype="<U6")},
+        schema={"S": {"format": "6A"}},
+    )
+    table.replace_column(path, "A", np.zeros(0, dtype=np.int16))
+    table.insert_column(path, "B", np.zeros(0, dtype=np.int32))
+    info = torchfits.read_table_info(path)
+    assert info["colnames"] == ["A", "S", "B"]
+    assert info["tforms"][1] == "6A"
+    assert info["nrows"] == 0
+    table.write(path, {"S": []}, schema={"S": {"format": "6A"}}, overwrite=True)
+    assert table.read(path).schema.field("S").type == "string"
+    with pytest.raises(ValueError, match="character TFORM"):
+        table.write(
+            path, {"S": np.arange(3)}, schema={"S": {"format": "6A"}}, overwrite=True
+        )
+
+
+def test_zero_row_arrow_string_column_writes(tmp_path):
+    # A zero-row Arrow string column became an empty object array, which the
+    # native writer could not type: RuntimeError('std::bad_cast'), so
+    # table.write(table.read(empty_file)) failed for any table with strings.
+    import pyarrow as pa
+
+    path = str(tmp_path / "empty_arrow.fits")
+    src = pa.table({"S": pa.array([], pa.string()), "I": pa.array([], pa.int32())})
+    table.write(path, src)
+    out = table.read(path)
+    assert out.num_rows == 0
+    assert out.schema.field("S").type == pa.string()
+    assert out.schema.field("I").type == pa.int32()
+    # A column with no rows and no type to infer is an argument error now.
+    with pytest.raises(ValueError, match="cannot infer a FITS format"):
+        table.write(path, {"S": np.array([], dtype=object)}, overwrite=True)

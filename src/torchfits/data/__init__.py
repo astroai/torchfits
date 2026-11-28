@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterator, Sequence
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
-from .._io_engine.device import to_device
+from .._io_engine.device import move_table_columns, to_device
 from .datasets import (
     BandInfo,
     FitsCubeDataset,
@@ -36,9 +36,9 @@ from .datasets import (
     FitsStagedCutoutIterableDataset,
     FitsTensorDataset,
     FitsTensorIterableDataset,
-    _buffered_shuffle,
     _check_return_label,
     _EpochSeed,
+    _EpochStream,
     _resolve_rank_and_world_size,
     discover_bands,
 )
@@ -58,8 +58,12 @@ class FitsTableDataset(Dataset[Any]):
     is a ``torch.long`` tensor (zero when no ``labels`` are provided). Pass
     ``return_label=False`` to get the row dict alone.
     Supports column projection and ``where=`` pushdown for filtered access.
-    **Loads the full filtered table at ``__init__``** — small/medium catalogs
-    only; use :class:`FitsTableIterableDataset` for large files.
+    **Loads the full filtered table at ``__init__``** by default — small/medium
+    catalogs only. ``lazy=True`` instead reads aligned blocks of
+    ``block_rows`` rows on demand and keeps the last ``cache_blocks`` of them
+    (per process, so per DataLoader worker): memory stays bounded for tables
+    that do not fit in RAM, at the cost of slower uniformly random access.
+    Use :class:`FitsTableIterableDataset` for streaming passes.
 
     Parameters
     ----------
@@ -82,6 +86,16 @@ class FitsTableDataset(Dataset[Any]):
     return_label : bool or None
         ``None`` (default) and ``True`` return ``(row_dict, label)``;
         ``False`` returns the row dict alone (and refuses ``labels``).
+    lazy : bool
+        Read rows on demand in cached blocks instead of loading the table at
+        ``__init__`` (default False). With ``where=`` only the selected row
+        numbers are kept in memory. ``mmap="auto"`` reads blocks with the
+        buffered reader (one mmap per small block costs more than a pread).
+    block_rows : int
+        Rows per cached block in lazy mode (default 256).
+    cache_blocks : int
+        Blocks kept per process in lazy mode, least recently used evicted
+        first (default 64).
     """
 
     def __init__(
@@ -96,6 +110,9 @@ class FitsTableDataset(Dataset[Any]):
         mmap: bool | str = "auto",
         *,
         return_label: bool | None = None,
+        lazy: bool = False,
+        block_rows: int = 256,
+        cache_blocks: int = 64,
     ) -> None:
         self._return_label = _check_return_label(return_label, labels)
         self.path = resolve_local_path(path)
@@ -105,16 +122,47 @@ class FitsTableDataset(Dataset[Any]):
         self.transform = transform
         self.device = device
         self.mmap = mmap
+        self.lazy = bool(lazy)
+        self._lazy_blocks: _TableBlockCache | None = None
 
-        # Read all data once and index by row.
-        # Small-to-medium catalogs only; see roadmap for streaming variant.
-        self._data = _eager_table_columns(
+        if self.lazy:
+            self._data: dict[str, Any] = {}
+            self._lazy_blocks = _TableBlockCache(
+                self.path,
+                hdu=self.hdu,
+                columns=self.columns,
+                where=self.where,
+                device=self.device,
+                mmap=self.mmap,
+                block_rows=block_rows,
+                cache_blocks=cache_blocks,
+            )
+            self._n_rows = len(self._lazy_blocks)
+            self._init_labels(labels)
+            return
+
+        # Read all data once and index by row. The native table reader takes
+        # an HDU index and reports a missing one as a bare RuntimeError: look
+        # an EXTNAME up first and translate a missing HDU or file into the
+        # typed errors every other reader raises (as lazy=True already does).
+        from .._io_engine._hdu_lookup import call_with_lookup, resolve_hdu_name
+
+        read_hdu = (
+            resolve_hdu_name(self.path, self.hdu)
+            if isinstance(self.hdu, str)
+            else self.hdu
+        )
+        self._data = call_with_lookup(
             self.path,
-            hdu=self.hdu,
-            columns=self.columns,
-            where=self.where,
-            device=self.device,
-            mmap=self.mmap,
+            read_hdu,
+            lambda: _eager_table_columns(
+                self.path,
+                hdu=read_hdu,
+                columns=self.columns,
+                where=self.where,
+                device=self.device,
+                mmap=self.mmap,
+            ),
         )
         # Two authorities, and which one applies depends on the read:
         #   * the data itself, when a ``where=`` filter or a projection means
@@ -132,9 +180,11 @@ class FitsTableDataset(Dataset[Any]):
                 data_rows = len(v)
                 break
         self._n_rows = (
-            data_rows if self._data else int(_tf.read_nrows(self.path, self.hdu))
+            data_rows if self._data else int(_tf.read_nrows(self.path, read_hdu))
         )
+        self._init_labels(labels)
 
+    def _init_labels(self, labels: list[int] | None) -> None:
         if labels is not None:
             if len(labels) != self._n_rows:
                 raise ValueError(
@@ -150,7 +200,10 @@ class FitsTableDataset(Dataset[Any]):
     def __getitem__(self, idx: int) -> Any:
         if not -self._n_rows <= idx < self._n_rows:
             raise IndexError(f"index {idx} out of range for {self._n_rows} rows")
-        row = {k: v[idx] for k, v in self._data.items()}
+        if self._lazy_blocks is not None:
+            row = self._lazy_blocks.row(idx % self._n_rows)
+        else:
+            row = {k: v[idx] for k, v in self._data.items()}
         if self.transform is not None:
             row = self.transform(row)
         if not self._return_label:
@@ -160,10 +213,170 @@ class FitsTableDataset(Dataset[Any]):
         return row, label
 
     def __repr__(self) -> str:
+        lazy = ", lazy=True" if self.lazy else ""
         return (
             f"FitsTableDataset(path={self.path!r}, hdu={self.hdu}, "
-            f"n_rows={self._n_rows})"
+            f"n_rows={self._n_rows}{lazy})"
         )
+
+
+class _TableBlockCache:
+    """Rows of one table HDU read on demand in aligned blocks, LRU-cached.
+
+    A block is ``block_rows`` consecutive table rows read with one native
+    call; the last ``cache_blocks`` blocks stay in memory. The cache belongs
+    to one process: a forked DataLoader worker starts from an empty cache
+    (and a fresh lock) instead of sharing the parent's, and pickling (spawn
+    workers) drops it. With ``where=`` the selected table row numbers are
+    resolved once, a window at a time, so only those indices are resident.
+    """
+
+    _WHERE_WINDOW_ROWS = 65536
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        hdu: int,
+        columns: list[str] | None,
+        where: str | None,
+        device: str,
+        mmap: bool | str,
+        block_rows: int,
+        cache_blocks: int,
+    ) -> None:
+        for name, value in (("block_rows", block_rows), ("cache_blocks", cache_blocks)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive int, got {value!r}")
+        import torchfits
+
+        self.path = path
+        self.hdu = hdu
+        self.columns = list(columns) if columns else []
+        self.device = device
+        # One mmap of the whole file per small block costs more than a
+        # pread of the block, so "auto" means the buffered reader here.
+        self.use_mmap = mmap if isinstance(mmap, bool) else False
+        _resolve_table_mmap(mmap)  # validates the value
+        self.block_rows = block_rows
+        self.cache_blocks = cache_blocks
+        self.total_rows = int(torchfits.read_nrows(path, hdu))
+        self.row_index: torch.Tensor | None = None
+        if where is not None:
+            self.row_index = self._where_rows(where)
+        self._reset()
+
+    def _reset(self) -> None:
+        import os
+        import threading
+        from collections import OrderedDict
+
+        self._blocks: OrderedDict[int, dict[str, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+        self._pid = os.getpid()
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        for key in ("_blocks", "_lock", "_pid"):
+            state.pop(key, None)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._reset()
+
+    def __len__(self) -> int:
+        if self.row_index is not None:
+            return int(self.row_index.numel())
+        return self.total_rows
+
+    def _where_rows(self, where: str) -> torch.Tensor:
+        """0-based table rows selected by *where*, resolved a window at a time."""
+        import torchfits
+        from .._table._read_schema import _all_table_columns
+        from .._table._read_where import _where_mask_for_table
+        from .._where import parse_where_expression, where_columns_from_ast
+
+        header = torchfits.read_header(self.path, self.hdu)
+        pred_cols = where_columns_from_ast(parse_where_expression(where))
+        known = {col.name for col in _all_table_columns(header)}
+        for name in pred_cols:
+            if name not in known:
+                raise KeyError(f"Column '{name}' not found")
+        picked: list[torch.Tensor] = []
+        step = self._WHERE_WINDOW_ROWS
+        for start in range(0, self.total_rows, step):
+            n = min(step, self.total_rows - start)
+            chunk = _native_table_read(
+                self.path, self.hdu, pred_cols, self.use_mmap, window=(start, n)
+            )
+            if chunk:
+                mask = _where_mask_for_chunk(
+                    self.path, self.hdu, header, chunk, where, pred_cols
+                )
+            else:
+                import numpy as np
+                import torchfits.table
+
+                pa_mask: Any = _where_mask_for_table(
+                    torchfits.table.read(
+                        self.path,
+                        hdu=self.hdu,
+                        columns=pred_cols,
+                        row_slice=(start, start + n),
+                        mmap=self.use_mmap,
+                    ),
+                    where,
+                )
+                mask = torch.from_numpy(
+                    np.asarray(pa_mask.to_numpy(zero_copy_only=False), dtype=bool)
+                )
+            picked.append(mask.nonzero().flatten() + start)
+        if not picked:
+            return torch.zeros(0, dtype=torch.int64)
+        return torch.cat(picked)
+
+    def _read_block(self, block: int) -> dict[str, Any]:
+        start = block * self.block_rows
+        n = min(self.block_rows, self.total_rows - start)
+        chunk = _native_table_read(
+            self.path, self.hdu, self.columns, self.use_mmap, window=(start, n)
+        )
+        if chunk:
+            return _move_table_chunk(chunk, self.device)
+        return _pyarrow_table_columns(
+            self.path,
+            hdu=self.hdu,
+            columns=self.columns or None,
+            where=None,
+            use_mmap=self.use_mmap,
+            device=self.device,
+            row_slice=(start, start + n),
+        )
+
+    def row(self, idx: int) -> dict[str, Any]:
+        """Row *idx* (0-based, after any ``where=`` selection)."""
+        import os
+
+        if self._pid != os.getpid():
+            self._reset()  # forked: never reuse the parent's cache or lock
+        table_row = idx if self.row_index is None else int(self.row_index[idx])
+        block, offset = divmod(table_row, self.block_rows)
+        with self._lock:
+            chunk = self._blocks.get(block)
+            if chunk is not None:
+                self._blocks.move_to_end(block)
+        if chunk is None:
+            # Read outside the lock: a slow block must not stall cache hits
+            # from other threads. Two threads missing the same block both
+            # read it; the second insert simply refreshes it.
+            chunk = self._read_block(block)
+            with self._lock:
+                self._blocks[block] = chunk
+                self._blocks.move_to_end(block)
+                while len(self._blocks) > self.cache_blocks:
+                    self._blocks.popitem(last=False)
+        return {k: v[offset] for k, v in chunk.items()}
 
 
 def _resolve_table_mmap(mmap: bool | str) -> bool:
@@ -178,15 +391,9 @@ def _resolve_table_mmap(mmap: bool | str) -> bool:
 
 
 def _move_table_chunk(chunk: dict[str, Any], device: str) -> dict[str, Any]:
-    if str(device) == "cpu":
-        return chunk
-    moved: dict[str, Any] = {}
-    for key, value in chunk.items():
-        if isinstance(value, torch.Tensor):
-            moved[key] = to_device(value, device)
-        else:
-            moved[key] = value
-    return moved
+    # VLA columns (lists of row tensors) follow their sibling columns, as
+    # they do in scan_torch / FitsTableIterableDataset.
+    return move_table_columns(chunk, device)
 
 
 def _eager_table_columns(
@@ -202,27 +409,105 @@ def _eager_table_columns(
 
     ``where=`` selects rows but never changes the representation: the
     selected rows come back exactly as an unfiltered read returns them
-    (stored TNULL sentinels, raw ``uint8`` character bytes).
+    (stored TNULL sentinels, raw ``uint8`` character bytes, VLA columns as
+    lists of tensors -- the representation ``FitsTableIterableDataset``
+    yields). Only when the native reader rejects the table does it fall back
+    to pyarrow (logged at WARNING), where character columns become ``str``.
     """
-    row_mask = None
+    use_mmap = _resolve_table_mmap(mmap)
+    col_list = list(columns) if columns else []
+    pred_cols: list[str] = []
+    drop: set[str] = set()
+    header: Any = None
     if where is not None:
-        row_mask = _where_row_mask(path, hdu, where, mmap=mmap)
-    try:
-        import torchfits._C as cpp
+        # One read either way: the native predicate scan when it can serve the
+        # request, else the projection plus the predicate columns, masked in
+        # memory (the predicate columns used to be read a second time).
+        import torchfits
+        from .._table._read_schema import _all_table_columns
+        from .._where import parse_where_expression, where_columns_from_ast
 
-        col_list = list(columns) if columns else []
-        chunk = cpp.read_fits_table(path, hdu, col_list, _resolve_table_mmap(mmap))
-        if chunk:
-            if row_mask is not None:
-                chunk = _select_table_rows(chunk, row_mask)
-            return _move_table_chunk(chunk, device)
-    except Exception:
-        _log.debug(
-            "C++ table read failed for %r, falling back to pyarrow",
-            path,
-            exc_info=True,
+        header = torchfits.read_header(path, hdu)
+        pred_cols = where_columns_from_ast(parse_where_expression(where))
+        known = {col.name for col in _all_table_columns(header)}
+        for name in pred_cols:
+            if name not in known:
+                raise KeyError(f"Column '{name}' not found")
+        pushed = _native_filtered_columns(path, hdu, header, col_list, where, use_mmap)
+        if pushed is not None:
+            return _move_table_chunk(pushed, device)
+        if col_list:
+            drop = {name for name in pred_cols if name not in col_list}
+            col_list = list(dict.fromkeys(col_list + pred_cols))
+    chunk = _native_table_read(path, hdu, col_list, use_mmap)
+    if chunk:
+        if where is not None:
+            row_mask = _where_mask_for_chunk(path, hdu, header, chunk, where, pred_cols)
+            if drop:
+                chunk = {k: v for k, v in chunk.items() if k not in drop}
+            chunk = _select_table_rows(chunk, row_mask)
+        return _move_table_chunk(chunk, device)
+    return _pyarrow_table_columns(
+        path, hdu=hdu, columns=columns, where=where, use_mmap=use_mmap, device=device
+    )
+
+
+def _native_table_read(
+    path: str,
+    hdu: int,
+    col_list: list[str],
+    use_mmap: bool,
+    window: tuple[int, int] | None = None,
+) -> dict[str, Any] | None:
+    """Columns of the table (or of a ``(start, num_rows)`` window, 0-based start)
+    from the native reader, or None when it rejects the table."""
+    import torchfits._C as cpp
+    from torchfits._table._read_scan import _reraise_invalid_geometry
+
+    def read(mmap: bool) -> Any:
+        if window is None:
+            return cpp.read_fits_table(path, hdu, col_list, mmap)
+        return cpp.read_fits_table_rows(
+            path, hdu, col_list, window[0] + 1, window[1], mmap
         )
 
+    # Only the native reader's own failures (RuntimeError / OSError, the
+    # family _read_scan catches) select a fallback; anything else -- a
+    # MemoryError, a binding TypeError -- is a bug and must surface.
+    try:
+        return dict(read(use_mmap))
+    except (RuntimeError, OSError) as exc:
+        _reraise_invalid_geometry(exc)
+        failure: BaseException | None = exc
+        if use_mmap:
+            # The mmap reader refuses some layouts (e.g. VLA columns); the
+            # handle reader serves them in the same representation the
+            # iterable dataset's scan_torch uses (VLA -> list of tensors).
+            _log.debug("mmap table read failed for %r, retrying: %s", path, exc)
+            try:
+                return dict(read(False))
+            except (RuntimeError, OSError) as retry_exc:
+                _reraise_invalid_geometry(retry_exc)
+                failure = retry_exc
+        _log.warning(
+            "native table read failed for %r (%s); falling back to pyarrow, "
+            "which returns character columns as str instead of uint8 bytes",
+            path,
+            failure,
+        )
+    return None
+
+
+def _pyarrow_table_columns(
+    path: str,
+    *,
+    hdu: int,
+    columns: list[str] | None,
+    where: str | None,
+    use_mmap: bool,
+    device: str,
+    row_slice: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     import torchfits.table
     import pyarrow.types as pt
 
@@ -231,7 +516,8 @@ def _eager_table_columns(
         hdu=hdu,
         columns=columns,
         where=where,
-        mmap=_resolve_table_mmap(mmap),
+        row_slice=row_slice,
+        mmap=use_mmap,
     )
     result: dict[str, Any] = {}
     for col_name in pa_table.column_names:
@@ -253,36 +539,90 @@ def _eager_table_columns(
     return result
 
 
-def _where_row_mask(
+def _native_filtered_columns(
     path: str,
     hdu: int,
+    header: Any,
+    columns: list[str],
     where: str,
-    *,
-    mmap: bool | str,
-    row_slice: tuple[int, int] | None = None,
-) -> torch.Tensor:
-    """Boolean row mask for *where* over the table (or a ``row_slice`` window).
+    use_mmap: bool,
+) -> dict[str, Any] | None:
+    """*where* served by the native predicate scan, or None when it cannot be.
 
-    Evaluated with the full ``table.read`` predicate dialect on the predicate
-    columns only, so the selected rows can be taken from a torch-native read.
+    The scan (``mmap=True`` only) gathers the selected rows as raw cells, in
+    the representation ``read_fits_table`` gives an unfiltered read; requests
+    it does not serve exactly (scaled or VLA columns, a predicate beyond a
+    conjunction of numeric comparisons) return None for the in-memory mask.
+    """
+    if not use_mmap:
+        return None
+    import torchfits._C as cpp
+    from .._table._read_where import (
+        _native_read_failed,
+        _native_where_filters,
+        _native_where_output_columns,
+    )
+
+    out_cols = _native_where_output_columns(header, columns or None)
+    if not out_cols:
+        return None
+    filters = _native_where_filters(header, where, out_cols, apply_fits_nulls=True)
+    if filters is None:
+        return None
+    try:
+        return dict(cpp.read_fits_table_filtered(path, hdu, out_cols, filters, 1, -1))
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        _native_read_failed(exc)
+        return None
+
+
+def _where_mask_for_chunk(
+    path: str,
+    hdu: int,
+    header: Any,
+    chunk: dict[str, Any],
+    where: str,
+    pred_cols: list[str],
+) -> torch.Tensor:
+    """Boolean row mask for *where* over an already-read columnar chunk.
+
+    The predicate columns are converted to Arrow the way ``table.read``
+    converts them (TNULL is NULL, character columns decoded as strict ASCII)
+    and evaluated with its full predicate dialect.
     """
     import numpy as np
+    import pyarrow as pa
 
-    import torchfits.table
-    from .._table._read_where import _where_mask_for_table
-    from .._where import parse_where_expression, where_columns_from_ast
-
-    ast = parse_where_expression(where)
-    pred_cols = where_columns_from_ast(ast)
-    pa_table = torchfits.table.read(
-        path,
-        hdu=hdu,
-        columns=pred_cols,
-        row_slice=row_slice,
-        mmap=_resolve_table_mmap(mmap),
+    from .._string_decode import DecodeSpec
+    from .._table._read_schema import (
+        _build_fits_metadata,
+        _column_tforms_for_decode,
+        _unsigned_column_dtypes,
     )
-    mask = _where_mask_for_table(pa_table, where, parsed_ast=ast)
-    values = mask.to_numpy(zero_copy_only=False) if hasattr(mask, "to_numpy") else mask
+    from .._table._read_where import _where_mask_for_table
+    from .._table.arrow_convert import _chunk_to_record_batch
+    from .._where import parse_where_expression
+
+    pred_set = set(pred_cols)
+    try:
+        null_meta = _build_fits_metadata(path, hdu, pred_set, header=header)[0]
+    except ValueError:
+        null_meta = {}
+    batch = _chunk_to_record_batch(
+        {name: chunk[name] for name in pred_cols if name in chunk},
+        True,
+        DecodeSpec("ascii", "strict"),
+        True,
+        null_meta=null_meta,
+        apply_fits_nulls=True,
+        column_tforms=_column_tforms_for_decode(path, hdu, pred_set, header=header),
+        unsigned_dtypes=_unsigned_column_dtypes(path, hdu, pred_set, header=header),
+    )
+    # A pyarrow BooleanArray (the annotation says ndarray).
+    mask: Any = _where_mask_for_table(
+        pa.Table.from_batches([batch]), where, parsed_ast=parse_where_expression(where)
+    )
+    values = mask.to_numpy(zero_copy_only=False)
     return torch.from_numpy(np.asarray(values, dtype=bool).copy())
 
 
@@ -338,7 +678,7 @@ def _shard_row_range(
     return start, start + size
 
 
-class FitsTableIterableDataset(IterableDataset[Any]):
+class FitsTableIterableDataset(_EpochStream, IterableDataset[Any]):
     """Iterable dataset streaming FITS table rows in constant memory.
 
     Each DataLoader worker (and each distributed rank) receives a
@@ -400,7 +740,14 @@ class FitsTableIterableDataset(IterableDataset[Any]):
             import torchfits
 
             info = torchfits.read_table_info(self.path, self.hdu)
-        except Exception:
+        except (RuntimeError, OSError, ValueError) as exc:
+            _log.warning(
+                "could not read the column formats of %r hdu %r (%s); "
+                "character columns stay in as_batches chunks as uint8 bytes",
+                self.path,
+                self.hdu,
+                exc,
+            )
             return set()
         names = list(info.get("colnames") or [])
         tforms = list(info.get("tforms") or [])
@@ -438,10 +785,15 @@ class FitsTableIterableDataset(IterableDataset[Any]):
 
         import torchfits.table
 
-        # where= only selects rows: each chunk is filtered with a row mask
-        # evaluated over the same row range, so rows keep the exact
-        # representation of an unfiltered scan.
-        offset = 0 if window is None else window[0]
+        # where= only selects rows: scan_torch reads each chunk's window once
+        # and yields just its matching rows, in the exact representation of an
+        # unfiltered scan (natively filtered when the predicate allows it).
+        # Absolute row of the next chunk, and the end of the scanned range
+        # (looked up lazily): a zero-column BINTABLE (TFIELDS = 0) yields
+        # ``{}`` chunks that carry no row count, yet holds NAXIS2 rows, which
+        # the map-style FitsTableDataset serves as empty row dicts.
+        scan_pos = 0 if window is None else window[0]
+        scan_end = None if window is None else window[1]
         for chunk in torchfits.table.scan_torch(
             self.path,
             hdu=self.hdu,
@@ -450,30 +802,26 @@ class FitsTableIterableDataset(IterableDataset[Any]):
             batch_size=self.batch_size,
             mmap=_resolve_table_mmap(self.mmap),
             device=self.device,
+            where=self.where,
         ):
             if not chunk:
-                continue
-            n_rows = next(
-                (
-                    v.shape[0] if isinstance(v, torch.Tensor) else len(v)
-                    for v in chunk.values()
-                    if isinstance(v, (torch.Tensor, list))
-                ),
-                0,
-            )
-            if self.where is not None:
-                row_mask = _where_row_mask(
-                    self.path,
-                    self.hdu,
-                    self.where,
-                    mmap=self.mmap,
-                    row_slice=(offset, offset + n_rows),
-                )
-                offset += n_rows
-                if not bool(row_mask.any()):
+                if scan_end is None:
+                    scan_end = int(torchfits.read_nrows(self.path, self.hdu))
+                # scan_torch chunks are ``min(batch_size, remaining)`` rows.
+                n_rows = max(0, min(self.batch_size, scan_end - scan_pos))
+                scan_pos += n_rows
+                if n_rows == 0:
                     continue
-                chunk = _select_table_rows(chunk, row_mask)
-                n_rows = int(row_mask.sum())
+            else:
+                n_rows = next(
+                    (
+                        v.shape[0] if isinstance(v, torch.Tensor) else len(v)
+                        for v in chunk.values()
+                        if isinstance(v, (torch.Tensor, list))
+                    ),
+                    0,
+                )
+                scan_pos += n_rows
             if self.as_batches:
                 if skipped:
                     chunk = {k: v for k, v in chunk.items() if k not in skipped}
@@ -493,13 +841,7 @@ class FitsTableIterableDataset(IterableDataset[Any]):
                 raise ValueError(
                     "shuffle_buffer_size requires per-row mode (as_batches=False)"
                 )
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
+        return super().__iter__()
 
     def __repr__(self) -> str:
         return (
@@ -677,7 +1019,7 @@ def fits_collate_fn(
 
 def make_loader(
     dataset: Dataset[Any] | IterableDataset[Any],
-    batch_size: int = 32,
+    batch_size: int | None = 32,
     shuffle: bool | None = None,
     num_workers: int = 0,
     pin_memory: bool = False,
@@ -691,8 +1033,10 @@ def make_loader(
     ----------
     dataset : Dataset or IterableDataset
         A torchfits dataset instance.
-    batch_size : int
-        Batch size.
+    batch_size : int or None
+        Batch size. ``None`` disables automatic batching: each sample is
+        yielded as the dataset returns it (use it with datasets that already
+        yield batches, such as ``as_batches=True``).
     shuffle : bool or None
         Whether to shuffle.  Defaults to True for map-style datasets.
     num_workers : int
@@ -710,7 +1054,11 @@ def make_loader(
     -------
     DataLoader
     """
-    collate_fn = loader_kwargs.pop("collate_fn", fits_collate_fn)
+    # Without automatic batching DataLoader calls collate_fn on each single
+    # sample, not on a list of samples, so fits_collate_fn does not apply;
+    # keep DataLoader's own per-sample conversion unless one was passed.
+    default_collate = fits_collate_fn if batch_size is not None else None
+    collate_fn = loader_kwargs.pop("collate_fn", default_collate)
 
     if shuffle is None:
         # Map-style datasets shuffle by default; IterableDataset must not

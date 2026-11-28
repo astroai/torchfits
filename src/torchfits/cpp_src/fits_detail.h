@@ -13,6 +13,7 @@
 #include <shared_mutex>
 #include <atomic>
 #include <limits>
+#include <type_traits>
 #include <stdexcept>
 #include <cerrno>
 #include <cstdint>
@@ -119,7 +120,71 @@ inline LONGLONG checked_nelements_product(const std::vector<DimT>& naxes) {
 }
 
 
+// Refuse an uncompressed image whose header declares more data than the file
+// holds before a buffer of that size is allocated: a corrupt or truncated
+// header claiming a huge NAXIS product on a small file raised a bare
+// MemoryError (std::bad_alloc) instead of saying the file is truncated, and a
+// cutout of it failed with CFITSIO's "tried to move past end of file". Like
+// the table readers, the whole declared data unit (without the final block
+// padding) must be present. `fptr` must be positioned on the image HDU.
+// Tile-compressed images are not checked here: their pixel count does not
+// bound the stored bytes.
+inline void ensure_image_data_within_file(fitsfile* fptr, int bitpix, LONGLONG nelements) {
+    if (fptr == nullptr || fptr->Fptr == nullptr || nelements <= 0) {
+        return;
+    }
+    int status = 0;
+    if (fits_is_compressed_image(fptr, &status) != 0 || status != 0) {
+        return;
+    }
+    LONGLONG headstart = 0;
+    LONGLONG datastart = 0;
+    LONGLONG dataend = 0;
+    fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
+    if (status != 0 || datastart < 0) {
+        return;
+    }
+    const unsigned long long elem = static_cast<unsigned long long>(bitpix < 0 ? -bitpix : bitpix) / 8ULL;
+    const unsigned long long n = static_cast<unsigned long long>(nelements);
+    const unsigned long long room =
+        static_cast<unsigned long long>(std::numeric_limits<LONGLONG>::max()) -
+        static_cast<unsigned long long>(datastart);
+    const LONGLONG filesize = fptr->Fptr->logfilesize;
+    if (elem == 0 || (n <= room / elem && static_cast<LONGLONG>(n * elem) + datastart <= filesize)) {
+        return;
+    }
+    const bool overflow = n > room / elem;
+    throw std::runtime_error(
+        "FITS image is truncated: header declares " +
+        (overflow ? std::string("more data than can be addressed")
+                  : std::to_string(n * elem) + " data bytes through offset " +
+                        std::to_string(static_cast<long long>(n * elem) + datastart)) +
+        " but the file holds only " + std::to_string(static_cast<long long>(filesize)) +
+        " bytes; the copy is incomplete or the header is corrupt");
+}
 
+
+
+// "status=<n> msg=<text>" for a failed image (or cutout) read. CFITSIO has
+// no text for NO_COMPRESSED_TILE (415: "unknown error status") and only a
+// bare "error uncompressing image" for DATA_DECOMPRESSION_ERR (414), which
+// is what a truncated or corrupt tile reports (vendored bounds patches).
+// The Rice decoder reports a short or corrupt stream as status 1 ("non-CFITSIO
+// program error"); on a tile-compressed HDU (`fptr` positioned on it) that
+// status can only come from a decoder, so it gets the same note.
+inline std::string image_read_status(int status, fitsfile* fptr = nullptr) {
+    char err_text[FLEN_STATUS];
+    fits_get_errstatus(status, err_text);
+    std::string msg = err_text;
+    const bool compressed_hdu =
+        fptr != nullptr && fptr->Fptr != nullptr && fptr->Fptr->compressimg != 0;
+    if (status == NO_COMPRESSED_TILE) {
+        msg = "compressed tile data is truncated or corrupt (tile missing)";
+    } else if (status == DATA_DECOMPRESSION_ERR || (status == 1 && compressed_hdu)) {
+        msg += ": compressed tile data is truncated or corrupt";
+    }
+    return "status=" + std::to_string(status) + " msg=" + msg;
+}
 
 // ---------------------------------------------------------------------------
 // ResolvedFITSMeta — flattened metadata for canonical image read
@@ -158,19 +223,93 @@ inline size_t datatype_elem_size(int datatype) {
 // special values), as astropy reads them — so those reads must pass nullptr
 // for Inf / -0 / NaN to survive. A NaN nulval is only for integer storage
 // read as float (BLANK promotion / arbitrary scale), where it marks
-// undefined pixels. `compressed` is accepted for call-site symmetry; the
-// storage BITPIX alone decides (r9b-01).
+// undefined pixels. The storage BITPIX decides (r9b-01), with one
+// exception: a tile-compressed float HDU that declares ZBLANK (a column or
+// keyword; fpack and quantized writes with NaN pixels) stores NaN as that
+// integer code in its quantized tiles, and CFITSIO only maps it back to NaN
+// when a nulval is passed. Without ZBLANK, CFITSIO never null-checks.
+// `compressed` is accepted for call-site symmetry: CFITSIO's own state for
+// the current HDU (`fptr`) decides whether it is a compressed image.
 inline void* cfitsio_float_nulval_ptr(
-    int bitpix, bool /*compressed*/, int datatype, float* fnull, double* dnull
+    int bitpix, bool /*compressed*/, int datatype, float* fnull, double* dnull,
+    fitsfile* fptr = nullptr
 ) {
     if (datatype != TFLOAT && datatype != TDOUBLE) {
         return nullptr;
     }
     if (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG) {
-        return nullptr;
+        const bool declares_zblank = fptr != nullptr && fptr->Fptr != nullptr &&
+            fptr->Fptr->compressimg && fptr->Fptr->cn_zblank != 0;
+        if (!declares_zblank) return nullptr;
     }
     return (datatype == TFLOAT) ? static_cast<void*>(fnull)
                                 : static_cast<void*>(dnull);
+}
+
+// A ZBLANK float HDU can also hold tiles CFITSIO could not quantize (Inf
+// pixels, constant tiles): those are stored losslessly as raw IEEE values in
+// a GZIP_COMPRESSED_DATA (or legacy UNCOMPRESSED_DATA) column, which the
+// writer only adds once such a tile exists. Under the NaN nulval that the
+// quantized tiles need, CFITSIO null-checks the raw tiles with fnan() too,
+// so Inf read back as NaN and -0.0 / subnormals as +0.0 (astropy keeps them).
+inline bool compressed_float_mixes_lossless_tiles(fitsfile* fptr) {
+    if (fptr == nullptr || fptr->Fptr == nullptr) return false;
+    const FITSfile* f = fptr->Fptr;
+    return f->compressimg && f->cn_zblank != 0 &&
+        (f->cn_gzip_data >= 1 || f->cn_uncompressed >= 1);
+}
+
+// CFITSIO caches the last decompressed tile per tile column without
+// recording the null handling it was decoded under, so a read that changes
+// the nulval must not be served from it.
+inline void drop_compressed_tile_cache(fitsfile* fptr) {
+    FITSfile* f = fptr->Fptr;
+    if (f->tilerow == nullptr || f->tilesize[0] <= 0) return;
+    const long ntilebins = static_cast<long>((f->znaxis[0] - 1) / f->tilesize[0]) + 1;
+    for (long k = 0; k < ntilebins; ++k) f->tilerow[k] = 0;
+}
+
+// Read `n` image pixels of `datatype` into `dst` through `read(nulval, out,
+// &status)` (one fits_read_img / fits_read_subset call), with the nulval
+// cfitsio_float_nulval_ptr chooses. For a float HDU that mixes quantized
+// ZBLANK tiles with lossless ones, read twice -- with the NaN nulval and
+// without one -- and keep the exact pixel unless only the null-checked read
+// marks it undefined: a ZBLANK code decodes to a finite number without a
+// nulval, while a raw tile's NaN / Inf are non-finite in both reads.
+template <typename ReadFn>
+inline void read_float_image_pixels(
+    fitsfile* fptr, int bitpix, int datatype, void* dst, LONGLONG n,
+    ReadFn&& read, int* status
+) {
+    float fnull = NAN;
+    double dnull = NAN;
+    void* nulval = cfitsio_float_nulval_ptr(bitpix, false, datatype, &fnull, &dnull, fptr);
+    const bool two_pass = nulval != nullptr && n > 0 &&
+        (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG) &&
+        compressed_float_mixes_lossless_tiles(fptr);
+    if (!two_pass) {
+        read(nulval, dst, status);
+        return;
+    }
+    auto merge = [&](auto* out) {
+        using T = std::remove_pointer_t<decltype(out)>;
+        std::vector<T> exact(static_cast<size_t>(n));
+        drop_compressed_tile_cache(fptr);
+        read(nulval, dst, status);
+        drop_compressed_tile_cache(fptr);
+        if (*status != 0) return;
+        read(nullptr, exact.data(), status);
+        drop_compressed_tile_cache(fptr);
+        if (*status != 0) return;
+        for (size_t i = 0; i < exact.size(); ++i) {
+            if (!(std::isnan(out[i]) && std::isfinite(exact[i]))) out[i] = exact[i];
+        }
+    };
+    if (datatype == TFLOAT) {
+        merge(static_cast<float*>(dst));
+    } else {
+        merge(static_cast<double*>(dst));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +347,7 @@ inline native::Tensor read_tensor_canonical(
     }
 
     LONGLONG nelements = checked_nelements_product(naxes_ll.data(), naxis);
+    ensure_image_data_within_file(fptr, bitpix, nelements);
 
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i)
@@ -357,18 +497,22 @@ inline native::Tensor read_tensor_canonical(
         }
     }
 
-    // CFITSIO fallback. nulval=NaN only for compressed tiles or integer
-    // storage read as float (BLANK). Native IEEE must pass nullptr —
+    // CFITSIO fallback. nulval=NaN only for ZBLANK compressed tiles or
+    // integer storage read as float (BLANK). Native IEEE must pass nullptr —
     // fnan() would turn Inf and signed zero into NaN / +0.
-    float fnullval = NAN;
-    double dnullval = NAN;
-    void* nullval_ptr = cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
+    auto read_pixels = [&](LONGLONG first, LONGLONG count, void* dst, int* st) {
+        read_float_image_pixels(
+            fptr, bitpix, datatype, dst, count,
+            [&](void* nulval, void* out, int* s) {
+                int anynul = 0;
+                fits_read_img(fptr, datatype, first, count, nulval, out, &anynul, s);
+            },
+            st);
+    };
 
     int status = 0;
     if (!use_chunking) {
-        int anynul = 0;
-        fits_read_img(fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+        read_pixels(1, nelements, tensor.data_ptr(), &status);
     } else {
         static const size_t kChunkSizeBytes = 128 * 1024 * 1024;
         const size_t pixel_size = datatype_elem_size(datatype);
@@ -376,17 +520,15 @@ inline native::Tensor read_tensor_canonical(
         const LONGLONG chunk_pixels = static_cast<LONGLONG>(kChunkSizeBytes / effective_pixel_size);
 
         if (nelements <= chunk_pixels) {
-            int anynul = 0;
-            fits_read_img(fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+            read_pixels(1, nelements, tensor.data_ptr(), &status);
         } else {
             LONGLONG remain = nelements;
             LONGLONG offset = 0;
             char* dst_ptr = static_cast<char*>(tensor.data_ptr());
             while (remain > 0 && status == 0) {
                 LONGLONG n_read = (remain > chunk_pixels) ? chunk_pixels : remain;
-                int anynul = 0;
-                fits_read_img(fptr, datatype, 1 + offset, n_read, nullval_ptr,
-                              static_cast<void*>(dst_ptr + (offset * effective_pixel_size)), &anynul, &status);
+                read_pixels(1 + offset, n_read,
+                            static_cast<void*>(dst_ptr + (offset * effective_pixel_size)), &status);
                 offset += n_read;
                 remain -= n_read;
             }
@@ -394,10 +536,7 @@ inline native::Tensor read_tensor_canonical(
     }
 
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading image data: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading image data: " + image_read_status(status, fptr));
     }
 
     return tensor;

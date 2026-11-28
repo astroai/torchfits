@@ -247,6 +247,7 @@ endif()
 get_filename_component(TORCHFITS_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(CFITSIO_SOURCE_DIR "${TORCHFITS_REPO_ROOT}/extern/cfitsio")
 set(TORCHFITS_VENDOR_SCRIPT "${TORCHFITS_REPO_ROOT}/extern/vendor.sh")
+include("${TORCHFITS_REPO_ROOT}/extern/vendor_stamp.cmake")
 # Git checkouts may fetch CFITSIO on first configure. PyPI sdists (and any
 # tree without .git) must not: pip installs are wheels-only.
 if(EXISTS "${TORCHFITS_REPO_ROOT}/.git")
@@ -254,13 +255,13 @@ if(EXISTS "${TORCHFITS_REPO_ROOT}/.git")
 else()
     set(_torchfits_auto_vendor_default OFF)
 endif()
-option(TORCHFITS_AUTO_VENDOR_DEPS "Auto-run extern/vendor.sh when vendored deps are missing" "${_torchfits_auto_vendor_default}")
+option(TORCHFITS_AUTO_VENDOR_DEPS "Auto-run extern/vendor.sh when vendored deps are missing or stale" "${_torchfits_auto_vendor_default}")
 set(TORCHFITS_VENDOR_RAN FALSE)
 
 macro(torchfits_run_vendor_once)
     if(TORCHFITS_AUTO_VENDOR_DEPS AND NOT TORCHFITS_VENDOR_RAN)
         if(EXISTS "${TORCHFITS_VENDOR_SCRIPT}")
-            message(STATUS "Vendored deps missing; running ${TORCHFITS_VENDOR_SCRIPT} (pinned via extern/VERSIONS.txt)")
+            message(STATUS "Running ${TORCHFITS_VENDOR_SCRIPT} (pinned via extern/VERSIONS.txt)")
             execute_process(
                 COMMAND bash "${TORCHFITS_VENDOR_SCRIPT}"
                         --cfitsio-version "${TORCHFITS_REPO_ROOT}/extern/VERSIONS.txt"
@@ -317,6 +318,31 @@ else()
     endif()
 
     if(EXISTS "${CFITSIO_SOURCE_DIR}/CMakeLists.txt")
+        # An existing tree is only reused when it was vendored from the
+        # checked-in inputs (extern/vendor_stamp.cmake). A tree vendored before
+        # a patch was added or edited otherwise built silently without it --
+        # including the http-* security patches.
+        torchfits_vendor_stamp_check("${TORCHFITS_REPO_ROOT}" _vendor_stamp_status _vendor_stamp_detail)
+        if(NOT _vendor_stamp_status STREQUAL "fresh" AND TORCHFITS_AUTO_VENDOR_DEPS AND NOT TORCHFITS_VENDOR_RAN)
+            message(STATUS "Vendored CFITSIO is ${_vendor_stamp_status} (${_vendor_stamp_detail}); re-vendoring")
+            torchfits_run_vendor_once()
+            torchfits_vendor_stamp_check("${TORCHFITS_REPO_ROOT}" _vendor_stamp_status _vendor_stamp_detail)
+        endif()
+        if(NOT _vendor_stamp_status STREQUAL "fresh")
+            message(FATAL_ERROR
+                "${CFITSIO_SOURCE_DIR} does not match extern/VERSIONS.txt, "
+                "extern/vendor.sh and extern/patches (${_vendor_stamp_detail}), so it "
+                "may lack patches the build relies on. Re-vendor it: "
+                "./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt")
+        endif()
+        # Re-run configure (and so this check) when any input changes, also on
+        # incremental and editable rebuilds; the patches directory catches a
+        # patch being added or removed.
+        torchfits_vendor_stamp_expected("${TORCHFITS_REPO_ROOT}" _vendor_stamp_text _vendor_stamp_inputs)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            ${_vendor_stamp_inputs}
+            "${TORCHFITS_REPO_ROOT}/extern/patches"
+            "${CFITSIO_SOURCE_DIR}/${TORCHFITS_VENDOR_STAMP_NAME}")
         message(STATUS "Building vendored CFITSIO from ${CFITSIO_SOURCE_DIR}")
 
         # CFITSIO Build Options
@@ -469,6 +495,12 @@ set(SOURCES
     fits_file.cpp
     table_bindings.cpp
     table_ops.cpp
+    table_reader_buffered.cpp
+    table_reader_filter.cpp
+    table_reader_layout.cpp
+    table_reader_mmap.cpp
+    table_reader_read.cpp
+    table_reader_vla.cpp
 )
 
 # A dlopen'd Python extension is an MH_BUNDLE, and dyld does not expand
@@ -518,6 +550,10 @@ if(TARGET cfitsio)
         target_include_directories(torchfits_core PRIVATE ${_core_cfitsio_iface_inc})
     endif()
     target_link_libraries(torchfits_core PRIVATE cfitsio)
+    # fits_get_diskfile_fd() comes from extern/patches/cfitsio-4.7.0-diskfile-fd
+    # .patch; an environment CFITSIO does not have it (fits_core.cpp then falls
+    # back to stat()ing the path around each open).
+    target_compile_definitions(torchfits_core PRIVATE TORCHFITS_CFITSIO_HAS_DISKFILE_FD=1)
     # A static archive only contributes the members something references, so
     # the core would export just the subset its own sources happen to call --
     # ffpcks/ffvcks (the checksum paths _C owns) would be missing and _C would

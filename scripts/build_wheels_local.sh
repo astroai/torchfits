@@ -40,8 +40,11 @@ mkdir -p "$OUT_DIR"
 # Absolute, so an absolute OUT_DIR is not glued onto $ROOT below.
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-if [[ ! -d extern/cfitsio ]]; then
-  echo "== vendoring cfitsio (needed by every build) =="
+# The build cells copy the tree without .git, where CMake refuses (rather than
+# re-vendors) an extern/cfitsio whose stamp does not match the checked-in
+# VERSIONS.txt / vendor.sh / patches. Re-vendor a missing or stale tree here.
+if ! bash extern/vendor.sh --check-stamp; then
+  echo "== vendoring cfitsio (missing or stale; needed by every build) =="
   bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
 fi
 

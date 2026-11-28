@@ -80,8 +80,8 @@ def test_write_ipc_round_trips(fits_table, tmp_path, stream):
     ipc = pytest.importorskip("pyarrow.ipc")
     dest = str(tmp_path / "t.arrow")
     with warnings.catch_warnings():
-        # pyarrow >= 24 deprecates write_feather, which the non-stream path uses.
-        warnings.simplefilter("ignore", FutureWarning)
+        # write_ipc no longer goes through the deprecated write_feather.
+        warnings.simplefilter("error", FutureWarning)
         table.write_ipc(dest, fits_table, stream=stream)
     got = ipc.open_file(dest).read_all()
     assert _arrow_types(got.schema) == ARROW_TYPES

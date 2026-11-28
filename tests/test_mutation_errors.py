@@ -2,8 +2,10 @@
 
 Pins three contracts:
 
-1. Unknown-column errors across the mutation API are ``KeyError`` naming the
-   column (dict-like semantics), not ``ValueError``.
+1. Unknown-column errors across the mutation API are
+   ``torchfits.UnknownColumnError`` naming the column: a ``KeyError``
+   (dict-like semantics) that is also a ``ValueError``, so code written
+   against either type keeps catching it.
 2. ``update_rows(..., mmap="auto")`` re-raises non-decode errors (e.g. IO)
    instead of silently swallowing them into a non-mmap fallback.
 3. A malformed ``NAXIS2`` row count surfaces loudly; it is never coerced to
@@ -60,8 +62,104 @@ def test_unknown_column_raises_keyerror_naming_column(tmp_path, op):
         "rename_columns": lambda: torchfits.table.rename_columns(path, {"ZZZ": "Q"}),
         "drop_columns": lambda: torchfits.table.drop_columns(path, ["ZZZ"]),
     }
-    with pytest.raises(KeyError, match="ZZZ"):
+    with pytest.raises(torchfits.UnknownColumnError, match="ZZZ") as info:
         calls[op]()
+    assert isinstance(info.value, KeyError)
+    assert isinstance(info.value, ValueError)
+
+
+def _hdu_calls(hdu):
+    return {
+        "getitem": lambda: hdu["ZZZ"],
+        "data_getitem": lambda: hdu.data["ZZZ"],
+        "select": lambda: hdu.select(["ZZZ"]),
+        "drop_columns": lambda: hdu.drop_columns(["ZZZ"]),
+        "rename_column": lambda: hdu.rename_column("ZZZ", "Q"),
+        "append_rows": lambda: hdu.append_rows(
+            {
+                "A": np.array([1], dtype=np.int32),
+                "B": np.array([1.0]),
+                "ZZZ": np.array([1]),
+            }
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        "getitem",
+        "data_getitem",
+        "select",
+        "drop_columns",
+        "rename_column",
+        "append_rows",
+    ],
+)
+def test_tablehdu_unknown_column_is_unknown_column_error(tmp_path, op):
+    # TableHDU.append_rows raised ValueError and the accessors KeyError for
+    # the same mistake; both now raise the one type, which is both.
+    hdu = torchfits.TableHDU(
+        {"A": np.array([1, 2, 3], dtype=np.int32), "B": np.array([1.5, 2.5, 3.5])}
+    )
+    with pytest.raises(torchfits.UnknownColumnError, match="ZZZ") as info:
+        _hdu_calls(hdu)[op]()
+    assert isinstance(info.value, (KeyError, ValueError))
+
+
+@pytest.mark.parametrize("reader", ["read", "read_torch", "schema", "scan"])
+def test_reader_projection_unknown_column_is_unknown_column_error(tmp_path, reader):
+    path = str(tmp_path / "t.fits")
+    _write_table(path)
+    fn = getattr(torchfits.table, reader)
+    with pytest.raises(torchfits.UnknownColumnError, match="ZZZ"):
+        result = fn(path, columns=["A", "ZZZ"])
+        if reader == "scan":
+            next(iter(result))
+
+
+def test_tablehduref_unknown_column_is_unknown_column_error(tmp_path):
+    path = str(tmp_path / "t.fits")
+    _write_table(path)
+    with torchfits.open(path) as hdul:
+        ref = hdul[1]
+        with pytest.raises(torchfits.UnknownColumnError, match="ZZZ"):
+            ref["ZZZ"]
+
+
+def test_unknown_column_error_message_is_a_sentence():
+    exc = torchfits.UnknownColumnError("Column 'ZZZ' not found")
+    assert str(exc) == "Column 'ZZZ' not found"
+
+
+_EXISTS_CALLS = {
+    "insert_column": lambda path, hdu: torchfits.table.insert_column(
+        path, "A", np.zeros(3, dtype=np.int32), hdu=1
+    ),
+    "rename_columns": lambda path, hdu: torchfits.table.rename_columns(
+        path, {"A": "B"}, hdu=1
+    ),
+    "TableHDU.add_column": lambda path, hdu: hdu.add_column("A", np.zeros(3)),
+    "TableHDU.rename_column": lambda path, hdu: hdu.rename_column("A", "B"),
+}
+
+
+@pytest.mark.parametrize("op", sorted(_EXISTS_CALLS))
+def test_existing_column_name_is_column_exists_error(tmp_path, op):
+    # The file helpers raised ValueError and TableHDU raised KeyError for the
+    # same mistake; both now raise the one type, which is both.
+    path = str(tmp_path / "t.fits")
+    _write_table(path)
+    hdu = torchfits.TableHDU(
+        {"A": np.array([1, 2, 3], dtype=np.int32), "B": np.array([1.5, 2.5, 3.5])}
+    )
+    with pytest.raises(torchfits.ColumnExistsError) as info:
+        _EXISTS_CALLS[op](path, hdu)
+    assert isinstance(info.value, KeyError)
+    assert isinstance(info.value, ValueError)
+    assert not str(info.value).startswith(('"', "'"))  # a sentence, not repr
+    assert "B" in str(info.value) or "A" in str(info.value)
+    assert torchfits.table.schema(path, hdu=1).names == ["A", "B"]
 
 
 def test_update_rows_mmap_auto_reraises_non_decode_error(tmp_path, monkeypatch):

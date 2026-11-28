@@ -1,0 +1,38 @@
+--- a/drvrfile.c
++++ b/drvrfile.c
+@@ -41,7 +41,21 @@
+ #define IO_READ 1        /* last file I/O operation was a read */
+ #define IO_WRITE 2       /* last file I/O operation was a write */
+ 
+-static char file_outfile[FLEN_FILENAME];
++/* torchfits: the "in.fits(out.fits)" output name travels from
++   file_checkfile() (called by ffopen() outside FFLOCK) to file_open() /
++   file_compress_open() (called inside it) through this buffer. As a single
++   static, a concurrent plain open on another thread could consume one
++   thread's request and copy the wrong source file into out.fits. Both calls
++   run on the opening thread, so a per-thread buffer keeps each request with
++   its own open. */
++#if defined(_MSC_VER)
++#define FF_OUTFILE_TLS __declspec(thread)
++#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
++#define FF_OUTFILE_TLS _Thread_local
++#else
++#define FF_OUTFILE_TLS __thread
++#endif
++static FF_OUTFILE_TLS char file_outfile[FLEN_FILENAME];
+ 
+ typedef struct    /* structure containing disk file structure */ 
+ {
+@@ -1059,8 +1073,11 @@
+         /* and copied to this newly created output file.  The original file */
+         /* will be closed, and the copy will be opened by CFITSIO for     */
+         /* subsequent processing (possibly with READWRITE access).        */
++        /* torchfits: a request left by an earlier ffopen() on this thread
++           that failed before reaching file_open() must not be applied to
++           this open. */
++        file_outfile[0] = '\0';
+         if (strlen(outfile)) {
+-	    file_outfile[0] = '\0';
+             strncat(file_outfile,outfile,FLEN_FILENAME-1);
+         }
+     }

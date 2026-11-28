@@ -20,9 +20,11 @@ pure-Python checks do not exercise native changes.
 - `pixi run dev` rebuilds and reinstalls the extension in editable mode.
   `pixi run test` does it for you; `preflight-push` does not, so running pytest
   after a native edit without `dev` exercises a stale `.so`.
-- `pixi run test` runs all of `tests/`; CI deselects the `performance` marker,
-  which no test currently carries. Slow numbers on a loaded machine are not
-  regressions; compare on the same quiet host.
+- `pixi run test` runs all of `tests/`; tests marked `performance` (the
+  large-scale probes in `tests/test_scale_large.py`) skip unless pytest gets
+  `--run-performance` (`pixi run test-scale`), and CI deselects the marker.
+  Slow numbers on a loaded machine are not regressions; compare on the same
+  quiet host.
 - `pixi run ci-local-fast` is the short loop; `pixi run ci-local` is the gate.
 
 ## Generated and vendored files
@@ -101,9 +103,13 @@ this repo; `to_astropy` stays a lazy optional converter.
 
 ## Notes and agent tooling
 
-Durable notes live under `.cursor/harness/` (playbook, plans) rather than long
-chat scrollback; trajectories and state there are local-only. Deferred product
-work: [`.cursor/post-1.0-backlog.md`](.cursor/post-1.0-backlog.md).
+Temporary plans and task lists live in `docs/work/`, one Markdown file each,
+and are deleted in the commit that finishes them. `docs/work/` is excluded
+from the published docs site (`exclude_docs` in `zensical.toml`). Do not put
+plans under `.cursor/` or other dot-directories. Agent state, trajectories and
+the playbook stay under `.cursor/harness/` (local-only where `.gitignore` says
+so). Deferred product work:
+[`.cursor/post-1.0-backlog.md`](.cursor/post-1.0-backlog.md).
 
 `.cursor/skills/` and `.cursor/hooks/` are canonical and tracked. `.agents/` and
 `.codex/` are installed copies that `.gitignore` excludes. After editing the

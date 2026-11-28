@@ -1,4 +1,13 @@
-"""Cache clearing, statistics, and disk-root helpers for torchfits."""
+"""Cache clearing, statistics, and disk-root helpers for torchfits.
+
+This is the public, torch-free façade of torchfits' caches. It owns the disk
+layer (``cache_root`` / ``remote_cache_root`` / ``sample_cache_root`` and
+their removal) and delegates the in-process layer to the I/O engine
+(``torchfits._io_engine.caches``: cached reads, header/meta/HDU-type LRUs,
+counters, and the native ``SharedReadMeta`` clear). The engine never touches
+disk caches; this module never holds in-process state. See
+docs/architecture.md, "Caching".
+"""
 
 from __future__ import annotations
 
@@ -65,16 +74,14 @@ def get_cache_stats() -> Dict[str, Any]:
 def clear_cache(*, disk: bool = False) -> None:
     """Clear in-process caches and optionally downloaded files."""
     try:
-        import torchfits._C as cpp
-
-        cpp.clear_shared_read_meta_cache()
-    except (ImportError, AttributeError):
-        pass
-    try:
+        # One engine call clears every in-process layer, the native
+        # SharedReadMeta included (it warns itself when the extension is
+        # unavailable); it used to be cleared a second time here first.
         from ._io_engine.caches import clear_file_cache
 
         clear_file_cache()
     except Exception as exc:
+        # Best effort: a failed in-process clear must not stop the disk clear.
         warnings.warn(
             f"clear_cache: I/O engine clear failed: {exc}",
             RuntimeWarning,

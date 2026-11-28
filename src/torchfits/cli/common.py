@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -53,7 +54,45 @@ class UsageError(CliError):
 
 
 class IoError(CliError):
+    """I/O or FITS-structure failure (exit 3).
+
+    Command bodies catch ``Exception`` at each file boundary and re-raise it
+    as ``IoError`` (after letting ``CliError`` through): that is the exit-3
+    contract in docs/cli.md. ``main`` maps anything that escapes to exit 5.
+
+    Raw CFITSIO read failures (``status=107``/``108``, "error reading data
+    buffer") get a plain-language note: they almost always mean the file is
+    shorter than its headers declare.
+    """
+
     exit_code = EXIT_IO
+
+    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
+        super().__init__(_clarify_io_message(message), exit_code=exit_code)
+
+
+_TRUNCATION_MARKERS = (
+    "status=107",
+    "status=108",
+    "error reading from fits file",
+    "tried to move past end of file",
+    "error reading data buffer",
+    "fits image is truncated",
+    "fits table is truncated",
+)
+_TRUNCATION_NOTE = (
+    " [truncated or unreadable FITS file: it is shorter than its headers declare]"
+)
+
+
+def _clarify_io_message(message: str) -> str:
+    text = str(message)
+    if _TRUNCATION_NOTE in text:
+        return text
+    lowered = text.lower()
+    if any(marker in lowered for marker in _TRUNCATION_MARKERS):
+        return text + _TRUNCATION_NOTE
+    return text
 
 
 def is_remote_path(path: str) -> bool:
@@ -234,16 +273,22 @@ def json_default(value: Any) -> Any:
 
 
 def _json_safe(value: Any) -> Any:
-    """Replace NaN/Inf with None so dumps(..., allow_nan=False) is valid JSON.
+    """Make ``value`` valid JSON for dumps(..., allow_nan=False).
 
-    NumPy scalars/arrays normalize via ``tolist()`` first, so numpy-typed
-    non-finite values (e.g. ``np.float32("nan")``) also become ``null``
-    instead of tripping ``allow_nan=False``.
+    NaN/Inf become ``null``; NumPy scalars/arrays normalize via ``tolist()``
+    first, so numpy-typed non-finite values (e.g. ``np.float32("nan")``) also
+    become ``null`` instead of tripping ``allow_nan=False``. Complex numbers
+    become ``{"re": ..., "im": ...}`` and bytes a UTF-8 decoded string with
+    undecodable bytes replaced by U+FFFD (not their Python ``str()`` repr).
     """
     if hasattr(value, "tolist"):
         value = value.tolist()
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, complex):
+        return {"re": _json_safe(value.real), "im": _json_safe(value.imag)}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
     if isinstance(value, dict):
         return {key: _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -251,10 +296,25 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def drop_data_range_cards(header: Any) -> None:
+    """Delete ``DATAMIN``/``DATAMAX`` from a header whose pixels changed.
+
+    They describe the source array's values; after arithmetic or a cutout
+    they are stale and would mislead display scaling (``transform`` drops
+    them for the same reason).
+    """
+    for key in ("DATAMIN", "DATAMAX"):
+        if key in header:
+            del header[key]
+
+
 def reject_same_path(src: str, dst: str) -> None:
     """Refuse OUTPUT that resolves to the same file as INPUT."""
     src_real = os.path.realpath(cfitsio_base_path(src))
     dst_real = os.path.realpath(dst)
+    # Hard links (and other aliases realpath cannot see) share an inode.
+    if _same_existing_file(src_real, dst_real):
+        raise UsageError(f"refusing same-path rewrite in place: {src}")
     if sys.platform == "darwin":
         src_real = unicodedata.normalize("NFC", src_real)
         dst_real = unicodedata.normalize("NFC", dst_real)
@@ -263,6 +323,40 @@ def reject_same_path(src: str, dst: str) -> None:
         dst_real = dst_real.casefold()
     if src_real == dst_real:
         raise UsageError(f"refusing same-path rewrite in place: {src}")
+
+
+@contextlib.contextmanager
+def staged_output(path: str, *, gzip_gz: bool = True) -> Iterator[str]:
+    """Yield a temp path that is published at ``path`` only on clean exit.
+
+    For commands that build an output in several steps (write, then edit
+    cards, then refresh checksums): every step runs on the temp file, so a
+    failure at any point leaves an existing ``path`` byte-identical and no
+    partial file behind. ``gzip_gz=False`` publishes the bytes verbatim even
+    for a '.gz' name (byte copies); otherwise a '.gz' target is gzip-wrapped.
+    """
+    from torchfits._io_engine._file_ops import (
+        _invalidate_path_caches,
+        _invalidate_written_target,
+        atomic_write_target,
+    )
+
+    temp_path: str | None = None
+    try:
+        with atomic_write_target(path, True, gzip_gz=gzip_gz) as temp_path:
+            yield temp_path
+    finally:
+        if temp_path is not None:
+            _invalidate_path_caches(temp_path)
+    _invalidate_written_target(path)
+
+
+def _same_existing_file(src: str, dst: str) -> bool:
+    """True when both paths exist locally and name the same inode (hard links)."""
+    try:
+        return os.path.samefile(src, dst)
+    except (OSError, ValueError):
+        return False
 
 
 def _filesystem_is_case_insensitive(path: str | Path) -> bool:

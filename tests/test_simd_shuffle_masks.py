@@ -67,7 +67,7 @@ _OFFSET_VARIANTS = ("bswap16_copy_u16_offset", "bswap32_copy_u32_offset")
 _X86 = ("ssse3", "avx2")
 
 _SET_EPI8 = re.compile(r"_mm(256)?_set_epi8\(([^)]*)\)", re.S)
-_LOOP = re.compile(r"n\s*-\s*i\s*>=\s*(\d+)\s*;\s*i\s*\+=\s*(\d+)")
+_LOOP = re.compile(r"i\s*\+\s*(\d+)\s*<=\s*n\s*;\s*i\s*\+=\s*(\d+)")
 _IFDEF = re.compile(r"defined\(__(\w+)\)")
 
 
@@ -110,7 +110,7 @@ def _isa_blocks(body: str) -> dict[str, str]:
 def _loop_bounds(isa: str, name: str) -> tuple[int, int]:
     block = _isa_blocks(_function_body(name))[isa]
     found = _LOOP.search(block)
-    assert found, f"{name}/{isa}: no `n - i >= K; i += K` vector loop"
+    assert found, f"{name}/{isa}: no `i + K <= n; i += K` vector loop"
     return int(found.group(1)), int(found.group(2))
 
 
@@ -170,7 +170,7 @@ def test_x86_vector_loop_covers_whole_elements(name: str, width: int, isa: str) 
     """A vector iteration must be a whole number of elements, and step by that."""
     need, step = _loop_bounds(isa, name)
     elems = (32 if isa == "avx2" else 16) // width
-    assert need == step, f"{name}/{isa}: runs while n - i >= {need} but steps {step}"
+    assert need == step, f"{name}/{isa}: runs while i + {need} <= n but steps {step}"
     assert need == elems, (
         f"{name}/{isa}: {need} elements per iteration, but the vector holds "
         f"{elems} of {width} bytes"
@@ -187,3 +187,22 @@ def test_bzero_variants_add_after_the_shuffle(name: str, isa: str) -> None:
         f"{name}/{isa}: no _mm*_add_epi{bits} after the shuffle "
         f"-- the BZERO offset would be dropped"
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bswap16_copy",
+        "bswap16_copy_u16_offset",
+        "bswap32_copy",
+        "bswap32_copy_u32_offset",
+        "bswap64_copy",
+    ],
+)
+def test_copy_loops_stay_out_of_line_with_a_hoisted_bound(name: str) -> None:
+    # Inlined into read_tensor_canonical, GCC reloaded the spilled destination
+    # pointer and recomputed `n - i` on every vector iteration (9 instructions
+    # per vector instead of 6), making small image reads slower than 1.3.3.
+    text = _HEADER.read_text()
+    assert f"TORCHFITS_COPY_LOOP inline void {name}(" in text
+    assert not re.search(r"n\s*-\s*i\s*>=", _function_body(name))

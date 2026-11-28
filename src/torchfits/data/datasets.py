@@ -8,6 +8,7 @@ import os
 import random
 import shutil
 import tempfile
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,10 @@ from .remote import (
     cleanup_downloaded_file,
     ephemeral_scratch_dir,
     is_remote_url,
+    PrefetchScope,
     prefetch_urls,
     resolve_local_path,
+    retire_prefetches,
 )
 
 HduRef = int | str
@@ -211,6 +214,32 @@ def _buffered_shuffle(
     yield from buffer
 
 
+class _EpochStream:
+    """``__iter__`` shared by the iterable datasets.
+
+    Each ``__iter__`` is one epoch boundary: it draws the epoch seed (see
+    :class:`_EpochSeed`) that every stochastic stream in ``_generate`` reads
+    from ``self._epoch``, so one pass is internally consistent, then applies
+    the optional reservoir shuffle buffer to the stream.
+    """
+
+    shuffle_buffer_size: int | None
+    _epoch_seed: _EpochSeed
+    _epoch: int
+
+    def _generate(self) -> Iterator[Any]:
+        raise NotImplementedError
+
+    def __iter__(self) -> Iterator[Any]:
+        self._epoch = self._epoch_seed.next()
+        stream = self._generate()
+        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
+            stream = _buffered_shuffle(
+                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
+            )
+        return stream
+
+
 def _resolve_paths(paths: str | list[str]) -> list[str]:
     if isinstance(paths, str):
         if is_remote_url(paths):
@@ -290,9 +319,10 @@ def _local_read_path(
     *,
     prefetch_ahead: Sequence[str] | None = None,
     cache_dir: Path | None = None,
+    scope: PrefetchScope | None = None,
 ) -> str:
     if prefetch_ahead:
-        prefetch_urls(prefetch_ahead, cache_dir=cache_dir)
+        prefetch_urls(prefetch_ahead, cache_dir=cache_dir, scope=scope)
     return resolve_local_path(path, cache_dir=cache_dir)
 
 
@@ -1001,7 +1031,7 @@ class FitsCubeDataset(FitsTensorDataset):
         )
 
 
-class FitsTensorIterableDataset(IterableDataset[Any]):
+class FitsTensorIterableDataset(_EpochStream, IterableDataset[Any]):
     """Sharded iterable general N-D IMAGE reader."""
 
     def __init__(
@@ -1094,17 +1124,6 @@ class FitsTensorIterableDataset(IterableDataset[Any]):
                 yield payload
             else:
                 yield payload, torch.tensor(sharded_labels[idx], dtype=torch.long)
-
-    def __iter__(self) -> Iterator[Any]:
-        # One epoch boundary: every stochastic stream below reads self._epoch,
-        # so a single __iter__ yields one internally consistent epoch.
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
 
     def __repr__(self) -> str:
         return (
@@ -1419,7 +1438,7 @@ class FitsSpectrumDataset(Dataset[Any]):
         )
 
 
-class FitsSpectrumIterableDataset(IterableDataset[Any]):
+class FitsSpectrumIterableDataset(_EpochStream, IterableDataset[Any]):
     """1D spectra streaming (IMAGE or table column), multi-arm layouts."""
 
     def __init__(
@@ -1532,15 +1551,6 @@ class FitsSpectrumIterableDataset(IterableDataset[Any]):
             else:
                 yield payload, torch.tensor(sharded_labels[idx], dtype=torch.long)
 
-    def __iter__(self) -> Iterator[Any]:
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
-
     def __repr__(self) -> str:
         return (
             f"FitsSpectrumIterableDataset(n={len(self.files)}, hdu={self.hdu!r}, "
@@ -1548,7 +1558,41 @@ class FitsSpectrumIterableDataset(IterableDataset[Any]):
         )
 
 
-class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
+def _check_staged_geometry(
+    flux_readers: Sequence[Any],
+    companions: Sequence[tuple[str, list[Any] | None, Sequence[Any]]],
+) -> None:
+    """Refuse flux bands / companions that are not pixel-aligned.
+
+    Cutout windows are drawn from the first flux band's geometry; a band or
+    companion of another shape would be cut at the same coordinates and
+    silently stacked (or clipped to an empty window), so mirror the
+    map-style checks (``_stack_flux`` / ``_check_companion_shape``).
+    """
+    shapes = [tuple(r.shape) for r in flux_readers]
+    if len(set(shapes)) != 1:
+        raise ValueError(
+            f"multi-HDU flux channels require identical shapes; got {sorted(set(shapes))}"
+        )
+    flux_shape = shapes[0]
+    for kind, hdus, readers in companions:
+        for hdu, reader in zip(hdus or [], readers):
+            shape = tuple(reader.shape)
+            if shape != flux_shape:
+                raise ValueError(
+                    f"{kind} companion {[hdu]} has shape {shape} but the flux has "
+                    f"{flux_shape}; a companion must be pixel-aligned with its flux "
+                    "image (the same shape)"
+                )
+
+
+def _reap_stage_dir(stage_root: Path, threads: list[threading.Thread]) -> None:
+    for thread in threads:
+        thread.join()
+    shutil.rmtree(stage_root, ignore_errors=True)
+
+
+class FitsStagedCutoutIterableDataset(_EpochStream, IterableDataset[Any]):
     """Streaming cutouts from large remote or local FITS mosaics with ephemeral staging."""
 
     def __init__(
@@ -1643,13 +1687,28 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
 
     def _generate(self) -> Iterator[Any]:
         root, stage_root = self._stage_root()
+        scope = PrefetchScope()
         try:
-            yield from self._cutout_stream(stage_root)
+            yield from self._cutout_stream(stage_root, scope)
         finally:
+            # Look-ahead prefetches belong to this iterator: cancel them so
+            # they neither recreate the removed stage directory nor leave
+            # their (staging-gone) errors behind for the next iterator.
+            still_running = retire_prefetches(scope)
             if self.cleanup and stage_root != root:
                 shutil.rmtree(stage_root, ignore_errors=True)
+                if still_running:
+                    # A transfer blocked in a network read stops at its next
+                    # check; sweep again once it has, in case it created a
+                    # file while the tree was being removed.
+                    threading.Thread(
+                        target=_reap_stage_dir,
+                        args=(stage_root, still_running),
+                        name="torchfits-stage-reaper",
+                        daemon=True,
+                    ).start()
 
-    def _cutout_stream(self, stage_root: Path) -> Iterator[Any]:
+    def _cutout_stream(self, stage_root: Path, scope: PrefetchScope) -> Iterator[Any]:
         from torchfits.io import open_subset_reader
 
         sharded_files, indices, worker_seed, _, _ = _shard_work_plan(
@@ -1667,7 +1726,7 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                 for j in range(i + 1, min(i + 3, len(indices)))
             ]
             local_path = _local_read_path(
-                file_ref, prefetch_ahead=ahead, cache_dir=stage_root
+                file_ref, prefetch_ahead=ahead, cache_dir=stage_root, scope=scope
             )
 
             try:
@@ -1703,6 +1762,13 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                         else []
                     )
 
+                    _check_staged_geometry(
+                        flux_readers,
+                        [
+                            ("ivar", self.ivar_hdus, ivar_readers),
+                            ("mask", self.mask_hdus, mask_readers),
+                        ],
+                    )
                     height, width = flux_readers[0].shape
                     for _ in range(self.cutouts_per_file):
                         if self.cutout_generator is not None:
@@ -1781,15 +1847,6 @@ class FitsStagedCutoutIterableDataset(IterableDataset[Any]):
                 # worker's); unlinking it there would race their open.
                 if self.cleanup and is_remote and self._url_counts[file_ref] < 2:
                     cleanup_downloaded_file(local_path)
-
-    def __iter__(self) -> Iterator[Any]:
-        self._epoch = self._epoch_seed.next()
-        stream = self._generate()
-        if self.shuffle_buffer_size is not None and self.shuffle_buffer_size > 1:
-            stream = _buffered_shuffle(
-                stream, buffer_size=self.shuffle_buffer_size, seed=self._epoch
-            )
-        return stream
 
     def __repr__(self) -> str:
         return (

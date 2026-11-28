@@ -1,0 +1,68 @@
+--- a/cfileio.c
++++ b/cfileio.c
+@@ -389,6 +389,26 @@
+     return(*status);
+ }
+ /*--------------------------------------------------------------------------*/
++int fits_get_diskfile_fd(fitsfile *fptr)
++/*
++  torchfits: the OS file descriptor behind a handle opened through the
++  "file://" disk driver (fits_open_diskfile / fits_open_file of a plain
++  local file), or -1 for any other driver (memory, compressed, network...).
++  The descriptor belongs to CFITSIO: callers may fstat() it but must not
++  read, seek or close it.
++*/
++{
++    int driver;
++
++    if (fptr == NULL || fptr->Fptr == NULL)
++        return(-1);
++    driver = (fptr->Fptr)->driver;
++    if (driver < 0 || driver >= no_of_drivers ||
++        strcmp(driverTable[driver].prefix, "file://") != 0)
++        return(-1);
++    return(file_fileno((fptr->Fptr)->filehandle));
++}
++/*--------------------------------------------------------------------------*/
+ int ffdopn(fitsfile **fptr,      /* O - FITS file pointer                   */ 
+            const char *name,     /* I - full name of file to open           */
+            int mode,             /* I - 0 = open readonly; 1 = read/write   */
+--- a/drvrfile.c
++++ b/drvrfile.c
+@@ -704,6 +704,16 @@
+     return(0);
+ }
+ /*--------------------------------------------------------------------------*/
++int file_fileno(int handle)
++/*
++  return the descriptor of an open disk file handle, or -1
++*/
++{
++    if (handle < 0 || handle >= NMAXFILES || handleTable[handle].fileptr == 0)
++        return(-1);
++    return(fileno(handleTable[handle].fileptr));
++}
++/*--------------------------------------------------------------------------*/
+ int file_close(int handle)
+ /*
+   close the file
+--- a/fitsio.h
++++ b/fitsio.h
+@@ -790,6 +790,7 @@
+ int CFITS_API fftopn(fitsfile **fptr, const char *filename, int iomode, int *status);
+ int CFITS_API ffiopn(fitsfile **fptr, const char *filename, int iomode, int *status);
+ int CFITS_API ffdkopn(fitsfile **fptr, const char *filename, int iomode, int *status);
++int CFITS_API fits_get_diskfile_fd(fitsfile *fptr);
+ int CFITS_API ffreopen(fitsfile *openfptr, fitsfile **newfptr, int *status); 
+ int CFITS_API ffinit(  fitsfile **fptr, const char *filename, int *status);
+ int CFITS_API ffdkinit(fitsfile **fptr, const char *filename, int *status);
+--- a/fitsio2.h
++++ b/fitsio2.h
+@@ -1200,6 +1200,7 @@
+ int file_create(char *filename, int *driverhandle);
+ int file_truncate(int driverhandle, LONGLONG filesize);
+ int file_size(int driverhandle, LONGLONG *filesize);
++int file_fileno(int driverhandle);
+ int file_close(int driverhandle);
+ int file_remove(char *filename);
+ int file_flush(int driverhandle);

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from .._io_engine.device import validate_device
-from .._table.cache import _acquire_cpp_reader
 from .._table.utils import _normalize_row_slice, _require_pyarrow
 from .._table.arrow_convert import _chunk_to_record_batch
 from .._table_engine import validate_table_backend
@@ -22,13 +21,14 @@ from ._read_schema import (
     _unsigned_column_dtypes,
 )
 
+from ._read_strategies import (
+    _reraise_invalid_geometry as _reraise_invalid_geometry,
+    read_full_raw,
+    read_row_window,
+    read_selected_rows,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def _reraise_invalid_geometry(exc: BaseException) -> None:
-    message = str(exc)
-    if "Invalid table geometry" in message or "Invalid VLA geometry" in message:
-        raise exc
 
 
 def _iter_chunks_cpp_table(
@@ -206,6 +206,239 @@ def _read_table_unfiltered(
     )
 
 
+def _table_row_range(header: Any, row_slice: Any) -> Optional[tuple[int, int]]:
+    """1-based inclusive ``(first, last)`` rows a row_slice covers, or None.
+
+    None when the header gives no usable NAXIS2; ``last < first`` for an
+    empty range.
+    """
+    if header is None:
+        return None
+    try:
+        total = header.get("NAXIS2", 0)
+        total = int(float(total)) if isinstance(total, str) else int(total)
+    except (TypeError, ValueError):
+        return None
+    start_row, num_rows = _normalize_row_slice(row_slice)
+    end_row = total if num_rows == -1 else min(total, start_row + num_rows - 1)
+    return start_row, end_row
+
+
+def _scan_where_iter(
+    path: str,
+    *,
+    hdu: int,
+    columns: Optional[list[str]],
+    row_slice: Optional[slice | tuple[int, int]],
+    where: str,
+    batch_size: int,
+    mmap: bool,
+    decode_bytes: bool,
+    encoding: str,
+    strip: bool,
+    include_fits_metadata: bool,
+    apply_fits_nulls: bool,
+    backend: str,
+    header: Any,
+) -> Iterator[Any]:
+    """Filtered Arrow scan: native per-window filtering, else the evaluator.
+
+    Each ``batch_size`` window of the scanned range is read once: the native
+    predicate scan selects its rows and gathers only those (torch-free raw
+    buffers, converted like an unfiltered scan). A request the native scan
+    cannot serve -- or a native refusal mid-scan -- continues on the streaming
+    Arrow evaluator from the first unserved row. Empty windows are skipped; a
+    scan that matched nothing still yields one typed empty batch.
+    """
+    import torchfits
+
+    from ._read_where import (
+        _native_read_failed,
+        _native_where_filters,
+        _native_where_output_columns,
+    )
+
+    hdr = header
+    if hdr is None:
+        try:
+            hdr = torchfits.read_header(path, hdu)
+        except ValueError:
+            hdr = None
+
+    filters = None
+    row_range = _table_row_range(hdr, row_slice)
+    out_cols: list[str] = []
+    if (
+        hdr is not None
+        and row_range is not None
+        and row_range[1] >= row_range[0]
+        and backend in {"auto", "cpp"}
+        and (mmap or backend == "cpp")
+    ):
+        out_cols = _native_where_output_columns(hdr, columns)
+        if out_cols:
+            filters = _native_where_filters(
+                hdr, where, out_cols, apply_fits_nulls=apply_fits_nulls
+            )
+
+    if filters is None or row_range is None:
+        yield from _scan_where_evaluator(
+            path,
+            hdu=hdu,
+            columns=columns,
+            row_slice=row_slice,
+            where=where,
+            batch_size=batch_size,
+            mmap=mmap,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+            backend=backend,
+            header=hdr,
+        )
+        return
+
+    import torchfits._C as cpp
+
+    convert = _raw_chunk_converter(
+        path,
+        hdu,
+        columns,
+        hdr,
+        decode_bytes=decode_bytes,
+        encoding=encoding,
+        strip=strip,
+        include_fits_metadata=include_fits_metadata,
+        apply_fits_nulls=apply_fits_nulls,
+    )
+    row, end_row = row_range
+    empty_batch = None
+    yielded = False
+    while row <= end_row:
+        size = min(batch_size, end_row - row + 1)
+        try:
+            chunk = cpp.read_fits_table_filtered_raw(
+                path, hdu, out_cols, filters, row, size
+            )
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            _native_read_failed(exc)
+            for batch in _scan_where_evaluator(
+                path,
+                hdu=hdu,
+                columns=columns,
+                row_slice=(row - 1, end_row),
+                where=where,
+                batch_size=batch_size,
+                mmap=mmap,
+                decode_bytes=decode_bytes,
+                encoding=encoding,
+                strip=strip,
+                include_fits_metadata=include_fits_metadata,
+                apply_fits_nulls=apply_fits_nulls,
+                backend=backend,
+                header=hdr,
+            ):
+                if batch.num_rows:
+                    yielded = True
+                    yield batch
+                elif empty_batch is None:
+                    empty_batch = batch
+            break
+        row += size
+        batch = convert(chunk)
+        if batch.num_rows:
+            yielded = True
+            yield batch
+        elif empty_batch is None:
+            empty_batch = batch
+    if not yielded and empty_batch is not None:
+        yield empty_batch
+
+
+def _scan_where_evaluator(
+    path: str,
+    *,
+    hdu: int,
+    columns: Optional[list[str]],
+    row_slice: Optional[slice | tuple[int, int]],
+    where: str,
+    batch_size: int,
+    mmap: bool,
+    decode_bytes: bool,
+    encoding: str,
+    strip: bool,
+    include_fits_metadata: bool,
+    apply_fits_nulls: bool,
+    backend: str,
+    header: Any,
+) -> Iterator[Any]:
+    """Stream unfiltered batches and filter each with the Arrow evaluator."""
+    from ._read_where import _where_mask_for_table
+
+    pa = _require_pyarrow()
+
+    try:
+        where_cols = where_columns_from_ast(parse_where_expression(where))
+    except ValueError:
+        where_cols = []
+
+    # Predicate columns outside the projection are read too, then dropped
+    # after filtering (mirrors read()'s column-union behavior).
+    read_columns: Optional[list[str]] = columns
+    drop_after: list[str] = []
+    if columns is not None:
+        seen = set(columns)
+        merged = list(columns)
+        for name in where_cols:
+            if name not in seen:
+                merged.append(name)
+                drop_after.append(name)
+                seen.add(name)
+        read_columns = merged
+
+    # Stream unfiltered batches and evaluate the predicate per batch so
+    # peak memory stays bounded by batch_size rather than table size.
+    # (The old path materialized the entire filtered result via read()
+    # and then re-batched it — defeating the point of scan().)
+    source = _scan_iter(
+        path,
+        hdu=hdu,
+        columns=read_columns,
+        row_slice=row_slice,
+        batch_size=batch_size,
+        mmap=mmap,
+        decode_bytes=decode_bytes,
+        encoding=encoding,
+        strip=strip,
+        include_fits_metadata=include_fits_metadata,
+        apply_fits_nulls=apply_fits_nulls,
+        backend=backend,
+        header=header,
+    )
+
+    yielded = False
+    empty_batch = None
+    for batch in source:
+        tbl = pa.Table.from_batches([batch])
+        mask = _where_mask_for_table(tbl, where)
+        filtered = tbl.filter(mask)
+        if drop_after:
+            keep = [n for n in filtered.column_names if n not in set(drop_after)]
+            filtered = filtered.select(keep)
+        out_batches = filtered.to_batches(max_chunksize=batch_size)
+        if out_batches:
+            yielded = True
+            yield from out_batches
+        elif empty_batch is None and filtered.schema.names:
+            # Remember the projected schema so a fully-filtered-out scan
+            # still hands consumers a typed empty batch at the end.
+            empty_batch = pa.RecordBatch.from_pylist([], schema=filtered.schema)
+    if not yielded and empty_batch is not None:
+        yield empty_batch
+
+
 # Sentinel, not None: `scan(backend=None)` is a real (bad) call that
 # `validate_table_backend` rejects, so "argument absent" cannot be spelled None.
 _VALIDATE_SCAN_UNSET: Any = object()
@@ -267,38 +500,12 @@ def _scan_iter(
     backend = validate_table_backend(backend)
 
     if where is not None:
-        from ._read_where import _where_mask_for_table
-
-        pa = _require_pyarrow()
-
-        try:
-            where_cols = where_columns_from_ast(parse_where_expression(where))
-        except ValueError:
-            where_cols = []
-
-        # Predicate columns outside the projection are read too, then dropped
-        # after filtering (mirrors read()'s column-union behavior).
-        read_columns: Optional[list[str]] = columns
-        drop_after: list[str] = []
-        if columns is not None:
-            seen = set(columns)
-            merged = list(columns)
-            for name in where_cols:
-                if name not in seen:
-                    merged.append(name)
-                    drop_after.append(name)
-                    seen.add(name)
-            read_columns = merged
-
-        # Stream unfiltered batches and evaluate the predicate per batch so
-        # peak memory stays bounded by batch_size rather than table size.
-        # (The old path materialized the entire filtered result via read()
-        # and then re-batched it — defeating the point of scan().)
-        source = _scan_iter(
+        yield from _scan_where_iter(
             path,
             hdu=hdu,
-            columns=read_columns,
+            columns=columns,
             row_slice=row_slice,
+            where=where,
             batch_size=batch_size,
             mmap=mmap,
             decode_bytes=decode_bytes,
@@ -309,26 +516,6 @@ def _scan_iter(
             backend=backend,
             header=header,
         )
-
-        yielded = False
-        empty_batch = None
-        for batch in source:
-            tbl = pa.Table.from_batches([batch])
-            mask = _where_mask_for_table(tbl, where)
-            filtered = tbl.filter(mask)
-            if drop_after:
-                keep = [n for n in filtered.column_names if n not in set(drop_after)]
-                filtered = filtered.select(keep)
-            out_batches = filtered.to_batches(max_chunksize=batch_size)
-            if out_batches:
-                yielded = True
-                yield from out_batches
-            elif empty_batch is None and filtered.schema.names:
-                # Remember the projected schema so a fully-filtered-out scan
-                # still hands consumers a typed empty batch at the end.
-                empty_batch = pa.RecordBatch.from_pylist([], schema=filtered.schema)
-        if not yielded and empty_batch is not None:
-            yield empty_batch
         return
 
     import torchfits
@@ -411,6 +598,7 @@ def _scan_iter(
             chunk_rows=batch_size,
             mmap=mmap,
             total_rows=total_rows,
+            header=_hdr,
         )
 
     for chunk in chunk_iter:
@@ -427,6 +615,66 @@ def _scan_iter(
             column_tforms=col_tforms,
             unsigned_dtypes=unsigned_dtypes,
         )
+
+
+def _raw_chunk_converter(
+    path: str,
+    hdu: int,
+    columns: Optional[list[str]],
+    header: Any,
+    *,
+    decode_bytes: bool,
+    encoding: str,
+    strip: bool,
+    include_fits_metadata: bool,
+    apply_fits_nulls: bool,
+) -> Callable[[dict[str, Any]], Any]:
+    """Chunk -> RecordBatch with the unfiltered raw read's conversion rules.
+
+    The header-derived inputs (TFORMs for string decoding, TNULL / FITS field
+    metadata, unsigned dtypes, column order) are resolved once, so a windowed
+    scan converts each chunk exactly as :func:`_read_cpp_table_chunk` converts
+    a whole read.
+    """
+    selected = set(columns) if columns else None
+    col_tforms = (
+        _column_tforms_for_decode(path, hdu, selected, header=header)
+        if decode_bytes
+        else None
+    )
+    field_meta: dict[str, dict[str, str]] = {}
+    table_meta: dict[str, str] = {}
+    if include_fits_metadata or apply_fits_nulls:
+        try:
+            field_meta, table_meta = _build_fits_metadata(
+                path, hdu, selected, header=header
+            )
+        except ValueError:
+            pass
+    if columns:
+        preferred_order: Optional[list[str]] = columns[:]
+    elif field_meta:
+        preferred_order = list(field_meta.keys())
+    else:
+        preferred_order = None
+    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, selected, header=header)
+
+    def convert(chunk: dict[str, Any]) -> Any:
+        return _chunk_to_record_batch(
+            chunk,
+            decode_bytes,
+            encoding,
+            strip,
+            field_meta=field_meta if include_fits_metadata else None,
+            table_meta=table_meta if include_fits_metadata else None,
+            preferred_order=preferred_order,
+            null_meta=field_meta,
+            apply_fits_nulls=apply_fits_nulls,
+            column_tforms=col_tforms,
+            unsigned_dtypes=unsigned_dtypes,
+        )
+
+    return convert
 
 
 def _row_index_0(row: Any) -> int:
@@ -519,6 +767,27 @@ def _read_cpp_table_chunk(
     if rows is not None:
         _validate_row_selection(rows, _get_hdr())
 
+    if where is not None and rows is None:
+        # backend="cpp": the fused native pushdown first (windowed, raw).
+        from ._read_where import _try_native_where_read
+
+        pushed = _try_native_where_read(
+            pa=_require_pyarrow(),
+            path=path,
+            hdu=hdu,
+            columns=columns,
+            where=where,
+            row_slice=row_slice,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            header=_get_hdr(),
+            apply_fits_nulls=apply_fits_nulls,
+            include_fits_metadata=include_fits_metadata,
+        )
+        if pushed is not None:
+            return pushed
+
     if where is not None:
         where_rows = _resolve_rows_from_where_cpp(
             path=path,
@@ -565,12 +834,9 @@ def _read_cpp_table_chunk(
     else:
         preferred_order = None
 
-    col_list = columns if columns else []
-
-    from .engine import _read_selected_rows
-
     # One chunk holds whole columns straight from the C++ engine, so the value
-    # type is the union of what the native and numpy paths return.
+    # type is the union of what the native and numpy paths return; each
+    # strategy returns None when the next one should be tried.
     chunk: dict[str, Any] | None = None
     prefer_raw_full_path = (
         rows is None
@@ -584,26 +850,7 @@ def _read_cpp_table_chunk(
         )
     )
     if prefer_raw_full_path:
-        if mmap and _can_use_mmap_row_path_for_full_read(
-            path, hdu, columns, header=_get_hdr()
-        ):
-            try:
-                chunk = cpp.read_fits_table_raw(path, hdu, col_list, True)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("mmap full table read failed; retrying: %s", exc)
-                chunk = None
-        if chunk is None:
-            try:
-                if not col_list:
-                    reader = _acquire_cpp_reader(path, hdu, cpp)
-                    chunk = reader.read_rows_raw([], 1, -1)
-                else:
-                    chunk = cpp.read_fits_table_raw(path, hdu, col_list, False)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("full table read failed; falling back: %s", exc)
-                chunk = None
+        chunk = read_full_raw(cpp, path, hdu, columns, mmap=mmap, get_header=_get_hdr)
 
     if chunk is None and rows is not None:
         # Convert through _row_index_0 so the non-negativity guard sees the
@@ -621,35 +868,10 @@ def _read_cpp_table_chunk(
         # A rows= selection has no fallback that could honor it: the scan
         # fallback would silently return the full table (r5a-01), so ranged
         # read failures propagate untouched.
-        hdr = _get_hdr()
-        try:
-            row_bytes = int(hdr.get("NAXIS1", 0)) if hdr is not None else 0
-        except (TypeError, ValueError):
-            row_bytes = 0
-        reader = _acquire_cpp_reader(path, hdu, cpp)
-        chunk = _read_selected_rows(reader, col_list, rows_arr, row_bytes=row_bytes)
+        chunk = read_selected_rows(cpp, path, hdu, columns, rows_arr, _get_hdr())
 
     if chunk is None:
-        if mmap:
-            try:
-                chunk = cpp.read_fits_table_rows_raw(
-                    path, hdu, col_list, start_row, num_rows, True
-                )
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                # VLA, scaled, and ASCII tables cannot use the mmap layout.
-                # Retry the buffered reader before falling back to the
-                # row-by-row Python scan, which is an order of magnitude slower.
-                logger.debug("mmap row-slice read failed; retrying buffered: %s", exc)
-                chunk = None
-        if chunk is None:
-            try:
-                reader = _acquire_cpp_reader(path, hdu, cpp)
-                chunk = reader.read_rows_raw(col_list, start_row, num_rows)
-            except (RuntimeError, OSError) as exc:
-                _reraise_invalid_geometry(exc)
-                logger.debug("row-slice table read failed: %s", exc)
-                chunk = None
+        chunk = read_row_window(cpp, path, hdu, columns, start_row, num_rows, mmap=mmap)
     if chunk is None:
         return None
 
@@ -687,11 +909,30 @@ def _scan_torch_iter(
     non_blocking: bool = True,
     pin_memory: bool = False,
     header: Any = None,
+    where: Optional[str] = None,
 ) -> Iterator[dict[str, Any]]:
-    import torch
     import torchfits
 
-    from .._io_engine.device import to_device
+    from .._io_engine.device import move_table_columns
+
+    def _move(chunk: dict[str, Any]) -> dict[str, Any]:
+        return move_table_columns(
+            chunk, device, non_blocking=non_blocking, pin_memory=pin_memory
+        )
+
+    if where is not None:
+        for chunk in _scan_torch_where_chunks(
+            path,
+            hdu=hdu,
+            columns=columns,
+            row_slice=row_slice,
+            where=where,
+            batch_size=batch_size,
+            mmap=mmap,
+            header=header,
+        ):
+            yield _move(chunk)
+        return
 
     start_row, num_rows = _normalize_row_slice(row_slice)
     use_mmap = mmap
@@ -728,32 +969,189 @@ def _scan_torch_iter(
         chunk_rows=batch_size,
         mmap=use_mmap,
         total_rows=total_rows,
+        header=_hdr,
     ):
-        if str(device) == "cpu":
-            yield chunk
-            continue
+        yield _move(chunk)
 
-        moved: dict[str, Any] = {}
-        for key, value in chunk.items():
+
+def _chunk_num_rows(chunk: dict[str, Any]) -> int:
+    for value in chunk.values():
+        shape = getattr(value, "shape", None)
+        if shape is not None and len(shape) > 0:
+            return int(shape[0])
+        if isinstance(value, list):
+            return len(value)
+    return 0
+
+
+def _scan_torch_where_chunks(
+    path: str,
+    *,
+    hdu: int,
+    columns: Optional[list[str]],
+    row_slice: Optional[slice | tuple[int, int]],
+    where: str,
+    batch_size: int,
+    mmap: bool,
+    header: Any,
+) -> Iterator[dict[str, Any]]:
+    """``scan_torch(where=...)``: each window read once, filtered, on the CPU.
+
+    Rows keep exactly the representation an unfiltered ``scan_torch`` gives
+    them; ``where`` selects rows with the ``table.read`` dialect and defaults
+    (TNULL never matches, character columns decoded as strict ASCII). The
+    native predicate scan serves what it can (``mmap=True``, a conjunction of
+    numeric comparisons, columns it gathers as raw cells); otherwise each
+    unfiltered window, predicate columns included, is filtered by the Arrow
+    evaluator. Windows with no selected row are skipped.
+    """
+    import torchfits
+
+    from .._io_engine.table_api import _squeeze_scalar_columns
+    from ._read_where import (
+        _native_read_failed,
+        _native_where_filters,
+        _native_where_output_columns,
+    )
+
+    hdr = header
+    if hdr is None:
+        try:
+            hdr = torchfits.read_header(path, hdu)
+        except ValueError:
+            hdr = None
+    row_range = _table_row_range(hdr, row_slice)
+    filters = None
+    out_cols: list[str] = []
+    if mmap and hdr is not None and row_range is not None:
+        out_cols = _native_where_output_columns(hdr, columns)
+        if out_cols:
+            filters = _native_where_filters(hdr, where, out_cols, apply_fits_nulls=True)
+    if filters is None or row_range is None:
+        yield from _scan_torch_where_evaluator(
+            path,
+            hdu=hdu,
+            columns=columns,
+            row_slice=row_slice,
+            where=where,
+            batch_size=batch_size,
+            mmap=mmap,
+            header=hdr,
+        )
+        return
+
+    import torchfits._C as cpp
+
+    row, end_row = row_range
+    while row <= end_row:
+        size = min(batch_size, end_row - row + 1)
+        try:
+            chunk = cpp.read_fits_table_filtered(
+                path, hdu, out_cols, filters, row, size
+            )
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            _native_read_failed(exc)
+            yield from _scan_torch_where_evaluator(
+                path,
+                hdu=hdu,
+                columns=columns,
+                row_slice=(row - 1, end_row),
+                where=where,
+                batch_size=batch_size,
+                mmap=mmap,
+                header=hdr,
+            )
+            return
+        row += size
+        chunk = _squeeze_scalar_columns(dict(chunk))
+        if _chunk_num_rows(chunk):
+            yield chunk
+
+
+def _scan_torch_where_evaluator(
+    path: str,
+    *,
+    hdu: int,
+    columns: Optional[list[str]],
+    row_slice: Optional[slice | tuple[int, int]],
+    where: str,
+    batch_size: int,
+    mmap: bool,
+    header: Any,
+) -> Iterator[dict[str, Any]]:
+    """Filter each unfiltered ``scan_torch`` window with the Arrow evaluator.
+
+    The window is read once with the predicate columns added to the
+    projection; those columns are converted to Arrow the way ``table.read``
+    converts them, masked, and dropped again if the caller did not ask for
+    them.
+    """
+    import numpy as np
+    import torch
+
+    from .._string_decode import DecodeSpec
+    from ._read_where import _where_mask_for_table
+
+    pa = _require_pyarrow()
+    ast = parse_where_expression(where)
+    pred_cols = where_columns_from_ast(ast)
+    read_cols: Optional[list[str]] = None
+    drop: set[str] = set()
+    if columns:
+        read_cols = list(dict.fromkeys(list(columns) + pred_cols))
+        drop = {name for name in pred_cols if name not in columns}
+    pred_set = set(pred_cols)
+    col_tforms = _column_tforms_for_decode(path, hdu, pred_set, header=header)
+    try:
+        field_meta, _table_meta = _build_fits_metadata(
+            path, hdu, pred_set, header=header
+        )
+    except ValueError:
+        field_meta = {}
+    unsigned_dtypes = _unsigned_column_dtypes(path, hdu, pred_set, header=header)
+    encoding = DecodeSpec("ascii", "strict")
+
+    for chunk in _scan_torch_iter(
+        path,
+        hdu=hdu,
+        columns=read_cols,
+        row_slice=row_slice,
+        batch_size=batch_size,
+        mmap=mmap,
+        header=header,
+    ):
+        batch = _chunk_to_record_batch(
+            {name: chunk[name] for name in pred_cols if name in chunk},
+            True,
+            encoding,
+            True,
+            null_meta=field_meta,
+            apply_fits_nulls=True,
+            column_tforms=col_tforms,
+            unsigned_dtypes=unsigned_dtypes,
+        )
+        # A pyarrow BooleanArray (the annotation says ndarray).
+        mask: Any = _where_mask_for_table(
+            pa.Table.from_batches([batch]), where, parsed_ast=ast
+        )
+        keep = np.flatnonzero(np.asarray(mask.to_numpy(zero_copy_only=False)))
+        if keep.size == 0:
+            continue
+        index = torch.from_numpy(keep)
+        picked = keep.tolist()
+        out: dict[str, Any] = {}
+        for name, value in chunk.items():
+            if name in drop:
+                continue
             if isinstance(value, torch.Tensor):
-                t = value
-                if pin_memory and t.device.type == "cpu":
-                    t = t.pin_memory()
-                moved[key] = to_device(t, device, non_blocking=non_blocking)
+                # Advanced indexing, not index_select: torch < 2.14 has no
+                # index_select kernel for uint16/uint32/uint64 columns.
+                out[name] = value[index]
             elif isinstance(value, list):
-                new_list = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        t = item
-                        if pin_memory and t.device.type == "cpu":
-                            t = t.pin_memory()
-                        new_list.append(to_device(t, device, non_blocking=non_blocking))
-                    else:
-                        new_list.append(item)
-                moved[key] = new_list
+                out[name] = [value[i] for i in picked]
             else:
-                moved[key] = value
-        yield moved
+                out[name] = value
+        yield out
 
 
 def _resolve_rows_from_where_cpp(

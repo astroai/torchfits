@@ -90,8 +90,8 @@ iterators and deep learning training pipelines), use the in-process Python API
 |---|---|---|
 | `0` | Success | Command completed successfully |
 | `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
-| `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
-| `3` | I/O error | File not found, permission denied, or invalid FITS structure |
+| `2` | Usage error | Missing arguments, invalid flags, or unknown syntax; an `-e`/`--hdu` (or `--bands`) index the file does not have, in every subcommand |
+| `3` | I/O error | File not found, permission denied, or invalid FITS structure (a truncated file is reported as such, not as a bare CFITSIO status) |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
 | `5` | Internal error | Unexpected exception; traceback printed to stderr |
 | `130` | Interrupted | `KeyboardInterrupt` / Ctrl-C |
@@ -180,6 +180,13 @@ Output statuses:
 - `OK (no checksum keywords)`: File has no checksum keywords (returns exit code 0).
 - `FAIL`: Checksum does not match data (returns exit code 4).
 
+Before checking checksums, `verify` makes sure a local, uncompressed file is as
+long as its headers say: every header and every data unit must be present (a
+missing final 2880-byte pad is tolerated, as CFITSIO tolerates it). A truncated
+file is an I/O error (exit code 3) naming the HDU that is cut short, even when
+it carries no checksum keywords or `--hdu` selects a different HDU. Compressed
+(`.gz`, `.bz2`, ...) files are not decompressed for this size check.
+
 ---
 
 ### `diff`
@@ -238,11 +245,23 @@ torchfits table catalog.fits -e 1 -n 0
 
 `-n` / `--rows` takes a non-negative count; a negative value is a usage error (exit `2`).
 
+The preview (in every output format) is strict JSON:
+
+- non-finite floats (`NaN`, `±inf`) are `null`;
+- complex values (`TFORM` `C` / `M`) are objects `{"re": 1.0, "im": -2.0}`
+  (a non-finite part is `null`); the schema lists them as `complex64` /
+  `complex128` (Arrow has no complex type, so these columns are read with
+  `torchfits.table.read_torch`);
+- strings decode as ASCII like `torchfits.table.read`, but a byte that does
+  not decode becomes U+FFFD (`"\ufffd"`) instead of failing the listing;
+  any raw `bytes` value is emitted as its UTF-8 decoding with the same
+  replacement.
+
 ---
 
 ### `cutout`
 
-Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged.
+Extracts a sub-region from an image HDU and writes it to a new FITS file. The output header is a copy of the source header with the reference pixel moved to the cutout origin: `CRPIX1` / `CRPIX2` (and alternate-WCS `CRPIX1a` / `CRPIX2a`) are shifted by the cutout's offset in both coordinate formats, so the stamp stays on the sky. Other WCS cards are copied unchanged. `DATAMIN` / `DATAMAX` describe the full source image and are dropped.
 
 Supports two coordinate formats:
 
@@ -283,9 +302,31 @@ torchfits convert catalog.fits -o catalog.csv -e 1 -c RA,DEC,MAG_G
 torchfits convert catalog.fits -o filtered.parquet -e 1 -w "MAG_G < 19.5 AND DEC > 0" -c RA,DEC,MAG_G
 ```
 
+`--to fits` (or a `.fits` OUTPUT) copies the table HDU in its stored form:
+column formats (`TFORMn`), `TSCALn`/`TZEROn`, `TNULLn` sentinels, `TDIMn`,
+`TUNITn` and other per-column cards (renumbered for `--columns`), `EXTNAME`,
+and the HDU's other non-structural keywords are kept.
+
+Output is streamed batch by batch, with or without `--columns`/`--where`, so
+memory stays bounded by the batch size. FITS output copies the stored row bytes
+of the selected columns chunk by chunk through `torchfits.table.writer()`
+(every cell byte-identical); a selection that includes a variable-length
+(`P`/`Q`) column is the exception and is rewritten from the table read into
+memory.
+
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
-syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
-HDU stays an I/O error (exit `3`).
+syntax error, type mismatch) is a usage error (exit `2`), as is an `-e` index
+the file does not have; an unreadable file or a corrupt HDU stays an I/O error
+(exit `3`).
+
+CSV/TSV cells hold one value each: a selection that includes a vector
+(`repeat > 1`, `TDIMn`) or variable-length (`P`/`Q`) column is refused as a
+usage error (exit `2`) naming those columns, before the output is touched.
+Select scalar columns with `--columns`, or convert to Parquet or Arrow, which
+store array cells natively.
+
+An OUTPUT that names the same file as an INPUT — the same path, a symlink, or
+a hard link — is refused (exit `2`) before anything is written.
 
 #### RGB PNG Rendering
 ```bash
@@ -321,7 +362,8 @@ output instead of being silently ignored.
 ### `copy`
 
 Performs an exact byte-for-byte copy of a FITS file (`shutil.copy2` locally).
-CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused.
+CompImage tiles stay compressed. Same-path `INPUT OUTPUT` is refused
+(exit `2`), including an OUTPUT that is a hard link to INPUT.
 Private/loopback `http`/`https`/`ftp` URLs are blocked; public `http`/`https`
 are fetched with the same redirect checks as `probe`.
 
@@ -341,10 +383,16 @@ Performs scalar and image-to-image arithmetic (`add`, `sub`, `mul`, `div`). Same
 `--hdu2` is valid only with an image operand B. `--split hdu` requires
 `--out-dir` and rejects `--out`. Every generated destination is checked before
 processing so it cannot overwrite either input operand.
+The output keeps operand A's header except `DATAMIN` / `DATAMAX`, which no
+longer describe the result and are dropped (as `transform` does).
+`BUNIT` is handled conservatively (torchfits does no unit algebra): `add` /
+`sub` keep it, and adding or subtracting two images whose `BUNIT` values are
+both set and differ is a usage error (exit `2`); `mul` / `div` by an image, or
+by a scalar other than 1, drop it.
 
 | Flag | Purpose |
 |---|---|
-| `--value FLOAT` | Scalar operand B |
+| `--value NUMBER` | Scalar operand B; an integer literal (`--value 9223372036854775807`) is kept exact |
 | `--operand2 PATH` | Image operand B; required for several A inputs with `--out-dir`, otherwise an alternative to the second positional path |
 | `--hdu2 N` | HDU of image operand B (default: the same index as each A HDU, else 0) |
 | `--dtype {auto,float32,float64}` | `auto` (default) keeps each A HDU's dtype (`div` on an integer A gives float64); integer results are saturated to the dtype's range and fractional parts truncated, with a warning. `float32` / `float64` cast both operands to that dtype, compute, and store in it |
@@ -363,6 +411,21 @@ torchfits arith science.fits dark.fits --op sub -o dark_subtracted.fits
 torchfits arith *.fits --op mul --value 2.0 --out-dir /tmp/scaled -J 0
 ```
 
+Integer `add` / `sub` / `mul` are exact for every integer width, including
+64-bit (`int64`, `uint64`) images and operands: results outside the output
+dtype saturate to its minimum or maximum with a `RuntimeWarning` naming how
+many pixels were clamped, instead of wrapping or being rounded through
+float64. A fractional scalar or a floating-point image B on an integer A (with
+`--dtype auto`) is applied exactly too: each pixel's exact result is truncated
+toward zero (warning how many pixels lost a fraction) and saturated to A's
+dtype, so 64-bit pixels near `2**63` are never rounded through float64.
+Non-finite results into an integer output: `+inf` / `-inf` (an infinite
+operand) saturate to the dtype's maximum / minimum; a NaN result (a NaN
+operand, or `0 * inf`) has no integer value and is refused as a usage error
+(exit `2`, nothing written) — use `--dtype float32/float64` to keep it. (An
+integer A with a `BLANK` keyword already reads as floating point, with NaN at
+its blank pixels, so its results are floating point.)
+
 ---
 
 ### `compress`
@@ -372,11 +435,25 @@ Tile-compresses image HDUs using CFITSIO's compression architecture. Preserves n
 The default `GZIP_1` codec is lossless for integer and floating-point images.
 Also available: `RICE_1`, `GZIP_2`, `HCOMPRESS_1`, and `PLIO_1`; `BZIP2_1` is
 listed when the build includes bzip2. The non-default codecs use CFITSIO float
-quantization and are lossy for floating-point images; `PLIO_1` rejects floats.
+quantization and are lossy for floating-point images (tune it with
+`--quantize-level`, or pass `-q 0` with `GZIP_2` for lossless floats);
+`PLIO_1` rejects floats. Integer images are always compressed losslessly:
+quantization flags on an input file with no floating-point image HDU are a
+usage error (exit `2`) unless `--int-to-float` is given, and in a mixed file
+they apply to its float HDUs only.
 No codec handles 64-bit integer images (`BITPIX = 64`): `compress` reports
 `tile compression does not support 64-bit integer images` and exits `3`
 without writing the output.
 `--hdu` applies only with `--split hdu`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--algorithm` | `GZIP_1` | Codec: `GZIP_1`, `GZIP_2`, `RICE_1`, `HCOMPRESS_1`, `PLIO_1` (and `BZIP2_1` when built with bzip2) |
+| `-t`, `--tile N1,N2,...` | one image row per tile (16 rows for `HCOMPRESS_1`) | Tile size per axis in **FITS axis order** (`NAXIS1` first), like `fpack -t`. Axes left out get size 1; `-1` (or a size past the axis length) means the whole axis — write it as `--tile=-1,-1`. `HCOMPRESS_1` tiles must span exactly two axes of at least 4 pixels. A tile with more axes than an image is a usage error (exit `2`). |
+| `-q`, `--quantize-level Q` | lossless for `GZIP_1`, `4` otherwise | Quantization of floating-point images, like `fpack -q`: `Q > 0` makes the step the tile's noise sigma divided by `Q` (larger = finer, bigger files); `Q < 0` is an absolute step of `abs(Q)`; `0` is lossless and needs `GZIP_1` or `GZIP_2`. |
+| `--quantize-method` | `subtractive_dither_1` | `subtractive_dither_1`, `subtractive_dither_2` (also keeps exact zeros; not with `HCOMPRESS_1`) or `no_dither` (default level `16`). |
+| `--dither-seed N` | picked from the clock | Dither seed `1..10000`; fixes the quantization so repeated runs write identical files. |
+| `--int-to-float` | off | Compress integer images as quantized floats, like `fpack -i2f` (lossy; default level `4` even with `GZIP_1`). Physical values (`BSCALE`/`BZERO` applied, `BLANK` pixels as NaN) are stored, so `decompress` writes them as `BITPIX = -32`. Not with `PLIO_1` or `-q 0`. |
 
 ```bash
 # Compress losslessly with default GZIP_1
@@ -385,12 +462,34 @@ torchfits compress science.fits science.fits.fz
 # Compress using GZIP algorithm
 torchfits compress science.fits science.fits.fz --algorithm GZIP_1
 
+# 100x100-pixel tiles; one tile for the whole image
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 --tile 100,100
+torchfits compress science.fits science.fits.fz --tile=-1,-1
+
+# fpack-like lossy float compression: finer quantization, reproducible dither
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 -q 16 --dither-seed 42
+
+# Absolute quantization step of 0.01, zeros kept exact
+torchfits compress science.fits science.fits.fz --algorithm RICE_1 -q -0.01 --quantize-method subtractive_dither_2
+
+# Lossless floats with the byte-shuffled GZIP_2
+torchfits compress science.fits science.fits.fz --algorithm GZIP_2 -q 0
+
+# fpack -i2f: quantize an integer (e.g. raw counts) image for higher compression
+torchfits compress raw.fits raw.fits.fz --algorithm RICE_1 --int-to-float -q 4
+
 # Split MEF file into individual compressed HDU files
 torchfits compress mef.fits --split hdu --out-dir /tmp/compressed_hdus
 
 # Batch compress all files in a directory in parallel
 torchfits compress *.fits --out-dir /tmp/compressed -J 0
 ```
+
+The same controls are keyword arguments of [`torchfits.write()`](api-core-io.md#write)
+(`tile_shape=`, `quantize_level=`, `quantize_method=`, `dither_seed=`,
+`int_to_float=`); note that `tile_shape` is in tensor axis order (rows first)
+while `--tile` is in FITS order. Runnable side by side:
+[`example_fpack_compression.py`](published-examples/example_fpack_compression.py).
 
 ---
 
@@ -440,6 +539,12 @@ torchfits transform science.fits --name ArcsinhStretch:a=0.05 -o custom_arcsinh.
 # Batch transform multiple files
 torchfits transform *.fits --name LogStretch --out-dir /tmp/log_images -J 0
 ```
+
+The output keeps the source header except storage and range cards (`BSCALE`,
+`BZERO`, `BLANK`, `DATAMIN`, `DATAMAX`, checksums). `BUNIT` is kept only by
+transforms whose output stays in the input unit — `BackgroundSubtract`,
+`MeshBackgroundSubtract`, `SigmaClip`, `AsymmetricSigmaClip`, and
+`AffineTransform` with `scale=1`; every normalization or stretch drops it.
 
 ---
 
@@ -546,6 +651,10 @@ For practical examples, see [CLI recipes](cli-recipes.md).
 ## Scripting notes
 
 - No prompts; stable exit codes.
+- Every output file (FITS, Parquet, CSV/TSV, Arrow, PNG, `copy`, `setkey -o`) is
+  written to a hidden temp file beside it and renamed into place only when
+  complete, so a failed command leaves an existing OUTPUT unchanged and no
+  partial file behind.
 - Prefer `-f json` / `jsonl` (or `--json` / `--jsonl`) for automation.
 - GPU tensors are staged through host memory before any FITS write (same as the
   Python API — not GPUDirect).

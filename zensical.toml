@@ -6,6 +6,10 @@ repo_url = "https://github.com/astroai/torchfits"
 repo_name = "astroai/torchfits"
 edit_uri = "edit/main/docs/"
 copyright = "Copyright &copy; 2026 torchfits contributors"
+# Temporary plans and task lists (deleted when finished); never published.
+exclude_docs = """
+work/
+"""
 
 extra_css = [
   "stylesheets/extra.css",

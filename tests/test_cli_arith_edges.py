@@ -11,6 +11,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
 import torch
 
 import torchfits
@@ -85,3 +86,275 @@ def test_arith_div_by_zero_refused(tmp_path):
     )
     assert result.returncode == 2, result.stderr
     assert "division by zero" in result.stderr
+
+
+# -- 64-bit integer images: no wraparound, no float64 rounding ----------------
+
+_I64 = torch.iinfo(torch.int64)
+_U64_MAX = 2**64 - 1
+
+
+def _arith_main(tmp_path, values, dtype, *argv, operand=None, caught_out=None):
+    import warnings
+
+    from torchfits.cli.main import main
+
+    a = tmp_path / "a.fits"
+    torchfits.write(str(a), torch.tensor([values], dtype=dtype), overwrite=True)
+    args = ["arith", str(a), *argv]
+    if operand is not None:
+        b = tmp_path / "b.fits"
+        torchfits.write(
+            str(b), torch.tensor([operand[0]], dtype=operand[1]), overwrite=True
+        )
+        args = ["arith", str(a), str(b), *argv]
+    out = tmp_path / "out.fits"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert main([*args, "-o", str(out)]) == 0
+    if caught_out is not None:
+        caught_out.extend(caught)
+    got = torchfits.read_tensor(str(out), hdu=0)
+    saturated = sum(
+        int(str(w.message).split()[1]) for w in caught if "saturated" in str(w.message)
+    )
+    return got, saturated
+
+
+def test_arith_int64_add_scalar_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.max, 5], torch.int64, "--op", "add", "--value", "1"
+    )
+    assert got.dtype == torch.int64
+    assert got.flatten().tolist() == [_I64.max, 6]
+    assert saturated == 1
+
+
+def test_arith_int64_sub_scalar_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.min, 5], torch.int64, "--op", "sub", "--value", "1"
+    )
+    assert got.flatten().tolist() == [_I64.min, 4]
+    assert saturated == 1
+
+
+def test_arith_int64_mul_scalar_saturates(tmp_path):
+    got, _ = _arith_main(
+        tmp_path, [2**62, -(2**62), 3], torch.int64, "--op", "mul", "--value", "2"
+    )
+    assert got.flatten().tolist() == [_I64.max, _I64.min, 6]
+
+
+def test_arith_int64_mul_image_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [2**62, 3],
+        torch.int64,
+        "--op",
+        "mul",
+        operand=([2, 3], torch.int64),
+    )
+    assert got.flatten().tolist() == [_I64.max, 9]
+    assert saturated == 1
+
+
+def test_arith_int64_exact_large_scalar_literal(tmp_path):
+    # An integer literal is kept exact (not rounded through a float).
+    got, _ = _arith_main(
+        tmp_path, [1, -5], torch.int64, "--op", "add", "--value", str(2**62 + 1)
+    )
+    assert got.flatten().tolist() == [2**62 + 2, 2**62 - 4]
+
+
+def test_arith_int64_huge_float_scalar_saturates_to_max(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [_I64.max, 0], torch.int64, "--op", "add", "--value", "1e20"
+    )
+    assert got.flatten().tolist() == [_I64.max, _I64.max]
+    assert saturated == 2
+
+
+def test_arith_uint64_add_scalar(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [1, _U64_MAX], torch.uint64, "--op", "add", "--value", "1"
+    )
+    assert got.dtype == torch.uint64
+    assert got.flatten().tolist() == [2, _U64_MAX]
+    assert saturated == 1
+
+
+def test_arith_uint64_sub_below_zero_saturates(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [1, _U64_MAX], torch.uint64, "--op", "sub", "--value", "2"
+    )
+    assert got.flatten().tolist() == [0, _U64_MAX - 2]
+    assert saturated == 1
+
+
+def test_arith_uint64_mul_is_exact_beyond_2_53(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path, [2**53 + 1, 2**63 + 1], torch.uint64, "--op", "mul", "--value", "1"
+    )
+    assert got.flatten().tolist() == [2**53 + 1, 2**63 + 1]
+    assert saturated == 0
+
+
+def test_arith_uint64_image_operand(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [2**63 + 1, 2],
+        torch.uint64,
+        "--op",
+        "mul",
+        operand=([1, 2**63], torch.uint64),
+    )
+    assert got.flatten().tolist() == [2**63 + 1, _U64_MAX]
+    assert saturated == 1
+
+
+def test_arith_int64_plus_uint64_image(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [5, -5],
+        torch.int64,
+        "--op",
+        "add",
+        operand=([_U64_MAX, 3], torch.uint64),
+    )
+    assert got.dtype == torch.int64
+    assert got.flatten().tolist() == [_I64.max, -2]
+    assert saturated == 1
+
+
+def test_arith_int16_plus_int64_image_saturates_not_wraps(tmp_path):
+    got, saturated = _arith_main(
+        tmp_path,
+        [1, -1],
+        torch.int16,
+        "--op",
+        "add",
+        operand=([_I64.max, _I64.min], torch.int64),
+    )
+    assert got.dtype == torch.int16
+    assert got.flatten().tolist() == [32767, -32768]
+    assert saturated == 2
+
+
+# -- float operand on an integer image: exact rational, truncate, saturate ----
+
+
+def _frac_warned(tmp_path, values, dtype, *argv, operand=None):
+    caught: list = []
+    got, saturated = _arith_main(
+        tmp_path, values, dtype, *argv, operand=operand, caught_out=caught
+    )
+    frac = sum(
+        int(str(w.message).split()[1]) for w in caught if "fractional" in str(w.message)
+    )
+    return got.flatten().tolist(), saturated, frac
+
+
+def test_arith_int64_fractional_scalar_is_exact_near_2_63(tmp_path):
+    values = [2**62 + 1, _I64.max - 1, -(2**62) - 3, 7]
+    got, saturated, frac = _frac_warned(
+        tmp_path, values, torch.int64, "--op", "add", "--value", "0.5"
+    )
+    # float64 rounded 2**62 + 1 to 2**62 and _I64.max - 1 up to 2**63
+    # (saturating); the exact sum truncated toward zero keeps every pixel.
+    assert got == [2**62 + 1, _I64.max - 1, -(2**62) - 2, 7]
+    assert saturated == 0
+    assert frac == 4
+
+
+def test_arith_uint64_fractional_mul_is_exact(tmp_path):
+    got, saturated, frac = _frac_warned(
+        tmp_path,
+        [2**63 + 3, _U64_MAX, 5],
+        torch.uint64,
+        "--op",
+        "mul",
+        "--value",
+        "0.5",
+    )
+    assert got == [2**62 + 1, 2**63 - 1, 2]
+    assert saturated == 0
+    assert frac == 3
+
+
+def test_arith_int64_fractional_sub_saturates_exactly(tmp_path):
+    got, saturated, _ = _frac_warned(
+        tmp_path,
+        [_I64.min + 1, _I64.min, 0],
+        torch.int64,
+        "--op",
+        "sub",
+        "--value",
+        "1.5",
+    )
+    # min + 1 - 1.5 = min - 0.5 truncates to min (in range); min - 1.5 saturates.
+    assert got == [_I64.min, _I64.min, -1]
+    assert saturated == 1
+
+
+def test_arith_fractional_result_never_rounds_across_an_integer(tmp_path):
+    # float64 rounds 2**30 + 0.99999999999 up to 2**30 + 1 and 3 * fl(1/3)
+    # (just below 1) up to 1.0; the exact values truncate to 2**30 and 0.
+    got, _, _ = _frac_warned(
+        tmp_path, [2**30, 1], torch.int32, "--op", "add", "--value", "0.99999999999"
+    )
+    assert got == [2**30, 1]
+    got, _, frac = _frac_warned(
+        tmp_path, [3, 6, -3], torch.int16, "--op", "mul", "--value", repr(1 / 3)
+    )
+    assert got == [0, 1, 0]
+    assert frac == 3
+
+
+def test_arith_float_image_operand_on_int64_is_exact(tmp_path):
+    got, saturated, _ = _frac_warned(
+        tmp_path,
+        [2**62 + 1, 4],
+        torch.int64,
+        "--op",
+        "add",
+        operand=([0.25, 1e30], torch.float64),
+    )
+    assert got == [2**62 + 1, _I64.max]
+    assert saturated == 1
+
+
+def test_arith_infinite_operand_saturates(tmp_path):
+    got, saturated, _ = _frac_warned(
+        tmp_path, [1, -1], torch.int16, "--op", "add", "--value", "inf"
+    )
+    assert got == [32767, 32767]
+    assert saturated == 2
+    got, saturated, _ = _frac_warned(
+        tmp_path, [2, 3], torch.uint64, "--op", "mul", "--value=-inf"
+    )
+    assert got == [0, 0]
+    assert saturated == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "operand"),
+    [
+        (("--op", "add", "--value", "nan"), None),
+        (("--op", "mul", "--value", "inf"), None),  # 0 * inf
+        (("--op", "sub"), ([1.0, float("nan")], torch.float32)),
+    ],
+)
+def test_arith_nan_into_integer_output_is_refused(tmp_path, capsys, argv, operand):
+    from torchfits.cli.main import main
+
+    a = tmp_path / "a.fits"
+    torchfits.write(str(a), torch.tensor([[0, 5]], dtype=torch.int32))
+    args = ["arith", str(a), *argv]
+    if operand is not None:
+        b = tmp_path / "b.fits"
+        torchfits.write(str(b), torch.tensor([operand[0]], dtype=operand[1]))
+        args = ["arith", str(a), str(b), *argv]
+    out = tmp_path / "out.fits"
+    assert main([*args, "-o", str(out)]) == 2
+    assert "NaN" in capsys.readouterr().err
+    assert not out.exists()

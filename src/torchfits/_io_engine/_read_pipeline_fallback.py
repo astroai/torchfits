@@ -14,7 +14,7 @@ import torch
 
 from .._errors import HDUNotFoundError
 from ..hdu import Header
-from .device import to_device, validate_device
+from .device import move_table_columns, to_device, validate_device
 from ._read_pipeline import (
     _coerce_bit_table_columns,
     _coerce_unsigned_table_columns,
@@ -219,6 +219,7 @@ def read_fallback(
         # would hide FileNotFoundError/PermissionError from callers (r4a-05).
         raise
     except Exception as exc:
+        # Translation boundary: the documented RuntimeError for a failed read.
         raise RuntimeError(f"Failed to read FITS file '{path}': {exc}") from exc
 
 
@@ -270,6 +271,10 @@ def read_fallback_image(
     elif bf16:
         data = data.to(torch.bfloat16)
 
+    # The cache keeps the host tensor as read: copying the device result
+    # back with .cpu() cost a synchronizing device-to-host transfer per read
+    # (P11). The table path below already caches before its device move.
+    host_data = data
     if str(device) != "cpu":
         data = to_device(data, device)
 
@@ -279,15 +284,7 @@ def read_fallback_image(
             header = Header(header_data)
 
     if use_cache and cache_key is not None:
-        store_cached_read(
-            cache_key,
-            (
-                data.cpu() if device != "cpu" else data,
-                header,
-                signature,
-            ),
-            cache_capacity,
-        )
+        store_cached_read(cache_key, (host_data, header, signature), cache_capacity)
 
     if isinstance(hdu_num, int):
         set_cached_hdu_type(path, hdu_num, "IMAGE", signature)
@@ -325,6 +322,12 @@ def read_fallback_table(
     col_list = columns if columns else []
     table_result = None
     decode_errors: list[BaseException] = []
+    # A reader that cannot handle this table at all (the mmap reader and VLA
+    # or ASCII columns) has no diagnosis to offer: when every reader fails,
+    # the first real decode error is reported instead of "VLA columns not
+    # supported for mmap".
+    unsupported_type = getattr(cpp_module, "TableReaderUnsupportedError", ())
+    unsupported: list[BaseException] = []
     table_mmap = mmap if isinstance(mmap, bool) else True
 
     # Opportunistic single-open read (r5a-11) for the mmap stage below: the
@@ -361,7 +364,10 @@ def read_fallback_table(
             # decode error is kept so an all-readers failure (e.g. truncated
             # data) surfaces the primary reader's diagnosis, not a slower
             # reader's replacement message.
-            decode_errors.append(exc)
+            if isinstance(exc, unsupported_type):
+                unsupported.append(exc)
+            else:
+                decode_errors.append(exc)
             table_result = None
 
     if table_result is None:
@@ -392,10 +398,10 @@ def read_fallback_table(
         except (RuntimeError, TypeError, ValueError) as exc:
             decode_errors.append(exc)
             table_result = None
-    if table_result is None and decode_errors:
+    if table_result is None and (decode_errors or unsupported):
         # Every reader failed with a decode error: surface the first one so
         # truncation and other primary-reader diagnoses keep their identity.
-        raise decode_errors[0]
+        raise (decode_errors or unsupported)[0]
 
     table_data = table_result
     # C++ already applies BIT→bool and unsigned TZERO offsets. Skip the extra
@@ -425,22 +431,7 @@ def read_fallback_table(
             cache_capacity,
         )
 
-    if str(device) != "cpu":
-        new_data: dict[str, Any] = {}
-        for key, value in table_data.items():
-            if isinstance(value, torch.Tensor):
-                new_data[key] = to_device(value, device)
-            elif isinstance(value, list):
-                new_list = []
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        new_list.append(to_device(item, device))
-                    else:
-                        new_list.append(item)
-                new_data[key] = new_list
-            else:
-                new_data[key] = value
-        table_data = new_data
+    table_data = move_table_columns(table_data, device)
 
     if isinstance(hdu_num, int):
         set_cached_hdu_type(path, hdu_num, "BINARY_TABLE", signature)

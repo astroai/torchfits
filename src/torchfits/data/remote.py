@@ -10,6 +10,8 @@ vos / vault short forms materialize via the optional ``vos`` client.
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import hashlib
 import importlib
 import json
@@ -19,6 +21,8 @@ import os
 import tempfile
 import urllib.error
 import warnings
+import zipfile
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -38,13 +42,66 @@ from torchfits.vos_uri import is_vos_path as is_vos_path
 from torchfits.vos_uri import normalize_vos_uri as normalize_vos_uri
 
 from torchfits.cache import remote_cache_root
+from torchfits._fits_structure import FitsStructureError as _FitsStructureError
+from torchfits._fits_structure import walk_fits_hdus as _walk_fits_hdus
 
 _REMOTE_PREFIXES = ("http://", "https://")
+# Prefetch/download bookkeeping is keyed by (cache key, destination path):
+# the same URL staged into two cache directories is two independent
+# transfers, and one's failure must not be reported for the other.
+_StateKey = tuple[str, str]
 _prefetch_lock = threading.Lock()
-_prefetch_threads: dict[str, threading.Thread] = {}
-_prefetch_errors: dict[str, BaseException] = {}
-_download_locks: dict[str, threading.Lock] = {}
+_prefetch_threads: dict[_StateKey, threading.Thread] = {}
+_prefetch_errors: dict[_StateKey, BaseException] = {}
+_prefetch_scopes: dict[_StateKey, "PrefetchScope"] = {}
+_download_locks: dict[_StateKey, threading.Lock] = {}
 _log = logging.getLogger(__name__)
+
+
+class PrefetchCancelled(OSError):
+    """A prefetch whose :class:`PrefetchScope` was retired before it finished."""
+
+
+class PrefetchScope:
+    """Cancellation token for the prefetches one consumer (an iterator) starts.
+
+    :func:`retire_prefetches` cancels every transfer started under the scope:
+    each checks the token before creating directories, between body chunks
+    and before promoting, so a retired transfer never recreates a staging
+    directory its owner removed, and its error is dropped instead of being
+    stored for the next consumer of the same URL.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        # Held while a transfer creates a directory, so retirement cannot
+        # interleave between the cancellation check and the ``mkdir``.
+        self._lock = threading.Lock()
+        self._keys: set[_StateKey] = set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def check(self) -> None:
+        if self._event.is_set():
+            raise PrefetchCancelled("prefetch retired by its owner")
+
+    def make_dir(self, directory: Path) -> None:
+        with self._lock:
+            self.check()
+            directory.mkdir(parents=True, exist_ok=True)
+
+
+def _make_dir(directory: Path, scope: PrefetchScope | None) -> None:
+    if scope is None:
+        directory.mkdir(parents=True, exist_ok=True)
+    else:
+        scope.make_dir(directory)
+
+
+def _state_key(cache_key: str, dest: Path) -> _StateKey:
+    return (cache_key, str(dest))
 
 
 def is_http_url(path: str) -> bool:
@@ -94,7 +151,9 @@ def cache_path_for_url(url: str, *, cache_dir: Path | None = None) -> Path:
 
 
 @contextmanager
-def _cross_process_download_lock(dest: Path) -> Iterator[None]:
+def _cross_process_download_lock(
+    dest: Path, scope: PrefetchScope | None = None
+) -> Iterator[None]:
     """Serialize download-on-demand for *dest* across processes via ``flock``.
 
     Only one writer at a time may touch a destination's ``.partial`` file;
@@ -106,7 +165,7 @@ def _cross_process_download_lock(dest: Path) -> Iterator[None]:
     if _fcntl is None:
         yield
         return
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    _make_dir(dest.parent, scope)
     lock_path = dest.parent / f".{dest.name}.lock"
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -163,8 +222,87 @@ def _looks_like_fits_payload(path: Path) -> bool:
     return any(head.startswith(magic) for magic in _FITS_PAYLOAD_MAGIC)
 
 
-def _download_http(url: str, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def _verify_fits_payload(path: Path, *, framed: bool) -> None:
+    """Raise :class:`_FitsStructureError` unless *path* is a complete payload.
+
+    A plain FITS body is always walked (a header-only scan with seeks). A
+    compressed body is decompressed and walked only when the transfer had
+    no length framing (*framed* false): a gzip/bzip2/pkzip stream that ends
+    early fails its end-of-stream / CRC check; Unix ``compress`` and
+    ``pack`` carry no such check and are refused as unverifiable.
+    """
+    with open(path, "rb") as handle:
+        head = handle.read(9)
+        if head.startswith(b"SIMPLE  ="):
+            handle.seek(0)
+            _walk_fits_hdus(handle, os.fstat(handle.fileno()).st_size)
+            return
+    if framed:
+        return
+    try:
+        if head.startswith(b"\x1f\x8b") or head.startswith(b"BZh"):
+            opener = gzip.open if head.startswith(b"\x1f\x8b") else bz2.open
+            with opener(path, "rb") as stream:
+                _walk_fits_hdus(stream, None)
+                while stream.read(1 << 20):
+                    pass
+            return
+        if head.startswith(b"PK\x03\x04"):
+            with zipfile.ZipFile(path) as archive:
+                members = archive.infolist()
+                if not members:
+                    raise _FitsStructureError("empty zip archive")
+                with archive.open(members[0]) as stream:
+                    _walk_fits_hdus(stream, None)
+                    while stream.read(1 << 20):
+                        pass
+            return
+    except (EOFError, OSError, zlib.error, zipfile.BadZipFile) as exc:
+        raise _FitsStructureError(
+            f"compressed stream is incomplete or corrupt ({exc})"
+        ) from exc
+    raise _FitsStructureError(
+        "compression format carries no integrity check, so a body without "
+        "Content-Length cannot be verified"
+    )
+
+
+# Cached files already checked by _cached_copy_is_complete, keyed by path
+# with the (size, mtime_ns) they had then, so the header walk runs once.
+_verified_cache_files: dict[str, tuple[int, int]] = {}
+
+
+def _cached_copy_is_complete(dest: Path) -> bool:
+    """Cheap re-check of an existing cache entry (plain FITS header walk).
+
+    Compressed entries are only checked for their magic: decompressing on
+    every resolve would cost a full read of the file.
+    """
+    try:
+        stat = dest.stat()
+    except OSError:
+        return False
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    key = str(dest)
+    with _prefetch_lock:
+        if _verified_cache_files.get(key) == stamp:
+            return True
+    if not _looks_like_fits_payload(dest):
+        return False
+    try:
+        _verify_fits_payload(dest, framed=True)
+    except _FitsStructureError as exc:
+        _log.warning("cached copy %s is incomplete: %s", dest, exc)
+        return False
+    except OSError:
+        return False
+    with _prefetch_lock:
+        _verified_cache_files[key] = stamp
+    return True
+
+
+def _download_http(url: str, dest: Path, *, scope: PrefetchScope | None = None) -> Path:
+    _make_dir(dest.parent, scope)
     tmp = _partial_path_for(dest)
     meta_path = Path(str(tmp) + ".meta")
     validators = _read_resume_validators(meta_path) if meta_path.is_file() else {}
@@ -228,6 +366,8 @@ def _download_http(url: str, dest: Path) -> Path:
                     meta_path.unlink(missing_ok=True)
             with open(tmp, mode) as handle:
                 while True:
+                    if scope is not None:
+                        scope.check()
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
@@ -238,15 +378,11 @@ def _download_http(url: str, dest: Path) -> Path:
             transfer_encoding = (
                 response.headers.get("Transfer-Encoding") or ""
             ).lower()
-            if expected is None and "chunked" not in transfer_encoding and wrote > 0:
-                # Connection-close framing: clean EOF is indistinguishable
-                # from a dropped connection mid-body. Promote, but say so.
-                warnings.warn(
-                    f"{url}: server sent no usable Content-Length; the cached "
-                    "copy's completeness could not be verified",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            # Connection-close framing (no usable Content-Length, not
+            # chunked): a clean EOF is indistinguishable from a connection
+            # dropped mid-body, so completeness is checked from the payload
+            # itself before promotion below.
+            framed = expected is not None or "chunked" in transfer_encoding
             if expected is not None and wrote != expected:
                 try:
                     tmp.unlink(missing_ok=True)
@@ -286,6 +422,20 @@ def _download_http(url: str, dest: Path) -> Path:
                 f"{url}: response is not a FITS file (no 'SIMPLE  =' header "
                 "or gzip/bzip2 signature); not cached"
             )
+        try:
+            _verify_fits_payload(tmp, framed=framed)
+        except _FitsStructureError as exc:
+            # A truncated body promoted here would be trusted forever and
+            # fail every later read (CFITSIO status 108) without the server
+            # ever being asked again.
+            tmp.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise OSError(
+                f"{url}: incomplete FITS download ({exc}); not cached"
+                + ("" if framed else " (server sent no usable Content-Length)")
+            ) from exc
+        if scope is not None:
+            scope.check()
         tmp.replace(dest)
         try:
             meta_path.unlink(missing_ok=True)
@@ -301,7 +451,7 @@ def _download_http(url: str, dest: Path) -> Path:
             # fetch cleanly instead of retrying the same doomed Range.
             tmp.unlink(missing_ok=True)
             meta_path.unlink(missing_ok=True)
-            return _download_http(url, dest)
+            return _download_http(url, dest, scope=scope)
         raise
     finally:
         if _fcntl is None:
@@ -312,14 +462,14 @@ def _download_http(url: str, dest: Path) -> Path:
             meta_path.unlink(missing_ok=True)
 
 
-def _download_vos(path: str, dest: Path) -> Path:
+def _download_vos(path: str, dest: Path, *, scope: PrefetchScope | None = None) -> Path:
     try:
         vos = importlib.import_module("vos")
     except ImportError as exc:
         raise ImportError(
             "vos/vault paths require the optional 'vos' package (pip/pixi install vos)"
         ) from exc
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    _make_dir(dest.parent, scope)
     tmp = _partial_path_for(dest)
     try:
         if tmp.exists():
@@ -329,6 +479,8 @@ def _download_vos(path: str, dest: Path) -> Path:
         client.copy(uri, str(tmp))
         if not tmp.is_file() or tmp.stat().st_size == 0:
             raise OSError(f"{path}: vos copy produced empty file")
+        if scope is not None:
+            scope.check()
         tmp.replace(dest)
         return dest
     finally:
@@ -338,25 +490,31 @@ def _download_vos(path: str, dest: Path) -> Path:
             tmp.unlink(missing_ok=True)
 
 
-def _download(url: str, dest: Path) -> Path:
+def _download(url: str, dest: Path, *, scope: PrefetchScope | None = None) -> Path:
     if is_vos_path(url):
-        return _download_vos(url, dest)
-    return _download_http(url, dest)
+        return _download_vos(url, dest, scope=scope)
+    return _download_http(url, dest, scope=scope)
 
 
-def _download_once(cache_key: str, url: str, dest: Path) -> Path:
+def _download_once(
+    cache_key: str, url: str, dest: Path, *, scope: PrefetchScope | None = None
+) -> Path:
     # Thread lock covers Dataset/prefetch threads; the flock serializes
     # DataLoader worker *processes* sharing one cache directory.
     with _prefetch_lock:
-        lock = _download_locks.setdefault(cache_key, threading.Lock())
-    with lock, _cross_process_download_lock(dest):
+        lock = _download_locks.setdefault(_state_key(cache_key, dest), threading.Lock())
+    if scope is not None:
+        scope.check()
+    with lock, _cross_process_download_lock(dest, scope):
+        if scope is not None:
+            scope.check()
         if dest.is_file():
             return dest
-        return _download(url, dest)
+        return _download(url, dest, scope=scope)
 
 
-def _cleanup_cache_key(cache_key: str) -> None:
-    """Remove per-key download bookkeeping after a completed transfer.
+def _cleanup_state(key: _StateKey) -> None:
+    """Remove per-transfer bookkeeping after a completed transfer.
 
     Does NOT pop from ``_download_locks`` — those Lock objects are tiny and
     removing them creates a race window where two threads could enter
@@ -364,8 +522,9 @@ def _cleanup_cache_key(cache_key: str) -> None:
     parallel, corrupting ``.partial``.
     """
     with _prefetch_lock:
-        _prefetch_threads.pop(cache_key, None)
-        _prefetch_errors.pop(cache_key, None)
+        _prefetch_threads.pop(key, None)
+        _prefetch_errors.pop(key, None)
+        _prefetch_scopes.pop(key, None)
 
 
 def resolve_local_path(
@@ -380,60 +539,92 @@ def resolve_local_path(
     # Cache key: normalized vos URI so short and long forms share one file.
     cache_key = normalize_vos_uri(path) if is_vos_path(path) else path
     dest = cache_path_for_url(cache_key, cache_dir=cache_dir)
+    key = _state_key(cache_key, dest)
     if dest.is_file():
-        if is_http_url(path) and not _looks_like_fits_payload(dest):
-            # Poisoned by an earlier release that cached any 200 body: drop
-            # it and fetch again instead of failing on it forever.
-            _log.warning("discarding non-FITS cached copy of %s at %s", path, dest)
+        if is_http_url(path) and not _cached_copy_is_complete(dest):
+            # Poisoned by an earlier release that cached any 200 body, or a
+            # truncated connection-close body: drop it and fetch again
+            # instead of failing on it forever.
+            _log.warning(
+                "discarding non-FITS or incomplete cached copy of %s at %s",
+                path,
+                dest,
+            )
             dest.unlink(missing_ok=True)
         else:
-            _cleanup_cache_key(cache_key)
+            _cleanup_state(key)
             return str(dest)
-    # Prefetch threads are keyed by cache_key so vos:/vault: aliases share one
-    # in-flight download and do not race the same ".partial".
+    # Prefetch threads are keyed by (cache_key, dest) so vos:/vault: aliases
+    # share one in-flight download and do not race the same ".partial".
     with _prefetch_lock:
-        existing = _prefetch_threads.get(cache_key)
-        prefetch_error = _prefetch_errors.pop(cache_key, None)
+        existing = _prefetch_threads.get(key)
+        prefetch_error = _prefetch_errors.pop(key, None)
     if existing is not None and existing.is_alive():
         existing.join()
         with _prefetch_lock:
-            prefetch_error = _prefetch_errors.pop(cache_key, None)
+            prefetch_error = _prefetch_errors.pop(key, None)
         if dest.is_file():
-            _cleanup_cache_key(cache_key)
+            _cleanup_state(key)
             return str(dest)
     if prefetch_error is not None:
         raise prefetch_error
     if not download:
         return str(dest)
     result = str(_download_once(cache_key, path, dest))
-    _cleanup_cache_key(cache_key)
+    _cleanup_state(key)
     return result
 
 
-def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None:
-    """Start background downloads for missing HTTP(S)/vos URLs (best-effort)."""
+def prefetch_urls(
+    urls: Iterable[str],
+    *,
+    cache_dir: Path | None = None,
+    scope: PrefetchScope | None = None,
+) -> None:
+    """Start background downloads for missing HTTP(S)/vos URLs (best-effort).
+
+    With *scope*, the transfers can later be cancelled together by
+    :func:`retire_prefetches` (their results and errors are then dropped).
+    """
     for url in urls:
         if not is_remote_url(url):
             continue
+        if scope is not None and scope.cancelled:
+            return
         cache_key = normalize_vos_uri(url) if is_vos_path(url) else url
         dest = cache_path_for_url(cache_key, cache_dir=cache_dir)
         if dest.is_file():
             continue
+        key = _state_key(cache_key, dest)
         with _prefetch_lock:
-            existing = _prefetch_threads.get(cache_key)
+            existing = _prefetch_threads.get(key)
             if existing is not None and existing.is_alive():
                 continue
 
-            def _job(u: str = url, d: Path = dest, key: str = cache_key) -> None:
+            def _job(
+                u: str = url,
+                d: Path = dest,
+                ck: str = cache_key,
+                k: _StateKey = key,
+            ) -> None:
+                me = threading.current_thread()
                 try:
-                    _download_once(key, u, d)
+                    _download_once(ck, u, d, scope=scope)
                     with _prefetch_lock:
-                        _prefetch_errors.pop(key, None)
+                        if _prefetch_threads.get(k) is me:
+                            _prefetch_errors.pop(k, None)
                 except Exception as exc:
+                    if scope is not None and scope.cancelled:
+                        # Retired by its owner: nobody will consume this
+                        # transfer, and its error (often the removed
+                        # staging directory) must not poison the next one.
+                        _log.debug("retired prefetch for %s ended: %s", u, exc)
+                        return
                     # NOTE: best-effort prefetch; resolve_local_path re-raises
                     # the stored error instead of retrying opaquely.
                     with _prefetch_lock:
-                        _prefetch_errors[key] = exc
+                        if _prefetch_threads.get(k) is me:
+                            _prefetch_errors[k] = exc
                     _log.error("prefetch failed for %s: %s", u, exc)
                     warnings.warn(
                         f"prefetch failed for {u}: {exc}",
@@ -444,5 +635,34 @@ def prefetch_urls(urls: Iterable[str], *, cache_dir: Path | None = None) -> None
             thread = threading.Thread(
                 target=_job, name="torchfits-prefetch", daemon=True
             )
-            _prefetch_threads[cache_key] = thread
+            _prefetch_threads[key] = thread
+            _prefetch_errors.pop(key, None)
+            if scope is not None:
+                _prefetch_scopes[key] = scope
+                scope._keys.add(key)
+            else:
+                _prefetch_scopes.pop(key, None)
             thread.start()
+
+
+def retire_prefetches(scope: PrefetchScope) -> list[threading.Thread]:
+    """Cancel every prefetch started under *scope* and forget its state.
+
+    Returns the threads still running; they stop at their next cancellation
+    check (or when their current network read returns) without creating
+    directories, promoting files or recording errors.
+    """
+    with scope._lock:
+        scope._event.set()
+    alive: list[threading.Thread] = []
+    with _prefetch_lock:
+        for key in scope._keys:
+            if _prefetch_scopes.get(key) is not scope:
+                continue
+            thread = _prefetch_threads.pop(key, None)
+            _prefetch_errors.pop(key, None)
+            _prefetch_scopes.pop(key, None)
+            if thread is not None and thread.is_alive():
+                alive.append(thread)
+        scope._keys.clear()
+    return alive

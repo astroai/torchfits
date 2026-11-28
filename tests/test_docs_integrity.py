@@ -1633,13 +1633,26 @@ def test_every_documented_torchfits_command_parses() -> None:
     unreleased_body = (
         changelog[unreleased_at : first_release.start()] if unreleased_at != -1 else ""
     )
+
+    # Expect a parsed command only when the section holds one the scanner
+    # would read (a code segment), not merely the word in a commit subject
+    # such as "Bound torchfits stats memory ...".
+    def _parses(segment: str) -> bool:
+        try:
+            return normalise(segment) is not None
+        except AssertionError:
+            return True  # malformed commands are already reported as offenders
+
+    unreleased_has_command = any(
+        _parses(segment) for _, segment in segments(unreleased_body)
+    )
     floors = (
         ("cli.md", 15),
         ("cli-recipes.md", 8),
         ("quickstart.md", 5),
         ("index.md", 2),
         ("install.md", 1),
-        ("changelog.md", 1 if "torchfits " in unreleased_body else 0),
+        ("changelog.md", 1 if unreleased_has_command else 0),
     )
     for name, floor in floors:
         assert per_page.get(name, 0) >= floor, (
@@ -1735,3 +1748,18 @@ def test_env_var_table_names_every_forced_example() -> None:
                     f"examples/test_examples.py force-sets it for"
                 )
     assert not offenders, "\n".join(offenders)
+
+
+def test_api_transforms_import_list_covers_all_exports() -> None:
+    """The "Importing" block of api-transforms.md lists every public name
+    (it omitted FITSTransform, safe_arcsinh and safe_log)."""
+    import torchfits.transforms
+
+    text = (
+        Path(__file__).resolve().parents[1] / "docs" / "api-transforms.md"
+    ).read_text()
+    block = text[text.index("## Importing") :]
+    block = block[block.index("import (") :]
+    block = block[: block.index(")")]
+    listed = set(re.findall(r"\b(\w+),", block))
+    assert listed == set(torchfits.transforms.__all__)

@@ -7,6 +7,155 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Docs
+- roadmap: 1.3.3 shipped the DLPack/stable-ABI change; plan 1.4
+- data: Document remote completeness checks and dataset edge cases
+
+- cli: Fpack controls recipes; drop them from the roadmap
+- transforms: List every exported name in the import block
+- roadmap: Record the implemented 1.4 work and what is left
+- cache: Document the cache layers and clear native metadata once
+- io: State that a tensor must not be mutated while it is written
+- architecture: List the HCOMPRESS encoder bounds patch
+- architecture: Describe the vendored CFITSIO patches
+- compatibility: Document tested scale limits and memory knobs
+- api: Keep the HDU edit and streaming-write snippets runnable
+- compatibility: Add an upgrading-from-1.3 note
+- api: Match signatures to the code and link the 1.4 features
+- examples: Add runnable examples for the 1.4 table, compression and dataset features
+- roadmap: Close the narrow-table read and table-reader split items
+- roadmap: Plan the 1.4.x line as the FITS release to beat
+- roadmap: Make ML pre-processing and remote caching the 1.4.x flagships
+- contributing: Keep temporary plans in docs/work, not dot-directories
+- roadmap: Ship the whole plan in 1.4.0; 1.4.x patches are fixes and CFITSIO only
+- work: Recommend obstore, both cache layouts and a loader-overhead target
+- work: Keep the 1.4.0 release-notes draft with the plan
+### Fixed
+- io: Keep the failing path's own error in read_batch(strict=True)
+- hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
+- **Breaking:** table: Decode string columns strictly, add decode_errors= opt-in
+- table: Type schema(where=...) on a zero-row table
+- cli: Drop or check BUNIT when arith/transform change the unit
+- cli: Drop stale DATAMIN/DATAMAX in arith and cutout
+- cli: Make 64-bit integer arith exact and saturating
+- table: Accept a column dict in write_parquet/write_csv/write_ipc
+- cli: Keep table layout and metadata on FITS-to-FITS convert
+- cli: Publish every non-FITS and multi-step output atomically
+- table: Name repeated TTYPE columns COL<i> on every read path
+- native: Initialize CFITSIO's global lock when the core library loads
+- data: Narrow the native table-read fallbacks
+- data: Stream the rows of zero-column tables
+- table: Store omitted columns' TNULL as-is in append/insert_rows
+- native: Serialize table reads on a borrowed FITSFile handle
+- data: Reject misaligned staged cutout bands and companions
+- remote: Key prefetch state by destination and retire staged prefetches
+- table: Range-check float payloads before row mutations write
+- remote: Never cache a truncated HTTP body
+- native: Publish image metadata only under the reader's generation
+- table: Keep TTYPE-less columns through mutations
+- native: Key shared read metadata by canonical path
+- cli: Refuse hard-linked output aliases of the input
+- table: Write Arrow IPC without the deprecated write_feather
+- compress: Keep NaN pixels of quantized float images
+- native: Lock the shared handle in TableReader(file_obj, hdu) reads
+- io: Cache negative image-meta lookups
+- transforms: Typed Payloads carry their own inverse statistics
+- hdu: Table num_rows no longer turns header errors into 0 rows
+- native: Type a zero-row VLA column from its schema TFORM
+- cli: Strict JSON for complex and byte values in table preview
+- cli: Let convert --columns/--where select from a table with complex columns
+- table: Warn when a whole-table write clips a string to its schema width
+- table: Wait out a concurrent read before a mutation's read-write open
+- cli: Report VOSpace handle close failures in probe
+- native: Close a partial CFITSIO handle when a write open fails
+- cli: Explain truncated-file CFITSIO read errors
+- cli: Exact arith for float operands on integer images; refuse NaN
+- native: Stop a table write at the first failed column
+- table: Narrow the rewrite temp cleanup and TFORM parse excepts
+- table: Read a native width-1 scalar column as a scalar Arrow array
+- cli: Report data-truncated files from verify as I/O errors
+- cfitsio: Size the HCOMPRESS_1 tile buffer for full-range noise
+- table: Release a failed read's descriptors without waiting for gc
+- cli: Exit 2 for a missing -e HDU in cutout, convert and transform
+- table: Refuse a zero-width vector column with a clear ValueError
+- cli: Refuse vector columns in a CSV/TSV convert as a usage error
+- table: Report a corrupt VLA table's real error from torchfits.read
+- image: Say "compressed tile data is truncated or corrupt" on bad tiles
+- cfitsio: Keep the in.fits(out.fits) copy request per thread
+- core: Stop learning HDU offsets after a clock step or on FUSE/FAT
+- io: Refuse writes through a closed native FITS handle
+- io: Raise when the final flush of a written FITS file fails
+- image: Refuse an image header that declares more data than the file
+- io: Keep the declared shape of a zero-size tensor in a compressed write
+- table: Keep MemoryError from an Arrow column conversion propagating
+- io: Take a handle's file version from the descriptor it reads
+- hdu: Stop pinning every unclosed HDUList and its file descriptor
+- io: Tie learned HDU offsets to the exact file version they came from
+- io: Refuse HCOMPRESS_1 default tiles smaller than 4x4 up front
+- io: Refuse PLIO_1 pixels outside 0..2**24-1 before writing
+- table: Write zero-row Arrow string columns instead of std::bad_cast
+- io: Store a zero-size image HDU uncompressed instead of dying of SIGFPE
+- table: Name a non-numeric TSCAL/TZERO card instead of a bare float() error
+- metadata: Drop stray bytes from TTYPE/TFORM in read_colnames and read_table_info
+- checksum: Refuse an HDU whose declared data runs past the end of file
+- table: Accept zero-row N-D cell blocks in row mutations
+- table: Write a zero-row character column instead of std::bad_cast
+- cfitsio: Stop the RICE_1 decoders reading past a corrupt tile
+- data: Let make_loader(batch_size=None) pass samples through
+- data: Raise HDUNotFoundError from an eager FitsTableDataset
+- cache: Close cached table readers on clear_all_caches
+- cfitsio: Bound the HCOMPRESS encoder's writes by its tile buffer
+- cli: Bound torchfits stats memory to about twice the image
+- table: Size the where= match index by matches, not by the window
+- hdu: Report a compressed image's own shape and dtype
+- where: Treat IN literals outside a numeric column's range as non-matches
+- where: Keep byte vector columns numeric in the torch-mask filter
+- table: Lay out an equal-length VLA first batch as VLA in table.writer
+- table: Type identity-scaled TNULL columns as float64 in schema()
+- table: Stream identity-scaled TNULL columns through the buffered reader
+- native: Pin TableReader raw reads to one descriptor opened at construction
+- io: Keep Inf and -0.0 in lossless tiles of ZBLANK float images
+### Performance
+- native: Release the GIL while deleting table rows
+- cli: Stream convert --columns/--where for non-FITS output
+- native: Release the GIL in the table write and mutation bindings
+- cli: Stream convert --to fits through table.writer
+- data: Read each FitsTableIterableDataset where= chunk once
+
+- table: Read the stream_table header at most once
+- io: Cache the host tensor in the fallback image read
+- io: Move large batch tensors to the device one by one
+- transforms: FITSHeaderScale validates the payload state once
+- cli: Walk remote HDU headers once for an HTTP box cutout
+- data: Read FitsTableDataset where= rows in a single pass
+- native: Tiled parallel pread for buffered table projections
+- table: Evaluate read_torch(where=) one row window at a time
+- io: Write images and HDU lists without holding the GIL
+- io: Open FITS handles and table readers without the GIL
+- io: Release the GIL while writing and verifying checksums
+- io: Reuse learned HDU offsets so reading HDU n is O(1)
+- hdu: List a many-HDU file through one open handle
+- native: Specialized column gathers and one output block for table reads
+- native: Make the first read of a name cheap again
+- native: Keep the byte-swap copy loops tight and out of line
+- native: Move a re-read path to the front of the raw-fd LRU in O(1)
+- table: Trim blank-padded string columns in Arrow, not numpy
+- table: Stop rebuilding full column metadata in per-read schema passes
+- native: Read the HDU-offset file version at close, not on every open
+- native: Remember path resolution for the metadata validation window
+### Added
+- Compress integer images as quantized floats (fpack -i2f)
+- compress: Explicit float quantization and dither controls
+- compress: Tile geometry for tile-compressed image writes
+- table: Native, torch-free, windowed where= filtering
+- table: Stream batches into FITS tables with table.writer()
+- table: Read and write TDIM-shaped N-D table cells
+- data: Lazy block-cached mode for FitsTableDataset
+- table: Accept decode_errors= in the interop converters
+- table: Raise UnknownColumnError for an unknown column name
+- io: Tile-compression options on write_tensor/insert_hdu/replace_hdu
+- table: Raise ColumnExistsError for a column name already in use
+
 ## [1.3.3] — 2026-11-20
 
 Final release of 1.3.3rc1, with no code changes. The full wheel matrix was

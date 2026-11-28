@@ -1,0 +1,35 @@
+Size the HCOMPRESS_1 tile buffer for high-entropy data.
+
+imcomp_calc_max_elem() sized the compressed-tile buffer as nx*2.2+26
+(8/16-bit) or nx*4.4+26 bytes, from "empirical evidence" of at most 10%
+growth. Lossless HCOMPRESS of full-range noise needs more (measured: up
+to 2.3 / 4.5 bytes per pixel on 16x16 tiles, ~6 / ~10 on 4x4 tiles), so
+such images failed with status 413 (since cfitsio-4.7.0-hcompress-bounds,
+cleanly; before it, by overrunning the buffer). The bound is now
+nx*3+1024 / nx*5.5+2048 bytes; a tile that still does not fit keeps
+failing cleanly through the hcompress-bounds checks.
+
+--- a/imcompress.c
++++ b/imcompress.c
+@@ -1474,6 +1474,21 @@
+ 	   
+          Possible improvement: may need to allow a larger size for 32-bit images */
+ 
++        /* torchfits: the 10% figure does not hold for high-entropy data.
++           Full-range noise needs about 2.1 bytes per 16-bit pixel and 4.1
++           per 32-bit pixel (coded by the 64-bit coder) on large tiles, up to
++           2.3 and 4.5 on 16x16 tiles, plus a fixed cost per bit plane and
++           quadrant that reaches ~60 and ~125 bytes on a 4x4 tile; such data
++           failed to compress (status 413).  Size the buffer with ample
++           margin over those measurements.  The old figures below remain only
++           for a degenerate nx <= 0. */
++        if (nx > 0) {
++            double hbound = (zbitpix == 16 || zbitpix == 8)
++                          ? nx * 3.0 + 1024.
++                          : nx * 5.5 + 2048.;
++            return (hbound > 2147483647.) ? 2147483647 : (int) hbound;
++        }
++
+         if (zbitpix == 16 || zbitpix == 8)
+ 	
+             return( (int) (nx * 2.2 + 26));   /* will be compressing 16-bit int array */

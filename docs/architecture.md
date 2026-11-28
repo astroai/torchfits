@@ -170,17 +170,21 @@ images, CFITSIO handles decompression internally.
 
 ## Table read paths
 
-### Buffered full-row path
+### Buffered row path
 
-When all selected columns span the full row width, uses `fits_read_tblbytes`
-to read entire rows in one call, then unpacks columns in-memory. Fewer I/O
-syscalls than per-column reads. Controlled by `TORCHFITS_TABLE_BUFFERED`.
+Serves every fixed-width binary-table projection (full rows, a few columns, or
+a single column). For a plain local file the row window is split into ~512 KiB
+tiles of whole rows; each pool thread `pread`s a tile into its own
+cache-resident scratch and gathers every requested column out of it. Without a
+raw fd (compressed or borrowed inputs) it reads whole rows with
+`fits_read_tblbytes` a chunk at a time instead. Controlled by
+`TORCHFITS_TABLE_BUFFERED`.
 
 ### Column-by-column path
 
-Uses `fits_read_col` per column. Handles VLA, BIT, logical, string, and
-complex types with type-specific dispatch. Activated when column selection
-doesn't cover the full row, or for types that require special handling.
+Uses `fits_read_col` per column. Handles VLA, BIT, complex and ASCII-table
+columns with type-specific dispatch, and every column when
+`TORCHFITS_TABLE_BUFFERED=0`.
 
 ### mmap table path
 
@@ -192,21 +196,29 @@ Activated when `mmap=True` and the table layout permits it.
 ### Filtered read (`where=`)
 
 - **`table.read_torch(..., where=)`:** simple compare / `BETWEEN` / `AND` only.
-  Reads projected columns, then applies a torch mask. Unsupported expressions
-  raise `ValueError`.
-- **`table.read` / `table.scan` (`where=`):** full dialect. C++ mmap-filtered
-  scans when `choose_where_read_plan` selects pushdown (readable header, no
+  Reads projected columns and applies a torch mask one row window (about
+  64 MB of rows) at a time, keeping only matching rows. Unsupported
+  expressions raise `ValueError`.
+- **`table.read` / `table.scan` / `table.scan_torch` (`where=`):** full
+  dialect. When `choose_where_read_plan` selects pushdown (readable header, no
   VLA in the projection, and `backend="cpp"` or `backend="auto"` with
-  `mmap=True`); otherwise Arrow filtering after a wider read. Under
-  `backend="auto"` the torch-tensor pushdown and mask paths run only when
-  torch is already imported, so an Arrow-only `where=` read stays torch-free.
+  `mmap=True`) and the predicate is a conjunction of numeric comparisons the
+  native scan supports (`_native_where_filters`), the C++ mmap-filtered scan
+  runs over the requested row window -- the whole `row_slice=`, or each
+  `scan` / `scan_torch` batch window -- and gathers only the selected rows.
+  Arrow reads take them as torch-free raw buffers
+  (`read_fits_table_filtered_raw`) converted like an unfiltered raw read;
+  `scan_torch` takes tensors. TNULL exclusion is pushed down as an extra
+  `!= TNULL` comparison. Everything else is Arrow filtering after a wider read;
+  the torch mask path for `mmap=False` runs only when torch is already
+  imported, so an Arrow-only `where=` read stays torch-free.
 
 `read_columns_mmap_filtered` (C++ Arrow/mmap path) implements row filtering
 in-process:
 
 1. mmap the file
 2. Pre-byte-swap filter target values to match raw FITS bytes
-3. Scan rows in parallel on the core thread pool
+3. Scan the rows of the requested window (one sequential pass)
 4. For EQ/NE on integers: compare raw bytes directly (zero bswap per row)
 5. For GT/LT/GE/LE: byte-swap per row then compare
 
@@ -229,12 +241,28 @@ Header and metadata probes go through `torchfits._core` and do not load
 PyTorch. `torchfits.open()` lists HDUs and reads headers through the same core;
 the torch-linked reader is opened lazily when an HDU first touches its data.
 
-`torchfits.cache.clear_cache()` clears policy state and I/O metadata.
-`clear_file_cache(...)` clears the in-process I/O caches: cached read results,
-header/meta and HDU-type caches, counters, and the native shared metadata.
-There is no shared pool of open FITS handles for either call to drain.
-`clear_all_caches()` (or `clear_cache(disk=True)`) also removes
-`cache_root()`; override directories outside it are never removed wholesale. See
+The two Python modules are layers, not rival caches:
+
+- `torchfits.cache` (`src/torchfits/cache.py`) is the public, torch-free
+  façade. It owns only the disk layer: where downloads and samples live
+  (`TORCHFITS_CACHE_DIR`, `TORCHFITS_REMOTE_CACHE`, `TORCHFITS_SAMPLE_CACHE`)
+  and how they are removed. The remote downloader takes its directory from
+  here. `clear_cache()` and `get_cache_stats()` delegate the in-process part
+  to the engine.
+- The engine caches (`src/torchfits/_io_engine/caches.py`) hold every piece
+  of in-process state: cached read results, header/meta and HDU-type LRUs
+  validated against the file's size, mtime and inode, the open-`HDUList`
+  registry that mutations close before writing, and the counters behind
+  `get_cache_performance()`. `clear_file_cache(...)` clears them and the
+  native shared metadata; `invalidate_path_caches(path)` drops one file's
+  entries after every write.
+
+So `torchfits.cache.clear_cache()` is `clear_file_cache()` (in-process
+only), `clear_all_caches()` (or `clear_cache(disk=True)`) is that plus the
+disk layer, and `torchfits.cache.get_cache_stats()` returns the same
+counters as `get_cache_performance()`. There is no shared pool of open FITS
+handles for any of them to drain. `clear_all_caches()` removes `cache_root()`;
+override directories outside it are never removed wholesale. See
 [Cache Utilities](api-core-io.md#cache-utilities).
 
 Native in-process tiers:
@@ -250,7 +278,38 @@ DataLoaders and concurrent reads without lock contention.
 ### L1 — SharedReadMeta
 
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
-resolution, raw fd. Validated via `stat()`. Lives in a global map protected
+resolution, raw fd, and the HDU header offsets a read-only handle learned
+(seeded into the next private handle so reaching HDU *n* is one seek instead
+of a walk over the *n*-1 headers before it). Keyed by the canonical
+(`realpath()`) file, so every spelling of a path shares one entry; what a name
+resolves to is remembered for the same validation interval as the `stat()`
+snapshot (a retargeted symlink is noticed when the interval runs out, an
+in-process write at once), so a cached probe costs a hash lookup rather than a
+`readlink()` per path component (a first sight of a name is resolved through
+`/proc/self/fd` on Linux, three syscalls at any depth). Validated via `stat()`. The HDU
+offsets are tied to the exact file version they were read from (device, inode,
+size, mtime and ctime of the file the handle opened: `fstat()` of the
+descriptor CFITSIO reads through, or with an environment CFITSIO a `stat()` of
+the path before and after the open) rather than to the validation window: a handle is
+only seeded from offsets recorded for its own version, and a handle only
+records them if the path still names that version when it closes and no
+in-process writer invalidated the path meanwhile. (With the descriptor
+accessor the version is read once, at close, and must have been settled at the
+moment of the open; a handle that never reaches a third HDU pays no extra
+syscall.) A version is recorded only
+once it is `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` old, so a rewrite within the
+filesystem's timestamp granularity cannot keep its ctime; a file younger than
+that is read with the plain header walk. Files on FUSE mounts (sshfs and
+others report ctime = mtime, so `rsync --inplace -t` can restore a version)
+and on FAT/exFAT (no ctime, 2 s mtime) are never cached, and a backwards
+wall-clock step (an NTP step or a manual date change, seen as `CLOCK_REALTIME`
+falling more than 1 s behind `CLOCK_BOOTTIME`) turns the cache off for the rest
+of the process. Not covered: a backwards clock step that happened before the
+process started, on a filesystem with coarse (1–2 s) timestamps; other
+filesystems that do not maintain ctime (some network filesystems); a network
+filesystem whose server clock runs behind the client by more than the age
+threshold; and a single `write()` (or a shared mapping) still modifying the
+file longer than that threshold while it is opened. Set `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES=0` to turn the offset cache off. Lives in a global map protected
 by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
 and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
 repeated header probing for hot files without sharing CFITSIO CHDU state.
@@ -260,6 +319,8 @@ repeated header probing for hot files without sharing CFITSIO CHDU state.
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | Validation interval |
 | `TORCHFITS_MAX_CACHED_FDS` | `32` | Raw descriptors kept open across reads (LRU); `0` keeps one per path, which is unbounded |
+| `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES` | `67108864` | Process-wide budget for learned HDU offsets (8 bytes per HDU); `0` disables the offset cache |
+| `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` | `3000` | Minimum age of a file version before its HDU offsets are recorded |
 
 ### L2 — Thread-local metadata
 
@@ -276,7 +337,13 @@ Cleared when exceeding 4096 entries.
 Every major I/O operation (`read_full`, `read_fits_table`,
 `read_fits_table_filtered`, `read_hdus_batch`) releases the GIL during the
 CFITSIO/raw-fd call and re-acquires before returning to Python. Safe for
-multi-worker DataLoader usage.
+multi-worker DataLoader usage. Writers (`write_fits_file`,
+`write_fits_file_compressed_images`, `write_fits_table`, the table mutation
+bindings, `TableStreamWriter`) convert the Python payload with the GIL held,
+keep owning references to the arrays, and run CFITSIO's create/write/close
+without it; header cards are written with the GIL. A `FITSFile` write holds
+the handle's I/O lock across that release, so Python-side callers take the
+lock with `lock_io_holding_gil()`, which never waits for it with the GIL held.
 
 ```mermaid
 flowchart LR
@@ -426,6 +493,36 @@ prevent CFITSIO command execution via shell pipes. The public `write()`
 rejects a leading `!` (CFITSIO clobber syntax) with `ValueError`; pass
 `overwrite=True` instead.
 
+### Vendored CFITSIO patches
+
+`extern/vendor.sh` applies `extern/patches/<tag>-*.patch` to the pinned
+CFITSIO in file-name order. Each file's header names the upstream commit it
+backports, or says that it is a torchfits fix not yet upstream. Apart from
+build changes (bzip2 support, `NIOBUF`/`MINDIRECT` overrides), they harden
+CFITSIO code that torchfits runs on untrusted files:
+
+- tile decompression: truncated or corrupt `RICE_1` and `HCOMPRESS_1` tiles
+  (out-of-bounds reads, division by zero), truncated `GZIP_1`/`GZIP_2` tiles
+  (an endless buffer-growing loop) and the `PLIO_1` compression buffer;
+- tile compression: the `HCOMPRESS_1` encoder writing past its tile buffer on
+  small high-entropy tiles (it now reports the full buffer instead), and a
+  tile buffer sized so that lossless `HCOMPRESS_1` of full-range noise fits
+  (it used to fail with status 413);
+- image headers: `NAXIS` above 99, and image sections (`f.fits[1:10,1:10]`)
+  of images with more than 9 axes;
+- ASCII tables with `TFIELDS` above 999, which now fail to open;
+- the IRAF `.imh` converter that CFITSIO runs for names such as `x.imh[0]`
+  (header and pixel-size bounds, long paths, long headers);
+- the `http://` driver: redirects that leave the host, `user@` inside the
+  path, and responses without a status line;
+- concurrent opens: an `in.fits(out.fits)` copy request is kept per thread,
+  so a plain open on another thread cannot consume it.
+
+Such a file now raises `RuntimeError` (or `OSError` from header-only calls)
+instead of crashing the process; `tests/test_cfitsio_backports.py` holds the
+crafted inputs. The vendor stamp covers the patches, so a tree vendored
+before one was added is re-vendored (git checkout) or refused by the build.
+
 ---
 
 ## Environment variables
@@ -455,11 +552,13 @@ profiling or working around a specific bottleneck.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered full-row table reads |
+| `TORCHFITS_TABLE_BUFFERED` | `1` | Enable buffered row reads for fixed-width table columns |
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable SharedReadMeta validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
 | `TORCHFITS_XOR_PARALLEL_MIN_BYTES` | `262144` | Threshold for parallel sign-bit XOR |
 | `TORCHFITS_MAX_CACHED_FDS` | `32` | Raw descriptors SharedReadMeta keeps open across reads, LRU-evicted. The table is per-process, so an unbounded cache starves every other library in it (measured: 90 reads at `RLIMIT_NOFILE=64` left 64/64 descriptors held and 199/200 further opens failing with EMFILE). `0` restores unbounded retention |
+| `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES` | `67108864` (64 MiB) | Process-wide budget for the HDU header offsets read-only handles learn (8 bytes per HDU, one table per path); a table that does not fit is not recorded. `0` disables the cache, so reaching HDU *n* always walks the *n*-1 headers before it |
+| `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` | `3000` | A file version's HDU offsets are recorded only once its ctime and mtime are this old, so a later same-size rewrite always changes its ctime even on filesystems with coarse timestamps (FAT: 2 s). Lowering it is only safe on filesystems with fine-grained timestamps |
 | `TORCHFITS_NUM_THREADS` | hardware concurrency (capped at 64) | Worker threads for `libtorchfits_core`'s pool, which runs every native parallel decode (table columns, row filters, sign-bit XOR). `torch.set_num_threads` does not size it; set this when the pool and PyTorch's intra-op threads would otherwise oversubscribe |
 | `TORCHFITS_VLA_HEAP_PREAD` | `0` (off) | Contiguous-heap single-`pread` fast path for VLA table columns; off by default until THEAP/offset edge cases are fully proven vs CFITSIO |
 

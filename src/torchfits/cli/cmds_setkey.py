@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import math
 import os
 import re
@@ -27,6 +26,7 @@ from .common import (
     resolve_file_jobs,
     resolve_paths,
     run_file_jobs,
+    staged_output,
 )
 
 
@@ -318,6 +318,13 @@ def _write_plan(path: str, plan: _Plan) -> None:
             torchfits.io._invalidate_path_caches(path)
 
 
+def _same_file(src: str, dest: str) -> bool:
+    try:
+        return os.path.samefile(src, dest)
+    except OSError:
+        return False
+
+
 def _edit_one(job: tuple[str, str, str, tuple[Any, ...]]) -> None:
     src, dest, hdu_spec, (set_key, set_value, rename_pair, del_keys) = job
     try:
@@ -331,21 +338,18 @@ def _edit_one(job: tuple[str, str, str, tuple[Any, ...]]) -> None:
             rename_pair=rename_pair,
             del_keys=del_keys,
         )
-        if os.path.realpath(src) == os.path.realpath(dest):
+        if os.path.realpath(src) == os.path.realpath(dest) or _same_file(src, dest):
             # dest resolves to src (e.g. --out-dir reaching the input's
-            # directory through a symlink): edit in place, as with dest == src.
+            # directory through a symlink, or a hard link): edit in place, as
+            # with dest == src.
             _write_plan(src, plan)
             return
-        created = not os.path.lexists(dest)
-        try:
-            shutil.copy2(src, dest)
-            _write_plan(dest, plan)
-        except BaseException:
-            # Never leave a half-edited copy that this run created.
-            if created:
-                with contextlib.suppress(OSError):
-                    os.remove(dest)
-            raise
+        # Copy and edit a temp file, published only once every edit landed:
+        # a failure never leaves a half-edited copy, nor clobbers an
+        # existing dest.
+        with staged_output(dest, gzip_gz=False) as temp_path:
+            shutil.copy2(src, temp_path)
+            _write_plan(temp_path, plan)
     except UsageError:
         raise
     except IoError:

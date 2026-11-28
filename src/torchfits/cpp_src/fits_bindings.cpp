@@ -7,6 +7,7 @@
 #include <cmath>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <shared_mutex>
 #include <list>
@@ -59,6 +60,9 @@ void invalidate_shared_meta(const std::string& filename) {
 
 void clear_shared_read_meta_cache() {
     d::clear_shared_meta_cache();
+    // The per-thread table readers hold a CFITSIO handle and a pinned data
+    // descriptor each; a cache clear must let go of the files too.
+    evict_all_cached_readers();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +77,15 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         return file.read_tensor(hdu_num, use_mmap);
     }
 
+    // Sample the metadata generation before opening: the handle below reads
+    // the file as it is now, and only answers from this same generation may
+    // be read from or published to the shared caches (see meta_is_current).
+    auto meta = d::get_shared_meta_for_path(path);
+    const uint64_t generation = meta->uid.load(std::memory_order_relaxed);
+    auto meta_is_current = [&]() {
+        return meta->uid.load(std::memory_order_relaxed) == generation;
+    };
+
     // Private per-call handle (CFITSIO §4 Option A): never share one fitsfile*
     // across threads. SharedReadMeta + shared raw fd remain the shared caches.
     fitsfile* fptr = nullptr;
@@ -82,6 +95,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     const int target_hdu = hdu_num + 1;
@@ -89,8 +103,6 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     if (status != 0) {
         throw std::runtime_error("Could not move to HDU");
     }
-
-    auto meta = d::get_shared_meta_for_path(path);
 
     struct LocalKey {
         uint64_t meta_uid = 0;
@@ -121,7 +133,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     static thread_local std::unordered_map<LocalKey, LocalHduMeta, LocalKeyHash> tl_cache;
     static thread_local std::list<LocalKey> tl_lru;
 
-    LocalKey key{meta->uid, hdu_num};
+    LocalKey key{generation, hdu_num};
     LocalHduMeta* local = nullptr;
     auto cache_it = tl_cache.find(key);
     if (cache_it != tl_cache.end()) {
@@ -144,7 +156,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->image_info_cache.find(hdu_num);
-            if (it != meta->image_info_cache.end()) {
+            if (meta_is_current() && it != meta->image_info_cache.end()) {
                 local->bitpix = std::get<0>(it->second);
                 local->naxis = std::get<1>(it->second);
                 local->naxes_ll = std::get<2>(it->second);
@@ -161,7 +173,10 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         }
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->image_info_cache[hdu_num] = std::make_tuple(local->bitpix, local->naxis, local->naxes_ll);
+            if (meta_is_current()) {
+                meta->image_info_cache[hdu_num] =
+                    std::make_tuple(local->bitpix, local->naxis, local->naxes_ll);
+            }
         }
         local->has_info = true;
     };
@@ -171,7 +186,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->compressed_cache.find(hdu_num);
-            if (it != meta->compressed_cache.end()) {
+            if (meta_is_current() && it != meta->compressed_cache.end()) {
                 local->compressed = it->second;
                 local->has_compressed = true;
                 return local->compressed;
@@ -185,7 +200,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         }
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->compressed_cache[hdu_num] = local->compressed;
+            if (meta_is_current()) meta->compressed_cache[hdu_num] = local->compressed;
         }
         local->has_compressed = true;
         return local->compressed;
@@ -205,7 +220,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
         {
             std::shared_lock<std::shared_mutex> lock(meta->mutex);
             auto it = meta->scale_cache.find(hdu_num);
-            if (it != meta->scale_cache.end()) {
+            if (meta_is_current() && it != meta->scale_cache.end()) {
                 local->scaled = std::get<0>(it->second);
                 local->trusted = std::get<1>(it->second);
                 local->bscale = std::get<2>(it->second);
@@ -222,9 +237,11 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
 
         {
             std::unique_lock<std::shared_mutex> lock(meta->mutex);
-            meta->scale_cache[hdu_num] = std::make_tuple(
-                local->scaled, local->trusted, local->bscale, local->bzero
-            );
+            if (meta_is_current()) {
+                meta->scale_cache[hdu_num] = std::make_tuple(
+                    local->scaled, local->trusted, local->bscale, local->bzero
+                );
+            }
         }
         local->has_scale = true;
     };
@@ -267,6 +284,9 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     // Hold the refcounted fd for the duration of the canonical read so an
     // invalidation cannot close it underneath pread/mmap.
     auto fd_holder = d::get_shared_raw_fd(meta, path);
+    // The shared fd follows the current generation; once that is no longer the
+    // file this handle opened, read through the handle instead.
+    if (!meta_is_current()) fd_holder.reset();
     const int fd = fd_holder ? fd_holder->fd : -1;
     return d::read_tensor_canonical(fptr, path, resolved, use_mmap, fd, /*use_chunking=*/true);
 }
@@ -316,12 +336,16 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     }
 
     auto meta = d::get_shared_meta_for_path(path);
+    // Generation observed before the open; the answer is published only if it
+    // is still current (a replace mid-scan must not pin the old index).
+    uint64_t generation = 0;
     if (meta) {
         std::shared_lock<std::shared_mutex> lock(meta->mutex);
         auto it = meta->hdu_name_cache.find(hdu_name_key);
         if (it != meta->hdu_name_cache.end()) {
             return it->second;
         }
+        generation = meta->uid.load(std::memory_order_relaxed);
     }
 
     fitsfile* fptr = nullptr;
@@ -331,6 +355,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     fits_movnam_hdu(
@@ -353,7 +378,9 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     const int resolved = std::max(0, current_hdu - 1);
     if (meta) {
         std::unique_lock<std::shared_mutex> lock(meta->mutex);
-        meta->hdu_name_cache[hdu_name_key] = resolved;
+        if (meta->uid.load(std::memory_order_relaxed) == generation) {
+            meta->hdu_name_cache[hdu_name_key] = resolved;
+        }
     }
     return resolved;
 }
@@ -549,6 +576,15 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
     fitsfile* fptr = nullptr;
     int status = 0;
     auto shared_meta = d::get_shared_meta_for_path(path);
+    // Generation observed before the open. A replace that lands while this
+    // reader scans rotates it; from then on this handle reads the old file, so
+    // it must neither use nor publish the shared answers (they belong to the
+    // replacement).
+    const uint64_t generation =
+        shared_meta ? shared_meta->uid.load(std::memory_order_relaxed) : 0;
+    auto meta_is_current = [&]() {
+        return shared_meta->uid.load(std::memory_order_relaxed) == generation;
+    };
     status = d::open_fits_readonly(&fptr, path);
     if (status != 0 || !fptr) {
         throw std::runtime_error(d::open_failure_message(path, status));
@@ -556,6 +592,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
 
     auto close_guard = [&]() {
         if (fptr) {
+            d::remember_hdu_offsets(fptr, path);
             int close_status = 0;
             fits_close_file(fptr, &close_status);
             fptr = nullptr;
@@ -588,7 +625,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->image_info_cache.find(hdu_num);
-            if (it != shared_meta->image_info_cache.end()) {
+            if (meta_is_current() && it != shared_meta->image_info_cache.end()) {
                 bitpix = std::get<0>(it->second);
                 naxis = std::get<1>(it->second);
                 naxes_ll = std::get<2>(it->second);
@@ -604,8 +641,10 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             }
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->image_info_cache[hdu_num] = std::make_tuple(
-                    bitpix, naxis, naxes_ll);
+                if (meta_is_current()) {
+                    shared_meta->image_info_cache[hdu_num] = std::make_tuple(
+                        bitpix, naxis, naxes_ll);
+                }
             }
         }
 
@@ -629,7 +668,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->compressed_cache.find(hdu_num);
-            if (it != shared_meta->compressed_cache.end()) {
+            if (meta_is_current() && it != shared_meta->compressed_cache.end()) {
                 compressed = it->second;
                 compressed_cached = true;
             }
@@ -641,7 +680,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             if (status != 0) status = 0;
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->compressed_cache[hdu_num] = compressed;
+                if (meta_is_current()) shared_meta->compressed_cache[hdu_num] = compressed;
             }
         }
 
@@ -649,6 +688,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         const bool float_like = (bitpix == FLOAT_IMG || bitpix == DOUBLE_IMG);
         if (float_like) {
             LONGLONG nelements = d::checked_nelements_product(naxes_ll.data(), naxis);
+            d::ensure_image_data_within_file(fptr, bitpix, nelements);
             int64_t torch_shape[9];
             for (int i = 0; i < naxis; ++i)
                 torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
@@ -656,21 +696,18 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             const int datatype = (bitpix == FLOAT_IMG) ? TFLOAT : TDOUBLE;
             auto tensor = native::empty(
                 torch_shape, static_cast<size_t>(naxis), native::TensorOptions().dtype(dtype));
-            int anynul = 0;
-            float fnullval = NAN;
-            double dnullval = NAN;
-            void* nullval_ptr = d::cfitsio_float_nulval_ptr(
-                bitpix, compressed, datatype, &fnullval, &dnullval);
             status = 0;
-            fits_read_img(
-                fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+            d::read_float_image_pixels(
+                fptr, bitpix, datatype, tensor.data_ptr(), nelements,
+                [&](void* nulval, void* out, int* st) {
+                    int anynul = 0;
+                    fits_read_img(fptr, datatype, 1, nelements, nulval, out, &anynul, st);
+                },
+                &status);
             if (status != 0) {
                 close_guard();
-                char err_text[31];
-                fits_get_errstatus(status, err_text);
                 throw std::runtime_error(
-                    "Error reading image data: status=" + std::to_string(status) +
-                    " msg=" + std::string(err_text));
+                    "Error reading image data: " + d::image_read_status(status, fptr));
             }
             close_guard();
             return tensor;
@@ -684,7 +721,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         if (shared_meta) {
             std::shared_lock<std::shared_mutex> lock(shared_meta->mutex);
             auto it = shared_meta->scale_cache.find(hdu_num);
-            if (it != shared_meta->scale_cache.end()) {
+            if (meta_is_current() && it != shared_meta->scale_cache.end()) {
                 scaled = std::get<0>(it->second);
                 scale_trusted = std::get<1>(it->second);
                 bscale = std::get<2>(it->second);
@@ -700,8 +737,10 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             bzero = detected.bzero;
             if (shared_meta) {
                 std::unique_lock<std::shared_mutex> lock(shared_meta->mutex);
-                shared_meta->scale_cache[hdu_num] = std::make_tuple(
-                    scaled, scale_trusted, bscale, bzero);
+                if (meta_is_current()) {
+                    shared_meta->scale_cache[hdu_num] = std::make_tuple(
+                        scaled, scale_trusted, bscale, bzero);
+                }
             }
         }
 
@@ -719,6 +758,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
         std::shared_ptr<d::RawFdHolder> fd_holder;
         if (!resolved.compressed && shared_meta) {
             fd_holder = d::get_shared_raw_fd(shared_meta, path);
+            if (!meta_is_current()) fd_holder.reset();
         }
         const int fd = fd_holder ? fd_holder->fd : -1;
         auto tensor = d::read_tensor_canonical(
@@ -993,7 +1033,7 @@ void validate_hdu_list_headers(nb::list hdus) {
     }
 }
 
-void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii) {
+void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::object schema_obj, bool is_ascii, bool release_gil) {
     struct ColumnWriteInfo {
         std::string name;
         bool is_vla = false;
@@ -1241,20 +1281,38 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 }
                 col.vla_rows.push_back(arr);
             }
-            if (!dtype_set) {
-                if (col.vla_rows.empty()) {
+            if (!dtype_set && col.vla_rows.empty() && has_schema_tform) {
+                // A zero-row VLA column (e.g. a filter that kept no row) has
+                // no element to type it, but its schema TFORM does; no row is
+                // written, so the datatype only has to be valid.
+                static const std::pair<char, int> kVlaTypes[] = {
+                    {'L', TLOGICAL}, {'X', TBIT},  {'B', TBYTE},     {'I', TSHORT},
+                    {'J', TINT},     {'K', TLONGLONG}, {'E', TFLOAT}, {'D', TDOUBLE},
+                    {'C', TCOMPLEX}, {'M', TDBLCOMPLEX}, {'A', TSTRING}};
+                col.datatype = 0;
+                for (const auto& [letter, type] : kVlaTypes) {
+                    if (schema_info.code == letter) col.datatype = type;
+                }
+                if (col.datatype == 0) {
                     throw std::runtime_error("VLA column has no data to infer dtype");
                 }
-                // All rows are empty but typed (e.g. explicit empty arrays or
-                // None-normalized rows): any row's dtype names the column type.
-                dt = col.vla_rows[0].dtype();
-            }
-            auto code = dtype_to_code(dt);
-            col.datatype = code.second;
-            if (has_schema_tform) {
                 col.tform = schema_tform;
             } else {
-                col.tform = "1P" + code.first;
+                if (!dtype_set) {
+                    if (col.vla_rows.empty()) {
+                        throw std::runtime_error("VLA column has no data to infer dtype");
+                    }
+                    // All rows are empty but typed (e.g. explicit empty arrays or
+                    // None-normalized rows): any row's dtype names the column type.
+                    dt = col.vla_rows[0].dtype();
+                }
+                auto code = dtype_to_code(dt);
+                col.datatype = code.second;
+                if (has_schema_tform) {
+                    col.tform = schema_tform;
+                } else {
+                    col.tform = "1P" + code.first;
+                }
             }
 
             long rows = static_cast<long>(col.vla_rows.size());
@@ -1280,6 +1338,16 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                         values.emplace_back(d::require_fits_ascii(
                             nb::cast<std::string>(elem), "table string value"));
                     }
+                }
+            } else if (nb::isinstance<nb::ndarray<>>(obj)) {
+                // A string column with no rows normalises to an empty
+                // (float) ndarray: it has no values to write. Any other
+                // array cannot fill a character column.
+                nb::ndarray<> arr = nb::cast<nb::ndarray<>>(obj);
+                if (arr.size() != 0) {
+                    throw std::invalid_argument(
+                        "column '" + col.name +
+                        "' has a character TFORM ('A') but non-string values");
                 }
             } else {
                 values.emplace_back(d::require_fits_ascii(
@@ -1332,6 +1400,18 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             continue;
         }
 
+      if (!nb::isinstance<nb::ndarray<>>(obj)) {
+          // An empty list (a zero-row column of unknown type) or another
+          // non-array value: say what is missing instead of std::bad_cast.
+          throw std::invalid_argument(
+              "column '" + col_key + "': cannot infer a FITS format from " +
+              (nb::isinstance<nb::list>(obj) || nb::isinstance<nb::tuple>(obj)
+                   ? std::string("an empty sequence")
+                   : std::string("a value of type ") +
+                         nb::cast<std::string>(nb::type_name(obj.type()))) +
+              "; pass a numpy array or schema={'" + col_key +
+              "': {'format': ...}}");
+      }
       nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(obj);
       require_cpu_ndarray(tensor, "column " + col_key);
       int ndim = tensor.ndim();
@@ -1371,6 +1451,15 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
             col.repeat = static_cast<long>(tensor.shape(1));
         } else {
             col.repeat = 1;
+        }
+        if (ndim > 1 && col.repeat == 0) {
+            // A '0E' column is valid FITS, but CFITSIO rejects writing it
+            // ("bad first element number") and torchfits' readers reject
+            // a repeat of 0, so it could not round-trip either way.
+            throw std::invalid_argument(
+                "Column '" + col.name + "' has zero elements per row (shape (" +
+                std::to_string(num_rows) + ", 0)); zero-width vector columns " +
+                "are not supported: drop the column or give it at least one element");
         }
         if (has_schema_tform) {
             col.tform = schema_tform;
@@ -1463,6 +1552,14 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
         tform[static_cast<size_t>(i)] = tform_store[static_cast<size_t>(i)].data();
         tunit[static_cast<size_t>(i)] = tunit_store[static_cast<size_t>(i)].data();
     }
+    // Every column is converted by now: creating the table and writing its
+    // data touches no Python object (the payload arrays stay referenced by
+    // `columns`), so with release_gil it runs without the GIL. The header
+    // cards below are Python objects again.
+    std::optional<nb::gil_scoped_release> release;
+    if (release_gil) {
+        release.emplace();
+    }
     fits_create_tbl(fptr, is_ascii ? ASCII_TBL : BINARY_TBL, num_rows, num_cols,
                     ttype.data(), tform.data(), tunit.data(), "Table", &status);
 
@@ -1505,6 +1602,9 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                     data_ptr = logical.data();
                 }
                 fits_write_col(fptr, col.datatype, i + 1, row + 1, 1, nelements, data_ptr, &status);
+                if (status != 0) {
+                    break;
+                }
             }
         } else if (col.is_string) {
             long width_chars = col.width > 0 ? col.width : 1;
@@ -1554,7 +1654,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                     // ground truth for 8X/12X/16X), silently shifting every
                     // row after the first. Write one row per call so the
                     // element count stays within the row.
-                    for (long r = 0; r < num_rows; ++r) {
+                    for (long r = 0; r < num_rows && status == 0; ++r) {
                         fits_write_col(fptr, TBIT, i + 1, 1 + r, 1, col.repeat,
                                        logical.data() + static_cast<size_t>(r * col.repeat),
                                        &status);
@@ -1569,7 +1669,18 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
                 fits_write_col(fptr, col.datatype, i + 1, 1, 1, nelements, data_ptr, &status);
             }
         }
+        if (status != 0) {
+            // Stop at the first failed column: every later CFITSIO call
+            // would return at once on the poisoned status, and the error
+            // must name the column that failed (r8b-09).
+            char err_msg[FLEN_STATUS];
+            fits_get_errstatus(status, err_msg);
+            throw std::runtime_error("Failed to write table column '" + col.name +
+                                     "': " + err_msg);
+        }
     }
+
+    release.reset();
 
     for (auto item : header) {
         std::string key = nb::cast<std::string>(item.first);
@@ -1631,7 +1742,7 @@ void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header, nb::
 }
 
 void write_table_hdu(fitsfile* fptr, nb::dict tensor_dict, nb::dict header) {
-    write_table_hdu(fptr, tensor_dict, header, nb::none(), false);
+    write_table_hdu(fptr, tensor_dict, header, nb::none(), false, false);
 }
 
 std::shared_ptr<fitsfile> share_fptr_from_python_object(nanobind::object obj) {
@@ -1679,7 +1790,11 @@ void bind_fits(nb::module_& m) {
             }
             return type;
         })
-        .def("close", &FITSFile::close)
+        .def("close", [](FITSFile& self) {
+            // Flushes and closes the file: no Python object involved.
+            nb::gil_scoped_release release;
+            self.close();
+        })
         .def("write_image", &FITSFile::write_image, nb::arg("tensor"))
         .def("write_hdus", &FITSFile::write_hdus)
         .def("get_shape", [](FITSFile& self, int hdu_num) {
@@ -1819,8 +1934,17 @@ void bind_fits(nb::module_& m) {
         }
         validate_hdu_list_headers(hdus);
         invalidate_shared_meta(path);
-        FITSFile file(final_path.c_str(), 1);
-        file.write_hdus(hdus, overwrite);
+        // Creating the file (deleting the old one for "!path") and the final
+        // close/flush touch no Python object; write_hdus converts each HDU with
+        // the GIL and writes its data without it.
+        std::optional<FITSFile> file;
+        {
+            nb::gil_scoped_release release;
+            file.emplace(final_path.c_str(), 1);
+        }
+        file->write_hdus(hdus, overwrite);
+        nb::gil_scoped_release release;
+        file->close();
     });
 
     m.def("write_fits_file_compressed_images",
@@ -1856,13 +1980,22 @@ void bind_fits(nb::module_& m) {
 
               validate_hdu_list_headers(hdus);
               invalidate_shared_meta(path);
-              FITSFile file(final_path.c_str(), 1);
-              file.write_hdus_compressed_images(hdus, comptype);
+              std::optional<FITSFile> file;
+              {
+                  nb::gil_scoped_release release;
+                  file.emplace(final_path.c_str(), 1);
+              }
+              file->write_hdus_compressed_images(hdus, comptype);
+              nb::gil_scoped_release release;
+              file->close();
           },
           nb::arg("path"), nb::arg("hdus"), nb::arg("overwrite"),
           nb::arg("algorithm") = std::string("RICE_1"));
 
     m.def("write_hdu_checksums", [](const std::string& path, int hdu_num) {
+        // ffpcks reads the whole HDU to sum it and touches no Python object:
+        // let other threads run meanwhile.
+        nb::gil_scoped_release release;
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(path);
@@ -1876,43 +2009,61 @@ void bind_fits(nb::module_& m) {
         }
         FitsHandleGuard guard;
         guard.fptr = fptr;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
-            int status = 0;
-            fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
-            if (status != 0) {
-                throw std::runtime_error("Could not move to HDU");
-            }
-        };
-        move_to_hdu(fptr, hdu_num);
+        fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
+        if (status != 0) {
+            throw std::runtime_error("Could not move to HDU");
+        }
         ffpcks(fptr, &status);
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS checksums");
         }
+        guard.close_checked("writing FITS checksums");
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
 
     m.def("verify_hdu_checksums", [](const std::string& path, int hdu_num) {
-        fitsfile* fptr = nullptr;
-        int status = 0;
-        check_fits_filename_security(path);
-        status = d::open_fits_readonly(&fptr, path);
-        if (status != 0 || !fptr) {
-            throw std::runtime_error("Could not open FITS file for checksum verification");
-        }
-        FitsHandleGuard guard;
-        guard.fptr = fptr;
         int datastatus = -1;
         int hdustatus = -1;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
+        {
+            // ffvcks reads the whole HDU (seconds on a multi-GB image) and
+            // touches no Python object: let other threads run meanwhile.
+            nb::gil_scoped_release release;
+            fitsfile* fptr = nullptr;
             int status = 0;
+            check_fits_filename_security(path);
+            status = d::open_fits_readonly(&fptr, path);
+            if (status != 0 || !fptr) {
+                throw std::runtime_error("Could not open FITS file for checksum verification");
+            }
+            FitsHandleGuard guard;
+            guard.fptr = fptr;
+            guard.remember_path = path;
             fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
             if (status != 0) {
                 throw std::runtime_error("Could not move to HDU");
             }
-        };
-        move_to_hdu(fptr, hdu_num);
-        ffvcks(fptr, &datastatus, &hdustatus, &status);
-        if (status != 0) {
-            throw std::runtime_error("Failed to verify FITS checksums");
+            // ffvcks sums every block the header declares, re-reading (and
+            // failing on) each one past the end of the file: a header that
+            // claims gigabytes on a short file kept it busy for minutes
+            // before a bare "Failed to verify". Refuse an HDU whose declared
+            // data unit ends at least one whole block past the end of the
+            // file (a missing final pad stays tolerated, as everywhere else).
+            LONGLONG headstart = 0;
+            LONGLONG datastart = 0;
+            LONGLONG dataend = 0;
+            fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
+            if (status == 0 && fptr->Fptr != nullptr &&
+                dataend - fptr->Fptr->logfilesize >= 2880) {
+                throw std::runtime_error(
+                    "FITS file is truncated: HDU " + std::to_string(hdu_num) +
+                    " declares data up to byte " + std::to_string(dataend) +
+                    " but the file has " +
+                    std::to_string(fptr->Fptr->logfilesize) + " bytes");
+            }
+            status = 0;
+            ffvcks(fptr, &datastatus, &hdustatus, &status);
+            if (status != 0) {
+                throw std::runtime_error("Failed to verify FITS checksums");
+            }
         }
         return nb::make_tuple(datastatus, hdustatus);
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
@@ -1999,6 +2150,7 @@ void bind_fits(nb::module_& m) {
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS header cards");
         }
+        guard.close_checked("writing FITS header cards");
     }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("cards"));
 
     m.def("delete_hdu_header_key", [](const std::string& path, int hdu_num, const std::string& key) {
@@ -2032,6 +2184,7 @@ void bind_fits(nb::module_& m) {
         if (status != 0) {
             throw std::runtime_error("Failed to delete FITS header keyword: " + sanitized);
         }
+        guard.close_checked("deleting a FITS header keyword");
     }, nb::arg("path"), nb::arg("hdu_num"), nb::arg("key"));
 
     m.def("open_and_read_headers", [](const std::string& path, int mode) {
@@ -2047,7 +2200,14 @@ void bind_fits(nb::module_& m) {
 
     m.def("open_fits_file", [](const std::string& path, const std::string& mode) {
         int mode_int = (mode == "w" || mode == "w+") ? 1 : 0;
-        return new FITSFile(path.c_str(), mode_int);
+        // An open can be slow (CFITSIO inflates a .gz file into memory, a URL
+        // is downloaded) and the constructor touches no Python object.
+        FITSFile* file = nullptr;
+        {
+            nb::gil_scoped_release release;
+            file = new FITSFile(path.c_str(), mode_int);
+        }
+        return file;
     }, nb::rv_policy::take_ownership);
 
     m.def("read_header", [](FITSFile& file, int hdu_num) {

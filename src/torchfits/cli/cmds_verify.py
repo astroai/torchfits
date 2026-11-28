@@ -3,6 +3,12 @@
 Self-contained by design: it reads DATASUM/CHECKSUM through the native reader
 and never shells out to ``fitsverify``. Cross-checking the verdict against that
 tool belongs in torchfits-harness, not in the library.
+
+Before the checksums, a local uncompressed file is walked header by header
+(``torchfits._fits_structure``) so a file shorter than its headers declare is
+an I/O error (exit 3) rather than "OK (no checksum keywords)": a checksum
+cannot vouch for bytes that are missing, and a file without checksum keywords
+would otherwise pass unchecked.
 """
 
 from __future__ import annotations
@@ -11,6 +17,8 @@ import argparse
 from typing import Any
 
 import torchfits
+from torchfits._fits_structure import FitsStructureError, check_plain_fits_extent
+from torchfits._io_engine.paths import cfitsio_base_path
 
 from .common import (
     EXIT_OK,
@@ -24,6 +32,7 @@ from .common import (
     header_extname,
     resolve_emit_format,
     resolve_file_jobs,
+    is_remote_path,
     resolve_paths,
     run_file_jobs,
     selected_hdu_indices,
@@ -49,6 +58,20 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
     parser.set_defaults(func=run)
 
 
+def _check_extent(path: str) -> None:
+    """Raise :class:`IoError` when a local plain FITS file is truncated."""
+    if is_remote_path(path):
+        return
+    try:
+        check_plain_fits_extent(cfitsio_base_path(path))
+    except FitsStructureError as exc:
+        raise IoError(f"{path}: truncated or unreadable FITS file: {exc}") from exc
+    except OSError:
+        # Missing/unreadable files are reported by torchfits.open below,
+        # with the same message every other command gives.
+        return
+
+
 def _verify_one(path: str, hdu: str | None) -> tuple[list[dict[str, Any]], bool]:
     try:
         with torchfits.open(path) as hdul:
@@ -61,6 +84,7 @@ def _verify_one(path: str, hdu: str | None) -> tuple[list[dict[str, Any]], bool]
         raise
     except Exception as exc:
         raise IoError(f"{path}: {exc}") from exc
+    _check_extent(path)
     records: list[dict[str, Any]] = []
     all_ok = True
     for index in indices:

@@ -105,13 +105,23 @@ inline void store_unaligned(uint8_t* dst, T value) {
 /// Scalar single-value helpers are spelled `bswap_XX`; no undecorated aliases
 /// (they duplicated the canonical names and had zero call sites).
 
+/// Kept out of line: inlined into read_tensor_canonical (a large function),
+/// GCC spilled the destination pointer and reloaded it on every iteration of
+/// the SIMD loop -- 9 instructions per vector instead of 6, ~50% more time in
+/// the copy that dominates a small image read.
+#if defined(__GNUC__) || defined(__clang__)
+#define TORCHFITS_COPY_LOOP __attribute__((noinline))
+#else
+#define TORCHFITS_COPY_LOOP
+#endif
+
 /// Vectorized big-endian → host endian copies for image mmap paths.
-inline void bswap16_copy(const void* src, void* dst, size_t n) {
+TORCHFITS_COPY_LOOP inline void bswap16_copy(const void* src, void* dst, size_t n) {
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         uint8x16_t v = vld1q_u8(src_bytes + i * sizeof(uint16_t));
         uint8x16_t b = vrev16q_u8(v);
         vst1q_u8(dst_bytes + i * sizeof(uint16_t), b);
@@ -120,7 +130,7 @@ inline void bswap16_copy(const void* src, void* dst, size_t n) {
     const __m256i shuffle = _mm256_set_epi8(
         30, 31, 28, 29, 26, 27, 24, 25, 22, 23, 20, 21, 18, 19, 16, 17,
         14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
-    for (; n - i >= 16; i += 16) {
+    for (; i + 16 <= n; i += 16) {
         __m256i v = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(src_bytes + i * sizeof(uint16_t)));
         _mm256_storeu_si256(
@@ -130,7 +140,7 @@ inline void bswap16_copy(const void* src, void* dst, size_t n) {
 #elif defined(__SSSE3__)
     const __m128i shuffle = _mm_set_epi8(
         14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i*>(src_bytes + i * sizeof(uint16_t)));
         _mm_storeu_si128(
@@ -146,14 +156,14 @@ inline void bswap16_copy(const void* src, void* dst, size_t n) {
     }
 }
 
-inline void bswap16_copy_u16_offset(const void* src, void* dst, size_t n,
+TORCHFITS_COPY_LOOP inline void bswap16_copy_u16_offset(const void* src, void* dst, size_t n,
                                     uint16_t offset) {
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
     const uint16x8_t off = vdupq_n_u16(offset);
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         uint8x16_t v = vld1q_u8(src_bytes + i * sizeof(uint16_t));
         uint8x16_t b = vrev16q_u8(v);
         vst1q_u8(dst_bytes + i * sizeof(uint16_t),
@@ -164,7 +174,7 @@ inline void bswap16_copy_u16_offset(const void* src, void* dst, size_t n,
         30, 31, 28, 29, 26, 27, 24, 25, 22, 23, 20, 21, 18, 19, 16, 17,
         14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
     const __m256i off = _mm256_set1_epi16(static_cast<int16_t>(offset));
-    for (; n - i >= 16; i += 16) {
+    for (; i + 16 <= n; i += 16) {
         __m256i v = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(src_bytes + i * sizeof(uint16_t)));
         v = _mm256_shuffle_epi8(v, shuffle);
@@ -176,7 +186,7 @@ inline void bswap16_copy_u16_offset(const void* src, void* dst, size_t n,
     const __m128i shuffle = _mm_set_epi8(
         14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
     const __m128i off = _mm_set1_epi16(static_cast<int16_t>(offset));
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i*>(src_bytes + i * sizeof(uint16_t)));
         v = _mm_shuffle_epi8(v, shuffle);
@@ -194,12 +204,12 @@ inline void bswap16_copy_u16_offset(const void* src, void* dst, size_t n,
     }
 }
 
-inline void bswap32_copy(const void* src, void* dst, size_t n) {
+TORCHFITS_COPY_LOOP inline void bswap32_copy(const void* src, void* dst, size_t n) {
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-    for (; n - i >= 4; i += 4) {
+    for (; i + 4 <= n; i += 4) {
         uint8x16_t v = vld1q_u8(src_bytes + i * sizeof(uint32_t));
         uint8x16_t b = vrev32q_u8(v);
         vst1q_u8(dst_bytes + i * sizeof(uint32_t), b);
@@ -208,7 +218,7 @@ inline void bswap32_copy(const void* src, void* dst, size_t n) {
     const __m256i shuffle = _mm256_set_epi8(
         28, 29, 30, 31, 24, 25, 26, 27, 20, 21, 22, 23, 16, 17, 18, 19,
         12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         __m256i v = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(src_bytes + i * sizeof(uint32_t)));
         _mm256_storeu_si256(
@@ -218,7 +228,7 @@ inline void bswap32_copy(const void* src, void* dst, size_t n) {
 #elif defined(__SSSE3__)
     const __m128i shuffle = _mm_set_epi8(
         12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
-    for (; n - i >= 4; i += 4) {
+    for (; i + 4 <= n; i += 4) {
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i*>(src_bytes + i * sizeof(uint32_t)));
         _mm_storeu_si128(
@@ -234,14 +244,14 @@ inline void bswap32_copy(const void* src, void* dst, size_t n) {
     }
 }
 
-inline void bswap32_copy_u32_offset(const void* src, void* dst, size_t n,
+TORCHFITS_COPY_LOOP inline void bswap32_copy_u32_offset(const void* src, void* dst, size_t n,
                                     uint32_t offset) {
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
     const uint32x4_t off = vdupq_n_u32(offset);
-    for (; n - i >= 4; i += 4) {
+    for (; i + 4 <= n; i += 4) {
         uint8x16_t v = vld1q_u8(src_bytes + i * sizeof(uint32_t));
         uint8x16_t b = vrev32q_u8(v);
         vst1q_u8(dst_bytes + i * sizeof(uint32_t),
@@ -252,7 +262,7 @@ inline void bswap32_copy_u32_offset(const void* src, void* dst, size_t n,
         28, 29, 30, 31, 24, 25, 26, 27, 20, 21, 22, 23, 16, 17, 18, 19,
         12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
     const __m256i off = _mm256_set1_epi32(static_cast<int32_t>(offset));
-    for (; n - i >= 8; i += 8) {
+    for (; i + 8 <= n; i += 8) {
         __m256i v = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(src_bytes + i * sizeof(uint32_t)));
         v = _mm256_shuffle_epi8(v, shuffle);
@@ -264,7 +274,7 @@ inline void bswap32_copy_u32_offset(const void* src, void* dst, size_t n,
     const __m128i shuffle = _mm_set_epi8(
         12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
     const __m128i off = _mm_set1_epi32(static_cast<int32_t>(offset));
-    for (; n - i >= 4; i += 4) {
+    for (; i + 4 <= n; i += 4) {
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i*>(src_bytes + i * sizeof(uint32_t)));
         v = _mm_shuffle_epi8(v, shuffle);
@@ -281,12 +291,12 @@ inline void bswap32_copy_u32_offset(const void* src, void* dst, size_t n,
     }
 }
 
-inline void bswap64_copy(const void* src, void* dst, size_t n) {
+TORCHFITS_COPY_LOOP inline void bswap64_copy(const void* src, void* dst, size_t n) {
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-    for (; n - i >= 2; i += 2) {
+    for (; i + 2 <= n; i += 2) {
         uint8x16_t v = vld1q_u8(src_bytes + i * sizeof(uint64_t));
         uint8x16_t b = vrev64q_u8(v);
         vst1q_u8(dst_bytes + i * sizeof(uint64_t), b);
@@ -295,7 +305,7 @@ inline void bswap64_copy(const void* src, void* dst, size_t n) {
     const __m256i shuffle = _mm256_set_epi8(
         24, 25, 26, 27, 28, 29, 30, 31, 16, 17, 18, 19, 20, 21, 22, 23,
         8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7);
-    for (; n - i >= 4; i += 4) {
+    for (; i + 4 <= n; i += 4) {
         __m256i v = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(src_bytes + i * sizeof(uint64_t)));
         _mm256_storeu_si256(
@@ -305,7 +315,7 @@ inline void bswap64_copy(const void* src, void* dst, size_t n) {
 #elif defined(__SSSE3__)
     const __m128i shuffle = _mm_set_epi8(
         8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7);
-    for (; n - i >= 2; i += 2) {
+    for (; i + 2 <= n; i += 2) {
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i*>(src_bytes + i * sizeof(uint64_t)));
         _mm_storeu_si128(

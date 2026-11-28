@@ -50,7 +50,8 @@ torchfits supports **PyTorch 2.12 and newer** (`torch>=2.12`, no upper bound).
 The native extension does not link libtorch: decoded buffers are handed to
 PyTorch through DLPack, its public zero-copy exchange protocol, so a torchfits
 wheel keeps working when you upgrade PyTorch. CI tests the floor (2.12) and the
-newest release (2.15); `scripts/torch_support.json` records both.
+newest tested minor (2.15), which `scripts/torch_support.json` records, and a
+nightly job runs the suite against the newest PyTorch release.
 
 The extension also targets the CPython stable ABI: one `cp312-abi3` wheel per
 platform serves Python 3.12 and every later CPython, and Python 3.11 has its
@@ -95,7 +96,7 @@ platform without a published wheel. The build itself needs no PyTorch.
 - Python 3.11+
 - C++20 compiler (GCC 10+, Clang 14+, MSVC 2019+)
 - [CMake](https://cmake.org/) 3.21+ and [Ninja](https://ninja-build.org/)
-- At runtime: [PyTorch](https://pytorch.org/) ≥ 2.12, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 25
+- At runtime: [PyTorch](https://pytorch.org/) ≥ 2.12, [NumPy](https://numpy.org/) ≥ 2.4.6, and [PyArrow](https://arrow.apache.org/docs/python/) ≥ 26
 
 === "Linux"
 
@@ -153,7 +154,7 @@ pixi run lint           # ruff linter and formatter
 
 | Extra | Included packages | Purpose |
 |---|---|---|
-| `torchfits[dev]` | pytest, ruff, mypy, pandas, matplotlib | Library development toolchain |
+| `torchfits[dev]` | pytest, pytest-cov, ruff, mypy, pandas, matplotlib | Library development toolchain |
 | `torchfits[test]` | pytest, pytest-cov, psutil | Unit testing extras (`pip install torchfits[test]`); PyArrow comes from the base package |
 | `torchfits[docs]` | zensical | Building the documentation site |
 | `torchfits[examples]` | matplotlib | Running tutorial scripts |

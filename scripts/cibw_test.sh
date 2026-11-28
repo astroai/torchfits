@@ -1,16 +1,42 @@
 #!/usr/bin/env bash
-# cibuildwheel test-command: CPU torch from the supported range + release smoke.
-# {project} is passed as $1 (the mounted source tree).
+# Installed-wheel test: CPU torch from the supported range + release smoke.
+# cibuildwheel runs it as test-command with {project} (the mounted source tree)
+# as $1; build_wheels.yml's wheel-test job runs it again on the built wheel with
+# TORCHFITS_TEST_TORCH_SPEC set to the floor and to the tested pin. Run it from
+# outside the source tree so the installed wheel, not src/, is imported.
 set -euo pipefail
 
 PROJECT="${1:?cibuildwheel test-command must pass project path}"
-# The supported floor, uncapped (scripts/torch_support.json): pip resolves the
-# newest PyTorch that has a wheel for this CPython.
+# Default: the supported floor, uncapped (scripts/torch_support.json), so pip
+# resolves the newest PyTorch that has a wheel for this CPython.
 FLOOR="$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["torch_min"])' \
   "${PROJECT}/scripts/torch_support.json")"
 test -n "${FLOOR}"
+TORCH_SPEC="${TORCHFITS_TEST_TORCH_SPEC:->=${FLOOR}}"
+# torch 2.12-2.14's cp315 macOS wheels were built against CPython 3.15.0b3
+# headers and segfault on the first tensor op outside the main thread
+# (pytorch/pytorch#200779, fixed in 2.15): test that cell against 2.15+.
+if [[ "$(uname -s)" == "Darwin" ]] &&
+  python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)'; then
+  TORCH_SPEC="${TORCH_SPEC},>=2.15"
+fi
 
-python -m pip install "torch>=${FLOOR}" --extra-index-url https://download.pytorch.org/whl/cpu
+python -m pip install "torch${TORCH_SPEC}" --extra-index-url https://download.pytorch.org/whl/cpu
+# The spec must have held: pip leaves an already-installed torch alone only if
+# it satisfies it, so this names the torch the tests below actually ran.
+python - "${TORCH_SPEC}" <<'PY'
+import sys
+from importlib.metadata import version
+
+spec = sys.argv[1]
+installed = version("torch").split("+")[0]
+print(f"torch {installed} (requested torch{spec})")
+if spec.startswith("==") and spec.endswith(".*"):
+    want = spec[2:-2]
+    assert installed == want or installed.startswith(want + "."), (
+        f"torch {installed} does not satisfy torch{spec}"
+    )
+PY
 
 # The extension links no libtorch: importing it must neither need torch's
 # library directory on the loader path nor import the torch module.
@@ -20,6 +46,7 @@ python -c 'import sys, torchfits._C as C; assert "torch" not in sys.modules, "im
 # library it dlopens, the failure is a metadata ImportError (or a cross-version
 # call into C) that no functional test above would reach.
 python -c 'import torchfits._core as c; assert c.TORCH_FREE, "the metadata core must be torch-free"; assert c.core_library_build_id() == c.__build_id__, "build id mismatch"; import torchfits._C as C; assert C.__core_build_id__ == c.__build_id__, "extension and library are from different builds"'
-python -m pytest -c /dev/null --noconftest \
+python -m pytest -c /dev/null --noconftest -p no:cacheprovider \
   "${PROJECT}/tests/test_release_smoke.py" \
-  "${PROJECT}/tests/test_bz2.py" -q
+  "${PROJECT}/tests/test_bz2.py" \
+  "${PROJECT}/tests/test_dlpack_boundary.py" -q

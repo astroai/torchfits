@@ -60,6 +60,8 @@ def count_hdus(path: str) -> int | None:
 
         return int(_core_api.read_num_hdus(path))
     except Exception:
+        # Diagnostic only (it sizes an error message): an unreadable file
+        # has no count, and the caller's own error is the one raised.
         return None
 
 
@@ -108,7 +110,7 @@ def raise_lookup_failure(path: Any, hdu: Any, exc: BaseException) -> None:
         except HDUNotFoundError as lookup:
             raise lookup from exc
         except Exception:
-            return
+            return  # the re-check failed too: the caller re-raises *exc*
 
 
 def call_with_lookup(path: Any, hdu: Any, func: Callable[..., _T], *args: Any) -> _T:

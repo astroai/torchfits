@@ -137,20 +137,19 @@ class HDUList:
             hdu_infos = [
                 _HDUInfo(
                     index=i,
-                    type=str(core.read_hdu_type(path, i)),
+                    type=hdu_type,
                     # Parse the header string so keyword values keep their FITS
                     # types (NAXIS is an int, not "2"), matching read_header.
-                    header=fast_parse_header_cards(core.read_header_string(path, i)),
+                    header=fast_parse_header_cards(header_text),
                 )
-                for i in range(num_hdus)
+                for i, (hdu_type, header_text) in enumerate(
+                    core.read_hdu_listing(path, num_hdus)
+                )
             ]
 
             from .._io_engine.caches import _register_open_hdulist
 
-            try:
-                _register_open_hdulist(path, lazy, hdul)
-            except Exception:
-                pass
+            _register_open_hdulist(path, lazy, hdul)
 
             for info in hdu_infos:
                 # LONGSTRN '&'+CONTINUE chains are rejoined at construction
@@ -182,10 +181,12 @@ class HDUList:
             return hdul
 
         except Exception as e:
+            # Translation boundary: every open failure is reported as the
+            # documented RuntimeError naming the file.
             try:
                 lazy.close()
             except Exception:
-                pass
+                pass  # cleanup only: never mask the open error
             raise RuntimeError(f"Failed to open FITS file '{path}': {str(e)}") from e
 
     def __len__(self) -> int:
@@ -250,10 +251,18 @@ class HDUList:
         self.close()
 
     def __del__(self) -> None:
+        # Only drop the registry entry: HDUs taken from this list
+        # (``torchfits.open(path)[1]``) share its lazy handle and must keep
+        # reading after the list itself is collected. The native handle
+        # closes the file when the last object using it is collected.
         try:
-            self.close()
+            target = self._file_handle or self._lazy_handle
+            if target:
+                from .._io_engine.caches import _unregister_open_hdulist
+
+                _unregister_open_hdulist(self._registry_key, target)
         except Exception:
-            pass
+            pass  # finalizer: exceptions here are only printed as noise
 
     def close(self) -> None:
         target = self._file_handle or self._lazy_handle
@@ -267,7 +276,7 @@ class HDUList:
                 _unregister_open_hdulist(self._registry_key, target)
                 self._registry_key = None
             except Exception:
-                pass
+                pass  # cleanup only: the handle must still be closed below
             try:
                 target.close()
             finally:
@@ -330,6 +339,8 @@ class HDUList:
 
             return True
         except Exception:
+            # A validity predicate: any failure to read the file means "not
+            # valid", which is the answer this method exists to give.
             return False
 
     @staticmethod

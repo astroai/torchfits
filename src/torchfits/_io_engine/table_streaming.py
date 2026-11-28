@@ -30,11 +30,14 @@ def stream_table(
     mmap: bool = False,
     max_chunks: Optional[int] = None,
     total_rows: Optional[int] = None,
+    header: Optional[Header] = None,
 ) -> Iterator[Dict[str, Any]]:
     """Yield FITS table data in row chunks.
 
-    ``total_rows`` (``NAXIS2``) may be supplied by callers that already hold the
-    header to skip the redundant ``get_header_func`` read at stream start.
+    Callers that already hold the HDU's ``header`` (or just its ``NAXIS2`` as
+    ``total_rows``) pass it to skip the redundant ``get_header_func`` read at
+    stream start. The header is read at most once per stream, and only when
+    something needs it: ``NAXIS2``, or the ``mmap`` route checks.
     """
     import torchfits._C as cpp
     from .paths import cfitsio_base_path, guard_fits_path, is_cfitsio_network_url
@@ -51,9 +54,9 @@ def stream_table(
 
     col_list = columns if columns else []
 
-    header = None
     if total_rows is None:
-        header = get_header_func(file_path, hdu)
+        if header is None:
+            header = get_header_func(file_path, hdu)
         total_rows = _total_rows_from_header(header)
     if total_rows == 0:
         return
@@ -64,20 +67,20 @@ def stream_table(
     # ASCII tables (XTENSION=TABLE) have no binary row layout and cannot be
     # read through the mmap row path; route them through the CFITSIO reader.
     # The XTENSION probe must run even when the caller supplied total_rows —
-    # otherwise ASCII tables would be routed into the binary mmap path.
+    # otherwise ASCII tables would be routed into the binary mmap path — but
+    # only the mmap route reads it, and the same header serves the scaled /
+    # VLA checks below, so it is read once and only for mmap (r5a-14).
     probe_failed = False
     ascii_table = False
-    if header is None:
+    if mmap and header is None:
         try:
-            import torchfits as _tf
-
-            ascii_table = _tf.read_hdu_type(file_path, hdu) == "ASCII_TABLE"
+            header = get_header_func(file_path, hdu)
         except (KeyError, TypeError, ValueError):
             # Schema/decode failure probing XTENSION: never guess — route to
             # the buffered reader below (decode errors only; IO errors and
             # other failures propagate).
             probe_failed = True
-    else:
+    if header is not None:
         ascii_table = str(header.get("XTENSION", "")).strip().upper() == "TABLE"
 
     # Scaled columns (TSCALn/TZEROn beyond the unsigned conventions) cannot be
@@ -90,17 +93,12 @@ def stream_table(
     # serves them. They join the ASCII / scaled cases on the buffered side.
     scaled_columns = False
     vla_columns = False
-    if mmap and not ascii_table and not probe_failed:
+    if mmap and not ascii_table and not probe_failed and header is not None:
         try:
             from ..fits_schema import iter_table_columns
 
-            hdr = header if header is not None else None
-            if hdr is None:
-                import torchfits as _tf
-
-                hdr = _tf.read_header(file_path, hdu)
             selected = set(col_list) if col_list else None
-            for col in iter_table_columns(hdr, selected=selected):
+            for col in iter_table_columns(header, selected=selected):
                 if col.tform_info.vla:
                     vla_columns = True
                     break
@@ -114,6 +112,19 @@ def stream_table(
                     or (tzero == -128.0 and col.tform_info.code == "B")
                 )
                 if (tscal != 1.0 or tzero != 0.0) and not is_unsigned:
+                    scaled_columns = True
+                    break
+                # Identity TSCAL/TZERO cards next to a TNULL still make the
+                # column scaled for the native reader (TNULL decodes to NaN),
+                # and its raw mmap route rejects it.
+                if (
+                    col.tnull is not None
+                    and not is_unsigned
+                    and (
+                        header.get(f"TSCAL{col.index}") is not None
+                        or header.get(f"TZERO{col.index}") is not None
+                    )
+                ):
                     scaled_columns = True
                     break
         except (KeyError, TypeError, ValueError):

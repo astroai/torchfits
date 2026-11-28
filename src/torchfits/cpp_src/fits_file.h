@@ -33,9 +33,26 @@ public:
 
     FITSFile(const char* filename, int mode);
     ~FITSFile();
+    // Closes (or, with borrowers, flushes) the file. For a write handle a
+    // failed final flush/close throws std::runtime_error: the file on disk is
+    // incomplete. Read handles never throw here.
     void close();
 
     fitsfile* get_fptr() const { return fptr_; }
+
+    // Take io_mutex_ from a thread that holds the GIL, waiting for it with the
+    // GIL released. The write paths hold io_mutex_ while they give the GIL up
+    // for the CFITSIO writes and take it back for the header cards, so a
+    // thread blocking on the lock with the GIL held would deadlock against
+    // them. Callers without the GIL lock io_mutex_ directly.
+    std::unique_lock<std::recursive_mutex> lock_io_holding_gil() const {
+        std::unique_lock<std::recursive_mutex> lock(io_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            nanobind::gil_scoped_release release;
+            lock.lock();
+        }
+        return lock;
+    }
     int get_start_hdu() const { return start_hdu_; }
 
     // For code that drives CFITSIO on this handle directly (bindings, table
@@ -43,8 +60,9 @@ public:
     // returned owner keeps the fitsfile open until the borrower drops it, so a
     // close() while a TableReader still uses the handle is deferred, not a
     // use-after-free.
+    // Called with the GIL held (share_fptr_from_python_object).
     std::shared_ptr<fitsfile> share_fptr() {
-        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        auto lock = lock_io_holding_gil();
         if (!fptr_) throw std::runtime_error("FITSFile is closed");
         return fptr_owner_;
     }
@@ -57,10 +75,34 @@ public:
         return fn(fptr_);
     }
 
+    // Run fn() under the handle's I/O lock whether or not the handle is still
+    // open. A persistent TableReader keeps the fitsfile alive past close()
+    // (share_fptr) and must keep serializing its cursor use with every other
+    // borrower of the same handle.
+    template <class F>
+    auto with_io_lock(F&& fn) {
+        std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+        return fn();
+    }
+
     // True while the shared per-path metadata (and its raw fd) still describes
     // the file this handle opened. False after an out-of-band replace: the
     // shared fd then reads the new file, so callers must use the handle.
     bool shares_current_file() const;
+
+    // False when this read-only handle's path now names a different file than
+    // the one it opened (an out-of-band replace: new inode, size or mtime).
+    // Borrowers that also read the path directly -- a TableReader's pread/mmap
+    // paths reopen it by name -- would then mix the replacement's bytes with
+    // this handle's geometry. True for write handles, names whose identity was
+    // not captured, and a path that no longer exists (nothing to mix in).
+    bool path_names_open_file() const;
+
+    // The same test for an already-resolved file: false when st (an fstat of
+    // a descriptor opened on this handle's path) is not the file this
+    // read-only handle opened. A TableReader on this handle vets the
+    // descriptor it pins for its raw reads with it.
+    bool names_open_file(const struct stat& st) const;
 
     void ensure_hdu(int hdu_num, int* status);
     // Same move, but throws naming the query that needed it. Used by the
@@ -88,6 +130,16 @@ public:
     std::string read_header_to_string(int hdu_num);
 
 private:
+    // Write paths: the open handle's owner, or throw "FITSFile is closed".
+    // io_mutex_ is recursive and the writers run Python code with the GIL
+    // (to_tensor(), header values, GC finalizers), so that code can close()
+    // this handle on the writing thread itself. The writer holds the returned
+    // owner (close() then only flushes and the fitsfile stays valid) and
+    // calls this again after every point where Python could have run.
+    std::shared_ptr<fitsfile> require_open_for_write() const {
+        if (!fptr_ || !fptr_owner_) throw std::runtime_error("FITSFile is closed");
+        return fptr_owner_;
+    }
     bool ensure_raw_fd(size_t required_end);
     void close_raw_fd();
     // Identity of the file this handle opened, captured in the constructor.
@@ -109,6 +161,10 @@ private:
     fitsfile* fptr_ = nullptr;
     // Owns fptr_; its deleter closes the file. Shared with borrowers.
     std::shared_ptr<fitsfile> fptr_owner_;
+    // Write handles: the deleter's fits_close_file status. CFITSIO flushes
+    // its last buffered blocks there, so a full disk, quota, EIO or
+    // RLIMIT_FSIZE failure shows up only in this status (close() throws).
+    std::shared_ptr<int> write_close_status_;
     int start_hdu_ = 1;
     int current_hdu_ = 1;
     int raw_fd_ = -1;

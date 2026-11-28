@@ -9,7 +9,7 @@ import torch
 from ._hdu_lookup import raise_hdu_index_error
 from .paths import coerce_fits_path
 from .hdu_api import _resolve_hdu_index, autodetect_hdu
-from .device import to_device
+from .device import move_table_columns
 
 
 def _resolve_mmap(mmap: Union[bool, str]) -> bool:
@@ -24,20 +24,7 @@ def _resolve_mmap(mmap: Union[bool, str]) -> bool:
 def _move_table_dict(
     data: dict[str, Any], device: str | torch.device
 ) -> dict[str, Any]:
-    if str(device) == "cpu":
-        return data
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, torch.Tensor):
-            out[key] = to_device(value, device)
-        elif isinstance(value, list):
-            out[key] = [
-                to_device(item, device) if isinstance(item, torch.Tensor) else item
-                for item in value
-            ]
-        else:
-            out[key] = value
-    return out
+    return move_table_columns(data, device)
 
 
 def _apply_row_window(
@@ -177,6 +164,150 @@ def _thin_read_table_filtered(
     return result
 
 
+def _filter_where_rows(
+    data: dict[str, Any],
+    predicates: Any,
+    tnull_map: dict[str, Any],
+    columns: Optional[list[str]],
+) -> dict[str, Any]:
+    """Rows of ``data`` matching every simple predicate (read_torch where=).
+
+    TNULL cells never match. Only ``columns`` are kept (every column when
+    None), in ``data``'s order.
+    """
+    import numpy as np
+
+    from torchfits._table._read_where import _not_null, _torch_cmp_mask
+
+    mask: torch.Tensor | None = None
+    for col, op, lit in predicates:
+        values = data[col]
+        if not isinstance(values, torch.Tensor):
+            values = torch.as_tensor(values)
+        if values.dim() != 1:
+            raise ValueError(f"where does not support fixed-size vector column '{col}'")
+        try:
+            part = _torch_cmp_mask(values, op, lit)
+        except TypeError as exc:
+            raise ValueError(
+                f"where cannot compare column '{col}' ({values.dtype}) with "
+                f"{lit!r} using '{op}': {exc}"
+            ) from exc
+        sentinel = tnull_map.get(col)
+        if sentinel is not None:
+            part = part & _not_null(values, sentinel)
+        mask = part if mask is None else (mask & part)
+    assert mask is not None
+    keep_cols = list(columns) if columns is not None else list(data.keys())
+    filtered: dict[str, Any] = {}
+    # List payloads (VLA / strings) have no boolean index. Build the row
+    # list only when one is kept. Doing it for a tensor column threw the
+    # list away, and on a dense 1e5-row filter that list cost more than
+    # the column read.
+    keep_idx: list[int] | None = None
+    if any(isinstance(data.get(k), list) for k in keep_cols):
+        keep_idx = mask.nonzero().flatten().tolist()
+    for k, v in data.items():
+        if k not in keep_cols:
+            continue
+        if isinstance(v, torch.Tensor):
+            filtered[k] = v[mask]
+        elif isinstance(v, np.ndarray):
+            # Buffered reads return numpy columns; gather with the torch
+            # mask (numpy fancy indexing is several× slower for the same
+            # work) and keep read_torch's tensor contract.
+            filtered[k] = torch.as_tensor(v)[mask]
+        elif isinstance(v, list):
+            assert keep_idx is not None
+            filtered[k] = [v[i] for i in keep_idx]
+        else:
+            filtered[k] = v
+    return filtered
+
+
+# read_torch(where=) evaluates the predicate one row window at a time and keeps
+# only the matching rows, so its peak memory is the result plus one window
+# rather than every read column plus a whole-table mask (2x a 2 GB column).
+_WHERE_WINDOW_BYTES = 64 << 20
+_WHERE_WINDOW_MIN_ROWS = 1 << 16
+_WHERE_WINDOW_MAX_ROWS = 1 << 22
+
+
+def _concat_row_parts(parts: list[Any]) -> Any:
+    """Join per-window results; frees each part once it is copied."""
+    if len(parts) == 1:
+        return parts[0]
+    first = parts[0]
+    if isinstance(first, torch.Tensor):
+        total = sum(int(part.shape[0]) for part in parts)
+        out = torch.empty((total, *first.shape[1:]), dtype=first.dtype)
+        pos = 0
+        for i, part in enumerate(parts):
+            parts[i] = None
+            out[pos : pos + part.shape[0]] = part
+            pos += int(part.shape[0])
+            del part
+        return out
+    if isinstance(first, list):
+        return [value for part in parts for value in part]
+    return parts[-1]
+
+
+def _read_where_windowed(
+    path: str,
+    *,
+    hdu: int,
+    columns: Optional[list[str]],
+    read_cols: Optional[list[str]],
+    predicates: Any,
+    tnull_map: dict[str, Any],
+    header: Any,
+    start_row: int,
+    num_rows: int,
+    mmap: Union[bool, str],
+) -> dict[str, Any] | None:
+    """read_torch(where=) over row windows; None when a window read fails.
+
+    Each window is read and filtered exactly like the whole-table read (same
+    reader, same predicate evaluation), so the result is identical; None hands
+    the request to that path, which owns the fallbacks and error messages.
+    """
+    try:
+        total = int(header.get("NAXIS2", 0))
+        row_bytes = int(header.get("NAXIS1", 0))
+    except (TypeError, ValueError):
+        return None
+    first = int(start_row)
+    last = total if int(num_rows) < 0 else min(total, first + int(num_rows) - 1)
+    if first > last:
+        return None
+    window = _WHERE_WINDOW_BYTES // max(row_bytes, 1)
+    window = max(_WHERE_WINDOW_MIN_ROWS, min(_WHERE_WINDOW_MAX_ROWS, window))
+    parts: dict[str, list[Any]] = {}
+    row = first
+    while row <= last:
+        size = min(window, last - row + 1)
+        try:
+            chunk = _thin_read_table_torch(
+                path,
+                hdu=hdu,
+                columns=read_cols or None,
+                start_row=row,
+                num_rows=size,
+                device="cpu",
+                mmap=mmap,
+            )
+        except (RuntimeError, OSError, ValueError, TypeError, MemoryError):
+            return None
+        kept = _filter_where_rows(chunk, predicates, tnull_map, columns)
+        del chunk
+        for name, value in kept.items():
+            parts.setdefault(name, []).append(value)
+        del kept
+        row += size
+    return {name: _concat_row_parts(values) for name, values in parts.items()}
+
+
 def read_table(
     read_func: Callable[..., Any],
     path: str,
@@ -244,6 +375,29 @@ def read_table(
         # evaluate predicates inside it. The old post-filter window returned
         # a different population for the same query depending on API shape.
         window_requested = start_row > 1 or num_rows != -1
+
+        import torchfits
+        from torchfits.fits_schema import column_null_sentinel_map
+
+        header = torchfits.read_header(path, hdu=hdu)
+        tnull_map = column_null_sentinel_map(header)
+        data = _read_where_windowed(
+            path,
+            hdu=hdu,
+            columns=columns,
+            read_cols=read_cols,
+            predicates=predicates,
+            tnull_map=tnull_map,
+            header=header,
+            start_row=start_row,
+            num_rows=num_rows,
+            mmap=mmap,
+        )
+        if data is not None:
+            data = _move_table_dict(data, device)
+            if return_header:
+                return data, header
+            return data
 
         data = None
         if window_requested:
@@ -338,61 +492,9 @@ def read_table(
                 return pushed, torchfits.read_header(path, hdu=hdu)
             return pushed
 
-        import numpy as np
-
-        import torchfits
-        from torchfits._table._read_where import _not_null, _torch_cmp_mask
-        from torchfits.fits_schema import column_null_sentinel_map
-
-        header = torchfits.read_header(path, hdu=hdu)
-        tnull_map = column_null_sentinel_map(header)
-
-        mask: torch.Tensor | None = None
-        for col, op, lit in predicates:
-            values = data[col]
-            if not isinstance(values, torch.Tensor):
-                values = torch.as_tensor(values)
-            if values.dim() != 1:
-                raise ValueError(
-                    f"where does not support fixed-size vector column '{col}'"
-                )
-            try:
-                part = _torch_cmp_mask(values, op, lit)
-            except TypeError as exc:
-                raise ValueError(
-                    f"where cannot compare column '{col}' ({values.dtype}) with "
-                    f"{lit!r} using '{op}': {exc}"
-                ) from exc
-            sentinel = tnull_map.get(col)
-            if sentinel is not None:
-                part = part & _not_null(values, sentinel)
-            mask = part if mask is None else (mask & part)
-        assert mask is not None
-        keep_cols = list(columns) if columns is not None else list(data.keys())
-        filtered: dict[str, Any] = {}
-        # List payloads (VLA / strings) have no boolean index. Build the row
-        # list only when one is kept. Doing it for a tensor column threw the
-        # list away, and on a dense 1e5-row filter that list cost more than
-        # the column read.
-        keep_idx: list[int] | None = None
-        if any(isinstance(data.get(k), list) for k in keep_cols):
-            keep_idx = mask.nonzero().flatten().tolist()
-        for k, v in data.items():
-            if k not in keep_cols:
-                continue
-            if isinstance(v, torch.Tensor):
-                filtered[k] = v[mask]
-            elif isinstance(v, np.ndarray):
-                # Buffered reads return numpy columns; gather with the torch
-                # mask (numpy fancy indexing is several× slower for the same
-                # work) and keep read_torch's tensor contract.
-                filtered[k] = torch.as_tensor(v)[mask]
-            elif isinstance(v, list):
-                assert keep_idx is not None
-                filtered[k] = [v[i] for i in keep_idx]
-            else:
-                filtered[k] = v
-        data = _move_table_dict(filtered, device)
+        data = _move_table_dict(
+            _filter_where_rows(data, predicates, tnull_map, columns), device
+        )
         if return_header:
             import torchfits
 

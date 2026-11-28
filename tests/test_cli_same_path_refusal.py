@@ -307,3 +307,83 @@ def test_canonically_equivalent_outputs_follow_filesystem(tmp_path):
         assert not output.exists()
     else:
         assert result.returncode == 0, result.stderr
+
+
+def _hardlink_or_skip(source, alias):
+    import os
+
+    import pytest
+
+    try:
+        os.link(source, alias)
+    except OSError as exc:  # pragma: no cover - filesystem without hard links
+        pytest.skip(f"hard links unsupported: {exc}")
+
+
+def test_convert_png_hard_link_alias_refused(tmp_path):
+    img = tmp_path / "source.fits"
+    torchfits.write(str(img), torch.zeros(2, 2), overwrite=True)
+    alias = tmp_path / "alias.png"
+    _hardlink_or_skip(img, alias)
+    before = img.read_bytes()
+    result = _run_cli("convert", str(img), "-o", str(alias), "--to", "png")
+    assert result.returncode == 2, result.stderr
+    assert REFUSAL in result.stderr
+    assert img.read_bytes() == before
+
+
+def _table_source(tmp_path):
+    tab = tmp_path / "source.fits"
+    torchfits.table.write(
+        str(tab), {"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]}, overwrite=True
+    )
+    return tab
+
+
+def _assert_hard_link_table_refused(tmp_path, fmt: str, suffix: str) -> None:
+    tab = _table_source(tmp_path)
+    alias = tmp_path / f"alias{suffix}"
+    _hardlink_or_skip(tab, alias)
+    before = tab.read_bytes()
+    result = _run_cli("convert", str(tab), "-o", str(alias), "--to", fmt)
+    assert result.returncode == 2, result.stderr
+    assert REFUSAL in result.stderr
+    assert tab.read_bytes() == before
+
+
+def test_convert_csv_hard_link_alias_refused(tmp_path):
+    _assert_hard_link_table_refused(tmp_path, "csv", ".csv")
+
+
+def test_convert_parquet_hard_link_alias_refused(tmp_path):
+    _assert_hard_link_table_refused(tmp_path, "parquet", ".parquet")
+
+
+def test_convert_arrow_hard_link_alias_refused(tmp_path):
+    _assert_hard_link_table_refused(tmp_path, "arrow", ".arrow")
+
+
+def test_copy_hard_link_alias_refused(tmp_path):
+    img = tmp_path / "source.fits"
+    torchfits.write(str(img), torch.zeros(2, 2), overwrite=True)
+    alias = tmp_path / "alias.fits"
+    _hardlink_or_skip(img, alias)
+    before = img.read_bytes()
+    result = _run_cli("copy", str(img), str(alias))
+    assert result.returncode == 2, result.stderr
+    assert REFUSAL in result.stderr
+    assert img.read_bytes() == before
+
+
+def test_arith_hard_link_alias_refused(tmp_path):
+    img = tmp_path / "source.fits"
+    torchfits.write(str(img), torch.ones(2, 2), overwrite=True)
+    alias = tmp_path / "alias.fits"
+    _hardlink_or_skip(img, alias)
+    before = img.read_bytes()
+    result = _run_cli(
+        "arith", str(img), "--op", "add", "--value", "1", "-o", str(alias)
+    )
+    assert result.returncode == 2, result.stderr
+    assert REFUSAL in result.stderr
+    assert img.read_bytes() == before

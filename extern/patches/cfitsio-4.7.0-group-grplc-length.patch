@@ -1,0 +1,37 @@
+# torchfits: backport of upstream CFITSIO develop commit
+#   aa072b0fe17e3e36058c515a071a7beb7b761741 (2026-09-29)
+#   "Check string length of returned grouping location before performing
+#    copy."
+#
+# ffgmrm (fits_remove_member) strcpy'd a GRPLCn long-string keyword of any
+# length into a FLEN_FILENAME buffer. torchfits does not call the grouping
+# API, so this is not reachable from it today; it is carried so the vendored
+# tree matches upstream's hardening.
+#
+# Drop this patch when extern/VERSIONS.txt moves to a CFITSIO release that
+# contains the commit.
+
+--- a/group.c
++++ b/group.c
+@@ -3255,8 +3255,19 @@ int ffgmrm(fitsfile *gfptr,  /* FITS file pointer to group table             */
+ 		      *status = fits_read_key_longstr(mfptr,keyword,&tgrplc,
+ 						      card, status);
+ 		      if (0 == *status) {
+-			strcpy(grplc,tgrplc);
+-			free(tgrplc);
++                        if (strlen(tgrplc) > FLEN_FILENAME-1)
++                        {
++                           snprintf(card,FLEN_CARD,"GRPLC%d keyword string is too long (ffgmrm)",index);
++                           ffpmsg(card);
++                           *status = URL_PARSE_ERROR;
++                           free(tgrplc);
++                           continue;
++                        }
++                        else
++                        {
++			   strcpy(grplc,tgrplc);
++			   free(tgrplc);
++                        }
+ 		      }
+ 		      		      
+ 		      if(*status == KEY_NO_EXIST)

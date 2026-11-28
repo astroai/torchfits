@@ -47,15 +47,10 @@ def _torch_dtype(bitpix: int) -> torch.dtype:
         raise HttpRangeUnsupported(f"unsupported BITPIX={bitpix}") from exc
 
 
-def _cards_dict(header_bytes: bytes) -> dict[str, Any]:
-    text = header_bytes.decode("latin-1", errors="replace")
-    return {key: value for key, value, _c in fast_parse_header_cards(text)}
-
-
-def _parse_header_at(url: str, offset: int) -> tuple[dict[str, Any], int]:
+def _parse_header_at(url: str, offset: int) -> tuple[dict[str, Any], int, str]:
     """Fetch and parse the HDU header starting at absolute *offset*.
 
-    Returns (cards, data_start_absolute).
+    Returns (cards, data_start_absolute, header_text through END).
     """
     peek = http_read_range(url, offset, offset + _HEADER_PEEK - 1)
     if len(peek) < _BLOCK:
@@ -81,8 +76,9 @@ def _parse_header_at(url: str, offset: int) -> tuple[dict[str, Any], int]:
     header_nbytes = ((end_at + _BLOCK - 1) // _BLOCK) * _BLOCK
     if header_nbytes > len(peek):
         peek = http_read_range(url, offset, offset + header_nbytes - 1)
-    cards = _cards_dict(peek[:header_nbytes])
-    return cards, offset + header_nbytes
+    text = peek[:end_at].decode("latin-1", errors="replace")
+    cards = {key: value for key, value, _c in fast_parse_header_cards(text)}
+    return cards, offset + header_nbytes, text
 
 
 def _data_nbytes(cards: dict[str, Any]) -> int:
@@ -173,10 +169,15 @@ def _match_hdu(cards: dict[str, Any], hdu: int | str, index: int) -> bool:
 
 
 def locate_uncompressed_2d(url: str, hdu: int | str) -> dict[str, Any]:
-    """Locate an uncompressed 2D image HDU; raise if Range cutout is unsuitable."""
+    """Locate an uncompressed 2D image HDU; raise if Range cutout is unsuitable.
+
+    The returned snapshot carries the matched HDU's header text
+    (``"header_text"``, through ``END``) so a caller that needs the header
+    too (the CLI cutout) does not walk the HDUs a second time.
+    """
     offset = 0
     for index in range(_MAX_HDU_WALK):
-        cards, data_start = _parse_header_at(url, offset)
+        cards, data_start, header_text = _parse_header_at(url, offset)
         if _match_hdu(cards, hdu, index):
             # A tile-compressed image is a BINTABLE: let the caller fall back
             # to a full download before the table check below rejects it.
@@ -218,6 +219,7 @@ def locate_uncompressed_2d(url: str, hdu: int | str) -> dict[str, Any]:
                 "naxis2": naxis2,
                 "elem_bytes": elem_bytes,
                 "dtype": dtype,
+                "header_text": header_text,
             }
         offset = data_start + _padded_data_nbytes(_hdu_data_span(cards))
     raise HttpRangeUnsupported(f"HDU {hdu!r} not found in Range scan")

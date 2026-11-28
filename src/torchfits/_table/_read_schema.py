@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .. import fits_schema
+from .._errors import UnknownColumnError
 from .._table.utils import _require_pyarrow
 from .._table.write import _resolve_table_hdu_index_and_columns
 from .._table_engine import validate_table_backend
@@ -292,13 +293,14 @@ def _can_use_full_read_path(
     selected = set(columns) if columns else None
     any_selected = False
 
+    from ..fits_schema import _reader_column_name
+
+    seen: set[str] = set()
     for i in range(1, tf_count + 1):
         si = str(i)
-        name = header.get("TTYPE" + si)
-        if not isinstance(name, str) or not name:
-            # TTYPE-less columns surface in the readers as COL<i> and still
-            # constrain the scalar-only fast paths (r5a-04).
-            name = f"COL{si}"
+        # TTYPE-less (and repeated-name) columns surface in the readers as
+        # COL<i> and still constrain the scalar-only fast paths (r5a-04).
+        name = _reader_column_name(header.get("TTYPE" + si), i, seen)
         if selected is not None and name not in selected:
             continue
         any_selected = True
@@ -380,13 +382,17 @@ def _arrow_type_from_tform(
     return pa.list_(base, repeat)
 
 
-def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
+def _column_arrow_type(
+    col: Any, *, decode_bytes: bool, pa: Any, has_scale_cards: bool = False
+) -> Any | None:
     """Arrow type for one table column: TFORM shape plus TSCAL/TZERO conventions.
 
     Must agree with the dtypes the data readers produce: the standard unsigned
     conventions keep integer storage (uint16/uint32), any other TSCAL/TZERO
     scaling reads as float64 (table scaling is float64). Raw integer TNULL
-    without scaling keeps its integer type (the sentinel stays a sentinel).
+    without scaling keeps its integer type (the sentinel stays a sentinel),
+    but a TNULL next to identity TSCAL/TZERO cards (``has_scale_cards``) is
+    scaled like any other: it reads as float64 with the TNULL cells as NaN.
     """
     info = col.tform_info
     arrow_type = _arrow_type_from_tform(
@@ -407,7 +413,7 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
         new_elem = pa.uint32()
     elif info.code == "K" and tzero == 9223372036854775808.0:
         new_elem = pa.uint64()
-    elif tzero != 0.0:
+    elif tzero != 0.0 or (has_scale_cards and col.tnull is not None):
         new_elem = pa.float64()
     else:
         return arrow_type
@@ -416,15 +422,15 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
 
 def _reader_column_names(header: Any) -> set[str]:
     """All column names a reader can serve for this header (incl. ``COL<i>``)."""
+    from ..fits_schema import _reader_column_name
+
     names: set[str] = set()
     try:
         tf_count = int(header.get("TFIELDS", 0))
     except (TypeError, ValueError):
         tf_count = 0
     for i in range(1, tf_count + 1):
-        si = str(i)
-        name = header.get("TTYPE" + si)
-        names.add(name if isinstance(name, str) and name else f"COL{si}")
+        _reader_column_name(header.get("TTYPE" + str(i)), i, names)
     return names
 
 
@@ -442,7 +448,7 @@ def _validate_projection_columns(
     known = _reader_column_names(header)
     for name in columns:
         if name not in known:
-            raise KeyError(f"Column '{name}' not found")
+            raise UnknownColumnError(f"Column '{name}' not found")
     return list(columns)
 
 
@@ -484,7 +490,13 @@ def _schema_from_header(
         if info.vla or info.code is None:
             any_vla = True
             continue
-        arrow_type = _column_arrow_type(col, decode_bytes=decode_bytes, pa=pa)
+        arrow_type = _column_arrow_type(
+            col,
+            decode_bytes=decode_bytes,
+            pa=pa,
+            has_scale_cards=header.get(f"TSCAL{col.index}") is not None
+            or header.get(f"TZERO{col.index}") is not None,
+        )
         if arrow_type is None:
             any_vla = True
             continue
@@ -524,9 +536,54 @@ def schema(
     include_fits_metadata: bool = False,
     apply_fits_nulls: bool = False,
     backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
+    shape_cells: bool = False,
 ) -> Any:
+    result = _schema_unshaped(
+        path,
+        hdu,
+        columns,
+        where,
+        decode_bytes,
+        encoding,
+        strip,
+        include_fits_metadata,
+        apply_fits_nulls,
+        backend,
+        decode_errors=decode_errors,
+    )
+    if not shape_cells or not result.names:
+        return result
+    import torchfits
+
+    from ._cell_shape import header_cell_shapes, shape_arrow_schema
+
+    if isinstance(hdu, str):
+        hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
+    shapes = header_cell_shapes(torchfits.read_header(path, hdu), set(result.names))
+    return shape_arrow_schema(_require_pyarrow(), result, shapes)
+
+
+def _schema_unshaped(
+    path: str,
+    hdu: int | str = 1,
+    columns: Optional[list[str]] = None,
+    where: Optional[str] = None,
+    decode_bytes: bool = True,
+    encoding: str = "ascii",
+    strip: bool = True,
+    include_fits_metadata: bool = False,
+    apply_fits_nulls: bool = False,
+    backend: str = "auto",
+    *,
+    decode_errors: str = "strict",
+) -> Any:
+    from .._string_decode import DecodeSpec
+
     pa = _require_pyarrow()
     backend = validate_table_backend(backend)
+    encoding = DecodeSpec(encoding, decode_errors)
     if isinstance(hdu, str):
         hdu = _resolve_table_hdu_index_and_columns(path, hdu)[0]
 
@@ -553,9 +610,27 @@ def schema(
         include_fits_metadata=include_fits_metadata,
         apply_fits_nulls=apply_fits_nulls,
         backend=scan_backend,
+        decode_errors=decode_errors,
     )
     first = next(iterator, None)
-    if first is None and where is None:
+    if first is None and where is not None:
+        # A table with no rows: scan yields no batch at all. Answer with what
+        # read(where=...) returns -- its typed empty table, or its error for a
+        # bad predicate -- instead of the empty schema this used to return.
+        return _read_mod.read(
+            path,
+            hdu=hdu,
+            columns=columns,
+            where=where,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            include_fits_metadata=include_fits_metadata,
+            apply_fits_nulls=apply_fits_nulls,
+            backend=backend,
+            decode_errors=decode_errors,
+        ).schema
+    if first is None:
         # A table with no rows: the C++ chunk reader still returns typed
         # (empty) columns, including VLA lists the header cannot type.
         from ._read_scan import _read_cpp_table_chunk

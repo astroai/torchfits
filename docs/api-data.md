@@ -29,6 +29,16 @@ Typical stack: `read_tensor` / `table.read` → optional
 | Fixed cutouts `(path, hdu, x, y, size)` | Map-style | `FitsCutoutDataset` |
 | Survey mosaics (remote/local) | Async staged cutouts | `FitsStagedCutoutIterableDataset` |
 
+**Recommended entry points.** For images and cubes, start from
+`FitsTensorDataset` (map-style) or `FitsTensorIterableDataset` (streaming):
+they read any N-D IMAGE HDU and take every option the image classes take.
+`FitsImageDataset` / `FitsImageIterableDataset` are the same classes with
+`add_channel_dim=True` by default (plus `FitsImageDataset.from_bands`), and
+`FitsCubeDataset` / `FitsCubeIterableDataset` add leading-axis selection
+(`slice_index=`, `spectral_slice=`); use them when those defaults are what you
+want. Spectra, tables and cutouts have their own readers. Every class above
+stays supported; the presets are not deprecated.
+
 **Channels:** flux bands / arms / CCDs stack as tensor channels. IVAR and
 mask are companion tensors (or dict fields) — pass `ivar_hdu=` / `mask_hdu=`
 (or table `ivar_column=`).
@@ -54,7 +64,12 @@ should branch on dict vs tensor if they need mask-aware wiring — see
     `TORCHFITS_HTTP_TOKEN`. Uncompressed 2D HTTP cutouts use Range GETs when
     possible; compressed and vos paths cache the full file first. An HTTP
     body that does not start like a FITS file (or a gzip/bzip2/compress/zip
-    wrapper) raises `OSError` naming the URL and is never cached.
+    wrapper) raises `OSError` naming the URL and is never cached. So does a
+    body that ends before the last HDU its headers declare (a dropped
+    connection-close transfer): plain FITS is checked HDU by HDU, and a
+    gzip/bzip2/zip body sent without `Content-Length` must decompress to the
+    end. An unframed Unix-compress/pack body cannot be checked and is
+    refused. A truncated file already in the cache is fetched again.
 
 ---
 
@@ -327,13 +342,17 @@ ds = FitsTensorIterableDataset(
 |---|---|---|---|
 | `paths` | `str` or `list[str]` | *(required)* | File paths, glob, or HTTP(S) URLs |
 | `hdu` | `int` or `str` or `sequence` | `0` | Flux HDU(s) |
+| `ivar_hdu` / `mask_hdu` | same arity as `hdu` | `None` | Companion HDUs (not flux channels) |
 | `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `True` | Memory-mapped reads |
 | `shuffle` | `bool` | `False` | Shuffle file order; a **different permutation each epoch** |
+| `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle buffer (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 | `seed` | `int` | `0` | Base seed for shuffling — the same `seed` replays the same *sequence* of epochs |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 | `add_channel_dim` | `bool` | `False` | Prepend channel dimension |
 | `cache_dir` | `str` or `Path` or `None` | `None` | Override remote prefetch directory |
+| `mask_is_dq` / `bad_bits` | `bool` / `int` or sequence or `None` | `False` / `None` | Keyword-only. Decode `mask_hdu` as a FITS `DQ` bitfield, as in `FitsTensorDataset` |
 | `label_key` | `str` or `None` | `None` | Keyword-only. Header keyword of the first flux HDU holding each file's integer label |
 | `labels` | `list[int]`, `Tensor` or `None` | `None` | Keyword-only. Explicit per-file labels (overrides `label_key`); length must match the files |
 
@@ -377,7 +396,8 @@ if __name__ == "__main__":
 ## `FitsTableDataset`
 
 Map-style dataset for row-indexable FITS catalogs. Loads the full filtered
-table at `__init__` — use only when the catalog fits in RAM.
+table at `__init__` — use only when the catalog fits in RAM — unless
+`lazy=True`, which reads rows on demand in cached blocks.
 
 ```python
 from torchfits.data import FitsTableDataset
@@ -403,6 +423,9 @@ ds = FitsTableDataset(
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
 | `return_label` | `bool` or `None` | `None` | Keyword-only. `None`/`True`: items are `(row_dict, label)`; `False`: the row dict alone (cannot be combined with `labels`) |
+| `lazy` | `bool` | `False` | Keyword-only. Read aligned row blocks on demand instead of loading the table at `__init__` (see below) |
+| `block_rows` | `int` | `256` | Keyword-only. Rows per block in lazy mode |
+| `cache_blocks` | `int` | `64` | Keyword-only. Blocks kept per process in lazy mode (least recently used evicted first) |
 
 **Returns per item:** `(dict[str, Tensor], torch.Tensor)` — row dict and
 `torch.long` label, which is `tensor(0)` for every row when `labels` is
@@ -411,7 +434,10 @@ omitted. `return_label=False` returns the row dict alone.
 Rows hold the values as stored, whether or not `where=` is set: `where=`
 only selects rows. Integer columns keep their dtype and a `TNULL` null comes
 back as its sentinel value; character columns are `uint8` byte tensors
-(space padded). Convert nulls to NaN with `TNullToNan`:
+(space padded). A variable-length column gives each row its own 1-D tensor,
+as `FitsTableIterableDataset` does. If the native reader rejects a table
+layout, the load falls back to pyarrow and logs a WARNING; character columns
+then come back as `str`. Convert nulls to NaN with `TNullToNan`:
 
 ```python
 import torchfits
@@ -426,7 +452,37 @@ ds = FitsTableDataset(
 
 !!! info "When to use"
     Use for catalogs up to a few million rows that fit in memory. For
-    larger catalogs, use `FitsTableIterableDataset`.
+    larger catalogs, use `FitsTableIterableDataset`, or `lazy=True` when you
+    need indexed (shuffled) access.
+
+### Lazy mode
+
+`FitsTableDataset(..., lazy=True)` reads nothing at `__init__` but the row
+count (and, with `where=`, the selected row numbers, resolved 64k rows at a
+time and kept as one `int64` per selected row). Each `ds[i]` reads the
+`block_rows`-row block holding row `i` in one native call and keeps the last
+`cache_blocks` blocks. Rows are identical to eager mode. The cache is per
+process: each DataLoader worker (forked or spawned) builds its own, so memory
+stays at roughly `workers × block_rows × cache_blocks` rows.
+`mmap="auto"` reads blocks with the buffered reader, since one mmap of the
+whole file per small block costs more than a `pread` of the block.
+
+Measured on a 2M-row, 8-column (84 MB) table, one process, warm page cache,
+`__getitem__` in a Python loop:
+
+| Mode | Peak RSS growth | Uniform random | Sequential | Shuffled within 64k-row windows |
+|---|---|---|---|---|
+| eager | 89–162 MB | ~90–110k rows/s | ~100k rows/s | ~80–105k rows/s |
+| `lazy=True` (256 × 64) | ~9 MB | ~22k rows/s | ~80–95k rows/s | ~50–55k rows/s |
+| `lazy=True`, `block_rows=1024` | ~12 MB | ~18k rows/s | ~95–100k rows/s | ~100k rows/s |
+
+Uniformly random access misses the cache on almost every row, so it costs
+one small block read per row (about 4–5× slower than eager); access with
+locality (sequential, sharded, or a windowed shuffle) runs at eager speed
+with larger blocks. Use lazy mode when the table does not fit in memory, or
+to avoid a long load before the first batch.
+
+Runnable: [`example_lazy_table_dataset.py`](published-examples/example_lazy_table_dataset.py).
 
 ---
 
@@ -459,6 +515,9 @@ ds = FitsTableIterableDataset(
 | `transform` | `callable` or `None` | `None` | Applied to each row dict (or each chunk when `as_batches=True`) |
 | `device` | `str` | `"cpu"` | Torch device |
 | `mmap` | `bool` or `str` | `"auto"` | Memory-mapped reads |
+| `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle of rows (per-row mode only) |
+| `seed` | `int` | `0` | Base seed for the shuffle buffer |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 
 **Returns per item:** `dict[str, Tensor | Any]` — one row, or one chunk of
 `batch_size` rows when `as_batches=True`.
@@ -467,13 +526,18 @@ Iterating the unfiltered dataset yields exactly as many rows as
 [`FitsTableDataset`](#fitstabledataset) reports `len` for the same file and
 HDU, including when every column is variable-length. A variable-length column
 arrives from `scan_torch` as a Python `list` rather than a tensor, so the
-per-chunk row count is read from tensor *or* list columns.
+per-chunk row count is read from tensor *or* list columns. A zero-column
+table (`TFIELDS = 0`) yields one empty dict per row, or one per chunk with
+`as_batches=True`.
 
 Rows and chunks follow the same convention as `FitsTableDataset`: values as
 stored, with or without `where=`. A `TNULL` null is its sentinel value and
 character columns are `uint8` byte tensors; use `TNullToNan` for NaN nulls.
-`where=` accepts the full `table.read` predicate dialect and is evaluated per
-chunk on the predicate columns only.
+`where=` accepts the full `table.read` predicate dialect and is applied through
+`table.scan_torch(where=...)`: each chunk's row window is read once and only its
+matching rows are kept (natively filtered when the predicate is a conjunction of
+numeric comparisons, see [Tables](api-tables.md)); chunks with no match are
+skipped.
 
 !!! info "When to use"
     Use for large catalogs that don't fit in memory. Each worker (and each
@@ -617,6 +681,7 @@ ds = FitsCubeIterableDataset(
 | `hdu` | `int` or `str` or `sequence` | `0` | Primary datacube HDU(s) |
 | `slice_index` | `int` or `None` | `None` | Optional index along the leading channel/spectral axis; must be `>= 0` (a negative index would silently pick a channel from the far end) |
 | `spectral_slice` | `(int, int)` or `None` | `None` | Half-open spectral window on the leading axis (mutually exclusive with `slice_index`) |
+| `add_channel_dim` | `bool` | `False` | Keyword-only. Prepend a channel dimension |
 | `transform` | `callable` or `None` | `None` | Applied to each payload |
 | `shuffle` | `bool` | `False` | Shuffle file order per epoch |
 | `shuffle_buffer_size` | `int` or `None` | `None` | Rolling reservoir buffer for in-flight random mixing |
@@ -654,7 +719,10 @@ ds = FitsSpectrumIterableDataset(
 | `mask_column` / `wavelength_column` / `wavelength_hdu` | `str` / `str` / HDU spec or `None` | `None` | Same companions as `FitsSpectrumDataset` |
 | `mask_is_dq` / `bad_bits` | `bool` / sequence or `None` | `False` / `None` | Interpret the mask source as a `DQ` bitfield |
 | `label_key` / `labels` | `str` / `list[int]` or `None` | `None` | Per-file labels; items become `(payload, label)` |
+| `transform` / `device` / `mmap` / `cache_dir` | | `None` / `"cpu"` / `True` / `None` | As in `FitsSpectrumDataset` |
+| `shuffle` / `seed` | `bool` / `int` | `False` / `0` | Shuffle file order per epoch, from this base seed |
 | `shuffle_buffer_size` | `int` or `None` | `None` | Reservoir shuffle buffer size |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
 
 ---
 
@@ -689,8 +757,16 @@ ds = FitsStagedCutoutIterableDataset(
 | `cleanup` | `bool` | `True` | Automatically delete downloaded mosaic after sampling |
 | `cutout_generator` | `callable` or `None` | `None` | Custom spatial coordinate sampler `(height, width, ch, cw) -> (x1, y1, x2, y2)` |
 | `transform` | `callable` or `None` | `None` | Applied to each cutout tensor or companion dict |
+| `device` | `str` | `"cpu"` | Torch device |
+| `add_channel_dim` | `bool` | `True` | Prepend a channel dimension to each cutout |
 | `shuffle_files` | `bool` | `False` | Shuffle mosaic order per epoch |
 | `shuffle_buffer_size` | `int` or `None` | `None` | In-flight reservoir shuffle across mosaic stamps |
+| `seed` | `int` | `0` | Base seed for the shuffles and the default cutout sampler |
+| `rank` / `world_size` | `int` or `None` | `None` | Distributed shard; `None` resolves automatically (see [Distributed & Worker Sharding](#distributed-worker-sharding)) |
+
+Every flux band and every `ivar_hdu` / `mask_hdu` companion must have the
+same shape as the first flux band; a misaligned file raises `ValueError` when
+it is reached. Closing an iterator early cancels its look-ahead downloads.
 
 ---
 

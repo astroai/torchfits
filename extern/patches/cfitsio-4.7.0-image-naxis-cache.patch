@@ -1,0 +1,29 @@
+# torchfits: fix in fitscore.c, not (yet) upstream.
+#
+# ffpinit() reads up to 999 NAXISn values (the FITS limit) and then caches
+# every one of them in FITSfile.imgnaxis[], which holds 99. An image HDU
+# with NAXIS >= 100 therefore wrote past imgnaxis[] over the following
+# FITSfile members (tfield, ..., tableptr): a heap overflow on open, before
+# any torchfits check of NAXIS can run (NAXIS = 999 crashes with SIGSEGV).
+# ffpinit() now rejects NAXIS > 99 with BAD_NAXIS. torchfits reaches it on
+# every open of a primary array or IMAGE extension.
+#
+# Present in cfitsio-4.7.0 and upstream develop as of 2026-11-23 (6b69524).
+
+--- a/fitscore.c
++++ b/fitscore.c
+@@ -4548,6 +4548,14 @@ int ffpinit(fitsfile *fptr,      /* I - FITS file pointer */
+     else if (*status > 0)
+         return(*status);
+ 
++    /* torchfits: imgnaxis[] below caches at most 99 axis lengths; more
++       overflowed it into the rest of the FITSfile structure. */
++    if (naxis > 99)
++    {
++        ffpmsg("NAXIS > 99 is not supported (ffpinit)");
++        return(*status = BAD_NAXIS);
++    }
++
+     /*
+        the logical end of the header is 80 bytes before the current position, 
+        minus any trailing blank keywords just before the END keyword.

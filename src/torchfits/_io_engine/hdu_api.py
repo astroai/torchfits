@@ -63,7 +63,7 @@ def _header_truthy(value: Any) -> bool:
         return value.strip().upper() in {"T", "TRUE", "1", "YES", "Y"}
     try:
         return bool(int(value))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return bool(value)
 
 
@@ -74,6 +74,7 @@ def find_first_hdu(path: str) -> Optional[int]:
     path = coerce_fits_path(path)
     file_handle, cached = get_cached_handle(path)
     first_table_hdu: Optional[int] = None
+    first_shaped_empty_hdu: Optional[int] = None
     try:
         num_hdus = cpp.get_num_hdus(file_handle)
         for i in range(num_hdus):
@@ -83,6 +84,14 @@ def find_first_hdu(path: str) -> Optional[int]:
                     hdu_type = cpp.get_hdu_type(file_handle, i)
                     set_cached_hdu_type(path, i, hdu_type)
                 except Exception:
+                    # Probe: an HDU whose type cannot be read is not a
+                    # payload candidate; the scan continues with the next.
+                    _log.debug(
+                        "get_hdu_type failed for %r HDU %s; skipping it",
+                        path,
+                        i,
+                        exc_info=True,
+                    )
                     hdu_type = None
             if hdu_type == "IMAGE":
                 try:
@@ -97,12 +106,27 @@ def find_first_hdu(path: str) -> Optional[int]:
                     shape = []
                 if shape and all(int(dim) > 0 for dim in shape):
                     return i
+                if len(shape) > 1 and first_shaped_empty_hdu is None:
+                    # A zero-size N-D image with declared axes (``(3, 0, 12)``;
+                    # a 1-D ``(0,)`` is the empty-primary placeholder),
+                    # e.g. the uncompressed extension a tile-compressed write
+                    # stores it in: a better last resort than the empty
+                    # primary, whose read would lose the declared shape.
+                    first_shaped_empty_hdu = i
                 continue
 
             if hdu_type in {"ASCII_TABLE", "BINARY_TABLE"}:
                 try:
                     hdr = read_header_fast(file_handle, i, fast_header=True)
                 except Exception:
+                    # Probe: without a header the table is a plain-table
+                    # candidate, not a compressed image.
+                    _log.debug(
+                        "header read failed for %r HDU %s; treating it as a table",
+                        path,
+                        i,
+                        exc_info=True,
+                    )
                     hdr = {}
                 zimage = _header_truthy(hdr.get("ZIMAGE"))
                 has_compression_keys = any(
@@ -117,9 +141,10 @@ def find_first_hdu(path: str) -> Optional[int]:
             try:
                 file_handle.close()
             except Exception:
-                pass
+                # Cleanup only: never mask the scan's result or error.
+                _log.debug("closing %r after the HDU scan failed", path, exc_info=True)
 
-    return first_table_hdu
+    return first_table_hdu if first_table_hdu is not None else first_shaped_empty_hdu
 
 
 def autodetect_hdu(path: str) -> int:
@@ -322,6 +347,9 @@ def _resolve_hdu_index(
                 path, i, ["EXTNAME", "HDUNAME"], missing_ok=True
             )
         except Exception:
+            # An HDU whose keywords cannot be read has no name to match; a
+            # name found nowhere raises HDUNotFoundError below.
+            _log.debug("read_keys failed for %r HDU %s", path, i, exc_info=True)
             continue
         for keyword in ("EXTNAME", "HDUNAME"):
             value = names.get(keyword)

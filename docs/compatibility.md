@@ -14,7 +14,7 @@ For supported FITS formats, HDU types, tile compression, and catalog features, s
 | **PyTorch** | **2.12 or newer** (`torch>=2.12`, no upper bound) | Same; the build needs no PyTorch |
 | **Hardware & CUDA** | **CPU**, **any CUDA build of a supported PyTorch**, **Apple Silicon MPS** | All PyTorch-supported compute devices |
 | **Operating Systems** | **Linux** (`x86_64` with SSSE3, `aarch64`, glibc 2.28+)<br>**macOS 14+** (`arm64` Apple Silicon) | Linux with glibc 2.28+, macOS 14+; `x86_64` builds require an SSSE3 CPU |
-| **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 25.0.0** | Same |
+| **Core Libraries** | **NumPy ≥ 2.4.6**, **PyArrow ≥ 26.0.0** | Same |
 
 ---
 
@@ -46,12 +46,154 @@ The floor and the newest tested minor live in `scripts/torch_support.json`.
 
 ### Known limitations
 
-- **Python 3.15 on macOS needs PyTorch 2.15+:** PyTorch 2.14's cp315 macOS and Windows wheels were built against CPython 3.15.0b3 headers, whose `PyThreadState` layout predates 3.15.0b4. The first Python-level tensor operation outside the main thread then segfaults inside pybind11's `gil_scoped_acquire` ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)); the Linux cp315 wheels are unaffected. The torchfits `cp312-abi3` wheel installs on macOS Python 3.15; pair it with PyTorch 2.15 or newer.
+- **Python 3.15 on macOS needs PyTorch 2.15+:** PyTorch 2.14's cp315 macOS and Windows wheels were built against CPython 3.15.0b3 headers, whose `PyThreadState` layout predates 3.15.0b4. The first Python-level tensor operation outside the main thread then segfaults inside pybind11's `gil_scoped_acquire` ([pytorch/pytorch#200779](https://github.com/pytorch/pytorch/issues/200779)); the Linux cp315 wheels are unaffected. The torchfits `cp312-abi3` wheel installs on macOS Python 3.15; pair it with PyTorch 2.15 or newer, which is the pairing CI and the release wheel tests run on macOS Python 3.15.
 - **No Windows support:** Prebuilt wheels and CI are Linux and macOS only; Windows is documented as unsupported.
 - **Runtime env knobs:** every `TORCHFITS_*` variable the library reads, with its default and effect, is listed under [Environment variables](architecture.md#environment-variables). Those knobs are not a stable public API and may change without notice.
 - **`KMP_DUPLICATE_LIB_OK`:** importing `torchfits` runs `os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")` before PyTorch loads. macOS otherwise aborts when PyTorch's `libomp` and a second OpenMP runtime (Homebrew or conda) are both mapped. An existing value is left alone. See [Install](install.md) if you import `torch` first.
 - **CFITSIO DNS:** `http`/`https`/`ftp`/`ftps` paths (and CFITSIO's `httpmem://`, `httpfile://`, `root://`, `gsiftp://` and similar driver variants) are classified at guard time: any address that is not globally routable (private, loopback, link-local, shared `100.64.0.0/10`, reserved) is blocked, and a numeric host must be canonical dotted-decimal IPv4 (`0177.0.0.1`, `127.1` or `2130706433` are refused because resolvers disagree on them). Python fetches (`http_open`) dial the addresses from that lookup, or, when `http_proxy`/`https_proxy` applies, connect to the proxy, which resolves the (still guarded) target itself. A URL that CFITSIO opens itself is only checked then; the driver re-resolves the host afterwards (residual TOCTOU, DNS rebinding). CFITSIO follows an `http` 301/302 redirect only when it stays on the same host; a redirect to another host fails the open instead of reaching an unchecked target (libcurl `https` opens never follow redirects). Pinning those connections would need a custom CFITSIO driver and is not implemented.
 - **Removed knobs (1.3.0):** `handle_cache_capacity` on a table read, `handles=` on `clear_file_cache()`, `torchfits.cache.configure_cache()`, `CacheManager.configure_cpp_cache()`, and `TableHDU(col_stats=...)` are gone. `cache_capacity` still controls the read cache and `fast_header` still affects the unified-reader fallback.
+
+---
+
+## Upgrading from 1.3
+
+The next release after 1.3.3 (on `main` until it is tagged) changes a few
+results that 1.3 returned silently. Most code needs no change; check the items
+below if you read non-ASCII tables, catch column errors by type, or script the
+CLI.
+
+**Breaking: string columns decode strictly.** 1.3 decoded character (`A`)
+columns with `errors="ignore"`, so bytes the encoding could not decode
+vanished (`b'caf\xe9'` read as `'caf'`, and `where="NAME == 'caf'"` matched
+it). Every read path -- `table.read` / `scan` / `reader` / `schema`, `where=`
+string comparisons, `TableHDU.get_string_column` and the converters that read
+a path -- now raises `UnicodeDecodeError` naming the column. Pass the encoding
+the file really uses (`encoding="latin-1"`), or `decode_errors="ignore"` for
+the 1.3 result (`"replace"` keeps a U+FFFD per bad byte); see
+[`table.read()`](api-tables.md#tableread). Tensor reads (`read_torch`,
+`scan_torch`, the table datasets) return raw `uint8` bytes and are unaffected,
+except for a `where=` predicate that compares a string column.
+
+**Tables**
+
+- A column whose `TTYPE` repeats an earlier column's name is named `COL<n>` on
+  every path (1.3 dropped it from `read`/`scan` results while `schema()`
+  listed it); see [Column names](api-tables.md#column-names).
+- An unknown column name raises `torchfits.UnknownColumnError` and a new name
+  that is already in use raises `torchfits.ColumnExistsError`. Both subclass
+  `KeyError` and `ValueError`, so existing `except` clauses still catch them.
+- `TableHDU.num_rows` / `TableHDURef.num_rows` raise on a malformed `NAXIS2`
+  or an unreadable header instead of reporting 0 rows.
+- `append_rows` / `insert_rows` fill an omitted float or complex column with
+  NaN (was 0) and store an omitted integer column's `TNULL` unscaled, so it
+  reads back as null.
+- A string clipped to its column width by `table.write(schema=...)`,
+  `insert_column` / `replace_column` or a streamed batch now emits a
+  `RuntimeWarning`, as the row mutations already did.
+- A column with an explicit repeat of 1 (`TFORM = '1E'`) reads as a scalar
+  Arrow array, as `schema()` describes it, instead of `FixedSizeList[1]`.
+
+**Images and compression**
+
+- NaN pixels of a float image written with a quantizing codec (`RICE_1`,
+  `GZIP_2`, `HCOMPRESS_1`, `BZIP2_1`, or any `quantize_level`) are kept as
+  NaN. 1.3 stored them as arbitrary integers that every reader decoded as
+  garbage, so rewrite such files from their source data. NaN-free and
+  lossless (`GZIP_1`) images are written exactly as before.
+
+**Datasets and transforms**
+
+- `FitsTableDataset` rows of a variable-length column are 1-D tensors, as
+  `FitsTableIterableDataset` yields them (1.3 returned Python lists). Only the
+  native reader's own I/O errors fall back to pyarrow now, logged at
+  `WARNING`; any other error is raised.
+- `FitsStagedCutoutIterableDataset` raises `ValueError` when a file's flux
+  bands or `ivar_hdu` / `mask_hdu` companions differ in shape (1.3 cut them at
+  the same window anyway).
+- A normalizer's `forward()` on a typed `Payload` records its inverse
+  statistics in `meta["torchfits.inverse_stats"]`; see
+  [Transforms](api-transforms.md).
+- `read_batch(strict=True)` raises the failing file's own error, the one a
+  single `read()` of it raises.
+
+**CLI** (see [CLI](cli.md))
+
+- Every output (FITS, Parquet, CSV, TSV, Arrow, PNG, `copy`, `setkey -o`) is
+  written to a temporary file and renamed into place: a failure leaves an
+  existing OUTPUT untouched. An OUTPUT that is a hard link to an INPUT is
+  refused (exit `2`).
+- `convert --to fits` keeps the table HDU in its stored form (`TFORM`,
+  `TSCAL`/`TZERO`, `TNULL`, `TDIM`, `TUNIT`, `EXTNAME` and other cards) and
+  streams it; 1.3 renamed the HDU and dropped those cards.
+- `arith` is exact for 64-bit integer images and for float operands on
+  integer images, saturating instead of wrapping; a NaN result into an integer
+  image is a usage error (exit `2`). `arith` and `cutout` drop the stale
+  `DATAMIN` / `DATAMAX`; `arith` and `transform` drop `BUNIT` when the unit
+  changes, and `arith` refuses to add or subtract images with different
+  `BUNIT` (exit `2`).
+- `verify` reports a truncated uncompressed file as an I/O error (exit `3`),
+  even when it carries no checksum keywords.
+- `table` previews are strict JSON: complex values are `{"re", "im"}` objects
+  and undecodable bytes become U+FFFD.
+
+---
+
+## Scale limits
+
+Supported platforms are 64-bit Linux and macOS: file offsets, row counts and
+element counts are 64-bit throughout. These numbers come from
+`pixi run test-scale` (`tests/test_scale_large.py`, sparse files) and probes
+on a shared 4-core Linux host; treat them as orders of magnitude.
+
+| Case | Tested | Measured |
+|---|---|---|
+| Image HDU larger than 4 GiB | 4.46 GB int16 primary + extension past the 4 GiB offset | extension read, cutout at the last pixel: < 1 ms; `write_checksums` 3.7 s, `verify_checksums` 1.9 s |
+| Image with more than 2^31 pixels | 2.15 GB uint8, `mmap=True` and `False` | full read 1.6 s, peak RSS ≈ image size |
+| Tile compression of a > 2 GiB image | `torchfits compress --algorithm RICE_1` / `decompress` | ~6 s each, peak RSS ≈ image size + 0.2 GB |
+| Table with more than 2^31 rows | 2^31 + 1000 one-byte rows | `row_slice` / `rows=` / `start_row` at the end: < 0.2 s; `where=` over every row 4.7 s; `scan(where=)` 4.6 s at 0.3 GB RSS |
+| Table larger than 4 GiB | 600 M rows × 12 bytes (7.2 GB) | last-row reads < 1 ms; full `scan` / `scan_torch` 3–4 s at 0.2–0.3 GB RSS |
+| Streaming write across 2^31 rows | `table.writer()` in 16 Mi-row batches, then `append_rows`, checksums | peak RSS 0.3 GB |
+| Many HDUs | 10,000-extension file | `torchfits.open` 0.34 s; read of any HDU after the first visit ~0.04 ms; `torchfits info` 0.7 s, `verify` 1.1 s, `stats` 3.7 s; `insert_hdu` / `replace_hdu` / `delete_hdu` rewrite the file: ~0.8 s |
+| Many files | 10,000 files under `ulimit -n 256` | `read`, `read_batch`, datasets and a 4-worker `DataLoader` keep a handful of descriptors open |
+| Repeated calls | 10,000 reads / writes / `where=` / `scan` / streaming writes / compressed reads | no RSS or descriptor growth |
+
+Memory follows the result, not the file, except where a whole object is
+materialized:
+
+- `table.scan()` / `scan_torch()` (with or without `where=`) and
+  `table.writer()` hold one batch at a time; use them for tables larger
+  than RAM.
+- `table.read(where=)` and `table.read_torch(where=)` keep the matching rows
+  only. `read_torch` reads and masks one row window (about 64 MB) at a time:
+  `where=` over a 2.1 GB one-byte column peaks at 0.26 GB RSS, and a 10%
+  match on a 1.2 GB table at 0.5 GB.
+- `FitsTableDataset` loads the table at construction; `lazy=True` keeps
+  `cache_blocks × block_rows` rows per process (per `DataLoader` worker). With
+  4 workers over a 5 M-row table: ~100 MB PSS per worker eager (copy-on-write
+  shares the table), ~80 MB lazy.
+- `torchfits stats` peaks at about twice the image; `compress` /
+  `decompress` hold the decoded image once.
+- `mmap=True` reads count mapped file pages in RSS; the kernel reclaims them
+  like page cache.
+
+Open descriptors are bounded by `TORCHFITS_MAX_CACHED_FDS` (default 32 raw
+descriptors, see [Environment variables](architecture.md#environment-variables))
+plus up to 8 cached table readers per thread (two descriptors each).
+`clear_all_caches()` closes all of them.
+
+Threads: reads, cutouts, table reads, checksums, file opens and writes run
+without the GIL. A write (`write`, `write(compress=...)`, `insert_hdu` /
+`replace_hdu`, `table.write`, `append_rows` and the other table mutations,
+`table.writer()`) converts its input with the GIL held and releases it for
+CFITSIO's create, data write (including tile compression) and close; four
+threads writing separate 64 MB images finish about 2× sooner than with the
+GIL held, and compressed writes about 2.4×. Header cards are still written
+with the GIL. Calls under ~100 µs (headers, tiny images) are bound by Python
+overhead and do not speed up with more threads. Because the payload is
+written without a copy, do not resize, `set_()` or otherwise mutate a tensor
+from another thread while it is being written (the same contract as torch's
+own operations): a resize frees the buffer being written and can crash the
+process.
 
 ---
 

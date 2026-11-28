@@ -20,6 +20,7 @@ from .._table_engine import (
     choose_where_read_plan,
 )
 from .._table.utils import _require_pyarrow
+from .._string_decode import column_decode_context
 from .._table.arrow_convert import (
     _pa_array,
     _tensor_to_arrow_array,
@@ -28,9 +29,7 @@ from ._read_schema import (
     _all_table_columns,
     _attach_fits_metadata,
     _can_use_mmap_row_path_for_full_read,
-    _column_tforms_for_decode,
     _empty_table_with_schema,
-    schema,
 )
 
 
@@ -305,7 +304,7 @@ def _try_torch_tensor_where_filter(
         for col in _all_table_columns(header, selected):
             if col.tform_info.is_string or col.tform_info.is_bit:
                 return None
-    elif decode_bytes and header is None:
+    elif header is None:
         return None
 
     pred_cols = [col for col, _op, _lit in predicates]
@@ -382,6 +381,13 @@ def _try_torch_tensor_where_filter(
     if mask is None:
         return None
 
+    # The TFORM tells a numeric byte ('B') vector from a character matrix:
+    # both arrive as 2-D uint8 tensors.
+    tforms = (
+        {col.name: col.tform for col in _all_table_columns(header)}
+        if header is not None
+        else {}
+    )
     arrays = []
     names_out = []
     for name in output_cols:
@@ -389,17 +395,18 @@ def _try_torch_tensor_where_filter(
         if not isinstance(value, torch.Tensor):
             return None
         filtered = value[mask]
-        arrays.append(
-            _tensor_to_arrow_array(
-                pa,
-                filtered,
-                decode_bytes,
-                encoding,
-                strip,
-                null_sentinel=tnull_map.get(name),
-                fits_tform=None,
+        with column_decode_context(name):
+            arrays.append(
+                _tensor_to_arrow_array(
+                    pa,
+                    filtered,
+                    decode_bytes,
+                    encoding,
+                    strip,
+                    null_sentinel=tnull_map.get(name),
+                    fits_tform=tforms.get(name),
+                )
             )
-        )
         names_out.append(name)
 
     if not arrays:
@@ -416,7 +423,7 @@ def _try_torch_tensor_where_filter(
                         encoding,
                         strip,
                         null_sentinel=tnull_map.get(name),
-                        fits_tform=None,
+                        fits_tform=tforms.get(name),
                     )
                 )
             else:
@@ -613,7 +620,18 @@ def _where_mask_for_table(
         non_null = [v for v in literals if v is not None]
         has_null = any(v is None for v in literals)
 
-        if non_null:
+        if non_null and (
+            pa.types.is_integer(column.type) or pa.types.is_floating(column.type)
+        ):
+            # Membership is equality with any listed value. Reusing the exact
+            # comparison keeps a literal outside the column's range (or a
+            # float on an integer column) a plain non-match, where an Arrow
+            # value set would overflow or refuse the cast.
+            mask = None
+            for value in non_null:
+                part = _compare(column, column_name, "==", value)
+                mask = part if mask is None else pc.or_kleene(mask, part)
+        elif non_null:
             if pa.types.is_boolean(column.type):
                 value_set = pa.array(
                     [_boolean_literal(v, column_name) for v in non_null],
@@ -733,173 +751,205 @@ def _filter_table_with_where(pa: Any, table: Any, where: str) -> Any:
     return table.filter(mask)
 
 
-def _try_cpp_where_pushdown(
+# Predicate column codes the native scan compares (scalar numeric cells).
+_NATIVE_PREDICATE_CODES = frozenset({"B", "I", "J", "K", "E", "D"})
+_NATIVE_INTEGER_CODES = frozenset({"B", "I", "J", "K"})
+
+
+def _native_layout_ok(header: Any, col: Any) -> bool:
+    """Whether the native mmap gather serves *col* exactly as an unfiltered read.
+
+    It copies raw cells (byte-swapped, with the unsigned / signed-byte TZERO
+    conventions applied), so it cannot serve VLA cells or a column that the
+    readers scale: any TSCAL/TZERO beyond those conventions, or a TNULL next
+    to identity TSCAL/TZERO cards (those decode TNULL to NaN).
+    """
+    if col.tform_info.vla:
+        return False
+    has_scale_cards = (
+        header.get(f"TSCAL{col.index}") is not None
+        or header.get(f"TZERO{col.index}") is not None
+    )
+    if not has_scale_cards:
+        return True
+    offset = fits_schema._UNSIGNED_TZERO.get(col.tform_info.code)
+    return col.tscal == 1.0 and offset is not None and col.tzero == float(offset)
+
+
+def _native_where_filters(
+    header: Any,
+    where: str,
+    output_columns: list[str],
+    *,
+    apply_fits_nulls: bool,
+) -> Optional[list[tuple[str, str, Any]]]:
+    """Native filter triples equivalent to *where*, or None to use the evaluator.
+
+    Only a conjunction of comparisons (``AND`` / ``BETWEEN``) of a scalar
+    numeric column with an int/float literal is pushed down; string, logical,
+    vector, scaled and VLA predicates, ``OR`` / ``IN`` / ``NOT`` / ``IS NULL``
+    and every other literal stay on the Arrow evaluator, which defines the
+    dialect. Float literals on integer columns become the exact integer bound
+    the evaluator uses (:func:`_integer_literal`). With ``apply_fits_nulls`` a
+    TNULL cell is NULL and never satisfies a comparison, so each predicate
+    column with a TNULL also gets a ``!= TNULL`` filter (in the decoded domain,
+    as :func:`fits_schema.column_null_sentinel_map` defines it).
+
+    *output_columns* must all be gathered natively too: a column the native
+    gather cannot serve exactly (VLA, scaled) sends the read to the evaluator.
+    """
+    if header is None:
+        return None
+    if str(header.get("XTENSION", "")).strip().upper() != "BINTABLE":
+        return None
+    predicates = _compile_where_to_simple_predicates(where)
+    if not predicates:
+        return None
+    by_name = {col.name: col for col in fits_schema.iter_table_columns(header)}
+    for name in output_columns:
+        col = by_name.get(name)
+        if col is None or not _native_layout_ok(header, col):
+            return None
+
+    sentinels = fits_schema.column_null_sentinel_map(header) if apply_fits_nulls else {}
+    filters: list[tuple[str, str, Any]] = []
+    null_filtered: set[str] = set()
+    for name, op, literal in predicates:
+        col = by_name.get(name)
+        if col is None:
+            return None  # the evaluator raises the unknown-column error
+        info = col.tform_info
+        if (
+            info.code not in _NATIVE_PREDICATE_CODES
+            or info.repeat != 1
+            or col.tdim
+            or not _native_layout_ok(header, col)
+        ):
+            return None
+        if isinstance(literal, bool) or not isinstance(literal, (int, float)):
+            return None
+        is_int_col = info.code in _NATIVE_INTEGER_CODES
+        if isinstance(literal, float):
+            if literal != literal or literal in (float("inf"), float("-inf")):
+                return None
+            if is_int_col:
+                op, literal = _integer_literal(op, literal)
+                if op == "const":
+                    return None
+        if isinstance(literal, int) and not (-(2**63) <= literal < 2**64):
+            return None  # the binding takes int64 / uint64 integer literals
+        if is_int_col and isinstance(literal, int):
+            offset = fits_schema._UNSIGNED_TZERO.get(info.code)
+            unsigned64 = (
+                info.code == "K" and offset is not None and col.tzero == float(offset)
+            )
+            if not unsigned64 and literal >= 2**63:
+                return None
+        filters.append((name, op, literal))
+
+        sentinel = sentinels.get(name)
+        if sentinel is None or name in null_filtered:
+            continue
+        if not is_int_col or isinstance(sentinel, bool):
+            # A float column's TNULL (non-standard) and NaN sentinels follow
+            # the evaluator's own null rules; leave them to it.
+            return None
+        if not isinstance(sentinel, int) or not (-(2**63) <= sentinel < 2**64):
+            return None
+        filters.append((name, "!=", sentinel))
+        null_filtered.add(name)
+    return filters
+
+
+def _native_where_output_columns(
+    header: Any, columns: Optional[list[str]]
+) -> list[str]:
+    """The columns a native filtered read returns: the projection, else all."""
+    if columns:
+        return list(columns)
+    return [col.name for col in _all_table_columns(header)]
+
+
+def _native_read_failed(exc: BaseException) -> None:
+    """Re-raise a native filtered-read failure that a fallback must not mask."""
+    message = str(exc)
+    if (
+        "truncat" in message.lower()
+        or "Invalid table geometry" in message
+        or "Invalid VLA geometry" in message
+    ):
+        try:
+            raise exc
+        finally:
+            del exc  # no exception -> traceback -> frame cycle (see _read_strategies)
+    logger.debug("native WHERE read failed; using the evaluator: %s", exc)
+
+
+def _try_native_where_read(
     *,
     pa: Any,
     path: str,
     hdu: int,
     columns: Optional[list[str]],
     where: str,
+    row_slice: Optional[slice | tuple[int, int]],
     decode_bytes: bool,
     encoding: str,
     strip: bool,
-    header: Any = None,
-    apply_fits_nulls: bool = False,
-    include_fits_metadata: bool = False,
+    header: Any,
+    apply_fits_nulls: bool,
+    include_fits_metadata: bool,
 ) -> Any | None:
-    # This legacy pushdown returns torch tensors. Arrow-only callers stay on
-    # the streaming Arrow filter unless another operation has already paid the
-    # explicit tensor boundary; importing torch merely to optimize WHERE would
-    # violate that contract.
-    torch = sys.modules.get("torch")
-    if torch is None:
+    """One native, torch-free filtered read of the row window, as Arrow.
+
+    The predicate is evaluated natively over the window only (filter-within-
+    window), the selected rows come back as raw buffers, and the Arrow
+    conversion is the one the unfiltered raw read uses, so string decoding
+    (``DecodeSpec``), TNULL nulls, unsigned columns and FITS metadata match an
+    unfiltered read of the same rows. Returns None when the request is not
+    native-eligible or the native reader refuses it; the caller then runs the
+    Arrow evaluator.
+    """
+    from .utils import _normalize_row_slice
+
+    if header is None:
+        return None
+    out_cols = _native_where_output_columns(header, columns)
+    if not out_cols:
+        return None
+    filters = _native_where_filters(
+        header, where, out_cols, apply_fits_nulls=apply_fits_nulls
+    )
+    if filters is None:
+        return None
+    start_row, num_rows = _normalize_row_slice(row_slice)
+    if num_rows == 0:
         return None
 
     import torchfits._C as cpp
 
-    filters = _compile_where_to_simple_predicates(where)
-    if filters is None:
-        return None
-    if header is None:
-        return None
-    pred_names = {col for col, _o, _l in filters}
-    for col in fits_schema.iter_table_columns(header, selected=pred_names):
-        info = col.tform_info
-        if info.vla or col.tdim or (info.repeat != 1 and info.code != "A"):
-            # Vector cells: the native scan compares only some elements. The
-            # Arrow filter refuses them with a clear error.
-            return None
-    if any(isinstance(lit, float) for _c, _o, lit in filters):
-        # The native scan compares a float literal with integer cells through
-        # an int64-clamped proxy; hand it the exact integer bound instead and
-        # leave constant or out-of-int64 comparisons to the exact engines.
-        int_cols = {
-            col.name
-            for col in fits_schema.iter_table_columns(header)
-            if col.tform_info.code in {"B", "I", "J", "K"}
-            and not col.tform_info.vla
-            and (col.tscal or 1.0) == 1.0
-            and float(col.tzero or 0.0).is_integer()
-        }
-        # The scan also takes an exact uint64 bound in [2**63, 2**64).
-        u64_cols = {
-            name
-            for name, dtype in fits_schema.unsigned_column_dtype_names_from_header(
-                header
-            ).items()
-            if dtype == "uint64"
-        }
-        exact: list[tuple[str, str, Any]] = []
-        for col_name, op, lit in filters:
-            if isinstance(lit, float) and col_name in int_cols:
-                op, lit = _integer_literal(op, lit)
-                high = 2**64 if col_name in u64_cols else 2**63
-                if op == "const" or not (-(2**63) <= lit < high):
-                    return None
-            exact.append((col_name, op, lit))
-        filters = tuple(exact)
     try:
-        target_cols = columns
-        if target_cols is None:
-            if header is not None:
-                # Same column set as the torch path above, so which one you get
-                # does not depend on whether torch was already imported (TE-007).
-                target_cols = [col.name for col in _all_table_columns(header)]
-            else:
-                target_cols = list(schema(path, hdu=hdu, backend="cpp").names)
-
-        # filters is a tuple (immutable, cached) — C++ binding expects a list.
-        data_dict = cpp.read_fits_table_filtered(path, hdu, target_cols, list(filters))
-
-        # The C++ pushdown compares raw stored values, so TNULL sentinels can
-        # satisfy numeric predicates (e.g. sentinel 25 matching "> 20") while
-        # the Arrow engine treats them as NULL and excludes them. Drop rows
-        # whose match came only from a sentinel so both engines agree.
-        full_tnull_map = (
-            fits_schema.column_null_sentinel_map(header)
-            if apply_fits_nulls and header is not None
-            else {}
-        )
-        keep: Any = None
-        for pred_col, _op, _lit in filters:
-            sentinel = full_tnull_map.get(pred_col)
-            if sentinel is None:
-                continue
-            col_tensor = data_dict.get(pred_col)
-            if not isinstance(col_tensor, torch.Tensor):
-                # Predicate column not in the projection: cannot verify
-                # sentinel matches here — defer to the Arrow engine.
-                return None
-            valid = _not_null(col_tensor, sentinel)
-            keep = valid if keep is None else (keep & valid)
-        if keep is not None:
-            if bool(keep.any()):
-                data_dict = {
-                    key: (
-                        value[keep]
-                        if isinstance(value, torch.Tensor)
-                        and value.shape[:1] == keep.shape[:1]
-                        else value
-                    )
-                    for key, value in data_dict.items()
-                }
-            else:
-                data_dict = {
-                    key: (
-                        value[:0]
-                        if isinstance(value, torch.Tensor)
-                        else ([] if isinstance(value, list) else value)
-                    )
-                    for key, value in data_dict.items()
-                }
-
-        # Only look up tforms when string/bit columns are present
-        # (numeric 1D columns don't need tform for Arrow conversion).
-        pushdown_tforms = None
-        if decode_bytes:
-            needs_tforms = header is None
-            if not needs_tforms:
-                for col in fits_schema.iter_table_columns(
-                    header, selected=set(target_cols) if target_cols else None
-                ):
-                    if col.tform_info.is_string or col.tform_info.is_bit:
-                        needs_tforms = True
-                        break
-            if needs_tforms:
-                pushdown_tforms = _column_tforms_for_decode(path, hdu, set(target_cols))
-        tnull_map = full_tnull_map
-        arrays = []
-        names_out = []
-        for name in target_cols:
-            if name not in data_dict:
-                continue
-            val = data_dict[name]
-            if isinstance(val, torch.Tensor):
-                arr = _tensor_to_arrow_array(
-                    pa,
-                    val,
-                    decode_bytes,
-                    encoding,
-                    strip,
-                    null_sentinel=tnull_map.get(name),
-                    fits_tform=pushdown_tforms.get(name) if pushdown_tforms else None,
-                )
-                arrays.append(arr)
-                names_out.append(name)
-
-        if not arrays:
-            return _empty_table_with_schema(
-                pa, path, hdu, columns, decode_bytes, include_fits_metadata
-            )
-        return _attach_fits_metadata(
-            pa,
-            pa.Table.from_arrays(arrays, names=names_out),
-            header,
-            include_fits_metadata,
+        chunk = cpp.read_fits_table_filtered_raw(
+            path, hdu, out_cols, filters, start_row, num_rows
         )
     except (RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.debug("CPP WHERE pushdown read failed; falling back: %s", exc)
+        _native_read_failed(exc)
         return None
+
+    from ._read_scan import _raw_chunk_converter
+
+    convert = _raw_chunk_converter(
+        path,
+        hdu,
+        columns,
+        header,
+        decode_bytes=decode_bytes,
+        encoding=encoding,
+        strip=strip,
+        include_fits_metadata=include_fits_metadata,
+        apply_fits_nulls=apply_fits_nulls,
+    )
+    return pa.Table.from_batches([convert(chunk)])
 
 
 def _read_table_with_where(
@@ -958,27 +1008,25 @@ def _read_table_with_where(
         )
     )
 
-    if plan.strategy == WhereStrategy.CPP_PUSHDOWN:
-        # The C++ pushdown filters the whole HDU and cannot express a row
-        # window; using it here would silently ignore row_slice/rows. Only
-        # take this shortcut for full-table predicates so the fallback below
-        # can apply the window BEFORE filtering (filter-within-window).
-        if row_slice is None and rows is None:
-            pushed = _try_cpp_where_pushdown(
-                pa=pa,
-                path=path,
-                hdu=hdu,
-                columns=columns,
-                where=where,
-                decode_bytes=decode_bytes,
-                encoding=encoding,
-                strip=strip,
-                header=hdr if header_ok else None,
-                apply_fits_nulls=apply_fits_nulls,
-                include_fits_metadata=include_fits_metadata,
-            )
-            if pushed is not None:
-                return pushed
+    if plan.strategy == WhereStrategy.CPP_PUSHDOWN and rows is None:
+        # Native, torch-free pushdown over the row window (filter-within-
+        # window); a rows= scatter selection stays on the evaluator below.
+        pushed = _try_native_where_read(
+            pa=pa,
+            path=path,
+            hdu=hdu,
+            columns=columns,
+            where=where,
+            row_slice=row_slice,
+            decode_bytes=decode_bytes,
+            encoding=encoding,
+            strip=strip,
+            header=hdr if header_ok else None,
+            apply_fits_nulls=apply_fits_nulls,
+            include_fits_metadata=include_fits_metadata,
+        )
+        if pushed is not None:
+            return pushed
 
     torch_filtered = _try_torch_tensor_where_filter(
         pa=pa,

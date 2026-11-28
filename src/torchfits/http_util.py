@@ -209,7 +209,7 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
     )
     try:
         hostname = urllib.parse.urlparse(url).hostname
-    except Exception:
+    except ValueError:  # malformed netloc / port / IPv6 literal
         raise blocked from None
     if not hostname:
         raise blocked
@@ -218,7 +218,7 @@ def _resolve_public_addrs(url: str) -> tuple[str, ...]:
         raise HttpBlockedError(f"{url}: {ambiguity}; blocked for security reasons")
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:  # gaierror; IDNA UnicodeError
         raise HttpBlockedError(f"{url}: could not resolve host {hostname!r}") from exc
     addrs: list[str] = []
     for info in infos:
@@ -246,6 +246,7 @@ def is_internal_url(url: str) -> bool:
     try:
         _resolve_public_addrs(url)
     except Exception:
+        # Fail closed: any failure to prove the host public blocks it.
         return True
     return False
 
@@ -602,4 +603,5 @@ def http_read_range(
             ) from exc
         raise OSError(f"{url}: HTTP {exc.code}") from exc
     except Exception as exc:
+        # Translation boundary: remote reads report every failure as OSError.
         raise OSError(f"{url}: {exc}") from exc

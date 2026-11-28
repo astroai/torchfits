@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Iterator
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -34,6 +34,12 @@ from ._file_ops import (
     _invalidate_path_caches,
     _invalidate_written_target,
     _resolve_compression_algorithm,
+)
+from ._tile_compression import (
+    CompressionOptions,
+    compression_options,
+    integer_image_as_float,
+    require_quantizable_image,
 )
 from ._write_helpers import (
     _COMMENTARY_HEADER_KEYS,
@@ -311,14 +317,34 @@ def _reject_64bit_integer_tile_compression(data: Any, algorithm: str, idx: int) 
         )
 
 
+def _reject_small_default_hcompress_tile(data: Any, algorithm: str, idx: int) -> None:
+    """HCOMPRESS_1 codes 2-D tiles of at least 4x4 pixels. The default tile
+    (whole rows, 16 at a time) of an image narrower or shorter than that made
+    CFITSIO fail mid-write with a bare "error compressing image" (status 413);
+    an explicit ``tile_shape`` is checked by ``resolve_tile_dims``."""
+    if algorithm.strip().upper() not in {"H", "HCOMPRESS", "HCOMPRESS_1"}:
+        return
+    if not isinstance(data, Tensor) or data.numel() == 0:
+        return  # an empty image is stored uncompressed
+    shape = tuple(data.shape)
+    if len(shape) < 2 or min(shape[-1], shape[-2]) < 4:
+        raise ValueError(
+            "HCOMPRESS_1 needs 2-D tiles of at least 4x4 pixels, but image HDU "
+            f"{idx} has shape {shape}; use another compress= codec"
+        )
+
+
 def _write_hdus_with_optional_compression(
     path: str,
     hdus: List[Any],
     compress: Union[bool, str] = False,
     *,
     overwrite: bool = True,
+    options: Optional[CompressionOptions] = None,
 ) -> None:
     """Rewrite HDUs, optionally using CFITSIO compressed-image writer.
+
+    ``options`` (tile geometry, ...) apply to every image HDU written.
 
     Like the uncompressed writer, the dict writers get commentary-free header
     mappings and the full card list is replayed once per output HDU (at
@@ -336,6 +362,7 @@ def _write_hdus_with_optional_compression(
 
     payload: list[Any] = []
     primary_header: Any = None
+    any_float = False
     for idx, hdu in enumerate(hdus):  # noqa: B007
         table_proxy = _prepare_table_hdu_for_payload(hdu)
         if table_proxy is not None:
@@ -358,6 +385,13 @@ def _write_hdus_with_optional_compression(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
         _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
+        if options is None or options.tile_shape is None:
+            _reject_small_default_hcompress_tile(hdu_dict.get("data"), algorithm, idx)
+        converted = (
+            options is not None
+            and options.int_to_float
+            and integer_image_as_float(hdu_dict)
+        )
         replay_header = _payload_replay_header(hdu_dict)
         if replay_header is not None:
             hdu_dict["header"] = _sanitize_header_for_compressed_write(replay_header)
@@ -377,7 +411,32 @@ def _write_hdus_with_optional_compression(
                 # PLIO only stores values in [0, 2**24): hand CFITSIO the
                 # physical uint16 pixels instead of the signed -32768 codes.
                 hdu_dict["data"] = (d ^ -32768).view(torch.uint16)
+            stored = hdu_dict.get("data")
+            # int8 and uint8/uint16 pixels always land in range (CFITSIO
+            # offsets signed bytes itself); int16/int32 storage may not.
+            if (
+                isinstance(stored, Tensor)
+                and stored.dtype in (torch.int16, torch.int32)
+                and stored.numel()
+            ):
+                lo, hi = int(stored.min()), int(stored.max())
+                if lo < 0 or hi >= 2**24:
+                    # CFITSIO fails mid-write with a bare "error compressing
+                    # image" (status 413); say why before anything is written.
+                    raise ValueError(
+                        "PLIO_1 can only store pixel values 0..2**24-1, but "
+                        f"HDU {idx} holds stored values {lo}..{hi} (uint32 "
+                        "images are stored offset by -2**31); use RICE_1 or "
+                        "GZIP_1"
+                    )
+        if options is not None:
+            data = hdu_dict["data"]
+            any_float = any_float or data.is_floating_point()
+            hdu_dict["_compression"] = options.image_options(
+                data, idx, converted=converted
+            )
         payload.append(hdu_dict)
+    require_quantizable_image(options, any_float)
 
     _invalidate_path_caches(path)
     cpp.write_fits_file_compressed_images(path, payload, overwrite, algorithm)
@@ -423,7 +482,11 @@ def _require_primary_capable(new_hdu: Any, compress: Union[bool, str]) -> None:
 
 @contextlib.contextmanager
 def _scratch_hdu(
-    new_hdu: Any, *, primary: bool, compress: Union[bool, str]
+    new_hdu: Any,
+    *,
+    primary: bool,
+    compress: Union[bool, str],
+    options: Optional[CompressionOptions] = None,
 ) -> Iterator[Tuple[str, int, int]]:
     """Write ``new_hdu`` alone to a scratch file; yield ``(path, start, end)``
     of its bytes (the primary HDU, or the extension behind an empty primary).
@@ -439,7 +502,7 @@ def _scratch_hdu(
         from . import write_api
 
         write_api._write_hdus_with_optional_compression(  # type: ignore[attr-defined]
-            scratch, hdus, compress=compress, overwrite=False
+            scratch, hdus, compress=compress, overwrite=False, options=options
         )
         start, _data, end = hdu_byte_spans(scratch)[0 if primary else 1]
         yield scratch, start, end
@@ -454,15 +517,30 @@ def insert_hdu(
     index: int = 1,
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Insert a new HDU into an existing FITS file.
 
-    Only the new HDU is written (``compress=`` applies to it alone); every
-    other HDU is copied byte-for-byte. Inserting at index 0 turns the old
+    Only the new HDU is written (``compress=`` and the tile-compression
+    keywords of :func:`torchfits.write` apply to it alone); every other HDU
+    is copied byte-for-byte. Inserting at index 0 turns the old
     primary into an IMAGE extension (header cards converted, data unchanged).
     """
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError("index must be an integer HDU position")
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
     new_hdu = _new_hdu_from_args(data, header)
     hdus = _file_hdus(path, len(_file_headers(path)))
     if index < 0 or index > len(hdus):
@@ -488,7 +566,9 @@ def insert_hdu(
         return
 
     cut = hdus[index - 1][2]
-    with _scratch_hdu(new_hdu, primary=False, compress=compress) as new_piece:
+    with _scratch_hdu(
+        new_hdu, primary=False, compress=compress, options=options
+    ) as new_piece:
         publish_spliced(
             path,
             _nonempty([(path, 0, cut), new_piece, (path, cut, end)]),
@@ -502,12 +582,27 @@ def replace_hdu(
     data: Any,
     header: Optional[Dict[str, Any]] = None,
     compress: Union[bool, str] = False,
+    *,
+    tile_shape: Optional[Sequence[int]] = None,
+    quantize_level: Optional[float] = None,
+    quantize_method: Optional[str] = None,
+    dither_seed: Optional[int] = None,
+    int_to_float: bool = False,
 ) -> None:
     """Replace an HDU by index or EXTNAME.
 
-    Only the replacement is written (``compress=`` applies to it alone); every
-    other HDU is copied byte-for-byte.
+    Only the replacement is written (``compress=`` and the tile-compression
+    keywords of :func:`torchfits.write` apply to it alone); every other HDU
+    is copied byte-for-byte.
     """
+    options = compression_options(
+        compress,
+        tile_shape=tile_shape,
+        quantize_level=quantize_level,
+        quantize_method=quantize_method,
+        dither_seed=dither_seed,
+        int_to_float=int_to_float,
+    )
     preserve_header = header is None and not isinstance(data, (TableHDU, TensorHDU))
     new_hdu = _new_hdu_from_args(data, header)
     headers = _file_headers(path)
@@ -543,7 +638,9 @@ def replace_hdu(
     if primary:
         _require_primary_capable(new_hdu, compress)
     start, _data, stop, _raw = hdus[target]
-    with _scratch_hdu(new_hdu, primary=primary, compress=compress) as new_piece:
+    with _scratch_hdu(
+        new_hdu, primary=primary, compress=compress, options=options
+    ) as new_piece:
         publish_spliced(
             path,
             _nonempty([(path, 0, start), new_piece, (path, stop, None)]),

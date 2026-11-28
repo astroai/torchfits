@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import weakref
 import warnings
 from collections import OrderedDict
 from types import MappingProxyType
 from threading import RLock
 from typing import Any
 
-from .device import to_device
+from .device import move_table_columns, to_device
+
+_log = logging.getLogger(__name__)
 
 _CACHE_STATS_DEFAULT = {
     "total_requests": 0,
@@ -143,7 +147,7 @@ def path_signature(path: str) -> Any:
         return object()
     try:
         st = os.stat(target)
-    except Exception:
+    except (OSError, ValueError):  # ValueError: embedded NUL in the path
         return None
     mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
     return (int(st.st_size), int(mtime_ns), int(st.st_ino))
@@ -179,8 +183,16 @@ def set_cached_hdu_type(
     signature_cached_set(hdu_type_cache, (path, hdu), hdu_type, 512, signature)
 
 
-def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
+# Sentinel default for signature_cached_get: lets a caller that stores None as
+# a real answer (a negative lookup) tell it apart from a miss.
+MISSING: Any = object()
+
+
+def signature_cached_get(cache: Any, key: tuple[str, Any], default: Any = None) -> Any:
     """Get an entry validated against the file's current stat signature.
+
+    Returns *default* on a miss (absent or stale entry). Pass ``MISSING`` when
+    ``None`` is a value the cache stores, such as a negative lookup.
 
     ``key`` is ``(path, discriminator)``: an HDU index for the per-HDU caches,
     or the ``"payload"`` sentinel auto_hdu_cache keys its whole-file answer by.
@@ -213,12 +225,12 @@ def signature_cached_get(cache: Any, key: tuple[str, Any]) -> Any:
     with cache_lock:
         entry = cache.get(key)
         if entry is None:
-            return None
+            return default
         cache.move_to_end(key)
         stored_sig, value = entry
         if stored_sig != path_signature(key[0]):
             del cache[key]
-            return None
+            return default
         return value
 
 
@@ -354,20 +366,7 @@ def _check_read_cache_locked(
                         if isinstance(cached_data, torch.Tensor):
                             out_data = to_device(cached_data, device)
                         elif isinstance(cached_data, dict):
-                            new_data: dict[str, Any] = {}
-                            for key, value in cached_data.items():
-                                if isinstance(value, torch.Tensor):
-                                    new_data[key] = to_device(value, device)
-                                elif isinstance(value, list):
-                                    new_data[key] = [
-                                        to_device(item, device)
-                                        if isinstance(item, torch.Tensor)
-                                        else item
-                                        for item in value
-                                    ]
-                                else:
-                                    new_data[key] = value
-                            out_data = new_data
+                            out_data = move_table_columns(cached_data, device)
                     else:
                         # Hand out a private copy so callers mutating their
                         # result cannot alias (and corrupt) the cached entry.
@@ -442,14 +441,28 @@ def _register_open_hdulist(path: str, handle: Any, hdulist: Any) -> None:
     """Register an HDUList's open file handle so mutations can close it."""
     try:
         real = os.path.realpath(path)
-    except Exception:
+    except (OSError, ValueError):
         real = os.path.abspath(path)
+    # Weak references: the registry exists so a mutation can close a list's
+    # handle, not to keep the list alive. Strong ones pinned every HDUList
+    # torchfits.open() returned (and its file descriptor) for the life of
+    # the process unless the caller closed it explicitly.
     with cache_lock:
-        _open_hdulist_registry.setdefault(real, []).append((handle, hdulist))
+        _open_hdulist_registry.setdefault(real, []).append(
+            (_weak(handle), _weak(hdulist))
+        )
     try:
         hdulist._registry_key = real
-    except Exception:
+    except AttributeError:  # an object with __slots__ / read-only attributes
         pass
+
+
+def _weak(obj: Any) -> Any:
+    """A zero-argument callable returning *obj* (a weakref when possible)."""
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return lambda: obj
 
 
 def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
@@ -462,7 +475,7 @@ def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
     with cache_lock:
         if key is not None:
             entries = _open_hdulist_registry.get(key, [])
-            remaining = [entry for entry in entries if entry[0] is not handle]
+            remaining = [entry for entry in entries if entry[0]() is not handle]
             if len(remaining) != len(entries):
                 if remaining:
                     _open_hdulist_registry[key] = remaining
@@ -471,7 +484,7 @@ def _unregister_open_hdulist(key: str | None, handle: Any) -> None:
             return
         for real_path in list(_open_hdulist_registry.keys()):
             entries = _open_hdulist_registry.get(real_path, [])
-            remaining = [entry for entry in entries if entry[0] is not handle]
+            remaining = [entry for entry in entries if entry[0]() is not handle]
             if len(remaining) == len(entries):
                 continue
             if remaining:
@@ -489,23 +502,32 @@ def _close_hdulist_for_path(path: str) -> None:
     """
     try:
         real = os.path.realpath(path)
-    except Exception:
+    except (OSError, ValueError):
         real = os.path.abspath(path)
     with cache_lock:
         entries = _open_hdulist_registry.pop(real, [])
     if not entries:
         return
-    for handle, hdulist in entries:
+    for handle_ref, hdulist_ref in entries:
+        handle, hdulist = handle_ref(), hdulist_ref()
+        if handle is None:
+            continue  # collected with its HDUs: nothing holds the file open
         try:
             handle.close()
         except Exception:
-            pass
+            # Cleanup before a mutation: the mutation's own open reports a
+            # handle that is really still open.
+            _log.debug(
+                "closing an open HDUList handle for %r failed", path, exc_info=True
+            )
         # Prevent double-close when HDUList.__exit__ calls close() later.
+        if hdulist is None:
+            continue
         try:
             hdulist._file_handle = None
             hdulist._lazy_handle = None
             hdulist._registry_key = None
-        except Exception:
+        except AttributeError:
             pass
 
 
@@ -522,8 +544,12 @@ def invalidate_path_caches(path: str) -> None:
         import torchfits._C as cpp
 
         cpp.evict_cached_reader(path)
+    except ImportError:
+        pass  # torch-free / core-only process: no native readers to evict
     except Exception:
-        pass
+        # Best effort: a reader that stays cached is re-validated against
+        # the file signature on its next use.
+        _log.debug("evicting cached table readers for %r failed", path, exc_info=True)
 
     with cache_lock:
         _invalidate_path_caches_locked(path)

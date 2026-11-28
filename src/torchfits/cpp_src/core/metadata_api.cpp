@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -50,9 +51,13 @@ std::string read_tstring_card(fitsfile* fptr, const char* keyname) {
     int status = 0;
     fits_read_key(fptr, TSTRING, keyname, value, nullptr, &status);
     if (status != 0) return std::string();
-    size_t len = strnlen(value, FLEN_VALUE);
-    while (len > 0 && value[len - 1] == ' ') --len;
-    return std::string(value, len);
+    // Drop stray non-printable bytes as every header read does: one byte
+    // >= 0x80 in a TTYPE/TFORM card made read_colnames / read_table_info
+    // raise UnicodeDecodeError while read_header and the readers named the
+    // same column without it.
+    std::string text = d::sanitize_fits_string(std::string(value, strnlen(value, FLEN_VALUE)));
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    return text;
 }
 
 // Open for reading, run `body`, always close. Path-level metadata must not leak
@@ -67,11 +72,13 @@ auto with_open(const std::string& path, F&& body) -> decltype(body(std::declval<
     }
     struct Guard {
         fitsfile* fptr;
+        const std::string& path;
         ~Guard() {
+            d::remember_hdu_offsets(fptr, path);
             int close_status = 0;
             fits_close_file(fptr, &close_status);
         }
-    } guard{fptr};
+    } guard{fptr, path};
     return body(fptr);
 }
 
@@ -275,15 +282,19 @@ std::vector<std::string> table_colnames(fitsfile* fptr) {
     if (status != 0) throw_fits_error(status, "read_colnames (HDU must be a table)");
     std::vector<std::string> names;
     names.reserve(static_cast<size_t>(ncols));
+    std::unordered_set<std::string> seen;
     for (int i = 1; i <= ncols; ++i) {
         char keyname[FLEN_KEYWORD];
         std::snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
         std::string name = read_tstring_card(fptr, keyname);
-        if (name.empty()) {
+        // Missing, empty or repeated TTYPE: COL<i>, as the table readers
+        // name it (fits_schema._reader_column_name).
+        if (name.empty() || seen.count(name) != 0) {
             char fallback[FLEN_VALUE];
             std::snprintf(fallback, FLEN_VALUE, "COL%d", i);
             name = fallback;
         }
+        seen.insert(name);
         names.emplace_back(std::move(name));
     }
     return names;
@@ -298,15 +309,19 @@ TableInfo table_info(fitsfile* fptr) {
     if (status != 0) throw_fits_error(status, "read_table_info (HDU must be a table)");
     info.colnames.reserve(static_cast<size_t>(ncols));
     info.tforms.reserve(static_cast<size_t>(ncols));
+    std::unordered_set<std::string> seen;
     for (int i = 1; i <= ncols; ++i) {
         char keyname[FLEN_KEYWORD];
         std::snprintf(keyname, FLEN_KEYWORD, "TTYPE%d", i);
         std::string name = read_tstring_card(fptr, keyname);
-        if (name.empty()) {
+        // Missing, empty or repeated TTYPE: COL<i>, as the table readers
+        // name it (fits_schema._reader_column_name).
+        if (name.empty() || seen.count(name) != 0) {
             char fallback[FLEN_VALUE];
             std::snprintf(fallback, FLEN_VALUE, "COL%d", i);
             name = fallback;
         }
+        seen.insert(name);
         info.colnames.emplace_back(std::move(name));
         std::snprintf(keyname, FLEN_KEYWORD, "TFORM%d", i);
         info.tforms.emplace_back(read_tstring_card(fptr, keyname));
@@ -635,6 +650,7 @@ FitsReader::~FitsReader() { close(); }
 void FitsReader::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (fptr_ != nullptr) {
+        d::remember_hdu_offsets(fptr_, path_);
         int status = 0;
         fits_close_file(fptr_, &status);
         fptr_ = nullptr;

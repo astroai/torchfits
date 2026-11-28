@@ -49,3 +49,42 @@ def test_other_failures_name_the_callers_path(tmp_path):
     # 64-bit integer tile compression is refused as an argument error.
     with pytest.raises(ValueError, match="64-bit integer"):
         torchfits.write(path, torch.ones(2, 2, dtype=torch.int64), compress=True)
+
+
+def test_failed_column_write_stops_and_names_the_column(tmp_path):
+    # r8b-09: the column loop kept going on a poisoned CFITSIO status and
+    # reported only "Failed to write table data". It now stops at the first
+    # failed column and names it with CFITSIO's reason.
+    import numpy as np
+
+    path = tmp_path / "a.fits"
+    with pytest.raises(RuntimeError, match=r"column 'i'.*overflow"):
+        torchfits.table.write(
+            str(path),
+            {
+                "ok": np.array([1], dtype=np.int64),
+                "i": np.array([123456], dtype=np.int64),
+                "k": np.array([123456], dtype=np.int64),
+            },
+            schema={c: {"format": "I3"} for c in ("ok", "i", "k")},
+            overwrite=True,
+            table_type="ascii",
+        )
+    assert not path.exists()
+
+
+def test_failed_row_update_reports_the_cfitsio_reason(tmp_path):
+    import numpy as np
+
+    path = str(tmp_path / "u.fits")
+    torchfits.table.write(
+        path,
+        {"a": np.arange(3, dtype=np.int16)},
+        schema={"a": {"format": "I2"}},
+        overwrite=True,
+        table_type="ascii",
+    )
+    with pytest.raises(RuntimeError, match="overflow"):
+        torchfits.table.update_rows(
+            path, {"a": np.array([1000], dtype=np.int16)}, row_slice=(0, 1)
+        )

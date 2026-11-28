@@ -8,9 +8,9 @@ import torch
 from torch import Tensor
 
 
-from .._errors import FITSFileNotFoundError
+from .._errors import ColumnExistsError, FITSFileNotFoundError, UnknownColumnError
 from ._repr import render_html_table
-from .header import Header
+from .header import Header, naxis2_row_count
 
 
 def _row_aligned_count(value: Any) -> Optional[int]:
@@ -28,7 +28,7 @@ def _row_aligned_count(value: Any) -> Optional[int]:
         if value.ndim > 0:
             return int(value.shape[0])
         return None
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return len(value)
     return None
 
@@ -49,7 +49,7 @@ def _predicate_array(value: Any) -> Any:
     """
     import numpy as np
 
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         if any(_is_sequence_cell(item) for item in value):
             return None
         return np.asarray(value, dtype=object)
@@ -106,7 +106,7 @@ class TableDataAccessor:
             ):
                 return value.reshape(-1)
             return value
-        raise KeyError(f"Column '{key}' not found")
+        raise UnknownColumnError(f"Column '{key}' not found")
 
     def __contains__(self, key: str) -> bool:
         return key in self._table._raw_data
@@ -247,8 +247,14 @@ class TableHDU:
         return out
 
     def get_string_column(
-        self, name: str, encoding: str = "ascii", strip: bool = True
+        self,
+        name: str,
+        encoding: str = "ascii",
+        strip: bool = True,
+        *,
+        decode_errors: str = "strict",
     ) -> List[str]:
+        """Decode string column *name*; see ``decode_errors`` in ``table.read``."""
         value = self._raw_data.get(name)
         if not isinstance(value, torch.Tensor):
             raise KeyError(f"Column '{name}' is not a tensor string column")
@@ -258,9 +264,14 @@ class TableHDU:
             raise ValueError(f"Column '{name}' must be 2D (rows, width)")
 
         # Numpy-free decode via shared helper.
-        from .._string_decode import decode_byte_tensor
+        from .._string_decode import DecodeSpec, decode_byte_tensor
 
-        return decode_byte_tensor(value, encoding=encoding, strip=strip)
+        return decode_byte_tensor(
+            value,
+            encoding=DecodeSpec(encoding, decode_errors),
+            strip=strip,
+            column=name,
+        )
 
     # ⚡ Bolt: Cache row count extraction to prevent scanning all column tensors
     # and re-evaluating shapes on every length check.
@@ -289,11 +300,8 @@ class TableHDU:
                 if isinstance(value, (list, tuple)):
                     return len(value)
             return 0
-        if self.header and "NAXIS2" in self.header:
-            try:
-                return int(self.header["NAXIS2"])
-            except Exception:
-                pass
+        if self.header:
+            return naxis2_row_count(self.header, None)
         return 0
 
     @property
@@ -325,7 +333,7 @@ class TableHDU:
         wanted = {str(c) for c in cols}
         missing = sorted(name for name in wanted if name not in self._raw_data)
         if missing:
-            raise KeyError(f"Columns not found: {missing}")
+            raise UnknownColumnError(f"Columns not found: {missing}")
         selected_dict = {k: v for k, v in self._raw_data.items() if str(k) in wanted}
         return TableHDU(
             selected_dict,
@@ -402,8 +410,10 @@ class TableHDU:
         for name, value in data_map.items():
             if str(name) not in row_aligned:
                 filtered[name] = value
-            elif isinstance(value, list):
-                filtered[name] = [item for item, keep in zip(value, mask) if keep]
+            elif isinstance(value, (list, tuple)):
+                filtered[name] = type(value)(
+                    item for item, keep in zip(value, mask) if keep
+                )
             elif isinstance(value, torch.Tensor):
                 filtered[name] = value[
                     mask_t if value.device.type == "cpu" else mask_t.to(value.device)
@@ -536,7 +546,7 @@ class TableHDU:
 
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         if name in raw and not overwrite:
-            raise KeyError(f"Column '{name}' already exists")
+            raise ColumnExistsError(f"Column '{name}' already exists")
 
         nrows = self.num_rows
         new_rows = self._value_num_rows(values)
@@ -557,7 +567,7 @@ class TableHDU:
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         missing = [name for name in to_drop if name not in raw]
         if missing:
-            raise KeyError(f"Columns not found: {missing}")
+            raise UnknownColumnError(f"Columns not found: {missing}")
         kept = {k: v for k, v in raw.items() if k not in to_drop}
         return TableHDU(
             kept,
@@ -576,9 +586,9 @@ class TableHDU:
 
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         if old_name not in raw:
-            raise KeyError(f"Column '{old_name}' not found")
+            raise UnknownColumnError(f"Column '{old_name}' not found")
         if new_name in raw:
-            raise KeyError(f"Column '{new_name}' already exists")
+            raise ColumnExistsError(f"Column '{new_name}' already exists")
 
         renamed: Dict[str, Any] = {}
         for key, value in raw.items():
@@ -616,9 +626,13 @@ class TableHDU:
         if incoming_cols != current_cols:
             missing = sorted(current_cols - incoming_cols)
             extra = sorted(incoming_cols - current_cols)
-            raise ValueError(
-                f"append_rows requires exactly matching columns; missing={missing}, extra={extra}"
+            message = (
+                "append_rows requires exactly matching columns; "
+                f"missing={missing}, extra={extra}"
             )
+            if extra:
+                raise UnknownColumnError(message)
+            raise ValueError(message)
 
         appended: Dict[str, Any] = {}
         append_rows_count: Optional[int] = None
@@ -652,7 +666,7 @@ class TableHDU:
                 # (see _io_engine.table_api._squeeze_scalar_columns).
                 return value.reshape(-1)
             return value
-        raise KeyError(f"Column '{col_name}' not found")
+        raise UnknownColumnError(f"Column '{col_name}' not found")
 
     def materialize(self) -> "TableHDU":
         return self
@@ -677,9 +691,10 @@ class TableHDU:
             for start in range(0, total_rows, batch_size):
                 batch: Dict[str, Any] = {}
                 for k, v in self._raw_data.items():
-                    if isinstance(v, torch.Tensor):
-                        batch[str(k)] = v[start : start + batch_size]
-                    elif isinstance(v, list):
+                    # Same row-aligned test as head()/filter(): tensors, numpy
+                    # arrays, lists and tuples are sliced (numpy and tuple
+                    # columns used to be yielded whole in every batch).
+                    if _row_aligned_count(v) is not None:
                         batch[str(k)] = v[start : start + batch_size]
                     else:
                         batch[str(k)] = v
@@ -754,7 +769,9 @@ class TableHDU:
             ):
                 from .._string_decode import decode_byte_tensor
 
-                payload[name] = decode_byte_tensor(value, encoding="ascii", strip=True)
+                payload[name] = decode_byte_tensor(
+                    value, encoding="ascii", strip=True, column=name
+                )
 
         header = self.header if self.header is not None else Header()
         from ..fits_schema import iter_table_columns, remap_table_column_cards

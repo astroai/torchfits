@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
-from .._errors import HDUNotFoundError
+from .._errors import HDUNotFoundError, UnknownColumnError
 from ._repr import render_html_table
-from .header import Header
+from .header import Header, naxis2_row_count
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -94,13 +94,10 @@ class TableHDURef:
 
     @property
     def num_rows(self) -> int:
-        try:
-            total = int(self.header.get("NAXIS2", 0))
-        except (HDUNotFoundError, FileNotFoundError):
-            # The source itself is gone: a 0-row answer would hide that.
-            raise
-        except Exception:
-            total = 0
+        # A header that cannot be read (file gone, HDU missing, I/O error)
+        # propagates: a 0-row answer would hide it. Only a missing NAXIS2
+        # means zero rows; a malformed one is a corrupt header (r3a-17).
+        total = naxis2_row_count(self.header, self._source_path)
         if self._row_slice is None:
             return max(0, total)
         # One definition of the row window, shared with read()/iter_rows()
@@ -141,14 +138,13 @@ class TableHDURef:
             raise
         except (TypeError, ValueError):
             n = 0
-        out: list[str] = []
-        for i in range(1, n + 1):
-            name = self.header.get(f"TTYPE{i}")
-            if isinstance(name, str) and name:
-                out.append(name)
-            else:
-                out.append(f"COL{i}")
-        return out
+        from ..fits_schema import _reader_column_name
+
+        seen: set[str] = set()
+        return [
+            _reader_column_name(self.header.get(f"TTYPE{i}"), i, seen)
+            for i in range(1, n + 1)
+        ]
 
     @property
     def string_columns(self) -> List[str]:
@@ -215,7 +211,9 @@ class TableHDURef:
     def _is_ascii_table(self) -> bool:
         try:
             return str(self.header.get("XTENSION", "")).strip().upper() == "TABLE"
-        except Exception:
+        except (AttributeError, TypeError):
+            # A header object without a usable .get(); a header that cannot
+            # be read raises here as it would from the read itself.
             return False
 
     def read(
@@ -294,14 +292,23 @@ class TableHDURef:
             yield chunk
 
     def __getitem__(self, col_name: str) -> Any:
+        known = self._file_columns()
+        if known and col_name not in known:
+            raise UnknownColumnError(f"Column '{col_name}' not found")
         data = self.read(columns=[col_name])
         if col_name not in data:
-            raise KeyError(f"Column '{col_name}' not found")
+            raise UnknownColumnError(f"Column '{col_name}' not found")
         return data[col_name]
 
     def get_string_column(
-        self, name: str, encoding: str = "ascii", strip: bool = True
+        self,
+        name: str,
+        encoding: str = "ascii",
+        strip: bool = True,
+        *,
+        decode_errors: str = "strict",
     ) -> List[str]:
+        """Decode string column *name*; see ``decode_errors`` in ``table.read``."""
         import torch
 
         value = self[name]
@@ -311,9 +318,14 @@ class TableHDURef:
             raise TypeError(
                 f"Column '{name}' is not a uint8 (rows,width) encoded string column"
             )
-        from .._string_decode import decode_byte_tensor
+        from .._string_decode import DecodeSpec, decode_byte_tensor
 
-        return decode_byte_tensor(value, encoding=encoding, strip=strip)
+        return decode_byte_tensor(
+            value,
+            encoding=DecodeSpec(encoding, decode_errors),
+            strip=strip,
+            column=name,
+        )
 
     def get_vla_column(self, name: str) -> List[Tensor]:
         value = self[name]

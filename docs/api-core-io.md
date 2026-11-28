@@ -492,6 +492,12 @@ torchfits.write(
     compress=False,
     quantize=None,
     checksum=False,
+    *,
+    tile_shape=None,
+    quantize_level=None,
+    quantize_method=None,
+    dither_seed=None,
+    int_to_float=False,
 )
 ```
 
@@ -501,8 +507,14 @@ torchfits.write(
 | `data` | `Tensor`, numpy array, `dict`, or `HDUList` | *(required)* | Data to write. Numpy arrays and tensors write an image HDU; `dict` writes a table. |
 | `header` | `dict` or `Header` or `None` | `None` | FITS header key-value pairs |
 | `overwrite` | `bool` | `False` | Overwrite an existing file. With `False`, a file that appears while writing is left untouched and `FileExistsError` is raised. A leading `!` (CFITSIO clobber syntax) in `path` raises `ValueError`. |
-| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1`; float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults). 64-bit integer images (`int64`, `uint64`) cannot be tile-compressed: `compress=` raises `ValueError`. |
+| `compress` | `bool` or `str` | `False` | `True` (= `RICE_1`), `"gzip"` (= `GZIP_1`), `"rice"`, etc. Integer images are lossless with every algorithm. Float images are lossless only with `GZIP_1` (or `GZIP_2` with `quantize_level=0`); float `GZIP_2`, `BZIP2_1`, `RICE_1` and `HCOMPRESS_1` use CFITSIO default quantization (lossy, same as astropy/fitsio defaults) unless `quantize_level=` says otherwise. NaN pixels survive every codec (quantized codecs store them as `ZBLANK` nulls). 64-bit integer images (`int64`, `uint64`) cannot be tile-compressed: `compress=` raises `ValueError`. `PLIO_1` stores only pixel values `0..2**24-1`: an image whose stored values fall outside (negative pixels, or a `uint32` image, stored offset by `-2**31`) raises `ValueError`. |
 | `quantize` | `None` or `str` or `dict` | `None` | Opt-in robust `BITPIX=16` pack for float images (`"robust"` or `{"lo_q", "hi_q", "keep_zero"}`). Default keeps native float. |
+| `checksum` | `bool` | `False` | Stamp `DATASUM`/`CHECKSUM` on every HDU of the new file (see [Checksums](#checksums)) |
+| `tile_shape` | sequence of `int` or `None` | `None` | Compression tile size per image axis, in **tensor axis order** (`(rows, cols)` for a 2-D image), like `fpack -t`. It covers the trailing axes; leading axes it leaves out get size 1. `-1` (or a size past the axis length) means the whole axis. Default: one image row per tile (16 rows for `HCOMPRESS_1`). `HCOMPRESS_1` tiles must span exactly two axes of at least 4 pixels. Applies to every image HDU written; requires `compress=`. Keyword-only. |
+| `quantize_level` | `float` or `None` | `None` | How float images are quantized in a tile-compressed write, like `fpack -q`. `> 0`: step = tile noise sigma / level (larger = finer); `< 0`: absolute step `abs(level)`; `0`: lossless (only `GZIP_1`/`GZIP_2`). `None`: lossless for `GZIP_1`, `4.0` for the other codecs. Not the same as `quantize=`. Keyword-only. |
+| `quantize_method` | `str` or `None` | `None` | `"subtractive_dither_1"` (CFITSIO default), `"subtractive_dither_2"` (also keeps exact zeros; not with `HCOMPRESS_1`) or `"no_dither"` (default level `16`). Recorded as `ZQUANTIZ`. Keyword-only. |
+| `dither_seed` | `int` or `None` | `None` | Dither seed `1..10000`, recorded as `ZDITHER0`; fixing it makes repeated writes byte-identical. `None`: CFITSIO picks one from the clock. Keyword-only. |
+| `int_to_float` | `bool` | `False` | Compress integer images as quantized `float32`, like `fpack -i2f`: physical values (`BSCALE`/`BZERO` applied, `BLANK` pixels as NaN) are quantized at `quantize_level` (default `4.0`, even with `GZIP_1`), so the image is stored and read back as `float32` (`ZBITPIX = -32`, no `BSCALE`/`BZERO`/`BLANK`). Lossy. Float images are unaffected. Not with `PLIO_1` or `quantize_level=0`; requires `compress=`. Keyword-only. |
 
 !!! note "`uint16` images and `PLIO_1`"
     CFITSIO stores a `uint16` image compressed with `PLIO_1` as unsigned
@@ -533,6 +545,59 @@ torchfits.write(
     torchfits.write("i32.fits", x.to(torch.int32), compress="GZIP_1", overwrite=True)
     ```
 
+!!! note "Tile-compression controls (fpack equivalents)"
+    With `compress=`, `tile_shape=` picks the tile geometry (`fpack -t`) and
+    `quantize_level=`, `quantize_method=` and `dither_seed=` control how
+    floating-point images are quantized (`fpack -q`). Integer images are
+    compressed losslessly and ignore the quantization options (a write whose
+    image HDUs are all integer refuses them) unless `int_to_float=True`
+    turns them into quantized floats (`fpack -i2f`). Validation happens before
+    anything is written; a bad value or combination (for example
+    `quantize_level=0` with `RICE_1`, which cannot store floats losslessly)
+    raises `ValueError` or `TypeError`.
+
+    ```python
+    import torch, torchfits
+
+    x = torch.randn(512, 512)
+    # 128x128-pixel tiles (tensor axis order: rows, cols)
+    torchfits.write(
+        "tiled.fits", x, compress="GZIP_1", tile_shape=(128, 128), overwrite=True
+    )
+    assert torch.equal(torchfits.read("tiled.fits", hdu=1), x)
+
+    # Lossy RICE_1 with an absolute step of 1e-3, reproducible dither
+    torchfits.write(
+        "rice.fits",
+        x,
+        compress="RICE_1",
+        quantize_level=-1e-3,
+        dither_seed=42,
+        overwrite=True,
+    )
+    assert (torchfits.read("rice.fits", hdu=1) - x).abs().max() <= 1e-3
+
+    # Lossless floats with byte-shuffled GZIP_2
+    torchfits.write("gz2.fits", x, compress="GZIP_2", quantize_level=0, overwrite=True)
+    assert torch.equal(torchfits.read("gz2.fits", hdu=1), x)
+
+    # fpack -i2f: integer counts stored as quantized float32 (step 0.5)
+    counts = (x * 30 + 1000).round().to(torch.int32)
+    torchfits.write(
+        "i2f.fits",
+        counts,
+        compress="RICE_1",
+        int_to_float=True,
+        quantize_level=-0.5,
+        overwrite=True,
+    )
+    restored = torchfits.read("i2f.fits", hdu=1)  # float32
+    assert (restored - counts).abs().max() <= 0.25 + 1e-3
+    ```
+
+    Runnable, with the matching `torchfits compress` flags:
+    [`example_fpack_compression.py`](published-examples/example_fpack_compression.py).
+
 !!! tip "Skewed float → int16"
     Linear min→max packing onto int16 wastes codes on rare extremes. Prefer
     native float (`quantize=None`). When size forces int16, use
@@ -544,8 +609,18 @@ torchfits.write(
 !!! note "Errors from `write()`"
     Invalid arguments raise `ValueError` or `TypeError` unchanged (for
     example `compress=3` raises `TypeError`). A failure inside the writer
-    raises `RuntimeError("Failed to write FITS file '<path>': ...")`. Either
-    way nothing is created or replaced at `path`.
+    raises `RuntimeError("Failed to write FITS file '<path>': ...")`, including
+    a failure to flush the last buffered blocks when the file is closed
+    (disk full, quota, `RLIMIT_FSIZE`). Either way nothing is created or
+    replaced at `path`.
+
+!!! warning "Do not mutate a tensor while it is being written"
+    The pixel data is written without the GIL and without a copy. Another
+    thread must not resize, `set_()` or modify a tensor (or the array it
+    came from) while `write()`, `write_tensor()`, `insert_hdu()` or
+    `replace_hdu()` is writing it: a resize frees the buffer CFITSIO is
+    reading and can crash the process. This is the same contract as
+    PyTorch's own operations. NumPy arrays refuse a resize while exported.
 
 !!! note "The `write()` data-type convention"
     `write()` dispatches on the *type* of `data`: a `dict` (of tensors or
@@ -607,8 +682,18 @@ torchfits.write_tensor(
     compress=False,
     quantize=None,
     checksum=False,
+    *,
+    tile_shape=None,
+    quantize_level=None,
+    quantize_method=None,
+    dither_seed=None,
+    int_to_float=False,
 )
 ```
+
+`tensor` must be a `torch.Tensor` (`TypeError` otherwise); every other
+argument, including the keyword-only tile-compression options, behaves as in
+[`write()`](#write).
 
 ```python
 torchfits.write_tensor("out.fits", tensor, header={"OBJECT": "M31"}, overwrite=True)
@@ -621,8 +706,18 @@ torchfits.write_tensor("checked.fits", tensor, checksum=True, overwrite=True)
 ## HDU Mutation
 
 ```python
-torchfits.insert_hdu(path, data, index=1, header=None, compress=False)
-torchfits.replace_hdu(path, hdu, data, header=None, compress=False)
+torchfits.insert_hdu(path, data, index=1, header=None, compress=False, *,
+                     tile_shape=None, quantize_level=None, quantize_method=None,
+                     dither_seed=None, int_to_float=False)
+```
+
+```python
+torchfits.replace_hdu(path, hdu, data, header=None, compress=False, *,
+                      tile_shape=None, quantize_level=None, quantize_method=None,
+                      dither_seed=None, int_to_float=False)
+```
+
+```python
 torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
@@ -635,7 +730,10 @@ Only the inserted or replacing HDU is written, from the call's arguments.
 Every other HDU is copied byte for byte, so it keeps the structure it had
 before the edit: tile compression, storage `BITPIX`, `BSCALE`/`BZERO`/`BLANK`,
 scaled table columns with `TSCAL`/`TZERO`, and all other cards. `compress=`
-applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
+and the keyword-only tile-compression options (`tile_shape=`,
+`quantize_level=`, `quantize_method=`, `dither_seed=`, `int_to_float=`; same
+meaning and validation as in [`write()`](#write), and they likewise require
+`compress=`) apply to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
 HDU is stamped too. Bytes after the last HDU that do not start an extension
 (junk, zero or blank padding, which readers ignore) stay at the end of the file.
 

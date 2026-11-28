@@ -26,6 +26,8 @@
 #include "fits_rw.h"
 #include "fits_detail.h"
 #include "fits_handle.h"
+#include "hardware.h"
+#include "nb_ndarray_utils.h"
 #include "table_types.h"
 #include "table_reader.h"
 #include "table_ops.h"
@@ -43,9 +45,9 @@ namespace {
 // blocked writes to another directory's x.fits after a chdir. Names
 // realpath() cannot resolve (extended syntax, URLs) are kept as given.
 std::string canonical_reader_path(const std::string& filename) {
-    char buf[PATH_MAX];
-    if (::realpath(filename.c_str(), buf) != nullptr) {
-        return std::string(buf);
+    std::string resolved;
+    if (torchfits::detail::resolve_existing_local_path(filename, &resolved)) {
+        return resolved;
     }
     return filename;
 }
@@ -179,6 +181,20 @@ struct ThreadLocalReaderCache {
             } else {
                 ++it;
             }
+        }
+    }
+
+    // Drop every idle cached reader (and its two descriptors) in this cache.
+    void evict_all() {
+        std::lock_guard<std::mutex> l(mu_);
+        map_.clear();
+        lru_.clear();
+    }
+
+    static void evict_all_everywhere() {
+        std::lock_guard<std::mutex> g(g_registry_mu);
+        for (ThreadLocalReaderCache* cache : g_registry) {
+            cache->evict_all();
         }
     }
 
@@ -575,6 +591,9 @@ nb::dict table_result_to_python(
     return result_dict;
 }
 
+using TableColumns =
+    std::vector<std::pair<std::string, torchfits::TableReader::ColumnData>>;
+
 // Name stamped on the open_fits_mmap_reader capsule; any other capsule must be
 // refused before its pointer is cast to TableReader*.
 constexpr const char* kTableReaderCapsuleName = "torchfits.TableReader";
@@ -587,12 +606,140 @@ torchfits::TableReader* table_reader_from_capsule(const nb::capsule& cap) {
     return static_cast<torchfits::TableReader*>(cap.data());
 }
 
+// Parse the (column, op, literal) triples of a native filtered read. Literal
+// contract: float/int only (no bool, no string); the Python planner keeps
+// every other predicate on the Arrow evaluator.
+std::vector<torchfits::TableFilter> parse_table_filters(const nb::list& filters_py) {
+    std::vector<torchfits::TableFilter> filters;
+    for (auto handle : filters_py) {
+        nb::tuple item = nb::cast<nb::tuple>(handle);
+        if (item.size() != 3) throw std::runtime_error("Filter must be (col, op, val)");
+
+        torchfits::TableFilter f;
+        f.col_name = nb::cast<std::string>(item[0]);
+        std::string op = nb::cast<std::string>(item[1]);
+
+        if (op == "==" || op == "eq") f.op = torchfits::FilterOp::EQ;
+        else if (op == "!=" || op == "ne") f.op = torchfits::FilterOp::NE;
+        else if (op == ">" || op == "gt") f.op = torchfits::FilterOp::GT;
+        else if (op == "<" || op == "lt") f.op = torchfits::FilterOp::LT;
+        else if (op == ">=" || op == "ge") f.op = torchfits::FilterOp::GE;
+        else if (op == "<=" || op == "le") f.op = torchfits::FilterOp::LE;
+        else throw std::runtime_error("Unknown operator: " + op);
+
+        // Literal contract: float/int. Python bool is an int subclass but
+        // is not a filter value, and older NumPy releases give np.bool_ an
+        // __index__ (NumPy 2 does not), so bool is rejected by type name.
+        // NumPy integer scalars convert through __index__, so this branch
+        // can never truncate a float.
+        nb::handle val = item[2];
+        const std::string type_name = torchfits::internal::python_type_name(val);
+        if (nb::isinstance<bool>(val) ||
+            type_name == "numpy.bool" ||
+            type_name == "numpy.bool_") {
+            throw std::runtime_error("Unsupported filter value type (only float/int)");
+        }
+        if (PyIndex_Check(val.ptr())) {
+            // __index__ is a type-level slot, so a 0-d array also lands
+            // here. Only an int64-convertible value is an integer literal;
+            // anything else (out of range, array) is rejected below.
+            if (nb::try_cast<int64_t>(val, f.val_i)) {
+                f.val_d = (double)f.val_i;
+            } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
+                // [2^63, 2^64): exact for uint64 columns, a constant
+                // predicate for every other integer column.
+                f.has_u64 = true;
+                f.out_of_int64 = 1;
+                f.val_i = std::numeric_limits<int64_t>::max();
+                f.val_d = (double)f.val_u;
+            } else {
+                throw std::runtime_error(
+                    "Unsupported filter value type (only float/int)");
+            }
+            f.type_idx = 1;
+        } else {
+            // NumPy floating scalars are not Python float subclasses
+            // (except float64), so isinstance<float> misses float32/16.
+            const bool numpy_float =
+                type_name == "numpy.float16" ||
+                type_name == "numpy.float32" ||
+                type_name == "numpy.float64" ||
+                type_name == "numpy.longdouble";
+            // PyFloat_Check, not nb::isinstance<float>: nanobind tests
+            // convertibility to C++ float (32-bit) losslessly, so a Python
+            // float such as 0.2 failed it and never reached the scan.
+            if (!PyFloat_Check(val.ptr()) && !numpy_float) {
+                throw std::runtime_error(
+                    "Unsupported filter value type (only float/int)");
+            }
+            f.val_d = nb::cast<double>(val);
+            if (!std::isfinite(f.val_d)) {
+                throw std::runtime_error("Filter float literal must be finite");
+            }
+            // The integer scan branch compares against this proxy; C++
+            // float-to-int conversion is undefined outside int64, so clamp.
+            // Outside int64 the proxy is wrong by design; out_of_int64
+            // (and val_u for [2^63, 2^64)) tells the scan the real bound.
+            constexpr double two63 = 9223372036854775808.0;
+            if (f.val_d >= two63) {
+                f.val_i = std::numeric_limits<int64_t>::max();
+                f.out_of_int64 = 1;
+                if (f.val_d < 2.0 * two63) {
+                    f.has_u64 = true;
+                    f.val_u = static_cast<uint64_t>(f.val_d);
+                }
+            } else if (f.val_d < -two63) {
+                f.val_i = std::numeric_limits<int64_t>::min();
+                f.out_of_int64 = -1;
+            } else {
+                f.val_i = (int64_t)f.val_d;
+            }
+            f.type_idx = 0;
+        }
+        filters.push_back(f);
+    }
+
+    return filters;
+}
+
+// Shared by both filtered bindings: one windowed native predicate scan +
+// gather on a cached reader (the GIL must already be released). A windowed
+// scan calls this once per window, so reusing the open reader keeps it from
+// re-opening the file and re-parsing the header per chunk.
+std::vector<std::pair<std::string, native::Tensor>> read_filtered_columns(
+    const std::string& filename, int hdu_num,
+    const std::vector<std::string>& column_names,
+    const std::vector<torchfits::TableFilter>& filters,
+    long start_row, long num_rows) {
+    ReaderCacheKey key{canonical_reader_path(filename), hdu_num};
+    AcquiredReader handle = g_reader_cache.acquire(key);
+    if (!handle.reader) {
+        handle.reader = std::make_unique<torchfits::TableReader>(key.filename, hdu_num);
+    }
+    std::vector<std::pair<std::string, native::Tensor>> result;
+    try {
+        result = handle.reader->read_columns_mmap_filtered(
+            column_names, filters, start_row, num_rows);
+    } catch (...) {
+        // An unsupported request (scaled column, compressed file) leaves the
+        // reader intact; keep it cached for the fallback read that follows.
+        g_reader_cache.release(key, std::move(handle));
+        throw;
+    }
+    g_reader_cache.release(key, std::move(handle));
+    return result;
+}
+
 } // anonymous namespace
 
 namespace torchfits {
 
 void evict_cached_reader(const std::string& filename) {
     ThreadLocalReaderCache::evict_everywhere(filename);
+}
+
+void evict_all_cached_readers() {
+    ThreadLocalReaderCache::evict_all_everywhere();
 }
 
 }  // namespace torchfits
@@ -602,46 +749,130 @@ namespace torchfits {
 void invalidate_shared_meta(const std::string& filepath);
 }
 
+namespace {
+
+// Drops a path's native caches before a write and again once it is done. The
+// mutation writers run their IO without the GIL, so another thread can read
+// the path meanwhile and re-cache its old metadata under the old stat
+// identity, which the validation window would keep serving.
+struct InvalidateAround {
+    const std::string& path;
+    explicit InvalidateAround(const std::string& p) : path(p) { drop(); }
+    ~InvalidateAround() {
+        try {
+            drop();
+        } catch (...) {
+        }
+    }
+    void drop() const {
+        torchfits::invalidate_shared_meta(path);
+        torchfits::evict_cached_reader(path);
+    }
+};
+
+// Identity check for the data fd of a TableReader borrowing file's handle
+// (TableReader::open_data_fd): the descriptor must be the file it opened.
+torchfits::TableReader::FileIdentityCheck same_file_as(const torchfits::FITSFile* file) {
+    return [file](const struct stat& st) { return file->names_open_file(st); };
+}
+
+// One read through a TableReader on a Python FITSFile's handle, under the
+// handle's I/O lock and replaced-file check (with_locked_fptr_from_python_object).
+template <class F>
+void with_handle_table_reader(nb::object file_obj, int hdu_num, F&& fn) {
+    const torchfits::FITSFile* file = &nb::cast<torchfits::FITSFile&>(file_obj);
+    torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+        torchfits::TableReader reader(fptr, hdu_num, same_file_as(file));
+        fn(reader);
+    });
+}
+
+}  // namespace
+
 void bind_table(nb::module_& m) {
+    nb::exception<torchfits::TableReaderUnsupported>(
+        m, "TableReaderUnsupportedError", PyExc_RuntimeError);
     nb::class_<torchfits::TableReader>(m, "TableReader")
         .def("__init__", [](torchfits::TableReader* self, const std::string& filename, int hdu_num) {
             new (self) torchfits::TableReader(filename, hdu_num);
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("__init__", [](torchfits::TableReader* self, nb::object file_obj, int hdu_num) {
+            // The reader borrows the handle's fitsfile*, whose single CFITSIO
+            // cursor every other borrower also drives, and pins one data fd
+            // (vetted against the handle's open identity) for its raw reads.
+            // Construction and every read run under the handle's I/O lock and
+            // are refused once the path names a different file -- the guard
+            // with_locked_fptr_from_python_object applies to the *_from_handle
+            // bindings. The pinned fd already keeps raw reads on the handle's
+            // file across an atomic replace; the refusal also covers a rewrite
+            // in place, which changes the bytes behind both. keep_alive<1, 2> keeps the FITSFile (and
+            // so its lock) alive as long as the reader; the lock does not need
+            // the handle open, so a reader that outlives close() still works.
+            torchfits::FITSFile* file = &nb::cast<torchfits::FITSFile&>(file_obj);
             auto owner = torchfits::share_fptr_from_python_object(file_obj);
-            new (self) torchfits::TableReader(owner.get(), hdu_num);
+            torchfits::TableReader::IoGuard guard =
+                [file](const std::function<void()>& fn) {
+                    file->with_io_lock([&] {
+                        static const char* kReplaced =
+                            "FITS file was replaced on disk after this handle was "
+                            "opened; reopen it to read the current file";
+                        if (!file->path_names_open_file()) {
+                            throw std::runtime_error(kReplaced);
+                        }
+                        fn();
+                        if (!file->path_names_open_file()) {
+                            throw std::runtime_error(kReplaced);
+                        }
+                    });
+                };
+            {
+                nb::gil_scoped_release release;
+                guard([&] {
+                    new (self) torchfits::TableReader(owner.get(), hdu_num, same_file_as(file));
+                });
+            }
             // Keep the fitsfile open for this reader even if the FITSFile is
-            // closed or collected first.
+            // closed first.
             self->hold_fptr_owner(std::move(owner));
-        }, nb::arg("file_obj"), nb::arg("hdu_num") = 1)
+            self->set_io_guard(std::move(guard));
+        }, nb::arg("file_obj"), nb::arg("hdu_num") = 1, nb::keep_alive<1, 2>())
         .def_prop_ro("num_rows", &torchfits::TableReader::get_num_rows)
         .def("read_rows", [](torchfits::TableReader& self,
                              const std::vector<std::string>& column_names,
                              long start_row, long num_rows) -> nb::object {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_python(result_map, false);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
         .def("read_rows_numpy", [](torchfits::TableReader& self,
                                    const std::vector<std::string>& column_names,
                                    long start_row, long num_rows) -> nb::object {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_python(result_map, true);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
         .def("read_rows_raw", [](torchfits::TableReader& self,
                                  const std::vector<std::string>& column_names,
                                  long start_row, long num_rows) -> nb::dict {
-            nb::gil_scoped_release release;
-            std::lock_guard<std::mutex> io_lock(self.io_mutex_);
-            auto result_map = self.read_columns(column_names, start_row, num_rows, true);
-            nb::gil_scoped_acquire acquire;
+            TableColumns result_map;
+            {
+                nb::gil_scoped_release release;
+                self.run_io([&] {
+                    result_map = self.read_columns(column_names, start_row, num_rows, true);
+                });
+            }
             return table_result_to_raw_python(result_map);
         }, nb::arg("column_names") = std::vector<std::string>(),
            nb::arg("start_row") = 1, nb::arg("num_rows") = -1)
@@ -651,29 +882,88 @@ void bind_table(nb::module_& m) {
 
     m.def("write_fits_table", [](const std::string& filename, nb::dict tensor_dict, nb::dict header, bool overwrite,
                                  nb::object schema, const std::string& table_type) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // Converts the payload with the GIL, writes the file without it.
+        InvalidateAround invalidate_around(filename);
         write_fits_table(filename.c_str(), tensor_dict, header, overwrite, schema, table_type);
     }, nb::arg("filename"), nb::arg("tensor_dict"), nb::arg("header"), nb::arg("overwrite"),
        nb::arg("schema") = nb::none(), nb::arg("table_type") = "binary");
 
     m.def("append_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // The payload is converted with the GIL; the IO runs without it.
+        InvalidateAround invalidate_around(filename);
         append_rows(filename.c_str(), hdu_num, tensor_dict);
     });
 
+    // Incremental writer behind torchfits.table.writer(): one open handle per
+    // stream, so a batch costs its column writes rather than an open/close.
+    struct StreamWriterBusy {
+        TableStreamWriter& writer;
+        explicit StreamWriterBusy(TableStreamWriter& w) : writer(w) {
+            if (writer.closed()) {
+                throw std::runtime_error("TableStreamWriter is closed");
+            }
+            if (writer.busy()) {
+                throw std::runtime_error("TableStreamWriter is in use by another thread");
+            }
+            writer.set_busy(true);
+        }
+        ~StreamWriterBusy() { writer.set_busy(false); }
+    };
+    nb::class_<TableStreamWriter>(m, "TableStreamWriter")
+        .def("__init__", [](TableStreamWriter* self, const std::string& filename, int hdu_num) {
+            torchfits::invalidate_shared_meta(filename);
+            torchfits::evict_cached_reader(filename);
+            nb::gil_scoped_release release;
+            new (self) TableStreamWriter(filename, hdu_num);
+        }, nb::arg("filename"), nb::arg("hdu_num") = 1)
+        .def("write_rows", &TableStreamWriter::write_rows, nb::arg("tensor_dict"))
+        .def("write_raw_rows", [](TableStreamWriter& self, nb::object rows_obj) {
+            StreamWriterBusy busy(self);
+            // Read-only input is fine (np.frombuffer views); taking an object
+            // keeps the generated stub a plain annotation.
+            nb::ndarray<nb::ro> rows = nb::cast<nb::ndarray<nb::ro>>(rows_obj);
+            const nb::dlpack::dtype dt = rows.dtype();
+            const bool c_contig = rows.ndim() == 2 &&
+                (rows.shape(0) <= 1 || rows.stride(0) == static_cast<int64_t>(rows.shape(1))) &&
+                (rows.shape(1) <= 1 || rows.stride(1) == 1);
+            if (rows.device_type() != nb::device::cpu::value || !c_contig ||
+                dt.code != (uint8_t)nb::dlpack::dtype_code::UInt || dt.bits != 8) {
+                throw std::invalid_argument(
+                    "write_raw_rows expects a C-contiguous 2-D uint8 CPU array");
+            }
+            if (rows.shape(0) > 0 && static_cast<long>(rows.shape(1)) != self.row_bytes()) {
+                throw std::invalid_argument(
+                    "write_raw_rows: rows are " + std::to_string(rows.shape(1)) +
+                    " bytes wide, the table's are " + std::to_string(self.row_bytes()));
+            }
+            const uint8_t* data = static_cast<const uint8_t*>(rows.data());
+            const long nrows = static_cast<long>(rows.shape(0));
+            nb::gil_scoped_release release;
+            self.write_raw_rows(data, nrows);
+        }, nb::arg("rows"))
+        .def("close", [](TableStreamWriter& self) {
+            if (self.closed()) {
+                return;
+            }
+            {
+                StreamWriterBusy busy(self);
+                nb::gil_scoped_release release;
+                self.close();
+            }
+        })
+        .def_prop_ro("num_rows", &TableStreamWriter::num_rows)
+        .def_prop_ro("row_bytes", &TableStreamWriter::row_bytes)
+        .def_prop_ro("closed", &TableStreamWriter::closed);
+
     m.def("insert_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict,
                                        long start_row) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        InvalidateAround invalidate_around(filename);
         insert_rows(filename.c_str(), hdu_num, tensor_dict, start_row);
     });
 
     m.def("update_fits_table_rows", [](const std::string& filename, int hdu_num, nb::dict tensor_dict,
                                        long start_row, long num_rows) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        InvalidateAround invalidate_around(filename);
         update_rows(filename.c_str(), hdu_num, tensor_dict, start_row, num_rows);
     });
 
@@ -685,21 +975,38 @@ void bind_table(nb::module_& m) {
     });
 
     m.def("rename_fits_table_columns", [](const std::string& filename, int hdu_num, nb::dict mapping) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
-        rename_columns(filename.c_str(), hdu_num, mapping);
+        std::vector<std::pair<std::string, std::string>> renames;
+        renames.reserve(mapping.size());
+        for (auto item : mapping) {
+            renames.emplace_back(nb::cast<std::string>(item.first),
+                                 nb::cast<std::string>(item.second));
+        }
+        nb::gil_scoped_release release;
+        InvalidateAround invalidate_around(filename);
+        rename_columns(filename.c_str(), hdu_num, renames);
     });
 
     m.def("drop_fits_table_columns", [](const std::string& filename, int hdu_num, nb::list columns) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
-        drop_columns(filename.c_str(), hdu_num, columns);
+        std::vector<std::string> names;
+        names.reserve(columns.size());
+        for (auto name : columns) {
+            names.push_back(nb::cast<std::string>(name));
+        }
+        // CFITSIO rewrites every row per dropped column: no GIL for that.
+        nb::gil_scoped_release release;
+        InvalidateAround invalidate_around(filename);
+        drop_columns(filename.c_str(), hdu_num, names);
     });
 
     m.def("delete_fits_table_rows", [](const std::string& filename, int hdu_num, long start_row,
                                        long num_rows) {
-        torchfits::invalidate_shared_meta(filename);
-        torchfits::evict_cached_reader(filename);
+        // Takes no Python input, so the whole rewrite (CFITSIO shifts every
+        // row after the deleted range) runs without the GIL. Other threads can
+        // then read the path while it is rewritten and re-cache its old row
+        // count under the old stat identity, which the validation window would
+        // keep serving: invalidate again once the write is done.
+        nb::gil_scoped_release release;
+        InvalidateAround invalidate_around(filename);
         delete_rows(filename.c_str(), hdu_num, start_row, num_rows);
     });
 
@@ -714,25 +1021,25 @@ void bind_table(nb::module_& m) {
         return table_result_to_python(result_map, false);
     });
 
+    // The *_from_handle readers drive the caller's shared FITSFile handle, so
+    // they run under its I/O lock (with_locked_fptr_from_python_object): two
+    // threads reading different HDUs through one handle would otherwise move
+    // its single CFITSIO cursor under each other.
     m.def("read_fits_table_from_handle", [](nb::object file_obj, int hdu_num) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns({}, 1, -1, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
+            result_map = reader.read_columns({}, 1, -1, true);
+        });
         return table_result_to_python(result_map, false);
     });
 
     m.def("read_fits_table_rows_from_handle", [](nb::object file_obj, int hdu_num,
                                                  const std::vector<std::string>& column_names,
                                                  long start_row, long num_rows) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_python(result_map, false);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
@@ -741,12 +1048,10 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_raw_from_handle", [](nb::object file_obj, int hdu_num,
                                                      const std::vector<std::string>& column_names,
                                                      long start_row, long num_rows) -> nb::dict {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_raw_python(result_map);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
@@ -846,12 +1151,10 @@ void bind_table(nb::module_& m) {
     m.def("read_fits_table_rows_numpy_from_handle", [](nb::object file_obj, int hdu_num,
                                                        const std::vector<std::string>& column_names,
                                                        long start_row, long num_rows) -> nb::object {
-        auto fptr_owner = torchfits::share_fptr_from_python_object(file_obj);
-        fitsfile* fptr = fptr_owner.get();
-        nb::gil_scoped_release release;
-        torchfits::TableReader reader(fptr, hdu_num);
-        auto result_map = reader.read_columns(column_names, start_row, num_rows, true);
-        nb::gil_scoped_acquire acquire;
+        TableColumns result_map;
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
+            result_map = reader.read_columns(column_names, start_row, num_rows, true);
+        });
         return table_result_to_python(result_map, true);
     }, nb::arg("file"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
@@ -901,7 +1204,12 @@ void bind_table(nb::module_& m) {
         // Persistent TableReader for batch mmap scans: opens + parses the
         // header once; each read_rows call maps/unmaps per batch but never
         // re-opens the file.
-        torchfits::TableReader* reader = new torchfits::TableReader(path, hdu_num);
+        torchfits::TableReader* reader = nullptr;
+        {
+            // Opening inflates a .gz file / fetches a URL: no GIL needed.
+            nb::gil_scoped_release release;
+            reader = new torchfits::TableReader(path, hdu_num);
+        }
         return nb::capsule(reader, kTableReaderCapsuleName, [](void* p) noexcept {
             delete static_cast<torchfits::TableReader*>(p);
         });
@@ -935,96 +1243,12 @@ void bind_table(nb::module_& m) {
 
     m.def("read_fits_table_filtered", [](const std::string& filename, int hdu_num,
                                          const std::vector<std::string>& column_names,
-                                         nb::list filters_py) -> nb::object {
-        std::vector<torchfits::TableFilter> filters;
-        for (auto handle : filters_py) {
-            nb::tuple item = nb::cast<nb::tuple>(handle);
-            if (item.size() != 3) throw std::runtime_error("Filter must be (col, op, val)");
-
-            torchfits::TableFilter f;
-            f.col_name = nb::cast<std::string>(item[0]);
-            std::string op = nb::cast<std::string>(item[1]);
-
-            if (op == "==" || op == "eq") f.op = torchfits::FilterOp::EQ;
-            else if (op == "!=" || op == "ne") f.op = torchfits::FilterOp::NE;
-            else if (op == ">" || op == "gt") f.op = torchfits::FilterOp::GT;
-            else if (op == "<" || op == "lt") f.op = torchfits::FilterOp::LT;
-            else if (op == ">=" || op == "ge") f.op = torchfits::FilterOp::GE;
-            else if (op == "<=" || op == "le") f.op = torchfits::FilterOp::LE;
-            else throw std::runtime_error("Unknown operator: " + op);
-
-            // Literal contract: float/int. Python bool is an int subclass but
-            // is not a filter value, and older NumPy releases give np.bool_ an
-            // __index__ (NumPy 2 does not), so bool is rejected by type name.
-            // NumPy integer scalars convert through __index__, so this branch
-            // can never truncate a float.
-            nb::handle val = item[2];
-            const std::string type_name = torchfits::internal::python_type_name(val);
-            if (nb::isinstance<bool>(val) ||
-                type_name == "numpy.bool" ||
-                type_name == "numpy.bool_") {
-                throw std::runtime_error("Unsupported filter value type (only float/int)");
-            }
-            if (PyIndex_Check(val.ptr())) {
-                // __index__ is a type-level slot, so a 0-d array also lands
-                // here. Only an int64-convertible value is an integer literal;
-                // anything else (out of range, array) is rejected below.
-                if (nb::try_cast<int64_t>(val, f.val_i)) {
-                    f.val_d = (double)f.val_i;
-                } else if (nb::try_cast<uint64_t>(val, f.val_u)) {
-                    // [2^63, 2^64): exact for uint64 columns, a constant
-                    // predicate for every other integer column.
-                    f.has_u64 = true;
-                    f.out_of_int64 = 1;
-                    f.val_i = std::numeric_limits<int64_t>::max();
-                    f.val_d = (double)f.val_u;
-                } else {
-                    throw std::runtime_error(
-                        "Unsupported filter value type (only float/int)");
-                }
-                f.type_idx = 1;
-            } else {
-                // NumPy floating scalars are not Python float subclasses
-                // (except float64), so isinstance<float> misses float32/16.
-                const bool numpy_float =
-                    type_name == "numpy.float16" ||
-                    type_name == "numpy.float32" ||
-                    type_name == "numpy.float64" ||
-                    type_name == "numpy.longdouble";
-                if (!nb::isinstance<float>(val) && !numpy_float) {
-                    throw std::runtime_error(
-                        "Unsupported filter value type (only float/int)");
-                }
-                f.val_d = nb::cast<double>(val);
-                if (!std::isfinite(f.val_d)) {
-                    throw std::runtime_error("Filter float literal must be finite");
-                }
-                // The integer scan branch compares against this proxy; C++
-                // float-to-int conversion is undefined outside int64, so clamp.
-                // Outside int64 the proxy is wrong by design; out_of_int64
-                // (and val_u for [2^63, 2^64)) tells the scan the real bound.
-                constexpr double two63 = 9223372036854775808.0;
-                if (f.val_d >= two63) {
-                    f.val_i = std::numeric_limits<int64_t>::max();
-                    f.out_of_int64 = 1;
-                    if (f.val_d < 2.0 * two63) {
-                        f.has_u64 = true;
-                        f.val_u = static_cast<uint64_t>(f.val_d);
-                    }
-                } else if (f.val_d < -two63) {
-                    f.val_i = std::numeric_limits<int64_t>::min();
-                    f.out_of_int64 = -1;
-                } else {
-                    f.val_i = (int64_t)f.val_d;
-                }
-                f.type_idx = 0;
-            }
-            filters.push_back(f);
-        }
-
+                                         nb::list filters_py, long start_row,
+                                         long num_rows) -> nb::object {
+        auto filters = parse_table_filters(filters_py);
         nb::gil_scoped_release release;
-        torchfits::TableReader reader(filename, hdu_num);
-        auto result_map = reader.read_columns_mmap_filtered(column_names, filters);
+        auto result_map = read_filtered_columns(
+            filename, hdu_num, column_names, filters, start_row, num_rows);
         nb::gil_scoped_acquire acquire;
 
         nb::dict result;
@@ -1034,5 +1258,22 @@ void bind_table(nb::module_& m) {
         return result;
     }, nb::arg("filename"), nb::arg("hdu_num") = 1,
        nb::arg("column_names") = std::vector<std::string>(),
-       nb::arg("filters"));
+       nb::arg("filters"), nb::arg("start_row") = 1, nb::arg("num_rows") = -1);
+
+    // Torch-free twin of read_fits_table_filtered: the same windowed native
+    // predicate scan, returned as raw NumPy/Arrow-ready buffers
+    // (tensor_map_to_raw_python), so an Arrow where= read never loads torch.
+    m.def("read_fits_table_filtered_raw", [](const std::string& filename, int hdu_num,
+                                             const std::vector<std::string>& column_names,
+                                             nb::list filters_py, long start_row,
+                                             long num_rows) -> nb::dict {
+        auto filters = parse_table_filters(filters_py);
+        nb::gil_scoped_release release;
+        auto result_map = read_filtered_columns(
+            filename, hdu_num, column_names, filters, start_row, num_rows);
+        nb::gil_scoped_acquire acquire;
+        return tensor_map_to_raw_python(result_map);
+    }, nb::arg("filename"), nb::arg("hdu_num") = 1,
+       nb::arg("column_names") = std::vector<std::string>(),
+       nb::arg("filters"), nb::arg("start_row") = 1, nb::arg("num_rows") = -1);
 }

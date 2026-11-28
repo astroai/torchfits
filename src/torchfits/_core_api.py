@@ -63,6 +63,7 @@ __all__ = [
     "read_colnames",
     "read_header_dict",
     "read_header_string",
+    "read_hdu_listing",
     "read_hdu_type",
     "read_keys",
     "read_nrows",
@@ -202,3 +203,24 @@ def read_shape(path: str, hdu: int) -> tuple[int, tuple[int, ...]]:
     """``(bitpix, shape)`` for an image HDU, shape in torch (row-major) order."""
     bitpix, dims = _core().read_shape(_guarded(path), hdu)
     return int(bitpix), tuple(int(d) for d in dims)
+
+
+def read_hdu_listing(path: str, num_hdus: int) -> list[tuple[str, str]]:
+    """``(hdu_type, header_string)`` for HDUs ``0 .. num_hdus - 1``.
+
+    One open handle walks the file once. Calling :func:`read_hdu_type` and
+    :func:`read_header_string` per HDU opens the file each time, and CFITSIO
+    re-scans every preceding header to reach HDU ``i``: quadratic in the HDU
+    count (a 2,000-extension file took ~10 s to list).
+    """
+    path = _guarded(path)
+    if gz_index.num_hdus(path) is not None:
+        # The gzip index already answers each HDU without decompressing.
+        return [
+            (read_hdu_type(path, i), read_header_string(path, i))
+            for i in range(num_hdus)
+        ]
+    with _core().Metadata(path) as meta:
+        return [
+            (str(meta.hdu_type(i)), str(meta.header_text(i))) for i in range(num_hdus)
+        ]

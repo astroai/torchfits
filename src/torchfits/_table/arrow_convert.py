@@ -312,24 +312,38 @@ def _decode_uint8_matrix_to_arrow(
     if width <= 0:
         return _pa_array(pa, [""] * int(arr.shape[0]))
 
+    import codecs
+
+    from .._string_decode import decode_errors_of
+
+    errors = decode_errors_of(encoding)
+    codec = codecs.lookup(str(encoding)).name
     # Vectorized fixed-width bytes -> unicode decode.
     byte_view = arr.view(np.dtype(f"S{width}")).reshape(arr.shape[0])
     if (
         strip
-        and encoding.lower() in {"ascii", "utf8", "utf-8"}
-        and not np.any(arr[:, -1] == 32)
+        and codec in {"ascii", "utf-8"}
+        # Arrow's cast validates UTF-8, not ASCII: it decoded UTF-8 bytes
+        # under encoding='ascii', so ASCII takes it only for 7-bit data.
+        and (codec == "utf-8" or int(arr.max(initial=0)) < 0x80)
     ):
-        # Fast path: if no row ends with a space, Arrow cast handles NUL trimming correctly.
+        # Fast path: the S-dtype view already drops trailing NULs and Arrow
+        # trims the trailing blanks FITS pads strings with (the same " \x00"
+        # set as the rstrip below). Invalid data falls through to the decode
+        # below, which applies the decode_errors policy like every other path.
         try:
             import pyarrow.compute as pc
 
-            return pc.cast(_pa_array(pa, byte_view), pa.string())
+            out = pc.cast(_pa_array(pa, byte_view), pa.string())
+            if np.any(arr[:, -1] == 32):
+                out = pc.utf8_rtrim(out, characters=" \x00")
+            return out
         except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError):
             pass
     if strip:
         # Stripping while still in bytes form is much faster than stripping unicode.
         byte_view = np.char.rstrip(byte_view, b" \x00")
-    decoded = np.char.decode(byte_view, encoding=encoding, errors="ignore")
+    decoded = np.char.decode(byte_view, encoding=str(encoding), errors=errors)
     return _pa_array(pa, decoded)
 
 
@@ -566,6 +580,10 @@ def _raw_column_to_arrow_direct(
     if width == 0:
         return None
     buffer = pa.py_buffer(data)
+    if width == 1 and _tform_is_scalar(fits_tform):
+        # A repeat-1 column is scalar per the schema mapping; a native (N, 1)
+        # payload must not surface as FixedSizeList<T>[1] (r5c-13).
+        return pa.Array.from_buffers(type_, rows, [None, buffer])
     if dtype_name == "uint8":
         if decode_bytes or _fits_tform_is_bit(fits_tform):
             return None
@@ -658,6 +676,12 @@ def _vla_tuple_to_arrow_array(
 # -- record-batch builder ----------------------------------------------------------
 
 
+def _named_decode_error(exc: UnicodeDecodeError, name: str) -> UnicodeDecodeError:
+    from .._string_decode import _named_decode_error as named
+
+    return exc if "decode_errors=" in str(exc.reason) else named(exc, name)
+
+
 def _chunk_to_record_batch(
     chunk: dict[str, Any],
     decode_bytes: bool,
@@ -707,13 +731,90 @@ def _chunk_to_record_batch(
         if not ordered_names:
             ordered_names = sorted(chunk.keys())
 
+        try:
+            for name in ordered_names:
+                value = chunk[name]
+                null_sentinel = (
+                    _column_tnull_from_meta(null_meta, name)
+                    if apply_fits_nulls
+                    else None
+                )
+                if _is_raw_column(value):
+                    pydict[name] = _raw_column_to_arrow_array(
+                        pa,
+                        value,
+                        decode_bytes,
+                        encoding,
+                        strip,
+                        null_sentinel=null_sentinel,
+                        fits_tform=_tform_for(name),
+                        unsigned_dtype=_unsigned_dtype_for(name),
+                    )
+                elif _is_torch_tensor(value):
+                    pydict[name] = _tensor_to_arrow_array(
+                        pa,
+                        value,
+                        decode_bytes,
+                        encoding,
+                        strip,
+                        null_sentinel=null_sentinel,
+                        fits_tform=_tform_for(name),
+                        unsigned_dtype=_unsigned_dtype_for(name),
+                    )
+                elif isinstance(value, np.ndarray):
+                    pydict[name] = _numpy_to_arrow_array(
+                        pa,
+                        value,
+                        decode_bytes,
+                        encoding,
+                        strip,
+                        null_sentinel=null_sentinel,
+                        fits_tform=_tform_for(name),
+                        unsigned_dtype=_unsigned_dtype_for(name),
+                    )
+                elif isinstance(value, list):
+                    converted = []
+                    for item in value:
+                        if _is_torch_tensor(item):
+                            t = item.detach()
+                            if t.device.type != "cpu":
+                                t = t.cpu()
+                            if not t.is_contiguous():
+                                t = t.contiguous()
+                            converted.append(t.numpy())
+                        else:
+                            converted.append(item)
+                    pydict[name] = converted
+                elif _is_vla_tuple(value):
+                    pydict[name] = _vla_tuple_to_arrow_array(
+                        pa, value, null_sentinel=null_sentinel
+                    )
+                else:
+                    pydict[name] = value
+        except UnicodeDecodeError as exc:
+            raise _named_decode_error(exc, name) from exc
+        return pa.RecordBatch.from_pydict(pydict)
+
+    arrays: list[Any] = []
+    fields: list[Any] = []
+
+    ordered_names = []
+    if preferred_order:
+        for name in preferred_order:
+            if name in chunk:
+                ordered_names.append(name)
+    for name in chunk.keys():
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    try:
         for name in ordered_names:
             value = chunk[name]
             null_sentinel = (
                 _column_tnull_from_meta(null_meta, name) if apply_fits_nulls else None
             )
             if _is_raw_column(value):
-                pydict[name] = _raw_column_to_arrow_array(
+                arr = _raw_column_to_arrow_array(
                     pa,
                     value,
                     decode_bytes,
@@ -724,7 +825,7 @@ def _chunk_to_record_batch(
                     unsigned_dtype=_unsigned_dtype_for(name),
                 )
             elif _is_torch_tensor(value):
-                pydict[name] = _tensor_to_arrow_array(
+                arr = _tensor_to_arrow_array(
                     pa,
                     value,
                     decode_bytes,
@@ -735,7 +836,7 @@ def _chunk_to_record_batch(
                     unsigned_dtype=_unsigned_dtype_for(name),
                 )
             elif isinstance(value, np.ndarray):
-                pydict[name] = _numpy_to_arrow_array(
+                arr = _numpy_to_arrow_array(
                     pa,
                     value,
                     decode_bytes,
@@ -757,90 +858,21 @@ def _chunk_to_record_batch(
                         converted.append(t.numpy())
                     else:
                         converted.append(item)
-                pydict[name] = converted
+                arr = _pa_array(pa, converted)
             elif _is_vla_tuple(value):
-                pydict[name] = _vla_tuple_to_arrow_array(
-                    pa, value, null_sentinel=null_sentinel
-                )
+                arr = _vla_tuple_to_arrow_array(pa, value, null_sentinel=null_sentinel)
             else:
-                pydict[name] = value
-        return pa.RecordBatch.from_pydict(pydict)
-
-    arrays: list[Any] = []
-    fields: list[Any] = []
-
-    ordered_names = []
-    if preferred_order:
-        for name in preferred_order:
-            if name in chunk:
-                ordered_names.append(name)
-    for name in chunk.keys():
-        if name not in ordered_names:
-            ordered_names.append(name)
-
-    for name in ordered_names:
-        value = chunk[name]
-        null_sentinel = (
-            _column_tnull_from_meta(null_meta, name) if apply_fits_nulls else None
-        )
-        if _is_raw_column(value):
-            arr = _raw_column_to_arrow_array(
-                pa,
-                value,
-                decode_bytes,
-                encoding,
-                strip,
-                null_sentinel=null_sentinel,
-                fits_tform=_tform_for(name),
-                unsigned_dtype=_unsigned_dtype_for(name),
-            )
-        elif _is_torch_tensor(value):
-            arr = _tensor_to_arrow_array(
-                pa,
-                value,
-                decode_bytes,
-                encoding,
-                strip,
-                null_sentinel=null_sentinel,
-                fits_tform=_tform_for(name),
-                unsigned_dtype=_unsigned_dtype_for(name),
-            )
-        elif isinstance(value, np.ndarray):
-            arr = _numpy_to_arrow_array(
-                pa,
-                value,
-                decode_bytes,
-                encoding,
-                strip,
-                null_sentinel=null_sentinel,
-                fits_tform=_tform_for(name),
-                unsigned_dtype=_unsigned_dtype_for(name),
-            )
-        elif isinstance(value, list):
-            converted = []
-            for item in value:
-                if _is_torch_tensor(item):
-                    t = item.detach()
-                    if t.device.type != "cpu":
-                        t = t.cpu()
-                    if not t.is_contiguous():
-                        t = t.contiguous()
-                    converted.append(t.numpy())
-                else:
-                    converted.append(item)
-            arr = _pa_array(pa, converted)
-        elif _is_vla_tuple(value):
-            arr = _vla_tuple_to_arrow_array(pa, value, null_sentinel=null_sentinel)
-        else:
-            arr = _pa_array(pa, value)
-        arrays.append(arr)
-        meta = None
-        if field_meta and name in field_meta:
-            meta = {
-                k.encode("utf-8"): v.encode("utf-8")
-                for k, v in field_meta[name].items()
-            }
-        fields.append(pa.field(name, arr.type, metadata=meta))
+                arr = _pa_array(pa, value)
+            arrays.append(arr)
+            meta = None
+            if field_meta and name in field_meta:
+                meta = {
+                    k.encode("utf-8"): v.encode("utf-8")
+                    for k, v in field_meta[name].items()
+                }
+            fields.append(pa.field(name, arr.type, metadata=meta))
+    except UnicodeDecodeError as exc:
+        raise _named_decode_error(exc, name) from exc
 
     schema_meta = None
     if table_meta:

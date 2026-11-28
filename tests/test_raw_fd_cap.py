@@ -87,3 +87,54 @@ def test_shared_read_cache_does_not_retain_one_descriptor_per_path(tmp_path):
         f"the shared read cache kept {bounded} descriptors open after "
         f"{N_FILES} reads with TORCHFITS_MAX_CACHED_FDS={CAP}"
     )
+
+
+_RECENCY_PROBE = textwrap.dedent(
+    """
+    import os, sys
+    import torchfits
+    import torch
+    import torch.utils.dlpack
+
+    a, b, c, d = sys.argv[1:5]
+
+    def open_paths():
+        out = set()
+        for e in os.listdir("/proc/self/fd"):
+            try:
+                out.add(os.readlink(os.path.join("/proc/self/fd", e)))
+            except OSError:
+                pass
+        return out
+
+    for p in (a, b, a, c, a, d):
+        torchfits.read(p, hdu=0)
+    held = open_paths()
+    print(",".join(name for name, p in zip("abcd", (a, b, c, d)) if p in held))
+    """
+)
+
+
+@pytest.mark.skipif(
+    not os.path.isdir("/proc/self/fd"), reason="needs /proc/self/fd readlinks"
+)
+def test_raw_descriptor_cache_evicts_the_least_recently_read_path(tmp_path):
+    # A repeat read moves its path to the most-recent end without rescanning
+    # the list; eviction must still take the least recently read path.
+    data = torch.arange(16, dtype=torch.int16).reshape(4, 4)
+    paths = []
+    for name in "abcd":
+        path = os.path.realpath(str(tmp_path / f"{name}.fits"))
+        torchfits.write(path, data)
+        paths.append(path)
+    env = {**os.environ, "TORCHFITS_MAX_CACHED_FDS": "2"}
+    result = subprocess.run(
+        [sys.executable, "-c", _RECENCY_PROBE, *paths],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "a,d"

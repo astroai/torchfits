@@ -1,11 +1,14 @@
 #undef READONLY
 #include <string>
 #include <algorithm>
+#include <cmath>
+#include <type_traits>
 #include <cctype>
 #include <vector>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <atomic>
 #include <limits>
@@ -79,10 +82,20 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         }
         throw std::runtime_error(message);
     }
-    fptr_owner_.reset(fptr_, [](fitsfile* f) {
-        int close_status = 0;
-        fits_close_file(f, &close_status);
-    });
+    if (mode == 0) {
+        fptr_owner_.reset(fptr_, [path = filename_](fitsfile* f) {
+            detail::remember_hdu_offsets(f, path);
+            int close_status = 0;
+            fits_close_file(f, &close_status);
+        });
+    } else {
+        write_close_status_ = std::make_shared<int>(0);
+        fptr_owner_.reset(fptr_, [result = write_close_status_](fitsfile* f) {
+            int close_status = 0;
+            fits_close_file(f, &close_status);
+            *result = close_status;
+        });
+    }
     if (mode == 0) {
         shared_meta_ = detail::get_shared_meta_for_path(filename_);
         capture_open_identity();
@@ -98,7 +111,13 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
     }
 }
 
-FITSFile::~FITSFile() { close(); }
+FITSFile::~FITSFile() {
+    try {
+        close();
+    } catch (...) {
+        // Destructors never throw; an explicit close() reports the failure.
+    }
+}
 
 void FITSFile::capture_open_identity() {
     struct stat st {};
@@ -131,6 +150,19 @@ bool FITSFile::shares_current_file() const {
     return owns_current_generation_locked();
 }
 
+bool FITSFile::path_names_open_file() const {
+    if (mode_ != 0 || !open_identity_valid_) return true;
+    struct stat st {};
+    if (::stat(filename_.c_str(), &st) != 0) return true;
+    return names_open_file(st);
+}
+
+bool FITSFile::names_open_file(const struct stat& st) const {
+    if (mode_ != 0 || !open_identity_valid_) return true;
+    return st.st_ino == open_inode_ && st.st_size == open_size_ &&
+           internal::mtime_ns_from_stat(st) == open_mtime_ns_;
+}
+
 void FITSFile::publish_image_info(
     int hdu_num, const std::tuple<int, int, std::array<LONGLONG, 9>>& info) const {
     if (!shared_meta_ || !open_identity_valid_) return;
@@ -157,16 +189,39 @@ void FITSFile::publish_compressed(int hdu_num, bool compressed) const {
 void FITSFile::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     close_raw_fd();
-    if (fptr_ && fptr_owner_ && fptr_owner_.use_count() > 1) {
+    const bool was_open = fptr_ != nullptr && fptr_owner_ != nullptr;
+    const bool borrowed = was_open && fptr_owner_.use_count() > 1;
+    // A write handle that never got an HDU: CFITSIO reports closing it as
+    // an error (status 252), but no data is lost -- nothing was written.
+    const bool untouched = was_open && mode_ != 0 && fptr_->Fptr != nullptr &&
+        fptr_->Fptr->headend == 0 && fptr_->Fptr->datastart == -1;  // DATA_UNDEFINED (fitsio2.h)
+    int flush_status = 0;
+    if (borrowed) {
         // A borrower (share_fptr) defers fits_close_file, but close() must
         // still put everything written so far on disk: another process
         // reading the file after close() saw it truncated.
-        int flush_status = 0;
         fits_flush_file(fptr_, &flush_status);
     }
     fptr_ = nullptr;
     // Closes the file now, or when the last borrower (share_fptr) lets go.
     fptr_owner_.reset();
+    if (!was_open || mode_ == 0 || untouched) {
+        return;
+    }
+    // CFITSIO writes its final buffered blocks in the flush/close: a full
+    // disk, quota, EIO or RLIMIT_FSIZE failure there used to be dropped, so
+    // a truncated file was reported as written (and published over the
+    // destination by the atomic write).
+    const int failed = borrowed ? flush_status
+                                : (write_close_status_ ? *write_close_status_ : 0);
+    if (failed != 0) {
+        char err_text[FLEN_STATUS];
+        fits_get_errstatus(failed, err_text);
+        throw std::runtime_error(
+            "Failed to finish writing FITS file '" + filename_ + "': status=" +
+            std::to_string(failed) + " msg=" + std::string(err_text) +
+            " (the file is incomplete: disk full, quota or file-size limit?)");
+    }
 }
 
 void FITSFile::ensure_hdu(int hdu_num, int* status) {
@@ -386,6 +441,7 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
     LONGLONG nelements = 0;
     if (naxis > 0) {
         nelements = torchfits::detail::checked_nelements_product(naxes_ll.data(), naxis);
+        torchfits::detail::ensure_image_data_within_file(fptr_, bitpix, nelements);
     }
     int64_t torch_shape[9];
     for (int i = 0; i < naxis; ++i) torch_shape[i] = static_cast<int64_t>(naxes_ll[naxis - 1 - i]);
@@ -474,23 +530,29 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
         }
         guard.active = true;
     }
-    int anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
-    fits_read_img(fptr_, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    detail::read_float_image_pixels(
+        fptr_, bitpix, datatype, tensor.data_ptr(), nelements,
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_img(fptr_, datatype, 1, nelements, nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading image data: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading image data: " + detail::image_read_status(status, fptr_));
     }
     return tensor;
 }
 
 bool FITSFile::write_image(nb::ndarray<> tensor) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    // Called with the GIL held (the binding, write_hdus). The dtype and shape
+    // are read here; creating the HDU, packing a strided view and writing the
+    // pixels touch no Python object -- `tensor` keeps the payload alive -- so
+    // they run without the GIL.
+    auto lock = lock_io_holding_gil();
+    // Keeps the fitsfile alive even if Python code closes this handle while
+    // the write runs (see require_open_for_write).
+    auto keep_open = require_open_for_write();
+    fitsfile* fptr = keep_open.get();
     torchfits::internal::require_cpu_ndarray(tensor, "image data");
     int status = 0;
     int naxis = tensor.ndim();
@@ -510,7 +572,8 @@ bool FITSFile::write_image(nb::ndarray<> tensor) {
     else throw std::runtime_error("Unsupported tensor dtype");
     long nelements = static_cast<long>(
         torchfits::detail::checked_nelements_product(naxes));
-    fits_create_img(fptr_, bitpix, naxis, naxes.data(), &status);
+    nb::gil_scoped_release release;
+    fits_create_img(fptr, bitpix, naxis, naxes.data(), &status);
     if (status != 0) {
         char err_text[31];
         fits_get_errstatus(status, err_text);
@@ -520,7 +583,7 @@ bool FITSFile::write_image(nb::ndarray<> tensor) {
     std::vector<uint8_t> contig_buf;
     void* data_ptr = torchfits::internal::ensure_c_contiguous_ndarray(
         tensor, nelements, contig_buf);
-    fits_write_img(fptr_, datatype, 1, nelements, data_ptr, &status);
+    fits_write_img(fptr, datatype, 1, nelements, data_ptr, &status);
     if (status != 0) {
         char err_text[31];
         fits_get_errstatus(status, err_text);
@@ -575,6 +638,11 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
         }
     }
     if (naxis < 2) throw std::runtime_error("Subset reading requires at least 2D image");
+    {
+        std::vector<long> dims(naxes, naxes + naxis);
+        detail::ensure_image_data_within_file(
+            fptr_, bitpix, detail::checked_nelements_product(dims));
+    }
     long max_x = naxes[0], max_y = naxes[1];
     if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
     if (x2 > max_x) x2 = max_x; if (y2 > max_y) y2 = max_y;
@@ -635,19 +703,16 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
     for (int i = 2; i < naxis; ++i) {
         lpixel[i] = naxes[i];
     }
-    int anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    const bool compressed = is_compressed_image_cached(hdu_num);
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval);
-    fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
-                     nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    detail::read_float_image_pixels(
+        fptr_, bitpix, datatype, tensor.data_ptr(), tensor.numel(),
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
+                             nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading subset: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, fptr_));
     }
     return tensor;
 }
@@ -670,10 +735,15 @@ std::string FITSFile::get_hdu_type(int hdu_num) {
 }
 
 bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    auto lock = lock_io_holding_gil();
+    auto keep_open = require_open_for_write();
+    fitsfile* fptr = keep_open.get();
     validate_hdu_list_headers(hdus);
     int hdu_count = 0;
     for (auto handle : hdus) {
+        // Python code run for the previous HDU (to_tensor(), header values,
+        // a finalizer) may have closed this handle on this very thread.
+        (void)require_open_for_write();
         nb::object hdu_obj = nb::cast<nb::object>(handle);
         if (nb::hasattr(hdu_obj, "_raw_data")) {
             nb::dict data_dict = nb::cast<nb::dict>(hdu_obj.attr("_raw_data"));
@@ -685,7 +755,9 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                 schema_obj = hdu_obj.attr("_schema");
                 if (schema_obj.is_none()) schema_obj = nb::none();
             }
-            write_table_hdu(fptr_, data_dict, header_dict, schema_obj, false);
+            (void)require_open_for_write();
+            // Converts the columns with the GIL, writes them without it.
+            write_table_hdu(fptr, data_dict, header_dict, schema_obj, false, true);
             hdu_count++;
             continue;
         }
@@ -703,11 +775,12 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
         }
         if (has_data) {
             nb::ndarray<> tensor = nb::cast<nb::ndarray<>>(data_obj);
-            write_image(tensor);
+            write_image(tensor);  // re-checks the handle itself
         } else {
+            (void)require_open_for_write();
             int status = 0;
             long naxes[1] = {0};
-            fits_create_img(fptr_, BYTE_IMG, 0, naxes, &status);
+            fits_create_img(fptr, BYTE_IMG, 0, naxes, &status);
             if (status != 0) throw std::runtime_error("Failed to create empty image HDU");
         }
         nb::object header_obj;
@@ -730,7 +803,7 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
                     key_upper == "PCOUNT" || key_upper == "GCOUNT" || key_upper == "TFIELDS" ||
                     key_upper == "THEAP" || key_upper.rfind("NAXIS", 0) == 0) continue;
                 int key_status = 0;
-                update_header_value(fptr_, key, item.second, nullptr, &key_status);
+                update_header_value(fptr, key, item.second, nullptr, &key_status);
                 if (key_status != 0) {
                     throw std::runtime_error("Failed to write FITS header keyword: " + key);
                 }
@@ -738,15 +811,18 @@ bool FITSFile::write_hdus(nb::list hdus, bool /*overwrite*/) {
         }
         hdu_count++;
     }
+    (void)require_open_for_write();
     return true;
 }
 
 bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type) {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    auto lock = lock_io_holding_gil();
+    auto keep_open = require_open_for_write();
+    fitsfile* fptr = keep_open.get();
     validate_hdu_list_headers(hdus);
     int status = 0;
     long naxes0[1] = {0};
-    fits_create_img(fptr_, BYTE_IMG, 0, naxes0, &status);
+    fits_create_img(fptr, BYTE_IMG, 0, naxes0, &status);
     if (status != 0) throw std::runtime_error("Failed to create primary HDU for compressed file");
     auto write_header_dict = [&](nb::object hdu_obj) {
         nb::object header_obj;
@@ -775,20 +851,22 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             if (key_upper.rfind("ZNAXIS", 0) == 0 || key_upper.rfind("ZTILE", 0) == 0 ||
                 key_upper.rfind("ZNAME", 0) == 0 || key_upper.rfind("ZVAL", 0) == 0) continue;
             int key_status = 0;
-            update_header_value(fptr_, key, item.second, nullptr, &key_status);
+            update_header_value(fptr, key, item.second, nullptr, &key_status);
             if (key_status != 0) {
                 throw std::runtime_error("Failed to write FITS header keyword: " + key);
             }
         }
     };
     for (auto handle : hdus) {
+        (void)require_open_for_write();
         nb::object hdu_obj = nb::cast<nb::object>(handle);
         if (nb::hasattr(hdu_obj, "_raw_data")) {
             nb::dict data_dict = nb::cast<nb::dict>(hdu_obj.attr("_raw_data"));
             nb::dict header_dict;
             if (nb::hasattr(hdu_obj, "header"))
                 header_dict = nb::cast<nb::dict>(hdu_obj.attr("header"));
-            write_table_hdu(fptr_, data_dict, header_dict, nb::none(), false);
+            (void)require_open_for_write();
+            write_table_hdu(fptr, data_dict, header_dict, nb::none(), false, true);
             continue;
         }
         nb::object data_obj;
@@ -811,8 +889,50 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         std::vector<long> naxes(naxis);
         for (int i = 0; i < naxis; ++i) naxes[i] = tensor.shape(i);
         std::reverse(naxes.begin(), naxes.end());
+        // Per-HDU options the Python layer validated and resolved
+        // (write(tile_shape=..., quantize_*=..., dither_seed=...)); absent
+        // keys keep the defaults below.
+        std::vector<long> requested_tile;
+        bool has_qlevel = false;
+        float requested_qlevel = 0.0f;
+        int quantize_method = 0;  // 0 = CFITSIO default (SUBTRACTIVE_DITHER_1)
+        int dither_seed = 0;      // 0 = CFITSIO picks one from the clock
+        if (nb::isinstance<nb::dict>(hdu_obj)) {
+            nb::dict d = nb::cast<nb::dict>(hdu_obj);
+            if (d.contains("_compression") && !d["_compression"].is_none()) {
+                nb::dict opts = nb::cast<nb::dict>(d["_compression"]);
+                if (opts.contains("tile_dims")) {
+                    requested_tile = nb::cast<std::vector<long>>(opts["tile_dims"]);
+                    if (requested_tile.size() != static_cast<size_t>(naxis))
+                        throw std::runtime_error("tile_dims must have one entry per image axis");
+                    for (long t : requested_tile)
+                        if (t <= 0) throw std::runtime_error("tile_dims entries must be positive");
+                }
+                if (opts.contains("quantize_level")) {
+                    has_qlevel = true;
+                    requested_qlevel = static_cast<float>(nb::cast<double>(opts["quantize_level"]));
+                }
+                if (opts.contains("quantize_method"))
+                    quantize_method = nb::cast<int>(opts["quantize_method"]);
+                if (opts.contains("dither_seed"))
+                    dither_seed = nb::cast<int>(opts["dither_seed"]);
+            }
+        }
+        // CFITSIO cannot tile an image with a zero-length axis: it divides by
+        // the tile count and the process dies of SIGFPE. Like fpack, store
+        // such an HDU uncompressed (it has no pixels to compress). 0 clears
+        // the request; NOCOMPRESS (-1) would still take the compressed path.
+        const bool empty_image =
+            std::find(naxes.begin(), naxes.end(), 0L) != naxes.end();
+        // Everything from here to the header cards is CFITSIO work on native
+        // buffers (`tensor` keeps the payload alive): tile compression is the
+        // slow part of a compressed write, so it runs without the GIL.
+        (void)require_open_for_write();
+        std::optional<nb::gil_scoped_release> release;
+        release.emplace();
         status = 0;
-        fits_set_compression_type(fptr_, compression_type, &status);
+        fits_set_compression_type(
+            fptr, empty_image ? 0 : compression_type, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression type");
         // Default to lossless where CFITSIO supports it: CFITSIO quantizes
         // float/double pixels (lossy) unless explicitly disabled, which would
@@ -833,10 +953,16 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         // lossless integer HDU does not leave a later float HDU at qlevel=0,
         // which float RICE rejects (status 413). 4.0 is CFITSIO's own default
         // for the default SUBTRACTIVE_DITHER_1 method (imcompress.c).
+        // Method and seed are per-file requests too: set them on every HDU
+        // (0 = CFITSIO's own defaults) so one HDU's choice cannot leak on.
         status = 0;
-        fits_set_quantize_level(fptr_, lossless_capable ? 0.0f : 4.0f, &status);
+        const float quantize_level =
+            has_qlevel ? requested_qlevel : (lossless_capable ? 0.0f : 4.0f);
+        fits_set_quantize_level(fptr, quantize_level, &status);
+        fits_set_quantize_method(fptr, quantize_method, &status);
+        fits_set_dither_seed(fptr, dither_seed, &status);
         if (status != 0) throw std::runtime_error("Failed to set compression quantization");
-        if (compression_type == PLIO_1) {
+        if (compression_type == PLIO_1 && !empty_image) {
             nb::dlpack::dtype dt_plio = tensor.dtype();
             if (dt_plio.code == (uint8_t)nb::dlpack::dtype_code::Float) {
                 throw std::runtime_error("PLIO_1 compression algorithm does not support floating-point image data");
@@ -844,7 +970,9 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         }
         std::vector<long> tilesize(naxis, 1);
         tilesize[0] = naxes[0];
-        if (compression_type == HCOMPRESS_1) {
+        if (!requested_tile.empty()) {
+            tilesize = requested_tile;
+        } else if (compression_type == HCOMPRESS_1 && !empty_image) {
             // HCOMPRESS requires 2D tiles; use 16-row bands like fpack's
             // default so output tiles match the reference CLI.
             if (naxis < 2)
@@ -853,8 +981,10 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
             tilesize[0] = naxes[0];
             tilesize[1] = naxes[1] < 16 ? naxes[1] : 16;
         }
-        fits_set_tile_dim(fptr_, naxis, tilesize.data(), &status);
-        if (status != 0) throw std::runtime_error("Failed to set tile dimensions");
+        if (!empty_image) {
+            fits_set_tile_dim(fptr, naxis, tilesize.data(), &status);
+            if (status != 0) throw std::runtime_error("Failed to set tile dimensions");
+        }
         int bitpix = FLOAT_IMG, datatype = TFLOAT;
         nb::dlpack::dtype dt = tensor.dtype();
         if (dt.code == (uint8_t)nb::dlpack::dtype_code::UInt && dt.bits == 8) { bitpix = BYTE_IMG; datatype = TBYTE; }
@@ -868,7 +998,7 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 32) { bitpix = FLOAT_IMG; datatype = TFLOAT; }
         else if (dt.code == (uint8_t)nb::dlpack::dtype_code::Float && dt.bits == 64) { bitpix = DOUBLE_IMG; datatype = TDOUBLE; }
         else throw std::runtime_error("Unsupported tensor dtype for compressed write");
-        fits_create_img(fptr_, bitpix, naxis, naxes.data(), &status);
+        fits_create_img(fptr, bitpix, naxis, naxes.data(), &status);
         if (status != 0) {
             char err_text[31];
             fits_get_errstatus(status, err_text);
@@ -880,15 +1010,39 @@ bool FITSFile::write_hdus_compressed_images(nb::list hdus, int compression_type)
         std::vector<uint8_t> contig_buf;
         void* data_ptr = torchfits::internal::ensure_c_contiguous_ndarray(
             tensor, nelements, contig_buf);
-        fits_write_img(fptr_, datatype, 1, nelements, data_ptr, &status);
+        // fits_write_img does not flag NaNs as nulls, so CFITSIO quantized
+        // NaN pixels into arbitrary integers (silent garbage on every
+        // reader). Like fpack, write NaN as CFITSIO's null value when floats
+        // are quantized: the tile records it as ZBLANK and decompresses back
+        // to NaN. NaN-free images and lossless floats are written as before.
+        auto write_nan_as_null = [&](auto* src, auto null_value, int ctype) {
+            using T = std::remove_const_t<std::remove_pointer_t<decltype(src)>>;
+            if (!std::any_of(src, src + nelements, [](T v) { return std::isnan(v); }))
+                return false;
+            std::vector<T> nulled(src, src + nelements);
+            for (T& v : nulled) if (std::isnan(v)) v = null_value;
+            fits_write_imgnull(fptr, ctype, 1, nelements, nulled.data(), &null_value, &status);
+            return true;
+        };
+        bool wrote = nelements == 0;
+        if (wrote) {
+            // nothing to write
+        } else if (quantize_level != 0.0f && datatype == TFLOAT)
+            wrote = write_nan_as_null(static_cast<const float*>(data_ptr), FLOATNULLVALUE, TFLOAT);
+        else if (quantize_level != 0.0f && datatype == TDOUBLE)
+            wrote = write_nan_as_null(static_cast<const double*>(data_ptr), DOUBLENULLVALUE, TDOUBLE);
+        if (!wrote) fits_write_img(fptr, datatype, 1, nelements, data_ptr, &status);
         if (status != 0) {
             char err_text[31];
             fits_get_errstatus(status, err_text);
             throw std::runtime_error("Error writing compressed image: status=" + std::to_string(status) +
                                      " msg=" + std::string(err_text));
         }
+        release.reset();
+        (void)require_open_for_write();
         write_header_dict(hdu_obj);
     }
+    (void)require_open_for_write();
     return true;
 }
 
@@ -958,7 +1112,8 @@ void SubsetReader::init_from_hdu() {
     // mmap fast path. The checker permits zero dimensions (empty windows are
     // handled without a data read) and rejects products too large for any
     // supported element type or address-space mapping.
-    (void)detail::checked_nelements_product(naxes_);
+    detail::ensure_image_data_within_file(
+        file_.get_fptr(), bitpix, detail::checked_nelements_product(naxes_));
     max_x_ = naxes_[0];
     max_y_ = naxes_[1];
     const auto scale = file_.get_scale_info_for_hdu(hdu_num_);
@@ -1201,19 +1356,18 @@ native::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     for (int i = 2; i < naxis_; ++i) {
         lpixel[i] = naxes_[i];
     }
-    int status = 0, anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    const bool compressed = file_.is_compressed_image_cached(hdu_num_);
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix_, compressed, datatype_, &fnullval, &dnullval);
-    fits_read_subset(file_.get_fptr(), datatype_, fpixel.data(), lpixel.data(), inc.data(),
-                     nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    int status = 0;
+    fitsfile* fptr = file_.get_fptr();
+    detail::read_float_image_pixels(
+        fptr, bitpix_, datatype_, tensor.data_ptr(), tensor.numel(),
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_subset(fptr, datatype_, fpixel.data(), lpixel.data(), inc.data(),
+                             nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
-        char err_text[31];
-        fits_get_errstatus(status, err_text);
-        throw std::runtime_error("Error reading subset: status=" + std::to_string(status) +
-                                 " msg=" + std::string(err_text));
+        throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, file_.get_fptr()));
     }
     return tensor;
 }

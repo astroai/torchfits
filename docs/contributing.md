@@ -79,6 +79,7 @@ src/torchfits/cpp_src/  C++ native extension (nanobind + CFITSIO)
 extern/cfitsio/         Vendored CFITSIO sources (via extern/vendor.sh)
 tests/                  Unit and integration tests
 docs/                   Documentation (zensical)
+docs/work/              Temporary plans and task lists (not published)
 overrides/              Docs theme templates (zensical custom_dir)
 examples/               Runnable example scripts
 scripts/                CI, docs, and release helpers
@@ -89,6 +90,10 @@ Benchmarks, parity checks, and migration notes live in
 
 Local-only (gitignored): `build/`, `site/`.
 
+Plans and task lists for work in progress go in `docs/work/`, one Markdown
+file each, and are deleted in the commit that finishes them. The docs build
+excludes that directory.
+
 ## Native extension
 
 The C++ extension is built by [scikit-build-core](https://scikit-build-core.readthedocs.io/) with [nanobind](https://nanobind.readthedocs.io/) bindings. Populate vendored sources with:
@@ -96,6 +101,12 @@ The C++ extension is built by [scikit-build-core](https://scikit-build-core.read
 ```bash
 ./extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
 ```
+
+The run stamps `extern/cfitsio/.torchfits-vendor-stamp` with the sha256 of
+`extern/VERSIONS.txt`, `extern/vendor.sh` and the applied `extern/patches/`. CMake
+re-checks it on every configure: in a git checkout a missing or stale stamp
+re-vendors, elsewhere it stops the build. `bash extern/vendor.sh --check-stamp`
+reports the same thing without building.
 
 Rebuild after C++ changes (default and test envs do **not** share the
 extension — rebuild each env you will run):

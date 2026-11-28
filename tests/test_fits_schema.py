@@ -341,26 +341,25 @@ def test_column_is_vla_answers_for_one_named_column():
     assert fits_schema.column_is_vla(header, "NOPE") is False
 
 
-def test_column_is_vla_and_selected_includes_vla_differ_on_duplicate_names():
-    """The two per-column forms scan differently, and the difference is real.
+def test_column_is_vla_and_selected_includes_vla_agree_on_duplicate_names():
+    """A repeated TTYPE is its own column, named COL<i>, for both forms.
 
-    ``column_is_vla`` answers about the *first* card carrying the name and
-    returns; ``selected_includes_vla`` keeps scanning and answers whether *any*
-    card with a wanted name is a VLA. On a duplicated TTYPE -- which
-    ``test_bug_table_duplicate_names.py`` shows this library really does see --
-    the two disagree. Both are intentional; neither was pinned, so a future
-    "simplify one into the other" would have looked free.
+    ``column_is_vla`` stops at the first column with the name while
+    ``selected_includes_vla`` scans every wanted column. They used to disagree
+    on a duplicated TTYPE because both scanned *names*, and two columns shared
+    one. The second column is now named ``COL2`` (as the readers name it), so
+    ``DUP`` means column 1 for both and ``COL2`` reaches column 2.
     """
     header = _vla_header([("DUP", "1J"), ("DUP", "1PJ")])
     assert fits_schema.column_is_vla(header, "DUP") is False
-    assert fits_schema.selected_includes_vla(header, ["DUP"]) is True
+    assert fits_schema.selected_includes_vla(header, ["DUP"]) is False
+    assert fits_schema.column_is_vla(header, "COL2") is True
+    assert fits_schema.selected_includes_vla(header, ["COL2"]) is True
 
-    # Reversed order: the per-column form now reports True, and so does the
-    # projection form, so the disagreement is genuinely about scanning, not
-    # about which card is "the" column.
     reversed_header = _vla_header([("DUP", "1PJ"), ("DUP", "1J")])
     assert fits_schema.column_is_vla(reversed_header, "DUP") is True
     assert fits_schema.selected_includes_vla(reversed_header, ["DUP"]) is True
+    assert fits_schema.column_is_vla(reversed_header, "COL2") is False
 
 
 def test_selected_includes_vla_none_delegates_to_table_has_vla():
@@ -436,3 +435,44 @@ def test_iter_tfields_indexed_keeps_nameless_columns():
     header3 = {"TFIELDS": 2, "TTYPE1": "", "TFORM1": "1J", "TTYPE2": "B"}
     cols3 = list(fits_schema._iter_tfields_indexed(header3))
     assert [c[1] for c in cols3] == ["COL1", "B"]
+
+
+def test_per_read_schema_passes_skip_full_column_metadata(monkeypatch):
+    # unsigned_column_dtype_names_from_header and complex_column_names run on
+    # every table read over every column of the header; building a full
+    # TableColumnMeta (TNULL lookup, dataclass) per column made a 5-column
+    # read of a 131-column catalog spend most of its time here. They walk the
+    # cards they need, with the same TSCAL/TZERO validation.
+    def boom(*_args, **_kwargs):
+        raise AssertionError("full column metadata built on the hot path")
+
+    monkeypatch.setattr(fits_schema, "iter_table_columns", boom)
+    header = {
+        "TFIELDS": 4,
+        "TTYPE1": "U",
+        "TFORM1": "1I",
+        "TZERO1": 32768,
+        "TTYPE2": "Z",
+        "TFORM2": "C",
+        "TTYPE3": "S",
+        "TFORM3": "1B",
+        "TZERO3": -128,
+        "TTYPE4": "P",
+        "TFORM4": "1J",
+        "TSCAL4": 2.0,
+        "TZERO4": 2147483648,
+    }
+    assert fits_schema.unsigned_column_dtype_names_from_header(header) == {
+        "U": "uint16",
+        "S": "int8",
+    }
+    assert fits_schema.complex_column_names(header) == {"Z"}
+    bad = dict(header, TSCAL2="abc")
+    with pytest.raises(ValueError, match="TSCAL2"):
+        fits_schema.unsigned_column_dtype_names_from_header(bad)
+
+
+def test_parse_tform_is_shared_across_calls():
+    first = fits_schema.parse_tform(" 16a ")
+    assert first == fits_schema.TformInfo(tform="16A", repeat=16, vla=False, code="A")
+    assert fits_schema.parse_tform(" 16a ") is first

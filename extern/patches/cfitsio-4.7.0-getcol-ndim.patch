@@ -1,0 +1,62 @@
+# torchfits: backport of upstream CFITSIO develop commit
+#   005435ec539c40aa104993a9ee6c1e88b5f647fd (2026-09-30)
+#   "Check for cases where img ndim exceed 9."
+#
+# ffgpxvll, ffgpxfll and ffgsv (fits_read_pix, fits_read_pixnull,
+# fits_read_subset) fetch only 9 NAXISn values but walked the image's real
+# NAXIS, reading past their naxes[9] stack arrays for NAXIS > 9. They now
+# fail with BAD_DIMEN. torchfits already refuses images with more than 9 axes
+# before it calls fits_read_subset (validate_image_naxis), so this is defence
+# in depth for the CFITSIO paths it uses.
+#
+# Drop this patch when extern/VERSIONS.txt moves to a CFITSIO release that
+# contains the commit.
+
+--- a/getcol.c
++++ b/getcol.c
+@@ -75,7 +75,14 @@ int ffgpxvll( fitsfile *fptr, /* I - FITS file pointer                       */
+ 
+     /* get the size of the image */
+     ffgidm(fptr, &naxis, status);
+-
++    
++    if (naxis > 9)
++    {
++       ffpmsg("ffgpxv function is currently limited to a maximum 9 dimensions");
++       *status = BAD_DIMEN;
++       return(*status);
++    }
++    
+     ffgiszll(fptr, 9, naxes, status);
+ 
+     if (naxis == 0 || naxes[0] == 0) {
+@@ -305,6 +312,14 @@ int ffgpxfll( fitsfile *fptr, /* I - FITS file pointer                       */
+ 
+     /* get the size of the image */
+     ffgidm(fptr, &naxis, status);
++
++    if (naxis > 9)
++    {
++       ffpmsg("ffgpxf function is currently limited to a maximum 9 dimensions");
++       *status = BAD_DIMEN;
++       return(*status);
++    }
++    
+     ffgiszll(fptr, 9, naxes, status);
+ 
+     /* calculate the position of the first element in the array */
+@@ -426,6 +441,14 @@ int ffgsv(  fitsfile *fptr,   /* I - FITS file pointer                       */
+ 
+     /* get the size of the image */
+     ffgidm(fptr, &naxis, status);
++    
++    if (naxis > 9)
++    {
++       ffpmsg("ffgsv function is currently limited to a maximum 9 dimensions");
++       *status = BAD_DIMEN;
++       return(*status);
++    }
++    
+     ffgisz(fptr, 9, naxes, status);
+ 
+     /* test for the important special case where we are reading the whole image */

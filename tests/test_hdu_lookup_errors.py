@@ -24,7 +24,7 @@ import torchfits
 import torchfits.table as tft
 from torchfits import HDUNotFoundError
 from torchfits.cli.main import main as cli_main
-from torchfits.data import FitsImageDataset
+from torchfits.data import FitsImageDataset, FitsTableDataset
 from torchfits.hdu import TableHDURef
 
 
@@ -76,6 +76,10 @@ ROUTES = {
     "table.reader": lambda p, h: tft.reader(p, hdu=h),
     "table.append_rows": lambda p, h: tft.append_rows(p, {"x": torch.arange(1)}, hdu=h),
     "FitsImageDataset": lambda p, h: FitsImageDataset([p], hdu=h)[0],
+    # The eager table dataset read through the native reader, which reported
+    # a missing HDU as a bare RuntimeError and an EXTNAME as a TypeError.
+    "FitsTableDataset": lambda p, h: FitsTableDataset(p, hdu=h),
+    "FitsTableDataset[lazy]": lambda p, h: FitsTableDataset(p, hdu=h, lazy=True),
 }
 INDEX_ONLY_ROUTES = {
     # A list read takes one integer HDU; a name there is an argument error.
@@ -219,7 +223,11 @@ def test_import_does_not_load_torch():
         (["stats", "{p}", "-e", "-1"], 2),
         (["verify", "{p}", "-e", "7"], 2),
         (["setkey", "{p}", "-k", "FOO", "--value", "1", "-e", "7"], 2),
-        (["cutout", "{p}", "--box", "0,0,2,2", "-o", "{o}", "-e", "7"], 3),
+        # A missing -e index is a usage error everywhere (docs/cli.md); cutout,
+        # convert and transform used to report it as an I/O error (exit 3).
+        (["cutout", "{p}", "--box", "0,0,2,2", "-o", "{o}", "-e", "7"], 2),
+        (["convert", "{p}", "{o}.csv", "-e", "7"], 2),
+        (["transform", "{p}", "-o", "{o}", "-e", "7", "--name", "LogStretch"], 2),
     ],
 )
 def test_cli_out_of_range_message(mef, tmp_path, capsys, argv, code):

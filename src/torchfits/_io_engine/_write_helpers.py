@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -19,6 +20,9 @@ from .quantize import (
     parse_table_quantize_spec,
     quantize_int16_robust,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 class UInt64WriteError(ValueError):
@@ -417,6 +421,88 @@ def _host_tensor_for_fits_write(tensor: Tensor) -> Tensor:
     return tensor.contiguous()
 
 
+def _arrow_column_values(column: Any, field: Any = None) -> Any:
+    """One Arrow column as the writer's column value.
+
+    A fixed-size list of numbers or booleans with no nulls -- how every
+    torchfits reader returns a vector column (TFORM ``rX``) -- becomes a 2-D
+    array, so it is written back as a fixed-width vector column instead of a
+    variable-length one. Nested fixed-size lists and ``fixed_shape_tensor``
+    columns (N-D cells) become ``(nrows, *cell)`` arrays, as does a vector
+    column whose ``field`` carries ``fits_tdim`` metadata; the writer stores
+    those with ``TDIM``. Anything else goes through ``to_numpy`` (nullable
+    integers widen to float with NaN, string nulls are blank) or, failing
+    that, ``to_pylist``.
+    """
+    from .._table._cell_shape import (
+        arrow_cell_values,
+        arrow_metadata_cells,
+        arrow_unnest,
+    )
+
+    try:
+        import pyarrow as pa
+
+        cells = arrow_cell_values(pa, column)
+        if cells is not None:
+            return cells
+        column = arrow_unnest(pa, column)
+    except ImportError:
+        pass
+    return arrow_metadata_cells(_arrow_flat_column_values(column), field)
+
+
+def _arrow_flat_column_values(column: Any) -> Any:
+    try:
+        import pyarrow as pa
+    except ImportError:  # not an Arrow column after all
+        return column.to_numpy(zero_copy_only=False)
+    # Conversion failures of this column (types to_numpy cannot express);
+    # anything else is a real error and propagates.
+    conversion_errors = (pa.ArrowException, ValueError, TypeError, NotImplementedError)
+    try:
+        typ = column.type
+        if (
+            pa.types.is_fixed_size_list(typ)
+            and column.null_count == 0
+            and (
+                pa.types.is_integer(typ.value_type)
+                or pa.types.is_floating(typ.value_type)
+                or pa.types.is_boolean(typ.value_type)
+            )
+        ):
+            arr = (
+                column.combine_chunks() if hasattr(column, "combine_chunks") else column
+            )
+            flat = arr.flatten()
+            if flat.null_count == 0:
+                return flat.to_numpy(zero_copy_only=False).reshape(
+                    len(arr), typ.list_size
+                )
+    except conversion_errors:
+        _log.debug("fixed-size-list fast path failed; using to_numpy", exc_info=True)
+    typ = getattr(column, "type", None)
+    if (
+        typ is not None
+        and (
+            pa.types.is_string(typ)
+            or pa.types.is_large_string(typ)
+            or pa.types.is_binary(typ)
+            or pa.types.is_large_binary(typ)
+        )
+        and len(column) == 0
+    ):
+        # to_numpy gives an empty object array, from which the writer cannot
+        # tell a character column (std::bad_cast before).
+        import numpy
+
+        return numpy.array([], dtype="<U1")
+    try:
+        return column.to_numpy(zero_copy_only=False)
+    except conversion_errors:
+        return column.to_pylist()
+
+
 def _normalize_table_input(data: Any) -> Any:
     """Normalize Table/DataFrame inputs (Astropy, Arrow, Polars, Pandas) into a columnar dict."""
     if isinstance(data, dict):
@@ -426,19 +512,21 @@ def _normalize_table_input(data: Any) -> Any:
         return {str(col): data[col] for col in data.colnames}
     # PyArrow Table / RecordBatch
     if hasattr(data, "column_names") and hasattr(data, "column"):
-        cols: dict[str, Any] = {}
-        for name in data.column_names:
-            c = data[name]
-            try:
-                cols[name] = c.to_numpy(zero_copy_only=False)
-            except Exception:
-                cols[name] = c.to_pylist()
-        return cols
+        fields = getattr(data, "schema", None)
+        return {
+            name: _arrow_column_values(
+                data.column(i), fields.field(i) if fields is not None else None
+            )
+            for i, name in enumerate(data.column_names)
+        }
     # Polars DataFrame
     if hasattr(data, "columns") and hasattr(data, "to_dict"):
         try:
             return {col: data[col].to_numpy() for col in data.columns}
         except Exception:
+            # Polars errors derive from Exception only (PolarsError), so no
+            # narrower clause catches a column to_numpy cannot express.
+            _log.debug("DataFrame to_numpy failed; using to_dict", exc_info=True)
             return dict(data.to_dict(as_series=False))
     # Pandas DataFrame
     if hasattr(data, "columns") and hasattr(data, "to_dict"):
@@ -659,7 +747,8 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
 
     The compressed writer always emits its own empty primary at HDU 0, so a
     leading empty primary in the input -- a ``NAXIS=0`` header card, or
-    in-memory data with no elements such as ``TensorHDU(torch.empty(0))`` --
+    in-memory 0-/1-D data with no elements such as
+    ``TensorHDU(torch.empty(0))`` --
     must be skipped both when writing and when replaying per-HDU header cards;
     otherwise the output HDU indices shift by one and header-card replay runs
     off the end ("Could not move to HDU").
@@ -671,13 +760,19 @@ def _is_skippable_empty_primary(idx: int, hdu: Any) -> bool:
         return False
     try:
         naxis = int(hdr.get("NAXIS", -1))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         naxis = -1
     if naxis == 0:
         return True
     data = getattr(hdu, "_data", None)
     numel = getattr(data, "numel", None)
-    return callable(numel) and numel() == 0
+    if not (callable(numel) and numel() == 0):
+        return False
+    # Only a shapeless placeholder (``torch.empty(0)``): an image that
+    # declares more axes, such as ``torch.zeros(3, 0, 12)``, is data whose
+    # shape must survive (it is stored uncompressed, like fpack does).
+    dim = getattr(data, "dim", None)
+    return not callable(dim) or dim() <= 1
 
 
 def _write_header_cards_if_supported(
@@ -766,7 +861,7 @@ def _vla_item_signature(item: Any) -> tuple[Any, ...] | None:
     if isinstance(item, (list, tuple, np.ndarray)):
         try:
             arr = np.asarray(item)
-        except Exception:
+        except (TypeError, ValueError):  # ragged / non-numeric sequence
             return None
         if arr.ndim > 1 or arr.dtype == np.object_:
             return None
@@ -1138,6 +1233,48 @@ def _string_column_width(value: Any) -> Optional[int]:
     return max(1, chars)
 
 
+def _warn_clipped_string_columns(
+    data: Dict[str, Any], schema: Optional[Dict[str, Any]], *, stacklevel: int = 3
+) -> None:
+    """Warn when a string value is longer than its column's schema width.
+
+    CFITSIO clips such a value to the ``TFORM`` width (``'3A'`` binary,
+    ``'A3'`` ASCII). The row mutations already warn when they clip; the
+    whole-table writers (``table.write`` with ``schema=``, ``insert_column`` /
+    ``replace_column`` with ``format=``, the first streamed batch) clipped
+    silently (r5b-06). ``data`` is the normalized payload (string columns are
+    lists of ``str``).
+    """
+    import warnings
+
+    from ..fits_schema import parse_tform
+
+    if not schema:
+        return
+    for name, value in data.items():
+        if not isinstance(value, list) or not value:
+            continue
+        meta = schema.get(name) or {}
+        tform = meta.get("format") or meta.get("tform")
+        if not tform:
+            continue
+        info = parse_tform(str(tform))
+        if info.vla or info.code != "A":
+            continue
+        width = info.repeat
+        clipped = sum(
+            1 for text in value if isinstance(text, str) and len(text) > width
+        )
+        if clipped:
+            warnings.warn(
+                f"Column '{name}' has width {width}: "
+                f"{clipped} value(s) were silently clipped to fit. "
+                "Shorten values or widen the column to silence.",
+                RuntimeWarning,
+                stacklevel=stacklevel,
+            )
+
+
 def _prepare_unsigned_table_data_for_write(
     table_dict: Dict[str, Any],
     schema: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1334,6 +1471,8 @@ def _coerce_compressed_hdu_item(item: Any) -> Any:
                     else:
                         img = torch.as_tensor(img)
                 except Exception:
+                    # Translated, not swallowed: torch raises TypeError,
+                    # ValueError or RuntimeError for unconvertible payloads.
                     raise NotImplementedError(
                         "Compressed FITS writing supports tensor image payloads"
                         " for dict HDUs. Could not convert"

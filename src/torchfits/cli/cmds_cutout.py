@@ -16,6 +16,7 @@ from .common import (
     UsageError,
     add_file_jobs_arg,
     compressed_image_geometry,
+    drop_data_range_cards,
     add_hdu_arg,
     resolve_batch_io_pairs,
     resolve_file_jobs,
@@ -146,6 +147,37 @@ def _shift_crpix(header: Any, x1: int, y1: int) -> None:
         header[key] = value - (x1 if match.group(1) == "1" else y1)
 
 
+def _read_box(path: str, hdu: int, box: tuple[int, int, int, int]) -> tuple[Any, Any]:
+    """Header and pixel box of one image HDU.
+
+    An http(s) URL walks its HDU headers once, by Range requests, for both
+    the header and the pixels; a file Range cannot serve (compressed, scaled,
+    no Range support) is downloaded once and read locally.
+    """
+    from torchfits.data.remote import is_http_url, resolve_local_path
+
+    if is_http_url(path):
+        from torchfits._io_engine.http_subset import (
+            HttpRangeUnsupported,
+            locate_uncompressed_2d,
+            read_subset_http,
+        )
+        from torchfits.header_parser import fast_parse_header_cards
+        from torchfits.hdu import Header
+        from torchfits.http_util import HttpRangeNotSatisfied
+
+        try:
+            meta = locate_uncompressed_2d(path, hdu)
+            header = Header(fast_parse_header_cards(meta["header_text"]))
+            _check_box_intersects_image(box, header, path=path, hdu=hdu)
+            return header, read_subset_http(path, hdu, *box, _meta=meta)
+        except (HttpRangeUnsupported, HttpRangeNotSatisfied):
+            path = resolve_local_path(path)
+    header = torchfits.read_header(path, hdu)
+    _check_box_intersects_image(box, header, path=path, hdu=hdu)
+    return header, torchfits.read_subset(path, hdu, *box)
+
+
 def _cutout_one(
     pair: tuple[str, str],
     *,
@@ -171,24 +203,23 @@ def _cutout_one(
             "(e.g. image.fits[10:100,20:200]) or --box x1,y1,x2,y2"
         )
     try:
-        header = torchfits.read_header(input_path, hdu)
         if sectioned:
+            header = torchfits.read_header(input_path, hdu)
             tensor = torchfits.read_tensor(input_path, hdu=hdu)
         else:
             assert box is not None  # guarded above
             x1, y1, x2, y2 = _parse_box(box)
-            _check_box_intersects_image(
-                (x1, y1, x2, y2), header, path=input_path, hdu=hdu
-            )
-            tensor = torchfits.read_subset(input_path, hdu, x1, y1, x2, y2)
+            header, tensor = _read_box(input_path, hdu, (x1, y1, x2, y2))
             # Keep the stamp on the sky, as CFITSIO does for a section.
             _shift_crpix(header, x1, y1)
+        drop_data_range_cards(header)
         torchfits.write_tensor(output_path, tensor, header=header, overwrite=True)
     except UsageError:
         raise
     except HDUNotFoundError as exc:
-        # The message already names the file and the HDU.
-        raise IoError(str(exc)) from exc
+        # An -e index the file does not have is a usage error (exit 2), as
+        # in every other subcommand; the message names the file and HDU.
+        raise UsageError(str(exc)) from exc
     except Exception as exc:
         raise IoError(f"{input_path}: {exc}") from exc
 

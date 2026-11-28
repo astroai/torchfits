@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any, Optional
 
+from .._errors import ColumnExistsError, UnknownColumnError
+from ._cell_shape import flatten_cells
 from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
 from ..fits_schema import unsigned_column_dtype_names_from_header
@@ -12,7 +13,6 @@ from .._table.utils import (
     _column_tnull_map,
     _naxis2_row_count,
     _normalize_row_slice,
-    _parse_tform,
 )
 from .._table.write import (
     _scaled_columns_as_stored,
@@ -21,26 +21,27 @@ from .._table.write import (
     _resolve_table_hdu_index_and_columns,
     _rewrite_table_hdu_with_schema,
     _rewrite_table_header,
+    _synthesized_column_ttypes,
 )
 
 from ._mutation_coerce import (
-    _COMPLEX_TFORM_CODES,
-    _clip_strings_to_width,
+    _column_scaling_map,
     _coerce_rows_from_arrow,
-    _coerce_table_column_array,
-    _coerce_table_complex_values,
-    _coerce_table_string_values,
-    _coerce_table_vla_values,
-    _ensure_dtype_maps,
     _exact_int_list,
     _infer_column_format_for_insert,
     _mutation_cache_barrier,
     _normalize_column_values_for_format,
     _normalize_mutation_rows,
+    _normalize_update_rows,
     _physical_to_stored_column,
     _read_table_for_rewrite,
     _replacement_column_layout,
+    _update_column_codes,
 )
+
+
+def _is_binary_table(header_map: dict[str, Any]) -> bool:
+    return str(header_map.get("XTENSION", "")).strip().upper() != "TABLE"
 
 
 def insert_column(
@@ -66,7 +67,7 @@ def insert_column(
         path, hdu
     )
     if name in columns:
-        raise ValueError(f"Column '{name}' already exists")
+        raise ColumnExistsError(f"Column '{name}' already exists")
 
     if index is None:
         index = len(columns)
@@ -79,6 +80,10 @@ def insert_column(
         if str(header_map.get("XTENSION", "")).strip().upper() == "TABLE"
         else "binary"
     )
+    # (nrows, *cell) values are stored flat with TDIM.
+    values, cell_tdim = flatten_cells(name, values, dim)
+    if dim is None:
+        dim = cell_tdim
 
     fmt = (
         str(format).strip().upper()
@@ -125,6 +130,7 @@ def insert_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        source_ttypes=_synthesized_column_ttypes(header_map),
     )
     _mutation_cache_barrier(path)
 
@@ -151,9 +157,12 @@ def replace_column(
         path, hdu
     )
     if name not in columns:
-        raise KeyError(f"Column '{name}' not found")
+        raise UnknownColumnError(f"Column '{name}' not found")
 
     num_rows = _naxis2_row_count(header_map, path)
+    values, cell_tdim = flatten_cells(name, values, dim)
+    if dim is None:
+        dim = cell_tdim
 
     existing_schema = _extract_table_schema_from_header(header_map, columns)
     existing_meta = dict(existing_schema.get(name, {}))
@@ -233,6 +242,7 @@ def replace_column(
         table_header,
         table_type,
         restamp_checksums="CHECKSUM" in header_map or "DATASUM" in header_map,
+        source_ttypes=_synthesized_column_ttypes(header_map),
     )
     _mutation_cache_barrier(path)
 
@@ -267,13 +277,16 @@ def append_rows(
         path, hdu
     )
     tnull_map = _column_tnull_map(header_map)
+    unsigned = unsigned_column_dtype_names_from_header(header_map)
     normalized, expected_rows = _normalize_mutation_rows(
         rows,
         columns,
         tform_map,
         tnull_map,
         allow_partial=True,
-        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
+        unsigned_dtypes=unsigned,
+        scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
@@ -310,13 +323,16 @@ def insert_rows(
         )
 
     tnull_map = _column_tnull_map(header_map)
+    unsigned = unsigned_column_dtype_names_from_header(header_map)
     normalized, expected_rows = _normalize_mutation_rows(
         rows,
         columns,
         tform_map,
         tnull_map,
         allow_partial=True,
-        unsigned_dtypes=unsigned_column_dtype_names_from_header(header_map),
+        unsigned_dtypes=unsigned,
+        scaling=_column_scaling_map(header_map, unsigned),
+        binary_table=_is_binary_table(header_map),
     )
     if expected_rows <= 0:
         return
@@ -373,73 +389,6 @@ def delete_rows(
     _restamp_checksums(path, target_hdu, header_map)
 
 
-def _check_numeric_coercion(
-    col_name: str,
-    arr: Any,
-    tform: Any,
-    unsigned_dtype: str | None = None,
-    scaled: bool = False,
-) -> None:
-    """Check *arr* against an integer-TFORM column before anything is written.
-
-    CFITSIO truncates floats toward zero (warned here). An out-of-range
-    integer is refused with ValueError: CFITSIO writes the rows before it
-    reports the overflow, which used to leave the file modified behind the
-    error. Scaled (TSCAL/TZERO) columns take physical values and are not
-    range-checked against the stored type here.
-    """
-    if not tform:
-        return
-    try:
-        is_vla, code, _repeat = _parse_tform(str(tform))
-    except Exception:
-        return
-    if is_vla or code not in {"B", "I", "J", "K"}:
-        return
-    import numpy as _np
-
-    if arr.dtype.kind == "f":
-        finite = arr[_np.isfinite(arr)]
-        non_integral = (
-            int(_np.count_nonzero(finite != _np.floor(finite))) if finite.size else 0
-        )
-        n_nonfinite = int(arr.size - finite.size)
-        if not (non_integral or n_nonfinite):
-            return
-        message = (
-            f"Column '{col_name}' has integer FITS format '{tform}': "
-            f"{non_integral} non-integral value(s) will be truncated toward zero"
-        )
-        if n_nonfinite:
-            message += f" and {n_nonfinite} non-finite value(s) will become undefined"
-        warnings.warn(
-            message + ". Cast explicitly to silence this warning.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        return
-    if arr.dtype.kind in {"i", "u"} and not scaled:
-        bits = {"B": 8, "I": 16, "J": 32, "K": 64}[code]
-        if unsigned_dtype == "int8":
-            # Signed-byte convention: 'B' with TZERO = -128.
-            low, high = -128, 127
-        elif code == "B" or unsigned_dtype is not None:
-            # 'B' is unsigned bytes; TZERO = 2**(bits-1) makes I/J/K unsigned.
-            low, high = 0, (1 << bits) - 1
-        else:
-            low, high = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
-        if arr.dtype.kind == "u":
-            out_of_range = int(_np.count_nonzero(arr > high))
-        else:
-            out_of_range = int(_np.count_nonzero((arr > high) | (arr < low)))
-        if out_of_range:
-            raise ValueError(
-                f"Column '{col_name}' has integer FITS format '{tform}': "
-                f"{out_of_range} value(s) fall outside [{low}, {high}]; "
-                "nothing was written"
-            )
-
-
 def update_rows(
     path: str,
     rows: dict[str, Any],
@@ -460,99 +409,21 @@ def update_rows(
     )
     unknown = sorted({str(name) for name in rows} - set(columns))
     if unknown:
-        raise KeyError(f"Unknown columns for table mutation: extra={unknown}")
+        raise UnknownColumnError(f"Unknown columns for table mutation: extra={unknown}")
     from ..fits_schema import unsigned_column_dtype_names_from_header
 
     unsigned_names = unsigned_column_dtype_names_from_header(header_map)
-    from ..fits_schema import iter_table_columns
+    scaling = _column_scaling_map(header_map, unsigned_names)
 
-    scaled_names = {
-        col.name
-        for col in iter_table_columns(header_map)
-        if col.name not in unsigned_names
-        and ((col.tscal or 1.0) != 1.0 or (col.tzero or 0.0) != 0.0)
-    }
-
-    string_widths: dict[str, int] = {}
-    vla_codes: dict[str, str] = {}
-    complex_codes: dict[str, str] = {}
-    _ensure_dtype_maps()
-    for name, tform in tform_map.items():
-        if not tform:
-            continue
-        is_vla, code, repeat = _parse_tform(tform)
-        if is_vla:
-            vla_codes[name] = code
-        elif code in _COMPLEX_TFORM_CODES:
-            complex_codes[name] = code
-        elif code == "A":
-            string_widths[name] = repeat
+    codes = _update_column_codes(tform_map)
 
     start_row, num_rows = _normalize_row_slice(row_slice)
     if num_rows == 0:
         return
 
-    normalized: dict[str, Any] = {}
-    expected_rows: Optional[int] = None
-    for name, value in rows.items():
-        col_name = str(name)
-        if col_name in vla_codes:
-            values = _coerce_table_vla_values(
-                col_name, value, vla_codes[col_name], expected_rows=expected_rows
-            )
-            if expected_rows is None:
-                expected_rows = len(values)
-            normalized[col_name] = values
-        elif col_name in string_widths:
-            width = string_widths[col_name]
-            texts = _clip_strings_to_width(
-                col_name,
-                _coerce_table_string_values(
-                    col_name, value, expected_rows=expected_rows
-                ),
-                width,
-            )
-            if expected_rows is None:
-                expected_rows = len(texts)
-            import numpy as _np
-
-            arr = _np.full((expected_rows, width), 0x20, dtype=_np.uint8)
-            for i, text in enumerate(texts):
-                if text:
-                    arr[i, : len(text)] = _np.frombuffer(
-                        text.encode("ascii"), dtype=_np.uint8
-                    )
-            normalized[col_name] = arr
-        elif col_name in complex_codes:
-            arr = _coerce_table_complex_values(
-                col_name,
-                value,
-                complex_codes[col_name],
-                expected_rows=expected_rows,
-                allow_2d=True,
-            )
-            if expected_rows is None:
-                expected_rows = int(arr.shape[0])
-            normalized[col_name] = arr
-        else:
-            arr = _coerce_table_column_array(
-                col_name, value, expected_rows=expected_rows, allow_2d=True
-            )
-            if expected_rows is None:
-                expected_rows = int(arr.shape[0])
-            _check_numeric_coercion(
-                col_name,
-                arr,
-                tform_map.get(col_name),
-                unsigned_names.get(col_name),
-                scaled=col_name in scaled_names,
-            )
-            if unsigned_names.get(col_name) == "uint64" and arr.dtype.kind == "i":
-                # Physical uint64 values (negatives refused above): send them
-                # as uint64 so every writer applies the TZERO = 2**63 offset.
-                arr = arr.astype("uint64")
-            normalized[col_name] = arr
-
+    normalized, expected_rows = _normalize_update_rows(
+        rows, codes, tform_map, unsigned_names, scaling
+    )
     if expected_rows is None:
         return
     if num_rows < 0:
@@ -593,13 +464,37 @@ def update_rows(
             "use append_rows to add rows"
         )
 
+    _write_row_update(
+        path,
+        target_hdu,
+        header_map,
+        normalized,
+        start_row,
+        num_rows,
+        mmap=mmap,
+        vla_names=set(codes.vla),
+    )
+
+
+def _write_row_update(
+    path: str,
+    target_hdu: int,
+    header_map: dict[str, Any],
+    normalized: dict[str, Any],
+    start_row: int,
+    num_rows: int,
+    *,
+    mmap: bool | str,
+    vla_names: set[str],
+) -> None:
+    """Write a validated, normalized update window (mmap writer, then CFITSIO)."""
     import torchfits._C as cpp
 
     _mutation_cache_barrier(path)
 
     use_mmap = mmap in (True, "auto", "mmap")
     forced_mmap = mmap in (True, "mmap")
-    unsupported_mmap = sorted(name for name in normalized if name in vla_codes)
+    unsupported_mmap = sorted(name for name in normalized if name in vla_names)
     if forced_mmap and unsupported_mmap:
         raise ValueError(
             "mmap table updates do not support variable-length-array columns; "
@@ -663,10 +558,10 @@ def rename_columns(
     existing = set(columns)
     missing = sorted(set(normalized) - existing)
     if missing:
-        raise KeyError(f"Column(s) not found for rename_columns: {missing}")
+        raise UnknownColumnError(f"Column(s) not found for rename_columns: {missing}")
     conflicts = sorted(set(normalized.values()) & (existing - set(normalized)))
     if conflicts:
-        raise ValueError(
+        raise ColumnExistsError(
             "rename_columns target names collide with existing columns not being renamed: "
             f"{conflicts}"
         )
@@ -699,7 +594,7 @@ def drop_columns(
     )
     missing = sorted(set(normalized) - set(existing_columns))
     if missing:
-        raise KeyError(f"Column(s) not found for drop_columns: {missing}")
+        raise UnknownColumnError(f"Column(s) not found for drop_columns: {missing}")
 
     import torchfits._C as cpp
 

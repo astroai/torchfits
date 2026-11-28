@@ -28,8 +28,13 @@ echo "=== ci_local: types + changelog ==="
 pixi run mypy src/torchfits
 pixi run changelog-check
 
-# Build first so nothing below exercises a stale extension.
+# Build first so nothing below exercises a stale extension. A vendored
+# extern/cfitsio older than extern/VERSIONS.txt or extern/patches is re-vendored
+# first (CMake would do the same in a git checkout; this says so up front).
 echo "=== ci_local: build ==="
+if ! bash extern/vendor.sh --check-stamp; then
+  bash extern/vendor.sh --cfitsio-version extern/VERSIONS.txt
+fi
 pixi run dev
 
 echo "=== ci_local: full test suite ==="

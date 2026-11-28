@@ -55,3 +55,54 @@ def test_empty_primary_keeps_its_header_cards(tmp_path, header):
     assert (primary["OBSERVER"], primary["TELESCOP"]) == ("me", "CFHT")
     assert primary["NAXIS"] == 0
     assert torchfits.read_header(path, "SCI").get("OBSERVER") is None
+
+
+@pytest.mark.parametrize("compress", ["RICE_1", "GZIP_1", "GZIP_2", "HCOMPRESS_1"])
+def test_zero_size_image_hdu_is_stored_uncompressed(tmp_path, compress):
+    # CFITSIO cannot tile an image with a zero-length axis: a compressed
+    # write of one (an extension, or the primary of a re-opened file) killed
+    # the process with SIGFPE. It is now stored uncompressed, like fpack does.
+    path = str(tmp_path / "zero.fits")
+    data = torch.ones(5, 6, dtype=torch.int16)
+    torchfits.write(
+        path,
+        [torch.zeros(4, 4), torch.zeros(3, 0, 12), data, torch.zeros(0, 7)],
+        compress=compress,
+    )
+    assert torchfits.read(path, hdu=2).shape == (3, 0, 12)
+    assert torchfits.read(path, hdu=4).shape == (0, 7)
+    assert "ZIMAGE" not in torchfits.read_header(path, 2)
+    assert torchfits.read_header(path, 3).get("ZIMAGE") is True
+    assert torch.equal(torchfits.read(path, hdu=3), data)
+
+    cube = str(tmp_path / "cube.fits")
+    torchfits.write(cube, torch.zeros(3, 0, 12, dtype=torch.float64))
+    out = str(tmp_path / "cube_c.fits")
+    with torchfits.open(cube) as hdul:
+        torchfits.write(out, hdul, compress=compress)
+    assert torchfits.read(out, hdu=1).shape == (3, 0, 12)
+
+
+@pytest.mark.parametrize("compress", [True, "RICE_1", "GZIP_1"])
+@pytest.mark.parametrize("shape", [(3, 0, 12), (0, 7)])
+def test_compressed_write_of_zero_size_tensor_keeps_declared_shape(
+    tmp_path, compress, shape
+):
+    # A bare zero-size tensor with declared axes was mistaken for the empty
+    # placeholder primary and dropped: the file held only the writer's empty
+    # primary, so the declared shape was lost. Like any compressed write the
+    # image now lands in HDU 1 (stored uncompressed, as fpack does).
+    path = str(tmp_path / "zero_c.fits")
+    torchfits.write(path, torch.zeros(*shape), compress=compress)
+    assert torchfits.read(path, hdu=1).shape == shape
+    assert torchfits.read(path, hdu="auto").shape == shape
+    with torchfits.open(path) as hdul:
+        assert len(hdul) == 2
+
+
+def test_compressed_write_of_shapeless_empty_tensor_is_a_placeholder(tmp_path):
+    path = str(tmp_path / "empty_c.fits")
+    torchfits.write(path, torch.empty(0), compress=True)
+    with torchfits.open(path) as hdul:
+        assert len(hdul) == 1
+    assert torchfits.read(path).shape == (0,)
