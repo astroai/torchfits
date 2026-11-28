@@ -820,6 +820,7 @@ from torchfits.transforms import (
     FITSScaleColumns,
     FITSHeaderNormalize,
     FITSHeaderScale,
+    FITSTransform,
     GlobalScalarNorm,
     InterquantileScale,
     InterquantileNormalize,
@@ -844,6 +845,8 @@ from torchfits.transforms import (
     mask_from_ivar,
     mask_from_nan,
     rgb,
+    safe_arcsinh,
+    safe_log,
     zscale_limits,
 )
 ```
