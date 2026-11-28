@@ -267,8 +267,9 @@ def test_convert_bad_columns_or_where_is_usage_error(tmp_path):
     for argv in (["-c", "NOPE"], ["-w", "NOPE > 1"], ["-w", "RA >"]):
         assert main(["convert", str(cat), str(out), "-e", "1", *argv]) == 2, argv
         assert not out.exists()
-    # An unreadable HDU stays an I/O error even with a predicate.
-    assert main(["convert", str(cat), str(out), "-e", "7", "-w", "RA > 1"]) == 3
+    # An HDU index the file does not have is a usage error, as in every
+    # other subcommand (it was exit 3 here and in cutout/transform).
+    assert main(["convert", str(cat), str(out), "-e", "7", "-w", "RA > 1"]) == 2
     assert main(["convert", str(cat), str(out), "-e", "1", "-w", "RA > 1"]) == 0
 
 

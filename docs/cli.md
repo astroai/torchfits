@@ -90,7 +90,7 @@ iterators and deep learning training pipelines), use the in-process Python API
 |---|---|---|
 | `0` | Success | Command completed successfully |
 | `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
-| `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
+| `2` | Usage error | Missing arguments, invalid flags, or unknown syntax; an `-e`/`--hdu` (or `--bands`) index the file does not have, in every subcommand |
 | `3` | I/O error | File not found, permission denied, or invalid FITS structure (a truncated file is reported as such, not as a bare CFITSIO status) |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
 | `5` | Internal error | Unexpected exception; traceback printed to stderr |
@@ -315,8 +315,9 @@ of the selected columns chunk by chunk through `torchfits.table.writer()`
 memory.
 
 An unknown `--columns` name or an invalid `--where` predicate (unknown column,
-syntax error, type mismatch) is a usage error (exit `2`); an unreadable file or
-HDU stays an I/O error (exit `3`).
+syntax error, type mismatch) is a usage error (exit `2`), as is an `-e` index
+the file does not have; an unreadable file or a corrupt HDU stays an I/O error
+(exit `3`).
 
 CSV/TSV cells hold one value each: a selection that includes a vector
 (`repeat > 1`, `TDIMn`) or variable-length (`P`/`Q`) column is refused as a

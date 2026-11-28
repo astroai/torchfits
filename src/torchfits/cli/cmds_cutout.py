@@ -217,8 +217,9 @@ def _cutout_one(
     except UsageError:
         raise
     except HDUNotFoundError as exc:
-        # The message already names the file and the HDU.
-        raise IoError(str(exc)) from exc
+        # An -e index the file does not have is a usage error (exit 2), as
+        # in every other subcommand; the message names the file and HDU.
+        raise UsageError(str(exc)) from exc
     except Exception as exc:
         raise IoError(f"{input_path}: {exc}") from exc
 

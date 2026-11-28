@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torchfits
+from torchfits._errors import HDUNotFoundError
 
 from .common import (
     EXIT_OK,
@@ -667,7 +668,7 @@ def _read_band(path: str, hdu: int) -> object:
     """
     try:
         return torchfits.read_tensor(path, hdu=hdu).detach().cpu()
-    except (UsageError, IoError):
+    except (UsageError, IoError, HDUNotFoundError):
         raise
     except Exception as exc:
         raise IoError(f"{path}: HDU {hdu}: {exc}") from exc
@@ -766,5 +767,9 @@ def run(args: argparse.Namespace) -> int:
         return _convert_png(args)
     except UsageError:
         raise
+    except HDUNotFoundError as exc:
+        # An -e / --bands index the file does not have is a usage error
+        # (exit 2), as in every other subcommand; a corrupt HDU stays exit 3.
+        raise UsageError(str(exc)) from exc
     except Exception as exc:
         raise IoError(str(exc)) from exc

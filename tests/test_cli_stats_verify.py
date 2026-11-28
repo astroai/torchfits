@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import numpy as np
+import pytest
 import torch
 
 import torchfits
@@ -324,3 +325,48 @@ def test_json_safe_bytes_and_complex():
     assert _json_safe(b"ok\xff") == "ok�"
     assert _json_safe(np.complex64(1 - 2j)) == {"re": 1.0, "im": -2.0}
     assert _json_safe([complex(float("inf"), 0)]) == [{"re": None, "im": 0.0}]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["info", "{img}", "-e", "99"],
+        ["header", "{img}", "-e", "99"],
+        ["stats", "{img}", "-e", "99"],
+        ["verify", "{img}", "-e", "99"],
+        ["probe", "{img}", "-e", "99"],
+        ["table", "{tbl}", "-e", "99"],
+        ["cutout", "{img}", "-o", "{out}.fits", "-e", "99", "--box", "0,0,2,2"],
+        ["convert", "{tbl}", "{out}.csv", "-e", "99"],
+        ["convert", "{tbl}", "{out}.fits", "-e", "99"],
+        ["convert", "{img}", "-o", "{out}.png", "--to", "png", "--bands", "99"],
+        [
+            "arith",
+            "{img}",
+            "--op",
+            "add",
+            "--value",
+            "1",
+            "-o",
+            "{out}.fits",
+            "-e",
+            "99",
+        ],
+        ["transform", "{img}", "-o", "{out}.fits", "-e", "99", "--name", "LogStretch"],
+        ["compress", "{img}", "-e", "99", "--split", "hdu", "--out-dir", "{dir}"],
+        ["decompress", "{img}", "-e", "99", "--split", "hdu", "--out-dir", "{dir}"],
+    ],
+    ids=lambda argv: "-".join(a for a in argv[:4] if not a.startswith("{")),
+)
+def test_every_subcommand_reports_a_missing_hdu_as_usage_error(tmp_path, argv, capsys):
+    # cutout, convert and transform used to exit 3 for an -e index the file
+    # does not have; info/header/stats/table/verify/... exit 2.
+    from torchfits.cli.main import main
+
+    img = tmp_path / "img.fits"
+    torchfits.write(str(img), torch.zeros((4, 4)))
+    tbl = tmp_path / "tbl.fits"
+    tf_table.write(str(tbl), {"A": np.array([1.0, 2.0])})
+    fields = {"img": img, "tbl": tbl, "out": tmp_path / "out", "dir": tmp_path / "d"}
+    assert main([a.format(**fields) for a in argv]) == 2
+    assert "out of range" in capsys.readouterr().err
