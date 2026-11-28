@@ -279,7 +279,20 @@ DataLoaders and concurrent reads without lock contention.
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
 resolution, raw fd, and the HDU header offsets a read-only handle learned
 (seeded into the next private handle so reaching HDU *n* is one seek instead
-of a walk over the *n*-1 headers before it). Validated via `stat()`. Lives in a global map protected
+of a walk over the *n*-1 headers before it). Validated via `stat()`. The HDU
+offsets are tied to the exact file version they were read from (device, inode,
+size, mtime and ctime of the file the handle opened, bracketed by a `stat()`
+before and after the open) rather than to the validation window: a handle is
+only seeded from offsets recorded for its own version, and a handle only
+records them if the path still names that version when it closes and no
+in-process writer invalidated the path meanwhile. A version is recorded only
+once it is `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` old, so a rewrite within the
+filesystem's timestamp granularity cannot keep its ctime; a file younger than
+that is read with the plain header walk. Not covered: filesystems that do not
+maintain ctime (some FUSE mounts), a network filesystem whose server clock runs
+behind the client by more than the age threshold, and a single `write()` (or a
+shared mapping) still modifying the file longer than that threshold while it is
+opened. Set `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES=0` to turn the offset cache off. Lives in a global map protected
 by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
 and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
 repeated header probing for hot files without sharing CFITSIO CHDU state.
@@ -289,6 +302,8 @@ repeated header probing for hot files without sharing CFITSIO CHDU state.
 | `TORCHFITS_SHARED_META_VALIDATE` | `1` | Enable validation |
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | Validation interval |
 | `TORCHFITS_MAX_CACHED_FDS` | `32` | Raw descriptors kept open across reads (LRU); `0` keeps one per path, which is unbounded |
+| `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES` | `67108864` | Process-wide budget for learned HDU offsets (8 bytes per HDU); `0` disables the offset cache |
+| `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` | `3000` | Minimum age of a file version before its HDU offsets are recorded |
 
 ### L2 — Thread-local metadata
 
@@ -489,6 +504,8 @@ profiling or working around a specific bottleneck.
 | `TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS` | `1000` | SharedReadMeta validation interval |
 | `TORCHFITS_XOR_PARALLEL_MIN_BYTES` | `262144` | Threshold for parallel sign-bit XOR |
 | `TORCHFITS_MAX_CACHED_FDS` | `32` | Raw descriptors SharedReadMeta keeps open across reads, LRU-evicted. The table is per-process, so an unbounded cache starves every other library in it (measured: 90 reads at `RLIMIT_NOFILE=64` left 64/64 descriptors held and 199/200 further opens failing with EMFILE). `0` restores unbounded retention |
+| `TORCHFITS_HDU_OFFSET_CACHE_MAX_BYTES` | `67108864` (64 MiB) | Process-wide budget for the HDU header offsets read-only handles learn (8 bytes per HDU, one table per path); a table that does not fit is not recorded. `0` disables the cache, so reaching HDU *n* always walks the *n*-1 headers before it |
+| `TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS` | `3000` | A file version's HDU offsets are recorded only once its ctime and mtime are this old, so a later same-size rewrite always changes its ctime even on filesystems with coarse timestamps (FAT: 2 s). Lowering it is only safe on filesystems with fine-grained timestamps |
 | `TORCHFITS_NUM_THREADS` | hardware concurrency (capped at 64) | Worker threads for `libtorchfits_core`'s pool, which runs every native parallel decode (table columns, row filters, sign-bit XOR). `torch.set_num_threads` does not size it; set this when the pool and PyTorch's intra-op threads would otherwise oversubscribe |
 | `TORCHFITS_VLA_HEAP_PREAD` | `0` (off) | Contiguous-heap single-`pread` fast path for VLA table columns; off by default until THEAP/offset edge cases are fully proven vs CFITSIO |
 

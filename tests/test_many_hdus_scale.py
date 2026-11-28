@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -88,6 +89,23 @@ def _bytes_read(fn) -> int:
 
 N_EXT = 400
 
+# Learned offsets are only recorded for a file version older than
+# TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS (default 3 s): a younger one could still
+# be rewritten within its filesystem's timestamp granularity.
+MIN_AGE_S = int(os.environ.get("TORCHFITS_HDU_OFFSET_CACHE_MIN_AGE_MS", "3000")) / 1000
+
+
+@pytest.fixture(scope="module")
+def aged_mefs(tmp_path_factory):
+    """MEFs written up front and left to age once, so their offsets get recorded."""
+    root = tmp_path_factory.mktemp("aged_mefs")
+    paths = {}
+    for n_ext in (N_EXT, 50, 120):
+        paths[n_ext] = str(root / f"mef{n_ext}.fits")
+        _write_mef(paths[n_ext], n_ext)
+    time.sleep(MIN_AGE_S + 0.5)
+    return paths
+
 
 def test_open_lists_a_many_hdu_file_in_one_pass(tmp_path):
     path = str(tmp_path / "mef.fits")
@@ -104,9 +122,8 @@ def test_open_lists_a_many_hdu_file_in_one_pass(tmp_path):
     assert _bytes_read(_open) < 8 * N_EXT * BLOCK
 
 
-def test_path_reads_of_a_late_hdu_do_not_rescan_the_headers(tmp_path):
-    path = str(tmp_path / "mef.fits")
-    _write_mef(path, N_EXT)
+def test_path_reads_of_a_late_hdu_do_not_rescan_the_headers(aged_mefs):
+    path = aged_mefs[N_EXT]
     torchfits.clear_all_caches()
     assert int(torchfits.read(path, hdu=N_EXT)[0, 0]) == N_EXT  # learns offsets
 
@@ -124,9 +141,8 @@ def test_path_reads_of_a_late_hdu_do_not_rescan_the_headers(tmp_path):
     assert int(torchfits.read(path, hdu=7)[0, 0]) == 7
 
 
-def test_learned_hdu_offsets_do_not_survive_a_rewrite(tmp_path):
-    path = str(tmp_path / "mef.fits")
-    _write_mef(path, 50)
+def test_learned_hdu_offsets_do_not_survive_a_rewrite(aged_mefs):
+    path = aged_mefs[50]
     torchfits.clear_all_caches()
     assert int(torchfits.read(path, hdu=50)[0, 0]) == 50
     # Out-of-band rewrite (not through torchfits): extension 1 grows by
@@ -141,13 +157,13 @@ def test_learned_hdu_offsets_do_not_survive_a_rewrite(tmp_path):
     assert int(torchfits.read(path, hdu=1)[0, 0]) == 2
 
 
-def test_concurrent_reads_of_a_many_hdu_file_stay_correct(tmp_path):
-    """Threads opening the same file share CFITSIO's FITSfile; seeding the
-    learned offsets must not race another thread's open or HDU move."""
+def test_concurrent_reads_of_a_many_hdu_file_stay_correct(aged_mefs):
+    """Every read opens its own handle (CFITSIO never shares a read-only
+    FITSfile between opens), while other threads publish and seed the same
+    path's offset table: every read must still land on the HDU it asked for."""
     from concurrent.futures import ThreadPoolExecutor
 
-    path = str(tmp_path / "mef.fits")
-    _write_mef(path, 120)
+    path = aged_mefs[120]
     torchfits.clear_all_caches()
 
     def _worker(seed: int) -> list[tuple[int, int]]:
