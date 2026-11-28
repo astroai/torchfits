@@ -24,7 +24,7 @@ import torchfits
 import torchfits.table as tft
 from torchfits import HDUNotFoundError
 from torchfits.cli.main import main as cli_main
-from torchfits.data import FitsImageDataset
+from torchfits.data import FitsImageDataset, FitsTableDataset
 from torchfits.hdu import TableHDURef
 
 
@@ -76,6 +76,10 @@ ROUTES = {
     "table.reader": lambda p, h: tft.reader(p, hdu=h),
     "table.append_rows": lambda p, h: tft.append_rows(p, {"x": torch.arange(1)}, hdu=h),
     "FitsImageDataset": lambda p, h: FitsImageDataset([p], hdu=h)[0],
+    # The eager table dataset read through the native reader, which reported
+    # a missing HDU as a bare RuntimeError and an EXTNAME as a TypeError.
+    "FitsTableDataset": lambda p, h: FitsTableDataset(p, hdu=h),
+    "FitsTableDataset[lazy]": lambda p, h: FitsTableDataset(p, hdu=h, lazy=True),
 }
 INDEX_ONLY_ROUTES = {
     # A list read takes one integer HDU; a name there is an argument error.

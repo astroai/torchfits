@@ -141,14 +141,28 @@ class FitsTableDataset(Dataset[Any]):
             self._init_labels(labels)
             return
 
-        # Read all data once and index by row.
-        self._data = _eager_table_columns(
+        # Read all data once and index by row. The native table reader takes
+        # an HDU index and reports a missing one as a bare RuntimeError: look
+        # an EXTNAME up first and translate a missing HDU or file into the
+        # typed errors every other reader raises (as lazy=True already does).
+        from .._io_engine._hdu_lookup import call_with_lookup, resolve_hdu_name
+
+        read_hdu = (
+            resolve_hdu_name(self.path, self.hdu)
+            if isinstance(self.hdu, str)
+            else self.hdu
+        )
+        self._data = call_with_lookup(
             self.path,
-            hdu=self.hdu,
-            columns=self.columns,
-            where=self.where,
-            device=self.device,
-            mmap=self.mmap,
+            read_hdu,
+            lambda: _eager_table_columns(
+                self.path,
+                hdu=read_hdu,
+                columns=self.columns,
+                where=self.where,
+                device=self.device,
+                mmap=self.mmap,
+            ),
         )
         # Two authorities, and which one applies depends on the read:
         #   * the data itself, when a ``where=`` filter or a projection means
@@ -166,7 +180,7 @@ class FitsTableDataset(Dataset[Any]):
                 data_rows = len(v)
                 break
         self._n_rows = (
-            data_rows if self._data else int(_tf.read_nrows(self.path, self.hdu))
+            data_rows if self._data else int(_tf.read_nrows(self.path, read_hdu))
         )
         self._init_labels(labels)
 
