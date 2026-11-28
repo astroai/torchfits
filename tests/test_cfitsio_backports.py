@@ -194,6 +194,15 @@ def test_hcompress_tile_with_zero_ny_raises(tmp_path: Path, dtype: torch.dtype) 
     _assert_read_raises(str(path), hdu=1)
 
 
+@pytest.mark.parametrize("algorithm", ["GZIP_1", "GZIP_2"])
+def test_truncated_gzip_tile_raises(tmp_path: Path, algorithm: str) -> None:
+    """zcompress-truncated-input: uncompress2mem_from_mem grew its output
+    buffer forever once a truncated tile ran out of input (the read hung)."""
+    path = _write_compressed(tmp_path / "gzip.fits", torch.int32, algorithm)
+    _truncate_tile(path)
+    _assert_read_raises(str(path), hdu=1)
+
+
 def test_intact_compressed_tiles_still_read(tmp_path: Path) -> None:
     """The decoder checks must not reject valid tiles."""
     for algorithm in ("RICE_1", "HCOMPRESS_1", "GZIP_1", "GZIP_2"):
