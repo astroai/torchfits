@@ -42,6 +42,9 @@ the notes. The changes that matter for what you call:
   natively, one row window at a time, and gather only the matching rows.
 - **Faster buffered table reads**: `mmap=False` column projections read the
   table in parallel tiles instead of whole rows.
+- **Faster full table reads**: a full `read_torch` or `table.read` of a narrow
+  table (many rows of a few small columns) is about three times faster with
+  `mmap=True` or `mmap=False` and no longer trails `fitsio.read`.
 - **fpack-style compression controls**: `tile_shape=`, `quantize_level=`,
   `quantize_method=`, `dither_seed=` and `int_to_float=` on the writers, and
   `--tile`, `-q`, `--quantize-method`, `--dither-seed` and `--int-to-float`
@@ -53,13 +56,7 @@ the notes. The changes that matter for what you call:
 
 ## Next
 
-- **Measure narrow-table buffered reads again.** The parallel tiled reads
-  closed most of the gap, but the comparison with fitsio has not been re-run
-  on the same host. A strided per-column read will be built only if
-  re-benchmarking in [torchfits-harness](https://github.com/astroai/torchfits-harness)
-  still shows buffered reads (`mmap=False`) trailing on narrow tables.
-- **Internal cleanup of the native table reader** with no change to what you
-  call.
+Nothing is scheduled beyond the 1.4 release.
 
 Out of scope: world coordinates, units, catalog cross-matching and source
 finding stay in other packages, and so do spectroscopy and continuum

@@ -4,6 +4,34 @@ Entries moved out of [`post-1.0-backlog.md`](post-1.0-backlog.md) because they
 are fixed, moot, or record state that no longer holds. Kept for history; do not
 work from this file.
 
+## Archived 2026-11-28 (table reader split and narrow-table reads)
+
+- **Re-benchmark narrow-table buffered reads vs fitsio** — done; fixed in
+  `4db556f`. fitsio 1.4.2 against the same files on one host (4 cores,
+  interleaved old/new processes, 3 rounds, min / median ms). narrow_1M
+  (1M rows x 13 bytes) full read: `read_torch(mmap=False)` 3.60 / 5.78 ->
+  0.87 / 1.85, `mmap=True` 3.30 / 5.90 -> 1.05 / 2.05, `table.read`
+  3.71 / 4.75 -> 1.28 / 1.86; `fitsio.read` 1.58 / 1.78. The gap was not
+  the tiled pread: 1-byte columns were gathered with a per-row run-time
+  `memcpy`, and six few-MiB outputs were trimmed by glibc and refaulted on
+  every read. Now width-specialized gathers shared by the buffered and mmap
+  readers, one row-block pass for all mmap columns, and one output
+  allocation per read up to 32 MiB. 1-column projections (0.53 -> 0.38),
+  `where=` (7.2 -> 4.8), n20 / w8 full reads and the 10-row read (~10 us at
+  the binding) unchanged or faster within noise. No strided per-column read
+  was needed. Same-`case_id` harness numbers are still to be recorded.
+- **`table_reader.h` split / persistent `TableReader` direct I/O by path** —
+  done. `f633cf2` splits the 3773-line header-only class into a declaration
+  and six translation units (layout, read, buffered, mmap, filter, VLA)
+  compiled once into `_C`; no warnings added. `7ba9b12` pins every raw read
+  (pread, mmap, filtered scan, VLA heap pread, extent check) to one
+  descriptor opened at construction; a borrowed-handle reader vets it against
+  the handle's open identity (`FITSFile::names_open_file`). It also fixes
+  persistent path readers (`_C.TableReader(path)`, the mmap-reader capsule)
+  that re-opened the path and read a replacement file's bytes under the old
+  geometry. The per-read replaced-file guard on borrowed handles stays: an
+  in-place rewrite changes the bytes behind the pinned descriptor too.
+
 ## Archived 2026-11-28 (1.4 correctness wave + hygiene pass)
 
 Everything below was open in `post-1.0-backlog.md` before this reconciliation.
@@ -44,7 +72,7 @@ Hashes are on the integrated branch (`fix/assessment-wave`, then `main`).
   whole rows to de-interleave one column; predicate_filter 26-32% behind
   astropy-numpy) — `a645818` tiled parallel pread: narrow 1-col 13.4 -> 2.7 ms
   (mmap 3.8), 2M x 8 full 216 -> 9.7 ms, where= mmap-off 228 -> 18 ms.
-  fitsio not re-run (not in env): tracked as the open re-benchmark.
+  fitsio not re-run (not in env) at the time; closed by `4db556f` above.
 - Single-pass arena decode (API-visible, "1.2 design") — not doing: after
   `a645818` the native full read is memory-bandwidth bound and Arrow
   conversion dominates.

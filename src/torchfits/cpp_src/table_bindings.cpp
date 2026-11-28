@@ -26,6 +26,8 @@
 #include "fits_rw.h"
 #include "fits_detail.h"
 #include "fits_handle.h"
+#include "hardware.h"
+#include "nb_ndarray_utils.h"
 #include "table_types.h"
 #include "table_reader.h"
 #include "table_ops.h"
@@ -750,6 +752,23 @@ struct InvalidateAround {
     }
 };
 
+// Identity check for the data fd of a TableReader borrowing file's handle
+// (TableReader::open_data_fd): the descriptor must be the file it opened.
+torchfits::TableReader::FileIdentityCheck same_file_as(const torchfits::FITSFile* file) {
+    return [file](const struct stat& st) { return file->names_open_file(st); };
+}
+
+// One read through a TableReader on a Python FITSFile's handle, under the
+// handle's I/O lock and replaced-file check (with_locked_fptr_from_python_object).
+template <class F>
+void with_handle_table_reader(nb::object file_obj, int hdu_num, F&& fn) {
+    const torchfits::FITSFile* file = &nb::cast<torchfits::FITSFile&>(file_obj);
+    torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
+        torchfits::TableReader reader(fptr, hdu_num, same_file_as(file));
+        fn(reader);
+    });
+}
+
 }  // namespace
 
 void bind_table(nb::module_& m) {
@@ -759,11 +778,14 @@ void bind_table(nb::module_& m) {
         }, nb::arg("filename"), nb::arg("hdu_num") = 1)
         .def("__init__", [](torchfits::TableReader* self, nb::object file_obj, int hdu_num) {
             // The reader borrows the handle's fitsfile*, whose single CFITSIO
-            // cursor every other borrower also drives, and reads the file by
-            // name. So construction and every read run under the handle's I/O
-            // lock and are refused once the path names a different file --
-            // the guard with_locked_fptr_from_python_object applies to the
-            // *_from_handle bindings. keep_alive<1, 2> keeps the FITSFile (and
+            // cursor every other borrower also drives, and pins one data fd
+            // (vetted against the handle's open identity) for its raw reads.
+            // Construction and every read run under the handle's I/O lock and
+            // are refused once the path names a different file -- the guard
+            // with_locked_fptr_from_python_object applies to the *_from_handle
+            // bindings. The pinned fd already keeps raw reads on the handle's
+            // file across an atomic replace; the refusal also covers a rewrite
+            // in place, which changes the bytes behind both. keep_alive<1, 2> keeps the FITSFile (and
             // so its lock) alive as long as the reader; the lock does not need
             // the handle open, so a reader that outlives close() still works.
             torchfits::FITSFile* file = &nb::cast<torchfits::FITSFile&>(file_obj);
@@ -785,7 +807,9 @@ void bind_table(nb::module_& m) {
                 };
             {
                 nb::gil_scoped_release release;
-                guard([&] { new (self) torchfits::TableReader(owner.get(), hdu_num); });
+                guard([&] {
+                    new (self) torchfits::TableReader(owner.get(), hdu_num, same_file_as(file));
+                });
             }
             // Keep the fitsfile open for this reader even if the FITSFile is
             // closed first.
@@ -983,8 +1007,7 @@ void bind_table(nb::module_& m) {
     // its single CFITSIO cursor under each other.
     m.def("read_fits_table_from_handle", [](nb::object file_obj, int hdu_num) -> nb::object {
         TableColumns result_map;
-        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
-            torchfits::TableReader reader(fptr, hdu_num);
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
             result_map = reader.read_columns({}, 1, -1, true);
         });
         return table_result_to_python(result_map, false);
@@ -994,8 +1017,7 @@ void bind_table(nb::module_& m) {
                                                  const std::vector<std::string>& column_names,
                                                  long start_row, long num_rows) -> nb::object {
         TableColumns result_map;
-        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
-            torchfits::TableReader reader(fptr, hdu_num);
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
             result_map = reader.read_columns(column_names, start_row, num_rows, true);
         });
         return table_result_to_python(result_map, false);
@@ -1007,8 +1029,7 @@ void bind_table(nb::module_& m) {
                                                      const std::vector<std::string>& column_names,
                                                      long start_row, long num_rows) -> nb::dict {
         TableColumns result_map;
-        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
-            torchfits::TableReader reader(fptr, hdu_num);
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
             result_map = reader.read_columns(column_names, start_row, num_rows, true);
         });
         return table_result_to_raw_python(result_map);
@@ -1111,8 +1132,7 @@ void bind_table(nb::module_& m) {
                                                        const std::vector<std::string>& column_names,
                                                        long start_row, long num_rows) -> nb::object {
         TableColumns result_map;
-        torchfits::with_locked_fptr_from_python_object(file_obj, [&](fitsfile* fptr) {
-            torchfits::TableReader reader(fptr, hdu_num);
+        with_handle_table_reader(file_obj, hdu_num, [&](torchfits::TableReader& reader) {
             result_map = reader.read_columns(column_names, start_row, num_rows, true);
         });
         return table_result_to_python(result_map, true);

@@ -137,6 +137,11 @@ bool FITSFile::path_names_open_file() const {
     if (mode_ != 0 || !open_identity_valid_) return true;
     struct stat st {};
     if (::stat(filename_.c_str(), &st) != 0) return true;
+    return names_open_file(st);
+}
+
+bool FITSFile::names_open_file(const struct stat& st) const {
+    if (mode_ != 0 || !open_identity_valid_) return true;
     return st.st_ino == open_inode_ && st.st_size == open_size_ &&
            internal::mtime_ns_from_stat(st) == open_mtime_ns_;
 }

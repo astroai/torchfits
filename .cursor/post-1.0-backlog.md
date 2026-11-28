@@ -8,16 +8,6 @@ hygiene pass.
 
 ## Open
 
-- **Narrow-table buffered reads vs fitsio (`mmap=False`).** Status: the tiled
-  parallel pread (`a645818`) took a 1-column projection of a narrow table from
-  13.4 to 2.7 ms and a 2M x 8 full read from 216 to 9.7 ms (where= with mmap
-  off: 228 to 18 ms); the fitsio comparison was not re-run because fitsio is
-  not in the dev environment. Next step: re-benchmark in torchfits-harness
-  (same host, same `case_id`) before deciding on a strided per-column read.
-- **`table_reader.h` split / persistent `TableReader` direct I/O by path.**
-  Status: still one header; reads through a borrowed handle are serialized
-  and checked against file replacement (`106d48c`, `8da20d1`), so this is
-  structure work, not a correctness gap.
 - **`imexpr` / STILTS-style expression CLI.** Status: not started; a feature
   idea, not a defect. If done, it stays on the torchfits HTTP stack (with its
   SSRF guard), never CFITSIO's HTTPS drivers.
