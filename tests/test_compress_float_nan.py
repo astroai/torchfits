@@ -72,3 +72,80 @@ def test_nan_free_quantized_image_declares_no_zblank(tmp_path):
     path = tmp_path / "clean.fits"
     torchfits.write(str(path), data, compress="RICE_1")
     assert "ZBLANK" not in torchfits.read_header(str(path), 1)
+
+
+_SPECIALS = [-0.0, float("inf"), float("-inf"), float("nan"), 1e-45]
+_SPECIALS += [1.0, 2.5, -1.25, 3.0]
+
+
+def _mixed_tiles_image(dtype, layout):
+    """Noise with NaN (quantized ZBLANK tiles) plus one tile of IEEE specials
+    that CFITSIO cannot quantize and stores losslessly. Returns the image, the
+    write kwargs, the lossless tile's (rows, cols) slices and an
+    (x1, y1, x2, y2) window over a quantized tile holding a NaN."""
+    g = torch.Generator().manual_seed(4)
+    if layout == "rows":  # default one-row tiles: CFITSIO caches none
+        data = (torch.randn(3, 45, generator=g) * 10 + 24).to(dtype)
+        data[0, 5] = float("nan")
+        data[2, 7] = float("nan")
+        box = (slice(1, 2), slice(0, 45))
+        data[box] = torch.tensor(_SPECIALS * 5, dtype=dtype)
+        return data, {}, box, (0, 2, 45, 3)
+    # 3x9 tiles: CFITSIO keeps the last decoded tile of each tile column
+    data = (torch.randn(6, 18, generator=g) * 10 + 24).to(dtype)
+    data[0, 5] = float("nan")
+    data[4, 2] = float("nan")
+    box = (slice(3, 6), slice(9, 18))
+    data[box] = torch.tensor(_SPECIALS * 3, dtype=dtype).reshape(3, 9)
+    return data, {"tile_shape": (3, 9)}, box, (0, 3, 9, 6)
+
+
+@pytest.mark.parametrize("layout", ["rows", "blocks"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_lossless_tile_next_to_zblank_tiles_keeps_ieee_specials(
+    tmp_path, dtype, layout
+):
+    """A quantized float HDU with NaN declares ZBLANK, but a tile CFITSIO
+    cannot quantize (here: one holding +-Inf) is stored losslessly as raw
+    IEEE values. The NaN nulval the quantized tiles need made CFITSIO
+    null-check that tile too, so Inf read back as NaN and -0.0 / subnormals
+    as +0.0 (astropy reads them exactly). The tiled layout also pins that
+    CFITSIO's decoded-tile cache (multi-row tiles only) never serves a tile
+    decoded under one null handling to a read under the other.
+    """
+    data, kwargs, box, (x1, y1, x2, y2) = _mixed_tiles_image(dtype, layout)
+    rows, cols = data.shape
+    path = tmp_path / "mixed.fits"
+    torchfits.write(str(path), data, compress="RICE_1", **kwargs)
+    assert torchfits.read_header(str(path), 1).get("ZBLANK") is not None
+
+    nan = torch.isnan(data)
+    bits = torch.int32 if dtype == torch.float32 else torch.int64
+    special = data[box]
+    keep = ~torch.isnan(special)
+    with torchfits.open(str(path)) as hdul:
+        readers = {
+            "read": torchfits.read(str(path), hdu=1),
+            "read_subset": torchfits.read_subset(str(path), 1, 0, 0, cols, rows),
+            "hdulist": hdul[1].to_tensor(),
+            # Same handle again, then a window of the lossless tile only.
+            "hdulist_again": hdul[1].to_tensor(),
+        }
+        window = hdul[1].data[box]
+    for name, got in readers.items():
+        assert torch.equal(torch.isnan(got), nan), name
+        assert torch.equal(got[box][keep].view(bits), special[keep].view(bits)), name
+        assert (got - data)[~nan & torch.isfinite(data)].abs().max() < 10, name
+    assert torch.equal(window[keep].view(bits), special[keep].view(bits))
+
+    # One reader, a full read then a window of a quantized tile with a NaN:
+    # the window must not be served the tile the full read last decoded
+    # without the nulval (its ZBLANK pixel is then a finite number).
+    with torchfits.open_subset_reader(str(path), hdu=1) as reader:
+        full = reader(0, 0, cols, rows)
+        part = reader(x1, y1, x2, y2)
+    assert torch.equal(torch.isnan(full), nan)
+    want = data[y1:y2, x1:x2]
+    assert torch.isnan(want).any()
+    assert torch.equal(torch.isnan(part), torch.isnan(want))
+    assert (part - want)[~torch.isnan(want)].abs().max() < 10

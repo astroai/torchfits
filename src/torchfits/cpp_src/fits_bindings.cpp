@@ -696,14 +696,14 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
             const int datatype = (bitpix == FLOAT_IMG) ? TFLOAT : TDOUBLE;
             auto tensor = native::empty(
                 torch_shape, static_cast<size_t>(naxis), native::TensorOptions().dtype(dtype));
-            int anynul = 0;
-            float fnullval = NAN;
-            double dnullval = NAN;
-            void* nullval_ptr = d::cfitsio_float_nulval_ptr(
-                bitpix, compressed, datatype, &fnullval, &dnullval, fptr);
             status = 0;
-            fits_read_img(
-                fptr, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+            d::read_float_image_pixels(
+                fptr, bitpix, datatype, tensor.data_ptr(), nelements,
+                [&](void* nulval, void* out, int* st) {
+                    int anynul = 0;
+                    fits_read_img(fptr, datatype, 1, nelements, nulval, out, &anynul, st);
+                },
+                &status);
             if (status != 0) {
                 close_guard();
                 throw std::runtime_error(

@@ -530,12 +530,13 @@ native::Tensor FITSFile::read_image_raw(int hdu_num, bool use_mmap) {
         }
         guard.active = true;
     }
-    int anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval, fptr_);
-    fits_read_img(fptr_, datatype, 1, nelements, nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    detail::read_float_image_pixels(
+        fptr_, bitpix, datatype, tensor.data_ptr(), nelements,
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_img(fptr_, datatype, 1, nelements, nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
         throw std::runtime_error("Error reading image data: " + detail::image_read_status(status, fptr_));
     }
@@ -702,14 +703,14 @@ native::Tensor FITSFile::read_subset(int hdu_num, long x1, long y1, long x2, lon
     for (int i = 2; i < naxis; ++i) {
         lpixel[i] = naxes[i];
     }
-    int anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    const bool compressed = is_compressed_image_cached(hdu_num);
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix, compressed, datatype, &fnullval, &dnullval, fptr_);
-    fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
-                     nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    detail::read_float_image_pixels(
+        fptr_, bitpix, datatype, tensor.data_ptr(), tensor.numel(),
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_subset(fptr_, datatype, fpixel.data(), lpixel.data(), inc.data(),
+                             nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
         throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, fptr_));
     }
@@ -1355,14 +1356,16 @@ native::Tensor SubsetReader::read(long x1, long y1, long x2, long y2) {
     for (int i = 2; i < naxis_; ++i) {
         lpixel[i] = naxes_[i];
     }
-    int status = 0, anynul = 0;
-    float fnullval = NAN;
-    double dnullval = NAN;
-    const bool compressed = file_.is_compressed_image_cached(hdu_num_);
-    void* nullval_ptr = detail::cfitsio_float_nulval_ptr(
-        bitpix_, compressed, datatype_, &fnullval, &dnullval, file_.get_fptr());
-    fits_read_subset(file_.get_fptr(), datatype_, fpixel.data(), lpixel.data(), inc.data(),
-                     nullval_ptr, tensor.data_ptr(), &anynul, &status);
+    int status = 0;
+    fitsfile* fptr = file_.get_fptr();
+    detail::read_float_image_pixels(
+        fptr, bitpix_, datatype_, tensor.data_ptr(), tensor.numel(),
+        [&](void* nulval, void* out, int* st) {
+            int anynul = 0;
+            fits_read_subset(fptr, datatype_, fpixel.data(), lpixel.data(), inc.data(),
+                             nulval, out, &anynul, st);
+        },
+        &status);
     if (status != 0) {
         throw std::runtime_error("Error reading subset: " + detail::image_read_status(status, file_.get_fptr()));
     }
