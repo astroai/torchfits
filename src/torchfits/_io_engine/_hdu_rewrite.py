@@ -317,6 +317,23 @@ def _reject_64bit_integer_tile_compression(data: Any, algorithm: str, idx: int) 
         )
 
 
+def _reject_small_default_hcompress_tile(data: Any, algorithm: str, idx: int) -> None:
+    """HCOMPRESS_1 codes 2-D tiles of at least 4x4 pixels. The default tile
+    (whole rows, 16 at a time) of an image narrower or shorter than that made
+    CFITSIO fail mid-write with a bare "error compressing image" (status 413);
+    an explicit ``tile_shape`` is checked by ``resolve_tile_dims``."""
+    if algorithm.strip().upper() not in {"H", "HCOMPRESS", "HCOMPRESS_1"}:
+        return
+    if not isinstance(data, Tensor) or data.numel() == 0:
+        return  # an empty image is stored uncompressed
+    shape = tuple(data.shape)
+    if len(shape) < 2 or min(shape[-1], shape[-2]) < 4:
+        raise ValueError(
+            "HCOMPRESS_1 needs 2-D tiles of at least 4x4 pixels, but image HDU "
+            f"{idx} has shape {shape}; use another compress= codec"
+        )
+
+
 def _write_hdus_with_optional_compression(
     path: str,
     hdus: List[Any],
@@ -368,6 +385,8 @@ def _write_hdus_with_optional_compression(
             hdu.to_tensor("cpu"), getattr(hdu, "header", None)
         )
         _reject_64bit_integer_tile_compression(hdu_dict.get("data"), algorithm, idx)
+        if options is None or options.tile_shape is None:
+            _reject_small_default_hcompress_tile(hdu_dict.get("data"), algorithm, idx)
         converted = (
             options is not None
             and options.int_to_float

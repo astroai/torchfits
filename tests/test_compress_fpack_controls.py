@@ -91,6 +91,16 @@ def test_hcompress_tile_constraints(tmp_path, shape, tile, match):
     assert not path.exists()
 
 
+@pytest.mark.parametrize("shape", [(3, 3), (3, 40), (40, 3), (30,)])
+def test_hcompress_default_tile_on_a_small_image(tmp_path, shape):
+    # The default HCOMPRESS tile of an image with an axis shorter than 4
+    # pixels failed mid-write with a bare "error compressing image" (413).
+    path = tmp_path / "h.fits"
+    with pytest.raises(ValueError, match="at least 4x4 pixels"):
+        torchfits.write(str(path), _image(shape), compress="HCOMPRESS_1")
+    assert not path.exists()
+
+
 @pytest.mark.parametrize(
     ("tile", "error", "match"),
     [
