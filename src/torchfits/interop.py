@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, cast
 
 import torch
 
+from ._string_decode import DecodeSpec
 from ._string_decode import decode_byte_tensor as _decode_byte_tensor
 from ._tensor_buffer import tensor_to_arrow_array as _tensor_to_arrow_array
 
@@ -21,6 +22,8 @@ def to_pandas(
     encoding: str = "ascii",
     strip: bool = True,
     vla_policy: str = "object",
+    *,
+    decode_errors: str = "strict",
 ) -> "pd.DataFrame":
     """
     Convert a dictionary of PyTorch tensors to a Pandas DataFrame.
@@ -31,6 +34,9 @@ def to_pandas(
 
     Args:
         data: Dictionary mapping column names to PyTorch tensors or lists of tensors (VLA).
+        decode_errors: How ``decode_bytes=True`` handles a byte the encoding
+            cannot decode: ``"strict"`` (raise ``UnicodeDecodeError`` naming
+            the column and row), ``"replace"`` or ``"ignore"``.
 
     Returns:
         pd.DataFrame: A Pandas DataFrame containing the data.
@@ -53,6 +59,7 @@ def to_pandas(
         encoding=encoding,
         strip=strip,
         vla_policy=arrow_vla,
+        decode_errors=decode_errors,
     )
     return arrow_table.to_pandas()
 
@@ -65,6 +72,7 @@ def to_polars(
     vla_policy: str = "list",
     *,
     rechunk: bool = False,
+    decode_errors: str = "strict",
 ) -> "pl.DataFrame":
     """
     Convert a dictionary of PyTorch tensors to a Polars DataFrame (via PyArrow).
@@ -91,6 +99,7 @@ def to_polars(
                 encoding=encoding,
                 strip=strip,
                 vla_policy=vla_policy,
+                decode_errors=decode_errors,
             ),
             rechunk=rechunk,
         ),
@@ -103,6 +112,8 @@ def to_astropy(
     encoding: str = "ascii",
     strip: bool = True,
     vla_policy: str = "list",
+    *,
+    decode_errors: str = "strict",
 ) -> Any:
     """Convert a dictionary of PyTorch tensors, or a FITS table path, to Astropy.
 
@@ -115,7 +126,14 @@ def to_astropy(
     from torchfits._table.interop import to_astropy as table_to_astropy
 
     if isinstance(data, (str, os.PathLike)):
-        return table_to_astropy(os.fspath(data))
+        # A file's string columns are always decoded; ``encoding``, ``strip``
+        # and ``decode_errors`` apply to them as in torchfits.table.read.
+        return table_to_astropy(
+            os.fspath(data),
+            encoding=encoding,
+            strip=strip,
+            decode_errors=decode_errors,
+        )
 
     arrow_table = to_arrow(
         data,
@@ -123,6 +141,7 @@ def to_astropy(
         encoding=encoding,
         strip=strip,
         vla_policy=vla_policy,
+        decode_errors=decode_errors,
     )
     return table_to_astropy(arrow_table)
 
@@ -133,6 +152,8 @@ def to_arrow(
     encoding: str = "ascii",
     strip: bool = True,
     vla_policy: str = "list",
+    *,
+    decode_errors: str = "strict",
 ) -> "pa.Table":
     """
     Convert a dictionary of PyTorch tensors to a PyArrow Table.
@@ -143,6 +164,9 @@ def to_arrow(
 
     Args:
         data: Dictionary mapping column names to PyTorch tensors or lists of tensors (VLA).
+        decode_errors: How ``decode_bytes=True`` handles a byte the encoding
+            cannot decode: ``"strict"`` (raise ``UnicodeDecodeError`` naming
+            the column and row), ``"replace"`` or ``"ignore"``.
 
     Returns:
         pa.Table: A PyArrow Table containing the data.
@@ -159,6 +183,9 @@ def to_arrow(
     # 'object'/'drop' spelling and maps it below.
     if vla_policy not in ("list", "drop"):
         raise ValueError("vla_policy must be 'list' or 'drop'")
+    # Validated up front too (and an unknown encoding refused), like the
+    # table readers' decode_errors=.
+    encoding = DecodeSpec(encoding, decode_errors)
 
     arrays = []
     names = []
@@ -168,7 +195,9 @@ def to_arrow(
         if isinstance(value, torch.Tensor):
             if decode_bytes and value.dtype == torch.uint8 and value.dim() == 2:
                 # Decode fixed-width byte column to strings (pure Python).
-                decoded = _decode_byte_tensor(value, encoding=encoding, strip=strip)
+                decoded = _decode_byte_tensor(
+                    value, encoding=encoding, strip=strip, column=key
+                )
                 arrays.append(pa.array(decoded))
             else:
                 arrays.append(_tensor_to_arrow_array(value, pa))

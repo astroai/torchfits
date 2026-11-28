@@ -91,3 +91,60 @@ def test_decode_errors_is_validated(latin1):
         T.read(latin1, decode_errors="surrogateescape")
     with pytest.raises(ValueError, match="decode_errors"):
         T.schema(latin1, where="ID == 0", decode_errors="bogus")
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        lambda p, **kw: T.to_pandas(p, **kw)["S"].tolist(),
+        lambda p, **kw: [x for d in T.to_pandas(p, stream=True, **kw) for x in d["S"]],
+        lambda p, **kw: T.to_polars(p, **kw)["S"].to_list(),
+        lambda p, **kw: T.read_polars(p, **kw)["S"].to_list(),
+        lambda p, **kw: T.dataset(p, **kw).to_table()["S"].to_pylist(),
+    ],
+    ids=["to_pandas", "to_pandas_stream", "to_polars", "read_polars", "dataset"],
+)
+def test_interop_readers_take_decode_errors(latin1, convert):
+    # table.to_pandas(path, decode_errors=...) handed the keyword to pandas,
+    # which rejected it; every path-taking converter now forwards it to the
+    # reader like encoding=.
+    with pytest.raises(UnicodeDecodeError):
+        convert(latin1)
+    assert convert(latin1, decode_errors="replace")[0] == "caf�XX"
+    assert convert(latin1, decode_errors="ignore")[0] == "cafXX"
+
+
+def _byte_dict():
+    import torch
+
+    return {"S": torch.tensor([list(b"caf\xe9"), list(b"abcd")], dtype=torch.uint8)}
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        lambda d, **kw: torchfits.to_arrow(d, **kw)["S"].to_pylist(),
+        lambda d, **kw: torchfits.to_pandas(d, **kw)["S"].tolist(),
+        lambda d, **kw: torchfits.to_polars(d, **kw)["S"].to_list(),
+    ],
+    ids=["to_arrow", "to_pandas", "to_polars"],
+)
+def test_tensor_dict_converters_take_decode_errors(convert):
+    d = _byte_dict()
+    with pytest.raises(UnicodeDecodeError, match="column 'S', row 0"):
+        convert(d, decode_bytes=True)
+    assert convert(d, decode_bytes=True, decode_errors="replace") == [
+        "caf�",
+        "abcd",
+    ]
+    assert convert(d, decode_bytes=True, decode_errors="ignore") == ["caf", "abcd"]
+    with pytest.raises(ValueError, match="decode_errors"):
+        convert(d, decode_bytes=True, decode_errors="bogus")
+
+
+def test_to_astropy_path_takes_decode_errors(latin1):
+    pytest.importorskip("astropy")
+    with pytest.raises(UnicodeDecodeError):
+        torchfits.to_astropy(latin1)
+    tbl = torchfits.to_astropy(latin1, decode_errors="replace")
+    assert tbl["S"][0] == "caf�XX"

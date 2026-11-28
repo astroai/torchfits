@@ -105,7 +105,10 @@ Pass the encoding the file really uses (for example `encoding="latin-1"`),
 or opt into a lossy decode with `decode_errors="replace"` (U+FFFD for each
 bad byte) or `decode_errors="ignore"` (bad bytes dropped). `table.scan`,
 `table.reader`, `table.schema` and `TableHDU.get_string_column` take the same
-`decode_errors=` keyword.
+`decode_errors=` keyword, and so do the converters that read a path
+(`table.to_pandas`, `table.to_polars`, `table.read_polars`,
+`table.read_astropy`, ...) and the tensor-dict converters `torchfits.to_arrow`,
+`to_pandas`, `to_polars` and `to_astropy` (for `decode_bytes=True`).
 
 ```python
 torchfits.table.read("legacy.fits", encoding="latin-1")
@@ -737,6 +740,8 @@ result = torchfits.table.duckdb_query(
 ```python
 arrow_table = torchfits.to_arrow(table_dict, decode_bytes=False)
 pandas_df = torchfits.to_pandas(table_dict, decode_bytes=False)
+# Decode uint8 string columns, replacing bytes ASCII cannot decode:
+arrow_table = torchfits.to_arrow(table_dict, decode_bytes=True, decode_errors="replace")
 ```
 
 ---
