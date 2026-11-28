@@ -97,3 +97,70 @@ def test_aliases_share_one_registry_entry(in_tmp) -> None:
     for spelling in spellings:
         assert torchfits.read_nrows(spelling) == 3
     assert core.shared_meta_entry_count() == 1
+
+
+def test_relative_name_follows_chdir(tmp_path, monkeypatch) -> None:
+    # The name -> file resolution is remembered, but a relative name is
+    # remembered together with the directory it was resolved in: after a chdir
+    # the same spelling must reach the other directory's file at once.
+    for name, nrows in (("a", 3), ("b", 5)):
+        (tmp_path / name).mkdir()
+        _write_table(str(tmp_path / name / "x.fits"), nrows)
+    monkeypatch.chdir(tmp_path / "a")
+    assert torchfits.read_nrows("x.fits") == 3
+    monkeypatch.chdir(tmp_path / "b")
+    assert torchfits.read_nrows("x.fits") == 5
+    monkeypatch.chdir(tmp_path / "a")
+    assert torchfits.read_nrows("./x.fits") == 3
+
+
+_RESOLUTION_WINDOW_SCRIPT = r"""
+import os, sys
+import numpy as np
+import torchfits
+
+root = sys.argv[1]
+os.chdir(root)
+torchfits.write("a.fits", {"a": np.arange(3, dtype=np.int32)}, overwrite=True)
+torchfits.write("b.fits", {"a": np.arange(5, dtype=np.int32)}, overwrite=True)
+os.symlink("a.fits", "link.fits")
+assert torchfits.read_nrows("link.fits") == 3
+
+# Retarget the link behind torchfits' back. Like a rewrite of the file itself,
+# that is noticed when the validation window ends, not on every call: the
+# probe must not pay a realpath() (a readlink per path component) each time.
+os.symlink("b.fits", "link.tmp")
+os.replace("link.tmp", "link.fits")
+assert torchfits.read_nrows("link.fits") == 3, "resolution was not remembered"
+# The remembered resolution must not leak b.fits' identity into a.fits' entry.
+assert torchfits.read_nrows("a.fits") == 3
+assert torchfits.read_nrows("b.fits") == 5
+
+# An in-process write invalidates, which drops every remembered resolution.
+torchfits.table.append_rows("b.fits", {"a": np.array([9], dtype=np.int32)})
+assert torchfits.read_nrows("link.fits") == 6
+assert torchfits.read_nrows("a.fits") == 3
+print("OK")
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_name_resolution_is_remembered_for_the_validation_window(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    probe = tmp_path / "probe"
+    try:
+        os.symlink("nowhere", probe)
+    except OSError:
+        pytest.skip("symlinks not permitted here")
+    env = dict(os.environ, TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS="600000")
+    proc = subprocess.run(
+        [sys.executable, "-c", _RESOLUTION_WINDOW_SCRIPT, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK" in proc.stdout

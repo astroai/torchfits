@@ -241,14 +241,6 @@ std::string resolve_local_path(const std::string& path) {
     return out + leaf;
 }
 
-// Registry key for `filename` whose local file is `stat_path` (a prefix of
-// filename, see cfitsio_stat_path): the canonical base file followed by any
-// extended-syntax suffix, so "f.fits[1]" keys as "/abs/f.fits[1]" and an
-// invalidation of the base can find it.
-std::string shared_meta_key(const std::string& filename, const std::string& stat_path) {
-    return resolve_local_path(stat_path) + filename.substr(stat_path.size());
-}
-
 }  // namespace
 
 const bool kValidateSharedMeta = []() {
@@ -260,6 +252,106 @@ const int64_t kSharedMetaValidateIntervalNs = []() {
     return torchfits::internal::env_nonnegative_int(
         "TORCHFITS_SHARED_META_VALIDATE_INTERVAL_MS", kDefaultMs) * 1000000LL;
 }();
+
+namespace {
+
+// resolve_local_path() is glibc realpath(): one readlink() per path component,
+// so a read of a file eight directories deep paid ~16 syscalls just to find
+// its registry entry (twice per read: lookup and open), and the cached probes
+// (read_num_hdus, read_shape) went from a hash lookup to ~7 us. Remember each
+// resolution for the same window SharedReadMeta trusts its stat snapshot:
+// what a name resolves to can change behind the process's back (a symlink
+// retargeted, a directory renamed) exactly as the file's contents can, and
+// both are re-checked on the same schedule. An in-process write invalidates
+// through invalidate_shared_meta_for_path(), which drops every memo, so this
+// process's own writes are seen at once, as before.
+//
+// Keyed by the absolute spelling: a relative name is prefixed with getcwd(),
+// one cheap syscall, so a chdir can never pair a name with another
+// directory's file. A validation interval of 0 ("always re-check") resolves
+// every time.
+struct ResolvedName {
+    std::string base;      // resolve_local_path() of the name
+    bool exists = false;   // realpath() of the full name succeeded
+    int64_t resolved_ns = 0;
+};
+
+constexpr size_t kMaxResolvedNames = 4096;
+
+// Guarded by g_shared_meta_mutex, like the registry it serves.
+std::unordered_map<std::string, ResolvedName>& resolved_names() {
+    static std::unordered_map<std::string, ResolvedName> names;
+    return names;
+}
+
+// Bumped by every invalidation, so a resolution that raced one is not stored.
+uint64_t g_resolved_names_generation = 0;
+
+std::string absolute_spelling(const std::string& path) {
+    if (!path.empty() && path[0] == '/') return path;
+    char cwd[PATH_MAX];
+    if (::getcwd(cwd, sizeof(cwd)) == nullptr) return std::string();
+    std::string out(cwd);
+    if (out.empty() || out.back() != '/') out.push_back('/');
+    return out + path;
+}
+
+ResolvedName resolve_name_uncached(const std::string& path, int64_t now_ns) {
+    ResolvedName out;
+    char buf[PATH_MAX];
+    if (::realpath(path.c_str(), buf) != nullptr) {
+        out.base = buf;
+        out.exists = true;
+    } else {
+        out.base = resolve_local_path(path);
+    }
+    out.resolved_ns = now_ns;
+    return out;
+}
+
+ResolvedName resolve_name(const std::string& path, int64_t now_ns) {
+    if (kSharedMetaValidateIntervalNs <= 0 || path.empty()) {
+        return resolve_name_uncached(path, now_ns);
+    }
+    const std::string spelled = absolute_spelling(path);
+    if (spelled.empty()) return resolve_name_uncached(path, now_ns);
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+        auto& names = resolved_names();
+        auto it = names.find(spelled);
+        if (it != names.end() && now_ns - it->second.resolved_ns < kSharedMetaValidateIntervalNs) {
+            return it->second;
+        }
+        generation = g_resolved_names_generation;
+    }
+    ResolvedName resolved = resolve_name_uncached(spelled, now_ns);
+    {
+        std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+        if (generation == g_resolved_names_generation) {
+            auto& names = resolved_names();
+            if (names.size() >= kMaxResolvedNames) names.clear();
+            names[spelled] = resolved;
+        }
+    }
+    return resolved;
+}
+
+// Called with g_shared_meta_mutex held.
+void forget_resolved_names() {
+    resolved_names().clear();
+    ++g_resolved_names_generation;
+}
+
+}  // namespace
+
+bool resolve_existing_local_path(const std::string& path, std::string* out) {
+    if (path.empty()) return false;
+    ResolvedName resolved = resolve_name(path, torchfits::internal::monotonic_now_ns());
+    if (!resolved.exists) return false;
+    *out = std::move(resolved.base);
+    return true;
+}
 
 namespace {
 
@@ -305,7 +397,12 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
                         std::memory_order_relaxed);
         return meta;
     }
-    const std::string key = shared_meta_key(filename, stat_path);
+    const int64_t now_ns = torchfits::internal::monotonic_now_ns();
+    // Registry key: the canonical base file followed by any extended-syntax
+    // suffix, so "f.fits[1]" keys as "/abs/f.fits[1]" and an invalidation of
+    // the base can find it.
+    const std::string base = resolve_name(stat_path, now_ns).base;
+    const std::string key = base + filename.substr(stat_path.size());
     std::shared_ptr<SharedReadMeta> meta;
     {
         std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
@@ -327,15 +424,17 @@ std::shared_ptr<SharedReadMeta> get_shared_meta_for_path(const std::string& file
         }
     }
     if (!kValidateSharedMeta) return meta;
-    const int64_t now_ns = torchfits::internal::monotonic_now_ns();
     std::unique_lock<std::shared_mutex> meta_lock(meta->mutex);
     if (kSharedMetaValidateIntervalNs > 0 && meta->last_stat_check_ns != 0 &&
         (now_ns - meta->last_stat_check_ns) < kSharedMetaValidateIntervalNs) {
         return meta;
     }
     meta->last_stat_check_ns = now_ns;
+    // Stat the file the key names, not the caller's spelling: with the name
+    // resolution remembered, a symlink retargeted inside the window must not
+    // load the new target's identity into the old target's entry.
     struct stat st {};
-    if (stat(stat_path.c_str(), &st) != 0) {
+    if (stat(base.c_str(), &st) != 0) {
         // A stat that fails for a path which previously had one means the file
         // is gone -- unlinked, renamed away, or unreachable through its parent
         // directory. This branch is what that looks like: has_stat was false
@@ -1014,8 +1113,10 @@ bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes) {
 void invalidate_shared_meta_for_path(const std::string& filename) {
     const std::string stat_path = cfitsio_stat_path(filename);
     if (stat_path.empty()) return;  // URLs are never registered
-    const std::string base = resolve_local_path(stat_path);
+    const std::string spelled = absolute_spelling(stat_path);
+    const std::string base = resolve_local_path(spelled.empty() ? stat_path : spelled);
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
+    forget_resolved_names();
     auto& order = shared_meta_lru();
     for (auto it = g_shared_meta.begin(); it != g_shared_meta.end();) {
         const std::string& key = it->first;
@@ -1035,6 +1136,7 @@ void clear_shared_meta_cache() {
     std::lock_guard<std::mutex> lock(g_shared_meta_mutex);
     g_shared_meta.clear();
     shared_meta_lru().clear();
+    forget_resolved_names();
 }
 
 std::string sanitize_fits_string(const std::string& input) {

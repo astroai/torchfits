@@ -45,9 +45,9 @@ namespace {
 // blocked writes to another directory's x.fits after a chdir. Names
 // realpath() cannot resolve (extended syntax, URLs) are kept as given.
 std::string canonical_reader_path(const std::string& filename) {
-    char buf[PATH_MAX];
-    if (::realpath(filename.c_str(), buf) != nullptr) {
-        return std::string(buf);
+    std::string resolved;
+    if (torchfits::detail::resolve_existing_local_path(filename, &resolved)) {
+        return resolved;
     }
     return filename;
 }

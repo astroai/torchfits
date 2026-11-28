@@ -152,6 +152,10 @@ TORCHFITS_CORE_API std::shared_ptr<RawFdHolder> get_shared_raw_fd(
 TORCHFITS_CORE_API bool read_region_via_fd(int fd, off_t offset, void* dst_void, size_t nbytes);
 TORCHFITS_CORE_API void invalidate_shared_meta_for_path(const std::string& filename);
 TORCHFITS_CORE_API void clear_shared_meta_cache();
+// realpath() of `path` when it names an existing local file, remembered for the
+// shared-metadata validation window (and forgotten on any invalidation). False
+// when the name does not resolve; `out` is then untouched.
+TORCHFITS_CORE_API bool resolve_existing_local_path(const std::string& path, std::string* out);
 
 // ---------------------------------------------------------------------------
 // FITS text handling

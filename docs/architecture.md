@@ -280,7 +280,12 @@ DataLoaders and concurrent reads without lock contention.
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
 resolution, raw fd, and the HDU header offsets a read-only handle learned
 (seeded into the next private handle so reaching HDU *n* is one seek instead
-of a walk over the *n*-1 headers before it). Validated via `stat()`. The HDU
+of a walk over the *n*-1 headers before it). Keyed by the canonical
+(`realpath()`) file, so every spelling of a path shares one entry; what a name
+resolves to is remembered for the same validation interval as the `stat()`
+snapshot (a retargeted symlink is noticed when the interval runs out, an
+in-process write at once), so a cached probe costs a hash lookup rather than a
+`readlink()` per path component. Validated via `stat()`. The HDU
 offsets are tied to the exact file version they were read from (device, inode,
 size, mtime and ctime of the file the handle opened: `fstat()` of the
 descriptor CFITSIO reads through, or with an environment CFITSIO a `stat()` of
