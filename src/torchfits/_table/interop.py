@@ -308,6 +308,27 @@ def _stream_csv(dest: Any, data: Any, pacsv: Any, write_options: Any) -> None:
             writer.close()
 
 
+_FEATHER_CODECS = ("lz4", "zstd", "uncompressed")
+_FEATHER_CHUNK_ROWS = 64 * 1024
+
+
+def _feather_compression(compression: Optional[str]) -> Optional[str]:
+    """``write_feather``'s ``compression=`` as an ``IpcWriteOptions`` codec.
+
+    ``None`` means LZ4 when the codec is built in (else uncompressed) and
+    ``"uncompressed"`` means none, as for ``pyarrow.feather.write_feather``.
+    """
+    pa = _require_pyarrow()
+    if compression is None:
+        return "lz4" if pa.Codec.is_available("lz4_frame") else None
+    if compression not in _FEATHER_CODECS:
+        raise ValueError(
+            f'compression="{compression}" not supported, must be one of '
+            f"{set(_FEATHER_CODECS)}"
+        )
+    return None if compression == "uncompressed" else compression
+
+
 def write_ipc(
     dest: str,
     data: str | Any | Iterable[Any],
@@ -325,12 +346,9 @@ def write_ipc(
         compression: Feather/IPC compression (``zstd``, ``lz4``, or ``None``).
     """
     try:
-        import pyarrow.feather as feather
         import pyarrow.ipc as ipc
     except ImportError as exc:
-        raise ImportError(
-            "pyarrow.feather/ipc is required for Arrow IPC export"
-        ) from exc
+        raise ImportError("pyarrow.ipc is required for Arrow IPC export") from exc
 
     path = _as_input_path(data)
     if path is not None:
@@ -341,8 +359,13 @@ def write_ipc(
 
     if not stream:
         table = _materialize_arrow_table(data)
+        # pyarrow.feather.write_feather is deprecated (Feather V2 *is* the IPC
+        # file format); write the same file with the IPC writer, keeping its
+        # compression and 64Ki-row chunking.
+        options = ipc.IpcWriteOptions(compression=_feather_compression(compression))
         with _atomic_output(dest) as out:
-            feather.write_feather(table, out, compression=compression)
+            with ipc.new_file(out, table.schema, options=options) as writer:
+                writer.write_table(table, max_chunksize=_FEATHER_CHUNK_ROWS)
         return
 
     write_options = ipc.IpcWriteOptions(compression=compression)

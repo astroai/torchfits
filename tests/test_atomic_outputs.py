@@ -98,12 +98,12 @@ def test_write_csv_stream_failure_keeps_destination(tmp_path):
 
 
 def test_write_ipc_failure_keeps_destination(tmp_path, monkeypatch):
-    import pyarrow.feather as feather
+    import pyarrow.ipc as ipc
 
     dest = tmp_path / "out.arrow"
     _seed(dest)
     monkeypatch.setattr(
-        feather, "write_feather", lambda table, where, **kw: _partial_then_fail(where)
+        ipc, "new_file", lambda where, schema, **kw: _partial_then_fail(where)
     )
     with pytest.raises(_Boom):
         torchfits.table.write_ipc(str(dest), _table())
