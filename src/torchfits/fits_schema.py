@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+import functools
 import re
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -51,7 +52,16 @@ class TableColumnMeta:
 
 def parse_tform(tform: str) -> TformInfo:
     """Parse a FITS TFORM string into structured metadata."""
-    text = str(tform).strip().upper()
+    return _parse_tform_text(str(tform))
+
+
+# Every schema pass (unsigned, complex, null and decode maps; several per
+# read) parses every column's TFORM, and a wide catalog repeats a handful of
+# distinct TFORM strings hundreds of times. TformInfo is immutable, so the
+# parse is shared.
+@functools.lru_cache(maxsize=4096)
+def _parse_tform_text(raw: str) -> TformInfo:
+    text = raw.strip().upper()
     if not text:
         return TformInfo(tform="", repeat=1, vla=False, code=None)
 
@@ -178,9 +188,15 @@ def _iter_tfields_indexed(
             name = get("TTYPE" + si)
             tform = get("TFORM" + si)
             tdim = get("TDIM" + si)
+            # _reader_column_name, inlined: this loop runs per column on
+            # every schema pass.
+            label = "" if name is None else str(name)
+            if not label or label in seen:
+                label = _default_column_name(i)
+            seen.add(label)
             yield (
                 i,
-                _reader_column_name(name, i, seen),
+                label,
                 str(tform) if tform is not None else "",
                 (str(tdim) if tdim is not None else None),
             )
@@ -333,24 +349,25 @@ def unsigned_column_dtype_names_from_header(
 ) -> dict[str, str]:
     """Map standard unsigned FITS conventions to dtype names without torch."""
     out: dict[str, str] = {}
-    for col in iter_table_columns(header):
-        code = col.tform_info.code
-        if code is None:
+    # Runs on every table read over every column, so it reads only the cards
+    # it needs (no TableColumnMeta, no TNULL) -- but still validates TSCAL /
+    # TZERO exactly like iter_table_columns.
+    get = _kw_lookup(header)
+    for idx, name, tform, _tdim in _iter_tfields_indexed(header):
+        tscal = _scale_card(f"TSCAL{idx}", get(f"TSCAL{idx}"), 1.0)
+        tzero = _scale_card(f"TZERO{idx}", get(f"TZERO{idx}"), 0.0)
+        if tzero == 0.0 or abs(tscal - 1.0) > 1e-5:
             continue
-        tscal = col.tscal if col.tscal is not None else 1.0
-        if abs(tscal - 1.0) > 1e-5:
-            continue
-        # iter_table_columns always yields a float tzero (0.0 default).
-        tzero = col.tzero if col.tzero is not None else 0.0
+        code = parse_tform(tform).code
         if code == "B" and tzero == -128.0:
             # Signed-byte convention: uint8 storage, TZERO = -128.
-            out[col.name] = "int8"
+            out[name] = "int8"
         elif code == "I" and abs(tzero - 32768.0) < 1e-5:
-            out[col.name] = "uint16"
+            out[name] = "uint16"
         elif code == "J" and abs(tzero - 2147483648.0) < 1e-5:
-            out[col.name] = "uint32"
+            out[name] = "uint32"
         elif code == "K" and tzero == 9223372036854775808.0:
-            out[col.name] = "uint64"
+            out[name] = "uint64"
     return out
 
 
@@ -485,9 +502,9 @@ def complex_column_names(header: Mapping[str, Any]) -> set[str]:
     cryptic conversion failure.
     """
     out: set[str] = set()
-    for col in iter_table_columns(header):
-        if col.tform_info.code in ("C", "M"):
-            out.add(col.name)
+    for _idx, name, tform, _tdim in _iter_tfields_indexed(header):
+        if tform and parse_tform(tform).code in ("C", "M"):
+            out.add(name)
     return out
 
 

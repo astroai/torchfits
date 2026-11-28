@@ -435,3 +435,44 @@ def test_iter_tfields_indexed_keeps_nameless_columns():
     header3 = {"TFIELDS": 2, "TTYPE1": "", "TFORM1": "1J", "TTYPE2": "B"}
     cols3 = list(fits_schema._iter_tfields_indexed(header3))
     assert [c[1] for c in cols3] == ["COL1", "B"]
+
+
+def test_per_read_schema_passes_skip_full_column_metadata(monkeypatch):
+    # unsigned_column_dtype_names_from_header and complex_column_names run on
+    # every table read over every column of the header; building a full
+    # TableColumnMeta (TNULL lookup, dataclass) per column made a 5-column
+    # read of a 131-column catalog spend most of its time here. They walk the
+    # cards they need, with the same TSCAL/TZERO validation.
+    def boom(*_args, **_kwargs):
+        raise AssertionError("full column metadata built on the hot path")
+
+    monkeypatch.setattr(fits_schema, "iter_table_columns", boom)
+    header = {
+        "TFIELDS": 4,
+        "TTYPE1": "U",
+        "TFORM1": "1I",
+        "TZERO1": 32768,
+        "TTYPE2": "Z",
+        "TFORM2": "C",
+        "TTYPE3": "S",
+        "TFORM3": "1B",
+        "TZERO3": -128,
+        "TTYPE4": "P",
+        "TFORM4": "1J",
+        "TSCAL4": 2.0,
+        "TZERO4": 2147483648,
+    }
+    assert fits_schema.unsigned_column_dtype_names_from_header(header) == {
+        "U": "uint16",
+        "S": "int8",
+    }
+    assert fits_schema.complex_column_names(header) == {"Z"}
+    bad = dict(header, TSCAL2="abc")
+    with pytest.raises(ValueError, match="TSCAL2"):
+        fits_schema.unsigned_column_dtype_names_from_header(bad)
+
+
+def test_parse_tform_is_shared_across_calls():
+    first = fits_schema.parse_tform(" 16a ")
+    assert first == fits_schema.TformInfo(tform="16A", repeat=16, vla=False, code="A")
+    assert fits_schema.parse_tform(" 16a ") is first
