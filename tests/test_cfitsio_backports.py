@@ -371,3 +371,24 @@ print(tuple(image.shape), image.flatten().tolist())
 def _assert_iraf_reads(directory: Path, imh: str) -> None:
     out = _run_child(_EXPECT_IRAF_IMAGE, imh, cwd=directory)
     assert out.strip() == f"(4, 3) {list(range(12))}", out
+
+
+def test_iraf_image_reads_through_extended_syntax(tmp_path: Path) -> None:
+    """iraffits-bounds: the converter is reachable and still works."""
+    _assert_iraf_reads(tmp_path, _write_iraf(tmp_path, "plain"))
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        pytest.param({"pixoff": 1}, id="pixel-offset-inside-magic"),
+        pytest.param({"shape": (2, 4, 0), "physical": (3, 4, 1)}, id="zero-axis"),
+        pytest.param(
+            {"shape": (65536, 32768), "physical": (65537, 2)}, id="size-overflow"
+        ),
+    ],
+)
+def test_iraf_bad_geometry_raises(tmp_path: Path, geometry: dict) -> None:
+    """iraffits-bounds: pixel offset, zero axis and size overflow checks."""
+    imh = _write_iraf(tmp_path, "bad", **geometry)
+    _assert_read_raises(imh + "[0]", cwd=tmp_path)
