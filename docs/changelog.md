@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cli: Fpack controls recipes; drop them from the roadmap
 - transforms: List every exported name in the import block
+- roadmap: Record the implemented 1.4 work and what is left
+- cache: Document the cache layers and clear native metadata once
 ### Fixed
 - io: Keep the failing path's own error in read_batch(strict=True)
 - hdu: Slice numpy and tuple columns in TableHDU.iter_rows/head/filter
@@ -56,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - native: Stop a table write at the first failed column
 - table: Narrow the rewrite temp cleanup and TFORM parse excepts
 - table: Read a native width-1 scalar column as a scalar Arrow array
+- cli: Report data-truncated files from verify as I/O errors
 ### Performance
 - native: Release the GIL while deleting table rows
 - cli: Stream convert --columns/--where for non-FITS output
@@ -81,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table: Accept decode_errors= in the interop converters
 - table: Raise UnknownColumnError for an unknown column name
 - io: Tile-compression options on write_tensor/insert_hdu/replace_hdu
+- table: Raise ColumnExistsError for a column name already in use
 
 ## [1.3.3] — 2026-11-20
 
