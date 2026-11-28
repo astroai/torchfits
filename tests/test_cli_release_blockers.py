@@ -286,6 +286,51 @@ def test_vos_probe_parses_multi_block_header(monkeypatch) -> None:
     assert record["naxis2"] == 13
 
 
+class _CloseFails(BytesIO):
+    def __init__(self, chunk, *, read_error=None):
+        super().__init__(chunk)
+        self.read_error = read_error
+
+    def read(self, *args):
+        if self.read_error is not None:
+            raise self.read_error
+        return super().read(*args)
+
+    def close(self):
+        if not self.closed:
+            super().close()
+            raise OSError("transfer aborted")
+
+
+def _fake_vos_handle(monkeypatch, handle) -> None:
+    class Client:
+        def open(self, uri, mode):
+            return handle
+
+    real_import = probe_module.importlib.import_module
+    monkeypatch.setattr(
+        probe_module.importlib,
+        "import_module",
+        lambda name: (
+            SimpleNamespace(Client=Client) if name == "vos" else real_import(name)
+        ),
+    )
+
+
+def test_vos_probe_reports_close_failure(monkeypatch) -> None:
+    _fake_vos_handle(monkeypatch, _CloseFails(_multi_block_header()))
+    with pytest.raises(IoError, match="closing the VOSpace handle failed"):
+        _probe_vos_now("vos:example/a.fits", header_bytes=5760)
+
+
+def test_vos_probe_read_error_keeps_close_failure_as_note(monkeypatch) -> None:
+    handle = _CloseFails(b"", read_error=OSError("read refused"))
+    _fake_vos_handle(monkeypatch, handle)
+    with pytest.raises(IoError, match="read refused") as info:
+        _probe_vos_now("vos:example/a.fits", header_bytes=5760)
+    assert any("transfer aborted" in note for note in info.value.__notes__)
+
+
 @pytest.mark.parametrize("operation", [_fake_slow_http, _fake_slow_vos])
 def test_remote_probe_deadline_stops_periodic_progress(operation) -> None:
     started = time.monotonic()
