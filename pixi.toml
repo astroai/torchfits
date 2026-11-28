@@ -49,7 +49,7 @@ bzip2 = ">=1.0.8"
 [package.run-dependencies]
 pytorch = ">=2.12"
 numpy = ">=2.4.6"
-pyarrow = ">=25.0.0"
+pyarrow = ">=26.0.0"
 zlib = ">=1.2.13"
 
 # Workspace dependencies - development environment
@@ -57,8 +57,8 @@ zlib = ">=1.2.13"
 # torchfits = { path = "." }  # Don't add self-dependency - causes circular dependency
 pytest = ">=9.0"
 pytest-cov = ">=7.0"
-ruff = ">=0.16.7"
-mypy = ">=2.3.1"
+ruff = ">=0.17.6"
+mypy = ">=2.4.1"
 pip = ">=24.0"
 scikit-build-core = ">=1.0.3"
 cmake = ">=3.21"
@@ -67,9 +67,9 @@ nanobind = ">=3.0.1"
 pytorch = ">=2.12"
 numpy = ">=2.4.6"
 pre-commit = ">=4.6"
-# conda-forge's newest build is 25.0.0; PyPI 26 has no feedstock build yet, so
-# the dev env floor tracks the channel that can actually install it.
-pyarrow = ">=25.0.0"
+# The floor needs a cp311 build on PyPI and conda-forge alike (26.0.0 is on
+# both); the dev env resolves whatever conda-forge can actually install.
+pyarrow = ">=26.0.0"
 # Plotting and table interop for examples. Astropy and fitsio live in
 # torchfits-harness.
 matplotlib = ">=3.11"
@@ -83,8 +83,10 @@ dev = "pip install -e . --no-build-isolation"
 build = "pixi build"
 # Install exactly the checked-in lock before the complete local gate.
 current-source-gate = "pixi install --locked && pixi run preflight-push && pixi run ci-local"
-# test runs the full suite; the GHA PR matrix deselects the performance marker (no test carries it today). release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
+# test runs the full suite; tests marked performance (large-scale probes, tests/test_scale_large.py) skip unless pytest gets --run-performance (test-scale), and the GHA PR matrix deselects the marker. release-gate runs the curated release subset (no marker filter) and must stay in lockstep with the CI release-gate job's file list -- tests/test_docs_integrity.py enforces that.
 test = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/"
+# Large-scale probes: multi-GB sparse files, a real 2.1 GB table write, 10k HDUs/files (minutes, ~5 GB free disk).
+test-scale = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/ -m performance --run-performance -q"
 release-gate = "pixi run dev && KMP_DUPLICATE_LIB_OK=TRUE pytest tests/test_package_isolation.py tests/test_docs_integrity.py tests/test_fits_schema.py tests/test_read_policy.py tests/test_examples_runner.py tests/test_transforms.py tests/test_release_smoke.py tests/test_public_boundary.py tests/test_http_probe_fixture.py -q && pixi run docs-contract && pixi run docs-links"
 lint = "ruff check . && ruff format ."
 preflight-push = "ruff check . && ruff format --check . && mypy src/torchfits && python -m compileall -q src/torchfits tests && pixi run check-lane && pixi run changelog-check"
@@ -136,5 +138,5 @@ default = { features = ["prod"] }
 test = { features = ["prod", "test"] }
 
 [pypi-dependencies]
-zensical = ">=0.0.61"
+zensical = ">=0.1.4"
 vos = ">=3.7, <4"

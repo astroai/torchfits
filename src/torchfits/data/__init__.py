@@ -1019,7 +1019,7 @@ def fits_collate_fn(
 
 def make_loader(
     dataset: Dataset[Any] | IterableDataset[Any],
-    batch_size: int = 32,
+    batch_size: int | None = 32,
     shuffle: bool | None = None,
     num_workers: int = 0,
     pin_memory: bool = False,
@@ -1033,8 +1033,10 @@ def make_loader(
     ----------
     dataset : Dataset or IterableDataset
         A torchfits dataset instance.
-    batch_size : int
-        Batch size.
+    batch_size : int or None
+        Batch size. ``None`` disables automatic batching: each sample is
+        yielded as the dataset returns it (use it with datasets that already
+        yield batches, such as ``as_batches=True``).
     shuffle : bool or None
         Whether to shuffle.  Defaults to True for map-style datasets.
     num_workers : int
@@ -1052,7 +1054,11 @@ def make_loader(
     -------
     DataLoader
     """
-    collate_fn = loader_kwargs.pop("collate_fn", fits_collate_fn)
+    # Without automatic batching DataLoader calls collate_fn on each single
+    # sample, not on a list of samples, so fits_collate_fn does not apply;
+    # keep DataLoader's own per-sample conversion unless one was passed.
+    default_collate = fits_collate_fn if batch_size is not None else None
+    collate_fn = loader_kwargs.pop("collate_fn", default_collate)
 
     if shuffle is None:
         # Map-style datasets shuffle by default; IterableDataset must not

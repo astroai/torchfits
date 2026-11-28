@@ -81,10 +81,18 @@ FITSFile::FITSFile(const char* filename, int mode) : filename_(filename), mode_(
         }
         throw std::runtime_error(message);
     }
-    fptr_owner_.reset(fptr_, [](fitsfile* f) {
-        int close_status = 0;
-        fits_close_file(f, &close_status);
-    });
+    if (mode == 0) {
+        fptr_owner_.reset(fptr_, [path = filename_](fitsfile* f) {
+            detail::remember_hdu_offsets(f, path);
+            int close_status = 0;
+            fits_close_file(f, &close_status);
+        });
+    } else {
+        fptr_owner_.reset(fptr_, [](fitsfile* f) {
+            int close_status = 0;
+            fits_close_file(f, &close_status);
+        });
+    }
     if (mode == 0) {
         shared_meta_ = detail::get_shared_meta_for_path(filename_);
         capture_open_identity();

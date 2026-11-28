@@ -88,7 +88,7 @@ jobs:
           pixi run -e test -- env "${preload}=${rt}" python -m pytest \
             tests/test_io.py tests/test_checksum.py tests/test_bz2.py \
             tests/test_core_library.py tests/test_native_tree.py \
-            tests/test_mutation_errors.py \
+            tests/test_mutation_errors.py tests/test_cfitsio_backports.py \
             tests/test_compress_hcompress_bounds.py \
             tests/test_compress_rice_decode_bounds.py \
             -q --no-header

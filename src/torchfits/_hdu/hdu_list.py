@@ -137,12 +137,14 @@ class HDUList:
             hdu_infos = [
                 _HDUInfo(
                     index=i,
-                    type=str(core.read_hdu_type(path, i)),
+                    type=hdu_type,
                     # Parse the header string so keyword values keep their FITS
                     # types (NAXIS is an int, not "2"), matching read_header.
-                    header=fast_parse_header_cards(core.read_header_string(path, i)),
+                    header=fast_parse_header_cards(header_text),
                 )
-                for i in range(num_hdus)
+                for i, (hdu_type, header_text) in enumerate(
+                    core.read_hdu_listing(path, num_hdus)
+                )
             ]
 
             from .._io_engine.caches import _register_open_hdulist

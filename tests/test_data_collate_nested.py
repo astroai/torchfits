@@ -46,3 +46,26 @@ def test_nested_non_tensor_leaf_names_full_path() -> None:
     batch = [{"B": {"name": "x"}}, {"B": {"name": "y"}}]
     with pytest.raises(ValueError, match=r"'B\.name'"):
         fits_collate_fn(batch)
+
+
+def test_make_loader_without_batching_yields_dataset_batches(tmp_path):
+    """batch_size=None turns off DataLoader batching: collate_fn then sees one
+    sample at a time, so the list-based fits_collate_fn must not be used."""
+    import numpy as np
+    import torch
+
+    import torchfits
+    from torchfits.data import FitsTableIterableDataset
+
+    path = tmp_path / "t.fits"
+    torchfits.table.write(
+        str(path), {"a": np.arange(10, dtype=np.int32)}, overwrite=True
+    )
+    ds = FitsTableIterableDataset(str(path), batch_size=4, as_batches=True)
+    batches = list(make_loader(ds, batch_size=None))
+    assert [b["a"].tolist() for b in batches] == [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9],
+    ]
+    assert all(isinstance(b["a"], torch.Tensor) for b in batches)

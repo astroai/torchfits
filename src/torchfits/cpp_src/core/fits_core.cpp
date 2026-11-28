@@ -17,6 +17,7 @@
 #include <climits>
 #include <fcntl.h>
 #include <list>
+#include <pthread.h>
 #include <stdexcept>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -25,6 +26,13 @@
 #include "core/parallel.h"
 #include "internal_utils.h"
 #include "security.h"
+
+// CFITSIO's global lock (cfileio.c). The vendored library is built
+// thread-safe (USE_PTHREADS / _REENTRANT); this translation unit is not
+// compiled with _REENTRANT, so fitsio2.h would not declare it. Weak: an
+// environment CFITSIO built without pthreads has no lock, and the HDU-offset
+// cache below is then simply off.
+extern "C" pthread_mutex_t Fitsio_Lock __attribute__((weak));
 
 namespace torchfits {
 namespace detail {
@@ -274,6 +282,8 @@ void reset_cached_metadata(const std::shared_ptr<SharedReadMeta>& meta) {
     meta->colnames_cache.clear();
     meta->hdu_type_cache.clear();
     meta->num_hdus = -1;
+    meta->hdu_headstart.reset();
+    meta->hdu_headstart_filesize = -1;
     // Rotate identity so per-thread caches keyed by {uid, hdu} cannot
     // pair stale shape/dtype/scale metadata with the replaced file
     // (R7-CPP2). In-flight readers keep their own shared_ptr and the
@@ -370,6 +380,73 @@ int open_readonly_fd(const std::string& filename) {
 }
 
 // Prefer fits_open_diskfile for plain local paths (skips CFITSIO extended-syntax parse).
+namespace {
+
+// Only plain local paths: a URL has no stat identity to validate offsets
+// against, and an extended-syntax name may open a filtered or virtual file.
+bool hdu_offsets_cacheable(const std::string& path) {
+    return &Fitsio_Lock != nullptr && !has_cfitsio_extended_filename_syntax(path) &&
+           path.find("://") == std::string::npos;
+}
+
+// CFITSIO attaches a second open of an already-open file to the same FITSfile
+// (fits_already_open, under this lock), so headstart[] is only ours to touch
+// while open_count is 1 *and* the lock keeps another open from attaching. The
+// lock is recursive (fits_init_cfitsio). Never take a SharedReadMeta mutex
+// while holding it: CFITSIO calls made under a meta lock take it too.
+struct CfitsioGlobalLock {
+    CfitsioGlobalLock() { pthread_mutex_lock(&Fitsio_Lock); }
+    ~CfitsioGlobalLock() { pthread_mutex_unlock(&Fitsio_Lock); }
+    CfitsioGlobalLock(const CfitsioGlobalLock&) = delete;
+    CfitsioGlobalLock& operator=(const CfitsioGlobalLock&) = delete;
+};
+
+// Hand a freshly opened read-only handle the HDU offsets an earlier handle on
+// the same file generation learned. CFITSIO's fits_movabs_hdu() jumps straight
+// to any HDU whose headstart[] entry is known and otherwise reads every header
+// in between; seeding headstart[]/maxhdu is exactly the state the handle would
+// have reached by walking those headers itself.
+void seed_hdu_offsets(fitsfile* fptr, const std::string& path) {
+    if (fptr == nullptr || fptr->Fptr == nullptr) return;
+    std::shared_ptr<const std::vector<LONGLONG>> known;
+    LONGLONG known_filesize = -1;
+    {
+        auto meta = get_shared_meta_for_path(path);
+        if (!meta) return;
+        std::shared_lock<std::shared_mutex> lock(meta->mutex);
+        if (!meta->has_stat) return;
+        known = meta->hdu_headstart;
+        known_filesize = meta->hdu_headstart_filesize;
+    }
+    if (!known || known->size() < 3) return;
+    CfitsioGlobalLock cfitsio_lock;
+    FITSfile* file = fptr->Fptr;
+    if (file->open_count != 1 || file->writemode != READONLY ||
+        file->logfilesize != known_filesize) {
+        return;
+    }
+    // headstart[maxhdu + 1] (the start of the next HDU) is known whenever HDU
+    // maxhdu's header has been read, so `known` covers maxhdu = size - 2.
+    const int known_max = static_cast<int>(known->size()) - 2;
+    if (known_max <= file->maxhdu) return;
+    if (known->size() > static_cast<size_t>(file->MAXHDU) + 1) {
+        // Same growth rule as ffmahd(): MAXHDU + 1 entries are allocated.
+        const size_t entries = known->size() + 1000;
+        auto* grown = static_cast<LONGLONG*>(
+            realloc(file->headstart, entries * sizeof(LONGLONG)));
+        if (grown == nullptr) return;
+        file->headstart = grown;
+        file->MAXHDU = static_cast<int>(entries) - 1;
+    }
+    // Entries 0 .. maxhdu + 1 are the handle's own; only extend past them.
+    for (size_t i = static_cast<size_t>(file->maxhdu) + 2; i < known->size(); ++i) {
+        file->headstart[i] = (*known)[i];
+    }
+    file->maxhdu = known_max;
+}
+
+}  // namespace
+
 int open_fits_readonly(fitsfile** fptr, const std::string& path) {
     int status = 0;
     // Drop stale messages so open_failure_message() reports this open only.
@@ -378,8 +455,45 @@ int open_fits_readonly(fitsfile** fptr, const std::string& path) {
         fits_open_file(fptr, path.c_str(), 0 /* READONLY */, &status);
     } else {
         fits_open_diskfile(fptr, path.c_str(), 0 /* READONLY */, &status);
+        if (status == 0 && hdu_offsets_cacheable(path)) seed_hdu_offsets(*fptr, path);
     }
     return status;
+}
+
+void remember_hdu_offsets(fitsfile* fptr, const std::string& path) noexcept {
+    try {
+        if (fptr == nullptr || fptr->Fptr == nullptr) return;
+        if (!hdu_offsets_cacheable(path)) return;
+        std::vector<LONGLONG> offsets;
+        LONGLONG filesize = -1;
+        {
+            CfitsioGlobalLock cfitsio_lock;
+            FITSfile* file = fptr->Fptr;
+            // Fewer than three known HDUs is nothing a fresh open does not
+            // already learn from its first header.
+            if (file->open_count != 1 || file->writemode != READONLY || file->maxhdu < 2) {
+                return;
+            }
+            offsets.assign(file->headstart,
+                           file->headstart + static_cast<size_t>(file->maxhdu) + 2);
+            filesize = file->logfilesize;
+        }
+        auto meta = get_shared_meta_for_path(path);
+        if (!meta) return;
+        std::unique_lock<std::shared_mutex> lock(meta->mutex);
+        // Offsets are only good for the file generation the stat identity
+        // describes; a handle that saw a different size saw a different file.
+        if (!meta->has_stat || filesize != static_cast<LONGLONG>(meta->size)) return;
+        if (meta->hdu_headstart && meta->hdu_headstart_filesize == filesize &&
+            meta->hdu_headstart->size() >= offsets.size()) {
+            return;
+        }
+        meta->hdu_headstart =
+            std::make_shared<const std::vector<LONGLONG>>(std::move(offsets));
+        meta->hdu_headstart_filesize = filesize;
+    } catch (...) {
+        // A cache fill is never worth failing a close over.
+    }
 }
 
 std::string open_failure_message(const std::string& path, int status) {

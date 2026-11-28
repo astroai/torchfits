@@ -143,6 +143,7 @@ void TableReader::close_data_fd() noexcept {
 TableReader::~TableReader() {
     close_data_fd();
     if (fptr_ && owns_fptr_) {
+        torchfits::detail::remember_hdu_offsets(fptr_, filename_);
         int status = 0;
         fits_close_file(fptr_, &status);
     }

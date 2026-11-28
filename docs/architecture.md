@@ -277,7 +277,9 @@ DataLoaders and concurrent reads without lock contention.
 ### L1 — SharedReadMeta
 
 Per-path shared metadata: image_info, compressed status, scale info, HDU name
-resolution, raw fd. Validated via `stat()`. Lives in a global map protected
+resolution, raw fd, and the HDU header offsets a read-only handle learned
+(seeded into the next private handle so reaching HDU *n* is one seek instead
+of a walk over the *n*-1 headers before it). Validated via `stat()`. Lives in a global map protected
 by per-entry mutexes. Safe to share across threads — maps are mutex-guarded,
 and the shared raw `fd` is only used with `pread` (offset-explicit). Avoids
 repeated header probing for hot files without sharing CFITSIO CHDU state.
@@ -452,6 +454,30 @@ Filenames starting or ending with `|` (pipe character) are rejected to
 prevent CFITSIO command execution via shell pipes. The public `write()`
 rejects a leading `!` (CFITSIO clobber syntax) with `ValueError`; pass
 `overwrite=True` instead.
+
+### Vendored CFITSIO patches
+
+`extern/vendor.sh` applies `extern/patches/<tag>-*.patch` to the pinned
+CFITSIO in file-name order. Each file's header names the upstream commit it
+backports, or says that it is a torchfits fix not yet upstream. Apart from
+build changes (bzip2 support, `NIOBUF`/`MINDIRECT` overrides), they harden
+CFITSIO code that torchfits runs on untrusted files:
+
+- tile decompression: truncated or corrupt `RICE_1` and `HCOMPRESS_1` tiles
+  (out-of-bounds reads, division by zero), truncated `GZIP_1`/`GZIP_2` tiles
+  (an endless buffer-growing loop) and the `PLIO_1` compression buffer;
+- image headers: `NAXIS` above 99, and image sections (`f.fits[1:10,1:10]`)
+  of images with more than 9 axes;
+- ASCII tables with `TFIELDS` above 999, which now fail to open;
+- the IRAF `.imh` converter that CFITSIO runs for names such as `x.imh[0]`
+  (header and pixel-size bounds, long paths, long headers);
+- the `http://` driver: redirects that leave the host, `user@` inside the
+  path, and responses without a status line.
+
+Such a file now raises `RuntimeError` (or `OSError` from header-only calls)
+instead of crashing the process; `tests/test_cfitsio_backports.py` holds the
+crafted inputs. The vendor stamp covers the patches, so a tree vendored
+before one was added is re-vendored (git checkout) or refused by the build.
 
 ---
 

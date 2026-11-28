@@ -1,0 +1,356 @@
+# torchfits: backport of upstream CFITSIO develop commits (getcols.c)
+#   de7da7908bca0b9ed70d219a35e8627667ced779 (2026-09-09)
+#     "Additional bounds checking for var string cols in cfitsio and
+#      fitsverify." (only getcols.c: utilities/fvrf_data.c is fitsverify,
+#      which torchfits does not build)
+#   93dba91ea0356c3840825d8866db41499fcca536 (2026-09-14, PR #184)
+#     "fix: check variable-length string buffer bounds before read"
+#   113781d8aa442cf8d3c27295d9084674b8b039f2 (2026-10-21)
+#     "Bug fix to ffgcdw for return values of variable length strings. Also
+#      added new constraint to length of copied strings in ffgcls2, based on
+#      TDISP setting."
+#   408694634f75367471d097c0ca30281d96d40884 (2026-11-16)
+#     "In ffgcdw, reset the starting search position to the top of the
+#      header each time. ..." (the two commits below build on it)
+#   e78291976f330608791f795a1905a4efb7bc4754 (2026-11-18)
+#     "This fixes a bug introduced with the getcols.c commit of 10/21/26 ..."
+#   e744cccdb3f64d2cadc5a1429a54e6341d8b093e (2026-11-18)
+#     "Minor edit to previous check-in. Added a check for int overflow."
+#
+# ffgcls2 (fits_read_col with TSTRING) read a variable-length string into
+# a 28800-byte stack buffer using the length in its heap descriptor, without
+# checking that it fits (fixed-width columns were already capped by
+# ffgcprll): a crafted descriptor overflowed the stack with file contents.
+# It now fails with READ_ERROR. ffgcdw (fits_get_col_display_width) also
+# reports a width that covers the variable-length strings ffgcls2 returns.
+#
+# torchfits reaches ffgcls2 only for ASCII-table string columns (fixed
+# width); it reads variable-length string columns as bytes, through its own
+# descriptor checks. The variable-length fixes are carried as hardening of
+# the vendored tree; torchfits output does not change, and the deviation
+# below keeps it that way.
+#
+# This is the net diff of getcols.c from cfitsio-4.7.0 to e744ccc with one
+# torchfits deviation, marked in the code: ffgcls2 still returns the whole
+# field of a fixed-width string column. Upstream 113781d cuts it to the
+# TDISPn width when that is narrower, which would make torchfits return
+# 'abcde' for a stored 'abcdefghij' with TDISPn = 'A5'
+# (tests/test_cfitsio_backports.py pins this).
+#
+# Drop this patch when extern/VERSIONS.txt moves to a CFITSIO release that
+# contains these commits, after deciding how to keep the deviation.
+
+--- a/getcols.c
++++ b/getcols.c
+@@ -613,43 +613,37 @@ int ffgcls( fitsfile *fptr,   /* I - FITS file pointer                       */
+     return(*status);
+ }
+ /*--------------------------------------------------------------------------*/
+-int ffgcdw( fitsfile *fptr,   /* I - FITS file pointer                       */
+-            int  colnum,      /* I - number of column (1 = 1st col)      */
+-            int  *width,      /* O - display width                       */
++static int ffgtdw( fitsfile *fptr,   /* I - FITS file pointer                */
++            int  colnum,      /* I - number of column (1 = 1st col)          */
++            int  *width,      /* O - display width from TDISPn, 0 if none    */
+             int  *status)     /* IO - error status                           */
+ /*
+-  Get Column Display Width.
++  Get the display width given by the TDISPn keyword of a column, or 0 if
++  the column has no valid TDISPn keyword.  The keyword search starts from
++  the top of the header, so that the result does not depend on the current
++  header position (e.g., if a header contains more than one TDISPn card,
++  successive calls would otherwise find different cards).
+ */
+ {
+     tcolumn *colptr;
+     char *cptr;
+-    char message[FLEN_ERRMSG], keyname[FLEN_KEYWORD], dispfmt[FLEN_VALUE];
+-    int tcode, hdutype, tstatus, scaled;
++    char keyname[FLEN_KEYWORD], dispfmt[FLEN_VALUE];
++    int tcode, tstatus;
+     long testwidth;
+-    double tscale;
++
++    *width = 0;
+ 
+     if (*status > 0)  /* inherit input status value if > 0 */
+         return(*status);
+ 
+-    if (fptr->HDUposition != (fptr->Fptr)->curhdu)
+-        ffmahd(fptr, (fptr->HDUposition) + 1, NULL, status);
+-
+-    if (colnum < 1 || colnum > (fptr->Fptr)->tfield)
+-    {
+-        snprintf(message, FLEN_ERRMSG,"Specified column number is out of range: %d",
+-                colnum);
+-        ffpmsg(message);
+-        return(*status = BAD_COL_NUM);
+-    }
+-
+     colptr  = (fptr->Fptr)->tableptr;   /* point to first column */
+     colptr += (colnum - 1);     /* offset to correct column structure */
+     tcode = abs(colptr->tdatatype);
+ 
+-    /* use the TDISPn keyword if it exists */
++    ffmaky(fptr, 1, status);    /* search from the top of the header */
++
+     ffkeyn("TDISP", colnum, keyname, status);
+ 
+-    *width = 0;
+     tstatus = 0;
+     if (ffgkys(fptr, keyname, dispfmt, NULL, &tstatus) == 0)
+     {
+@@ -680,6 +674,43 @@ int ffgcdw( fitsfile *fptr,   /* I - FITS file pointer                       */
+             }
+           }
+     }
++    return(*status);
++}
++/*--------------------------------------------------------------------------*/
++int ffgcdw( fitsfile *fptr,   /* I - FITS file pointer                       */
++            int  colnum,      /* I - number of column (1 = 1st col)      */
++            int  *width,      /* O - display width                       */
++            int  *status)     /* IO - error status                           */
++/*
++  Get Column Display Width.
++*/
++{
++    tcolumn *colptr;
++    char *cptr;
++    char message[FLEN_ERRMSG], keyname[FLEN_KEYWORD], dispfmt[FLEN_VALUE];
++    int tcode, hdutype, tstatus, scaled;
++    double tscale;
++
++    if (*status > 0)  /* inherit input status value if > 0 */
++        return(*status);
++
++    if (fptr->HDUposition != (fptr->Fptr)->curhdu)
++        ffmahd(fptr, (fptr->HDUposition) + 1, NULL, status);
++
++    if (colnum < 1 || colnum > (fptr->Fptr)->tfield)
++    {
++        snprintf(message, FLEN_ERRMSG,"Specified column number is out of range: %d",
++                colnum);
++        ffpmsg(message);
++        return(*status = BAD_COL_NUM);
++    }
++
++    colptr  = (fptr->Fptr)->tableptr;   /* point to first column */
++    colptr += (colnum - 1);     /* offset to correct column structure */
++    tcode = abs(colptr->tdatatype);
++
++    /* use the TDISPn keyword if it exists */
++    ffgtdw(fptr, colnum, width, status);
+ 
+     if (*width == 0)
+     {
+@@ -752,29 +783,69 @@ int ffgcdw( fitsfile *fptr,   /* I - FITS file pointer                       */
+                      *width = 1;
+                   else if (tcode == TSTRING)   /* 'A' */
+                   {
+-		    int typecode;
+-		    long int repeat = 0, rwidth = 0;
+-		    int gstatus = 0;
+-
+-		    /* Deal with possible vector string with repeat / width  by parsing
+-		       the TFORM=rAw keyword */
+-		    if (ffgtcl(fptr, colnum, &typecode, &repeat, &rwidth, &gstatus) == 0 &&
+-			rwidth >= 1 && rwidth < repeat) {
+-		      *width = rwidth;
+-
+-		    } else {
+-		      
+-		      /* Hmmm, we couldn't parse the TFORM keyword by standard, so just do
+-			 simple parsing */
+-		      cptr = dispfmt;
+-		      while(!isdigit((int) *cptr) && *cptr != '\0') 
+-			cptr++;
+-		      
+-		      *width = atoi(cptr);
+-		    }
+-
+-                    if (*width < 1)
+-                         *width = 1;  /* default is at least 1 column */
++                     if (colptr->tdatatype < 0)
++                     {
++                        /* This is a variable-length string.  The length of  */
++                        /* the string in each row is given by its heap       */
++                        /* descriptor, so report the longest string in the   */
++                        /* column (the same scan that ffuptf makes when it   */
++                        /* rewrites TFORMn as '1PA(len)' on closing the HDU).*/
++                        /* A buffer of this width then holds every row that  */
++                        /* ffgcls2 can return.  If the descriptors cannot be */
++                        /* read, fall back to the maximum length in TFORMn.  */
++                        LONGLONG nrows, jj, length, addr, maxlen = 0;
++                        long formwidth = colptr->twidth;
++                        int dstatus = 0;
++
++                        nrows = (fptr->Fptr)->numrows;
++                        for (jj = 1; jj <= nrows; jj++)
++                        {
++                            if (ffgdesll(fptr, colnum, jj, &length, &addr,
++                                         &dstatus) > 0)
++                                break;
++                            if (length > maxlen)
++                                maxlen = length;
++                        }
++
++                        if (dstatus == 0 && maxlen > 0 && maxlen <= INT_MAX)
++                            *width = (int) maxlen;
++                        else if (formwidth > INT_MAX) 
++                        {
++                           snprintf(message, FLEN_ERRMSG,"Bad TFORM value detected for col %d",
++                                   colnum);
++                           ffpmsg(message);
++                           return(*status = BAD_TFORM);
++                           
++                        }
++                        else
++                            *width = (int) formwidth;
++                     }
++                     else
++                     {
++		        int typecode;
++		        long int repeat = 0, rwidth = 0;
++		        int gstatus = 0;
++
++		        /* Use the width of the (unit) string from the column structure,
++		           which supports the TFORM=rAw vector string syntax, rather than
++		           parsing the TFORMn card found in the header */
++		        if (ffgtcl(fptr, colnum, &typecode, &repeat, &rwidth, &gstatus) == 0 &&
++			    rwidth >= 1) {
++		          *width = rwidth;
++
++		        } else {
++
++		          /* Hmmm, we couldn't parse the TFORM keyword by standard, so just do
++			     simple parsing */
++		          cptr = dispfmt;
++		          while(!isdigit((int) *cptr) && *cptr != '\0') 
++			    cptr++;
++
++		          *width = atoi(cptr);
++		        }
++                     }
++                     if (*width < 1)
++                          *width = 1;  /* default is at least 1 column */
+                   }
+             }
+         }
+@@ -801,7 +872,7 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+ {
+     double dtemp;
+     long nullen; 
+-    int tcode, maxelem, hdutype, nulcheck;
++    int tcode, maxelem, hdutype, nulcheck, trailing, dwidth=0, varlen = 0;
+     long twidth, incre;
+     long ii, jj, ntodo;
+     LONGLONG repeat, startpos, elemnum, readptr, tnull, rowlen, rownum, remain, next;
+@@ -843,6 +914,8 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+ 
+     if (tcode == -TSTRING) /* variable length column in a binary table? */
+     {
++      varlen = 1;
++
+       /* only read a single string; ignore value of firstelem */
+ 
+       if (ffgcprll( fptr, colnum, firstrow, 1, 1, 0, &scale, &zero,
+@@ -873,6 +946,30 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+     }
+     else
+         return(*status = NOT_ASCII_COL);
++    
++    /* If TDISP keyword exists, dwidth may be different than twidth */
++    if (varlen)
++    {
++        /* Variable length string: twidth is the length of this row's     */
++        /* string, from its heap descriptor, so limit the returned string */
++        /* only to the display width if a TDISPn keyword exists.  (ffgcdw */
++        /* is not used here because it would scan every row's descriptor  */
++        /* on each call.)                                                 */
++        ffgtdw(fptr, colnum, &dwidth, status);
++        if (dwidth == 0)
++            dwidth = (int) twidth;
++    }
++    else
++    {
++        /* torchfits: keep cfitsio-4.7.0's result for fixed-width strings,
++           the whole field, rather than cutting it to the TDISPn display
++           width (upstream 113781d): TDISPn is a display hint, and readers
++           that size their buffers from TFORMn would silently lose data. */
++        dwidth = (int) twidth;
++    }
++
++    if (dwidth > twidth)
++       dwidth = twidth;
+ 
+     nullen = strlen(snull);   /* length of the undefined pixel string */
+     if (nullen == 0)
+@@ -914,6 +1011,16 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+       readptr = startpos + ((LONGLONG)rownum * rowlen) + (elemnum * incre);
+       ffmbyt(fptr, readptr, REPORT_EOF, status);  /* move to read position */
+ 
++      if (twidth < 1 || ntodo < 1 ||
++          (size_t) ntodo > sizeof(cbuff) / (size_t) twidth)
++      {
++         snprintf(message, FLEN_ERRMSG,
++                "Out-of-bounds string read: %ld strings of width %ld (ffgcls2)",
++                ntodo, twidth);
++         ffpmsg(message);
++         return(*status = READ_ERROR);
++      }
++
+       /* read the array of strings from the FITS file into the buffer */
+ 
+       if (incre == twidth)
+@@ -928,18 +1035,36 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+ 
+       for (ii = (long) (next + ntodo - 1); ii >= next; ii--)
+       {
+-         arrayptr = array[ii] + twidth - 1;
+-
+-         for (jj = twidth - 1; jj > 0; jj--)  /* ignore trailing blanks */
++         arrayptr = array[ii] + dwidth - 1;
++         /* Don't start copying to output array till in range of
++            dwidth (which may differ from twidth due to TDISP setting).
++            And don't copy trailing blanks. */
++         jj = twidth - 1;
++         trailing=1;
++         while (jj >= dwidth)
+          {
+-            if (*buffer == ' ')
++           if (*buffer != ' ')
++              trailing=0;
++           buffer--;
++           jj--;
++         }
++         if (trailing)
++         {
++            /* In range of dwidth now, but so far have only seen 
++               trailing blanks */
++            while (jj > 0)
+             {
+-              buffer--;
+-              arrayptr--;
++               if (*buffer == ' ')
++               {
++                  buffer--;
++                  arrayptr--;
++                  jj--;
++               }
++               else
++                  break;
+             }
+-            else
+-              break;
+-         }
++         }   
++                     
+          *(arrayptr + 1) = 0;  /* write the string terminator */
+          
+          for (; jj >= 0; jj--)    /* copy the string itself */
+@@ -995,4 +1120,3 @@ int ffgcls2 ( fitsfile *fptr,   /* I - FITS file pointer                       *
+ 
+     return(*status);
+ }
+-

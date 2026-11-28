@@ -20,9 +20,11 @@ pure-Python checks do not exercise native changes.
 - `pixi run dev` rebuilds and reinstalls the extension in editable mode.
   `pixi run test` does it for you; `preflight-push` does not, so running pytest
   after a native edit without `dev` exercises a stale `.so`.
-- `pixi run test` runs all of `tests/`; CI deselects the `performance` marker,
-  which no test currently carries. Slow numbers on a loaded machine are not
-  regressions; compare on the same quiet host.
+- `pixi run test` runs all of `tests/`; tests marked `performance` (the
+  large-scale probes in `tests/test_scale_large.py`) skip unless pytest gets
+  `--run-performance` (`pixi run test-scale`), and CI deselects the marker.
+  Slow numbers on a loaded machine are not regressions; compare on the same
+  quiet host.
 - `pixi run ci-local-fast` is the short loop; `pixi run ci-local` is the gate.
 
 ## Generated and vendored files

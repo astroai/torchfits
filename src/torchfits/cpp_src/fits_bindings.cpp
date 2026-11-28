@@ -60,6 +60,9 @@ void invalidate_shared_meta(const std::string& filename) {
 
 void clear_shared_read_meta_cache() {
     d::clear_shared_meta_cache();
+    // The per-thread table readers hold a CFITSIO handle and a pinned data
+    // descriptor each; a cache clear must let go of the files too.
+    evict_all_cached_readers();
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,7 @@ native::Tensor read_full_cached(const std::string& path, int hdu_num, bool use_m
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     const int target_hdu = hdu_num + 1;
@@ -351,6 +355,7 @@ int resolve_hdu_name_cached(const std::string& path, const std::string& hdu_name
     }
     FitsHandleGuard guard;
     guard.fptr = fptr;
+    guard.remember_path = path;
 
     int status = 0;
     fits_movnam_hdu(
@@ -587,6 +592,7 @@ native::Tensor read_full_nocache(const std::string& path, int hdu_num, bool use_
 
     auto close_guard = [&]() {
         if (fptr) {
+            d::remember_hdu_offsets(fptr, path);
             int close_status = 0;
             fits_close_file(fptr, &close_status);
             fptr = nullptr;
@@ -1961,6 +1967,9 @@ void bind_fits(nb::module_& m) {
           nb::arg("algorithm") = std::string("RICE_1"));
 
     m.def("write_hdu_checksums", [](const std::string& path, int hdu_num) {
+        // ffpcks reads the whole HDU to sum it and touches no Python object:
+        // let other threads run meanwhile.
+        nb::gil_scoped_release release;
         fitsfile* fptr = nullptr;
         int status = 0;
         check_fits_filename_security(path);
@@ -1974,14 +1983,10 @@ void bind_fits(nb::module_& m) {
         }
         FitsHandleGuard guard;
         guard.fptr = fptr;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
-            int status = 0;
-            fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
-            if (status != 0) {
-                throw std::runtime_error("Could not move to HDU");
-            }
-        };
-        move_to_hdu(fptr, hdu_num);
+        fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
+        if (status != 0) {
+            throw std::runtime_error("Could not move to HDU");
+        }
         ffpcks(fptr, &status);
         if (status != 0) {
             throw std::runtime_error("Failed to write FITS checksums");
@@ -1989,47 +1994,49 @@ void bind_fits(nb::module_& m) {
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
 
     m.def("verify_hdu_checksums", [](const std::string& path, int hdu_num) {
-        fitsfile* fptr = nullptr;
-        int status = 0;
-        check_fits_filename_security(path);
-        status = d::open_fits_readonly(&fptr, path);
-        if (status != 0 || !fptr) {
-            throw std::runtime_error("Could not open FITS file for checksum verification");
-        }
-        FitsHandleGuard guard;
-        guard.fptr = fptr;
         int datastatus = -1;
         int hdustatus = -1;
-        auto move_to_hdu = [](fitsfile* fptr, int hdu_num) {
+        {
+            // ffvcks reads the whole HDU (seconds on a multi-GB image) and
+            // touches no Python object: let other threads run meanwhile.
+            nb::gil_scoped_release release;
+            fitsfile* fptr = nullptr;
             int status = 0;
+            check_fits_filename_security(path);
+            status = d::open_fits_readonly(&fptr, path);
+            if (status != 0 || !fptr) {
+                throw std::runtime_error("Could not open FITS file for checksum verification");
+            }
+            FitsHandleGuard guard;
+            guard.fptr = fptr;
+            guard.remember_path = path;
             fits_movabs_hdu(fptr, hdu_num + 1, nullptr, &status);
             if (status != 0) {
                 throw std::runtime_error("Could not move to HDU");
             }
-        };
-        move_to_hdu(fptr, hdu_num);
-        // ffvcks sums every block the header declares, re-reading (and
-        // failing on) each one past the end of the file: a header that
-        // claims gigabytes on a short file kept it busy for minutes before
-        // a bare "Failed to verify". Refuse an HDU whose declared data unit
-        // ends at least one whole block past the end of the file (a missing
-        // final pad stays tolerated, as everywhere else).
-        LONGLONG headstart = 0;
-        LONGLONG datastart = 0;
-        LONGLONG dataend = 0;
-        fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
-        if (status == 0 && fptr->Fptr != nullptr &&
-            dataend - fptr->Fptr->logfilesize >= 2880) {
-            throw std::runtime_error(
-                "FITS file is truncated: HDU " + std::to_string(hdu_num) +
-                " declares data up to byte " + std::to_string(dataend) +
-                " but the file has " + std::to_string(fptr->Fptr->logfilesize) +
-                " bytes");
-        }
-        status = 0;
-        ffvcks(fptr, &datastatus, &hdustatus, &status);
-        if (status != 0) {
-            throw std::runtime_error("Failed to verify FITS checksums");
+            // ffvcks sums every block the header declares, re-reading (and
+            // failing on) each one past the end of the file: a header that
+            // claims gigabytes on a short file kept it busy for minutes
+            // before a bare "Failed to verify". Refuse an HDU whose declared
+            // data unit ends at least one whole block past the end of the
+            // file (a missing final pad stays tolerated, as everywhere else).
+            LONGLONG headstart = 0;
+            LONGLONG datastart = 0;
+            LONGLONG dataend = 0;
+            fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
+            if (status == 0 && fptr->Fptr != nullptr &&
+                dataend - fptr->Fptr->logfilesize >= 2880) {
+                throw std::runtime_error(
+                    "FITS file is truncated: HDU " + std::to_string(hdu_num) +
+                    " declares data up to byte " + std::to_string(dataend) +
+                    " but the file has " +
+                    std::to_string(fptr->Fptr->logfilesize) + " bytes");
+            }
+            status = 0;
+            ffvcks(fptr, &datastatus, &hdustatus, &status);
+            if (status != 0) {
+                throw std::runtime_error("Failed to verify FITS checksums");
+            }
         }
         return nb::make_tuple(datastatus, hdustatus);
     }, nb::arg("path"), nb::arg("hdu_num") = 0);
@@ -2164,7 +2171,14 @@ void bind_fits(nb::module_& m) {
 
     m.def("open_fits_file", [](const std::string& path, const std::string& mode) {
         int mode_int = (mode == "w" || mode == "w+") ? 1 : 0;
-        return new FITSFile(path.c_str(), mode_int);
+        // An open can be slow (CFITSIO inflates a .gz file into memory, a URL
+        // is downloaded) and the constructor touches no Python object.
+        FITSFile* file = nullptr;
+        {
+            nb::gil_scoped_release release;
+            file = new FITSFile(path.c_str(), mode_int);
+        }
+        return file;
     }, nb::rv_policy::take_ownership);
 
     m.def("read_header", [](FITSFile& file, int hdu_num) {

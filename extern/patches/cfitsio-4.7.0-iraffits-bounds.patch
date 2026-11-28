@@ -1,0 +1,240 @@
+# torchfits: backport of upstream CFITSIO develop commits (iraffits.c)
+#   341801031ebfe2cbb58493159829c1355dfeb6dd (2026-09-25)
+#     "Added checks for numerical overflow when calculating image size."
+#   b9964a5c60d8ebb7763bbed14b98c7e3252a93e9 (2026-11-10)
+#     "Bounds checking added in several places, including for case of
+#      multiple newlines in header."
+#   6662639eb16fd5de0303c1e113ec43f063c8949c (2026-11-13)
+#     "Catch corner-case of a zero length axis during read from pix file."
+#
+# CFITSIO converts an IRAF .imh/.pix pair to FITS in memory when a name that
+# goes through the extended filename syntax ends in ".imh", e.g.
+# torchfits.read("image.imh[0]"). The converter overflowed its header buffer
+# on a user area made of many short lines, computed the pixel size in int
+# without overflow checks (NAXISn = 65536 x 32768 wrapped to 0 and then
+# fread into a too-small buffer), trusted a pixel offset smaller than the
+# pixel-file magic, and read lines past the image buffer when an axis was 0.
+#
+# Drop this patch when extern/VERSIONS.txt moves to a CFITSIO release that
+# contains these commits.
+
+--- a/iraffits.c
++++ b/iraffits.c
+@@ -49,6 +49,7 @@
+ #include <stdlib.h>
+ #include <stddef.h>  /* stddef.h is apparently needed to define size_t */
+ #include <string.h>
++#include <limits.h>
+ 
+ #define FILE_NOT_OPENED 104
+ 
+@@ -347,7 +348,7 @@ static int irafrdimage (
+ {
+     FILE *fd;
+     char *bang;
+-    int nax = 1, naxis1 = 1, naxis2 = 1, naxis3 = 1, naxis4 = 1, npaxis1 = 1, npaxis2;
++    int nax = 1, naxis1 = 1, naxis2 = 1, naxis3 = 1, naxis4 = 1, npaxis1 = 1, npaxis2, overflowErr=0;
+     int bitpix, bytepix, i;
+     char *fitsheader, *image;
+     int nbr, nbimage, nbaxis, nbl, nbdiff;
+@@ -427,7 +428,43 @@ static int irafrdimage (
+     else
+ 	bytepix = bitpix / 8;
+ 
+-    nbimage = naxis1 * naxis2 * naxis3 * naxis4 * bytepix;
++    if (naxis1 < 0 || naxis2 < 0 || naxis3 < 0 || naxis4 < 0)
++    {
++       ffpmsg("IRAFRIMAGE: Negative val not allowed for image dimension");
++       fclose (fd);
++       return (*status = FILE_NOT_OPENED);
++    }
++    /* perform naxis1 * naxis2 * naxis3 * naxis4 * bytepix while
++       checking for overflow */
++    nbimage = naxis1;
++    if (naxis2 && nbimage > INT_MAX/naxis2)
++       overflowErr=1;
++    else
++    {
++       nbimage *= naxis2;
++       if (naxis3 && nbimage > INT_MAX/naxis3)
++          overflowErr=1;
++       else
++       {
++          nbimage *= naxis3;
++          if (naxis4 && nbimage > INT_MAX/naxis4)
++             overflowErr=1;
++          else
++          {
++             nbimage *= naxis4;
++             if (bytepix && nbimage > INT_MAX/bytepix)
++                overflowErr=1;
++             else
++                nbimage *= bytepix;
++          }
++       }
++    }
++    if (overflowErr)
++    {
++       ffpmsg("IRAFRIMAGE: Integer overflow while calculating dimensions");
++       fclose (fd);
++       return (*status = FILE_NOT_OPENED);
++    }
+     
+     newfilesize = *filesize + nbimage;  /* header + data */
+     newfilesize = (((newfilesize - 1) / 2880 ) + 1 ) * 2880;
+@@ -463,6 +500,12 @@ static int irafrdimage (
+ 	nbr = 0;
+ 	if (naxis2 == 1 && naxis3 > 1)
+ 	    naxis2 = naxis3;
++            
++        if ((double)naxis2*nbaxis > nbimage) {
++           ffpmsg("IRAFRIMAGE: image dimension and image size mismatch.");
++	   fclose (fd);
++	   return (*status = FILE_NOT_OPENED);
++        }    
+ 	for (i = 0; i < naxis2; i++) {
+ 	    nbl = fread (linebuff, 1, nbaxis, fd);
+ 	    nbr = nbr + nbl;
+@@ -567,7 +610,7 @@ static int iraftofits (
+     char *pixname, *newpixname, *bang, *chead;
+     char *fitsheader;
+     int nblock, nlines;
+-    char *fhead, *fhead1, *fp, endline[81];
++    char *fhead, *fhead1, *fheadLimit, *fp, endline[81];
+     char irafchar;
+     char fitsline[81];
+     int pixtype;
+@@ -622,7 +665,11 @@ static int iraftofits (
+         ffpmsg(hdrname);
+ 	return (*status = FILE_NOT_OPENED);
+ 	}
+-
++    /* This is the highest position from which a card created from the user
++        portion of the IRAF header may be entered.  The subtraction of 80
++        is to leave room for the END card. */
++    fheadLimit = fitsheader + (*nbfits/2880)*2880 - 80;
++    
+     fhead = fitsheader;
+     *buffptr = fitsheader;
+     (void)strncpy (fitsheader, endline, 80);
+@@ -781,6 +828,15 @@ static int iraftofits (
+ 
+     /* Save image offset from star of pixel file */
+     pixoff = irafgeti4 (irafheader, impixoff);
++    /* pixoff must not be < 6 at this stage.  Otherwise later in the
++     irafrdimage function, a value of (pixoff -1)*2 < 10 is used to
++     allocate a string passed to pix_version that is expected to be
++     at least 10 bytes.  */
++    if (pixoff < 6 || pixoff > INT_MAX/2) {
++       ffpmsg("IRAF header has invalid pixel offset");
++       ffpmsg(hdrname);
++       return (*status = FILE_NOT_OPENED);
++    }
+     pixoff = (pixoff - 1) * 2;
+     hputi4 (fitsheader, "PIXOFF", pixoff);
+     hputcom (fitsheader,"PIXOFF", "IRAF .pix pixel offset (Do not change!)");
+@@ -812,6 +868,11 @@ static int iraftofits (
+ 	    if (irafchar == 0)
+ 		break;
+ 	    else if (irafchar == 10) {
++                if (fhead >= fheadLimit)
++                {
++                   ffpmsg("IRAF user area truncated: too many header lines.");
++                   break;
++                }
+ 		(void)strncpy (fhead, fitsline, 80);
+ 		/* fprintf (stderr,"%80s\n",fitsline); */
+ 		if (strncmp (fitsline, "OBJECT ", 7) != 0) {
+@@ -824,14 +885,19 @@ static int iraftofits (
+ 	    else {
+ 		if (j > 80) {
+ 		    if (strncmp (fitsline, "OBJECT ", 7) != 0) {
++                        if (fhead >= fheadLimit)
++                        {
++                           ffpmsg("IRAF user area truncated: too many header lines.");
++                           break;
++                        }
+ 			(void)strncpy (fhead, fitsline, 80);
+ 			/* fprintf (stderr,"%80s\n",fitsline); */
+-			j = 9;
+ 			fhead = fhead + 80;
+-			}
++		    }
+ 		    for (k = 0; k < 80; k++)
+ 			fitsline[k] = ' ';
+-		    }
++		    j = 9;
++		}
+ 		if (irafchar > 32 && irafchar < 127)
+ 		    fitsline[j] = irafchar;
+ 		j++;
+@@ -854,6 +920,11 @@ static int iraftofits (
+ 		break;
+ 	    else if (irafchar == 10) {
+ 		if (strncmp (fitsline, "OBJECT ", 7) != 0) {
++                    if (fhead >= fheadLimit)
++                    {
++                       ffpmsg("IRAF user area truncated: too many header lines.");
++                       break;
++                    }
+ 		    (void)strncpy (fhead, fitsline, 80);
+ 		    fhead = fhead + 80;
+ 		    }
+@@ -865,14 +936,19 @@ static int iraftofits (
+ 	    else {
+ 		if (j > 80) {
+ 		    if (strncmp (fitsline, "OBJECT ", 7) != 0) {
++                        if (fhead >= fheadLimit)
++                        {
++                           ffpmsg("IRAF user area truncated: too many header lines.");
++                           break;
++                        }
+ 			(void)strncpy (fhead, fitsline, 80);
+-			j = 9;
+ 			fhead = fhead + 80;
+-			}
++		    }
+ 		    /* fprintf (stderr,"%80s\n",fitsline); */
+ 		    for (k = 0; k < 80; k++)
+ 			fitsline[k] = ' ';
+-		    }
++		    j = 9;
++		}
+ 		if (irafchar > 32 && irafchar < 127)
+ 		    fitsline[j] = irafchar;
+ 		j++;
+@@ -940,10 +1016,14 @@ static int getirafpixname (
+ 	  }
+ 	}
+ 	
+-    if ((bang = strchr (pixname, '!')) != NULL )
+-	strcpy(pixfilename,bang+1);
+-    else
+-	strcpy(pixfilename,pixname);
++    if ((bang = strchr (pixname, '!')) != NULL ) {
++	strncpy(pixfilename,bang+1,SZ_IM2PIXFILE);
++        pixfilename[SZ_IM2PIXFILE]=0;
++    }
++    else {
++	strncpy(pixfilename,pixname,SZ_IM2PIXFILE);
++        pixfilename[SZ_IM2PIXFILE]=0;
++    }
+ 
+     free (pixname);
+ 
+@@ -1013,9 +1093,12 @@ const char	*hdrname)	/* IRAF image header file pathname */
+ 	/* load entire header name string into name buffer */
+ 	(void)strncpy (newpixname, hdrname, SZ_IM2PIXFILE);
+ 	len = strlen (newpixname);
+-	newpixname[len-3] = 'p';
+-	newpixname[len-2] = 'i';
+-	newpixname[len-1] = 'x';
++        if (len >= 3)
++	   newpixname[len-3] = 'p';
++        if (len >= 2)
++	   newpixname[len-2] = 'i';
++        if (len >= 1)
++	   newpixname[len-1] = 'x';
+ 	}
+ 
+     return (newpixname);

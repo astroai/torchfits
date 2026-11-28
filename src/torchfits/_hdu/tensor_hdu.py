@@ -14,6 +14,23 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 
+def _image_geometry_keys(header: Any) -> tuple[str, str]:
+    """``("NAXIS", "BITPIX")``, or the ``Z`` cards of a tile-compressed image.
+
+    A tile-compressed image is stored as a ``BINTABLE`` of tiles whose plain
+    ``NAXISn`` / ``BITPIX`` describe that table; the image's own geometry is
+    in ``ZNAXISn`` / ``ZBITPIX``.
+    """
+    try:
+        zimage = header.get("ZIMAGE")
+        has_z = "ZNAXIS" in header and "ZBITPIX" in header
+    except (AttributeError, TypeError):
+        return "NAXIS", "BITPIX"
+    if has_z and (zimage is True or str(zimage).strip().upper() in {"T", "TRUE"}):
+        return "ZNAXIS", "ZBITPIX"
+    return "NAXIS", "BITPIX"
+
+
 class TensorHDU:
     def __init__(
         self,
@@ -187,13 +204,16 @@ class TensorHDU:
         if self._data is not None:
             return str(tuple(self._data.shape))
         elif self._file_handle or self._source_path:
+            naxis_key, _ = _image_geometry_keys(self.header)
             try:
-                naxis = int(self.header.get("NAXIS", 0))
+                naxis = int(self.header.get(naxis_key, 0))
             except (TypeError, ValueError):
                 return "unknown"
             if naxis <= 0:
                 return "()"
-            dims = [str(self.header.get(f"NAXIS{i + 1}", 0)) for i in range(naxis)]
+            dims = [
+                str(self.header.get(f"{naxis_key}{i + 1}", 0)) for i in range(naxis)
+            ]
             return f"({', '.join(reversed(dims))})"
         return "()"
 
@@ -201,8 +221,9 @@ class TensorHDU:
         if self._data is not None:
             return str(self._data.dtype).replace("torch.", "")
         elif self._file_handle or self._source_path:
+            _, bitpix_key = _image_geometry_keys(self.header)
             try:
-                bitpix = int(self.header.get("BITPIX", 0))
+                bitpix = int(self.header.get(bitpix_key, 0))
             except (TypeError, ValueError):
                 return "unknown"
             kind = _BITPIX_TO_KIND.get(bitpix)

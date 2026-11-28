@@ -478,6 +478,12 @@ torchfits compress mef.fits --split hdu --out-dir /tmp/compressed_hdus
 torchfits compress *.fits --out-dir /tmp/compressed -J 0
 ```
 
+The same controls are keyword arguments of [`torchfits.write()`](api-core-io.md#write)
+(`tile_shape=`, `quantize_level=`, `quantize_method=`, `dither_seed=`,
+`int_to_float=`); note that `tile_shape` is in tensor axis order (rows first)
+while `--tile` is in FITS order. Runnable side by side:
+[`example_fpack_compression.py`](published-examples/example_fpack_compression.py).
+
 ---
 
 ### `decompress`
