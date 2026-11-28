@@ -1996,6 +1996,25 @@ void bind_fits(nb::module_& m) {
             }
         };
         move_to_hdu(fptr, hdu_num);
+        // ffvcks sums every block the header declares, re-reading (and
+        // failing on) each one past the end of the file: a header that
+        // claims gigabytes on a short file kept it busy for minutes before
+        // a bare "Failed to verify". Refuse an HDU whose declared data unit
+        // ends at least one whole block past the end of the file (a missing
+        // final pad stays tolerated, as everywhere else).
+        LONGLONG headstart = 0;
+        LONGLONG datastart = 0;
+        LONGLONG dataend = 0;
+        fits_get_hduaddrll(fptr, &headstart, &datastart, &dataend, &status);
+        if (status == 0 && fptr->Fptr != nullptr &&
+            dataend - fptr->Fptr->logfilesize >= 2880) {
+            throw std::runtime_error(
+                "FITS file is truncated: HDU " + std::to_string(hdu_num) +
+                " declares data up to byte " + std::to_string(dataend) +
+                " but the file has " + std::to_string(fptr->Fptr->logfilesize) +
+                " bytes");
+        }
+        status = 0;
         ffvcks(fptr, &datastatus, &hdustatus, &status);
         if (status != 0) {
             throw std::runtime_error("Failed to verify FITS checksums");

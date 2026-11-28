@@ -137,3 +137,28 @@ def test_write_checksums_invalidates_cached_header(tmp_path):
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert os.stat(path).st_size == st.st_size
     assert "CHECKSUM" in torchfits.read_header(path, 0)
+
+
+def test_verify_refuses_a_data_unit_past_the_end_of_file(tmp_path):
+    # A header declaring far more data than the file holds made ffvcks walk
+    # every missing block (tens of seconds of CPU for a 2**31-row lie) before
+    # a bare "Failed to verify FITS checksums".
+    import time
+
+    import numpy as np
+    import pytest
+
+    path = tmp_path / "lie.fits"
+    torchfits.table.write(
+        str(path), {"A": np.arange(10, dtype=np.int64)}, checksum=True
+    )
+    raw = bytearray(path.read_bytes())
+    card = raw.find(b"NAXIS2  =")
+    assert card > 0
+    raw[card : card + 80] = f"{'NAXIS2':<8}= {2**31:>20}".ljust(80).encode()
+    path.write_bytes(bytes(raw))
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="truncated"):
+        torchfits.verify_checksums(str(path), 1)
+    assert time.monotonic() - start < 5
+    assert torchfits.verify_checksums(str(path), 0)["ok"]
