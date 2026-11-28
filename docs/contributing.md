@@ -79,6 +79,7 @@ src/torchfits/cpp_src/  C++ native extension (nanobind + CFITSIO)
 extern/cfitsio/         Vendored CFITSIO sources (via extern/vendor.sh)
 tests/                  Unit and integration tests
 docs/                   Documentation (zensical)
+docs/work/              Temporary plans and task lists (not published)
 overrides/              Docs theme templates (zensical custom_dir)
 examples/               Runnable example scripts
 scripts/                CI, docs, and release helpers
@@ -88,6 +89,10 @@ Benchmarks, parity checks, and migration notes live in
 [torchfits-harness](https://github.com/astroai/torchfits-harness).
 
 Local-only (gitignored): `build/`, `site/`.
+
+Plans and task lists for work in progress go in `docs/work/`, one Markdown
+file each, and are deleted in the commit that finishes them. The docs build
+excludes that directory.
 
 ## Native extension
 

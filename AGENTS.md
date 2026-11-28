@@ -103,9 +103,13 @@ this repo; `to_astropy` stays a lazy optional converter.
 
 ## Notes and agent tooling
 
-Durable notes live under `.cursor/harness/` (playbook, plans) rather than long
-chat scrollback; trajectories and state there are local-only. Deferred product
-work: [`.cursor/post-1.0-backlog.md`](.cursor/post-1.0-backlog.md).
+Temporary plans and task lists live in `docs/work/`, one Markdown file each,
+and are deleted in the commit that finishes them. `docs/work/` is excluded
+from the published docs site (`exclude_docs` in `zensical.toml`). Do not put
+plans under `.cursor/` or other dot-directories. Agent state, trajectories and
+the playbook stay under `.cursor/harness/` (local-only where `.gitignore` says
+so). Deferred product work:
+[`.cursor/post-1.0-backlog.md`](.cursor/post-1.0-backlog.md).
 
 `.cursor/skills/` and `.cursor/hooks/` are canonical and tracked. `.agents/` and
 `.codex/` are installed copies that `.gitignore` excludes. After editing the

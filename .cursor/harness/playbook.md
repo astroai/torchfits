@@ -9,7 +9,7 @@
   desc: CI main job runs the whole suite (pytest tests/ -q -m 'not performance'); ci-local does NOT — it runs release-gate, the nine contract files plus docs-contract and docs-links. ci-local also re-implements preflight-push's lint steps without calling it, so it never runs mypy, compileall, or changelog-check. Only preflight-push type-checks; use it before claiming a change is clean.
 
 - id: file-memory
-  desc: Put durable notes in .cursor/harness/ — not long chat scrollback.
+  desc: Temporary plans and task lists go in docs/work/ (one file each, deleted when finished; excluded from the docs site). Agent notes stay in .cursor/harness/ — not long chat scrollback.
 
 - id: git-fork-main
   desc: Work lands on sfabbro/torchfits main — no wip/* feature branches, no fork PRs. origin=fork, upstream=astroai/torchfits; re-sync with `git fetch upstream && git merge --ff-only upstream/main && git push origin main`. The fork must carry only `main` and stay identical to upstream/main between rounds.
