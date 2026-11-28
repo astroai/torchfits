@@ -91,7 +91,7 @@ iterators and deep learning training pipelines), use the in-process Python API
 | `0` | Success | Command completed successfully |
 | `1` | Difference found | `torchfits diff` found header, pixel, or table-data discrepancies |
 | `2` | Usage error | Missing arguments, invalid flags, or unknown syntax |
-| `3` | I/O error | File not found, permission denied, or invalid FITS structure |
+| `3` | I/O error | File not found, permission denied, or invalid FITS structure (a truncated file is reported as such, not as a bare CFITSIO status) |
 | `4` | Checksum verification failure | `torchfits verify` detected invalid `DATASUM` or `CHECKSUM` |
 | `5` | Internal error | Unexpected exception; traceback printed to stderr |
 | `130` | Interrupted | `KeyboardInterrupt` / Ctrl-C |

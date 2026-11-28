@@ -54,7 +54,39 @@ class UsageError(CliError):
 
 
 class IoError(CliError):
+    """I/O or FITS-structure failure (exit 3).
+
+    Raw CFITSIO read failures (``status=107``/``108``, "error reading data
+    buffer") get a plain-language note: they almost always mean the file is
+    shorter than its headers declare.
+    """
+
     exit_code = EXIT_IO
+
+    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
+        super().__init__(_clarify_io_message(message), exit_code=exit_code)
+
+
+_TRUNCATION_MARKERS = (
+    "status=107",
+    "status=108",
+    "error reading from fits file",
+    "tried to move past end of file",
+    "error reading data buffer",
+)
+_TRUNCATION_NOTE = (
+    " [truncated or unreadable FITS file: it is shorter than its headers declare]"
+)
+
+
+def _clarify_io_message(message: str) -> str:
+    text = str(message)
+    if _TRUNCATION_NOTE in text:
+        return text
+    lowered = text.lower()
+    if any(marker in lowered for marker in _TRUNCATION_MARKERS):
+        return text + _TRUNCATION_NOTE
+    return text
 
 
 def is_remote_path(path: str) -> bool:

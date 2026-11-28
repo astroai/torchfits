@@ -156,6 +156,49 @@ def test_stats_truncated_image_is_io_error(tmp_path):
     result = _run_cli("stats", str(path))
     assert result.returncode == 3, result.stderr
     assert "Traceback" not in result.stderr
+    # The raw CFITSIO status (108) is explained, not left bare.
+    assert "truncated or unreadable FITS file" in result.stderr
+
+
+def test_truncated_file_errors_are_explained_exit_3(tmp_path, capsys):
+    from torchfits.cli.main import main
+
+    full = tmp_path / "full.fits"
+    torchfits.write(
+        str(full),
+        [torch.zeros(10, 10), torch.ones(100, 100), torch.ones(50, 50)],
+        overwrite=True,
+    )
+    raw = full.read_bytes()
+    data_cut = tmp_path / "data_cut.fits"
+    data_cut.write_bytes(raw[: 2880 * 3 + 1000])  # inside HDU 1's data
+    header_cut = tmp_path / "header_cut.fits"
+    header_cut.write_bytes(raw[:1000])  # inside the primary header
+    scan_cut = tmp_path / "scan_cut.fits"
+    scan_cut.write_bytes(raw[: 5760 + 1000])  # inside HDU 1's header
+    cases = [
+        (["diff", str(data_cut), str(full)], "truncated or unreadable"),
+        (
+            [
+                "arith",
+                str(data_cut),
+                "--op",
+                "add",
+                "--value",
+                "1",
+                "-o",
+                str(tmp_path / "o.fits"),
+            ],
+            "truncated or unreadable",
+        ),
+        (["info", str(header_cut)], "truncated or unreadable"),
+        (["header", str(scan_cut)], "appears truncated or corrupt"),
+    ]
+    for argv, message in cases:
+        assert main(argv) == 3, argv
+        err = capsys.readouterr().err
+        assert message in err, (argv, err)
+        assert "Traceback" not in err
 
 
 def test_verify_truncated_checksummed_is_io_error(tmp_path):
