@@ -25,28 +25,44 @@ the notes. The changes that matter for what you call:
 
 **1.1** added checksummed writes, streaming `where=` filters, and the remote downloader. **1.0** (2026-08-09) was memory-mapped image reads, table filters, the datasets, and the CLI.
 
-## Next: 1.4
+**1.4** (unreleased, on `main`) is implemented:
 
-- **Correctness and data integrity** (in progress): a sweep of silent-wrong-result
-  and partial-output bugs across reads, writes, the CLI and the datasets.
-- **Streaming table writes**: an incremental, atomic FITS table writer that
-  takes an Arrow `RecordBatchReader` or any iterable of batches, so tables larger
-  than memory can be written; `torchfits convert` streams through it.
-- **Native filtered reads without PyTorch**: `scan(where=)`, `scan_torch(where=)`
-  and the datasets evaluate the filter natively and push row windows down to the
-  reader instead of materializing every row first.
-- **Measure before optimizing the table reader further.** Buffered reads
-  (`mmap=False`) still trail fitsio on some narrow tables. Single-column
-  projections already use `fits_read_col`, but on a narrow table that call still
-  reads every byte of every row: one column of a 20-column, 48 MB table read all
-  48 MB and was slower than a buffered two-column read. Closing that gap needs a
-  strided per-column read. Whether it is worth building will be decided by
-  re-benchmarking in [torchfits-harness](https://github.com/astroai/torchfits-harness),
-  not by the October 2026 figures, which predate 1.3's zero-copy transport.
+- **Correctness and data integrity**: a sweep of silent-wrong-result and
+  partial-output bugs across reads, writes, the CLI and the datasets. String
+  columns now decode strictly by default; `decode_errors="replace"` or
+  `"ignore"` opts into a lossy decode. CLI outputs (FITS, Parquet, CSV,
+  Arrow) are written to a temporary file and renamed into place, and
+  `torchfits verify` reports a truncated uncompressed file as an I/O error.
+  A new column name the table already has raises `torchfits.ColumnExistsError`.
+- **Streaming table writes**: `torchfits.table.writer()` (and `table.write`
+  given a stream of batches) writes a table larger than memory incrementally
+  and atomically; `torchfits convert` streams through it.
+- **Native filtered reads without PyTorch**: `table.read`, `scan`,
+  `scan_torch` and the table datasets evaluate eligible `where=` predicates
+  natively, one row window at a time, and gather only the matching rows.
+- **Faster buffered table reads**: `mmap=False` column projections read the
+  table in parallel tiles instead of whole rows.
+- **fpack-style compression controls**: `tile_shape=`, `quantize_level=`,
+  `quantize_method=`, `dither_seed=` and `int_to_float=` on the writers, and
+  `--tile`, `-q`, `--quantize-method`, `--dither-seed` and `--int-to-float`
+  on `torchfits compress`.
+- **Lazy map-style tables** (opt-in): `FitsTableDataset(..., lazy=True)`
+  reads cached row blocks on index instead of the whole table up front.
+- **Shaped `TDIM` cells** (opt-in): `shape_cells=True` reads a column with a
+  multi-axis `TDIMn` as N-D cells; N-D cells are written with `TDIM`.
 
-## Later
+## Next
 
-- Lazy, map-style table access (rows fetched on index instead of read up front).
-- Shaped cells for `TDIM` columns.
+- **Measure narrow-table buffered reads again.** The parallel tiled reads
+  closed most of the gap, but the comparison with fitsio has not been re-run
+  on the same host. A strided per-column read will be built only if
+  re-benchmarking in [torchfits-harness](https://github.com/astroai/torchfits-harness)
+  still shows buffered reads (`mmap=False`) trailing on narrow tables.
+- **Internal cleanup of the native table reader** with no change to what you
+  call.
+
+Out of scope: world coordinates, units, catalog cross-matching and source
+finding stay in other packages, and so do spectroscopy and continuum
+transforms.
 
 A later major version may read tiles with its own codecs and move bytes from storage into GPU memory without a host copy. That is not scheduled. The 1.x read and write calls stay as they are.
