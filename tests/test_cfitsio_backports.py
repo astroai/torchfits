@@ -216,6 +216,15 @@ def _write_many_axis_image(path: Path, naxis: int) -> Path:
     return path
 
 
+def test_image_section_of_many_axis_image_raises(tmp_path: Path) -> None:
+    """copy-image-section-naxis: fits_copy_image_section (extended syntax
+    "[a:b,c:d]") read all NAXISn into a 9-element stack array before
+    rejecting NAXIS > 4."""
+    path = _write_many_axis_image(tmp_path / "axes60.fits", 60)
+    out = _assert_read_raises(f"{path}[1:1,1:1]")
+    assert "dimensions" in out
+
+
 # --------------------------------------------------------------------------
 # Tables
 
