@@ -39,3 +39,14 @@ def test_stray_byte_in_a_tform_card_is_dropped_everywhere(tmp_path):
     assert info["tforms"][1] == str(header["TFORM2"]).strip() == "1I"
     assert torchfits.table.read(str(path))["X"].to_pylist() == [0, 1, 2]
 
+
+def test_non_numeric_tscal_card_names_itself(tmp_path):
+    path = _table(tmp_path)
+    raw = bytearray(path.read_bytes())
+    end = raw.find(b"END" + b" " * 77, 2880)
+    assert (end % 2880) // 80 < 35  # room for one more card in the block
+    raw[end : end + 80] = b"TSCAL2  = 'E15.7   '".ljust(80)
+    raw[end + 80 : end + 160] = b"END".ljust(80)
+    path.write_bytes(bytes(raw))
+    with pytest.raises(ValueError, match="TSCAL2 = 'E15.7' is not a number"):
+        torchfits.table.read(str(path))

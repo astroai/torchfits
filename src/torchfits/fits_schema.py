@@ -218,6 +218,16 @@ def _iter_tfields_indexed(
         )
 
 
+def _scale_card(key: str, raw: Any, default: float) -> float:
+    """A TSCALn/TZEROn card as a float; a non-numeric card names itself."""
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} = {raw!r} is not a number") from None
+
+
 def iter_table_columns(
     header: Mapping[str, Any],
     *,
@@ -232,8 +242,8 @@ def iter_table_columns(
         tnull = get(f"TNULL{idx}")
         tscal_raw = get(f"TSCAL{idx}")
         tzero_raw = get(f"TZERO{idx}")
-        tscal = float(tscal_raw) if tscal_raw is not None else 1.0
-        tzero = float(tzero_raw) if tzero_raw is not None else 0.0
+        tscal = _scale_card(f"TSCAL{idx}", tscal_raw, 1.0)
+        tzero = _scale_card(f"TZERO{idx}", tzero_raw, 0.0)
         yield TableColumnMeta(
             index=idx,
             name=name,
