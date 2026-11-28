@@ -382,13 +382,17 @@ def _arrow_type_from_tform(
     return pa.list_(base, repeat)
 
 
-def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
+def _column_arrow_type(
+    col: Any, *, decode_bytes: bool, pa: Any, has_scale_cards: bool = False
+) -> Any | None:
     """Arrow type for one table column: TFORM shape plus TSCAL/TZERO conventions.
 
     Must agree with the dtypes the data readers produce: the standard unsigned
     conventions keep integer storage (uint16/uint32), any other TSCAL/TZERO
     scaling reads as float64 (table scaling is float64). Raw integer TNULL
-    without scaling keeps its integer type (the sentinel stays a sentinel).
+    without scaling keeps its integer type (the sentinel stays a sentinel),
+    but a TNULL next to identity TSCAL/TZERO cards (``has_scale_cards``) is
+    scaled like any other: it reads as float64 with the TNULL cells as NaN.
     """
     info = col.tform_info
     arrow_type = _arrow_type_from_tform(
@@ -409,7 +413,7 @@ def _column_arrow_type(col: Any, *, decode_bytes: bool, pa: Any) -> Any | None:
         new_elem = pa.uint32()
     elif info.code == "K" and tzero == 9223372036854775808.0:
         new_elem = pa.uint64()
-    elif tzero != 0.0:
+    elif tzero != 0.0 or (has_scale_cards and col.tnull is not None):
         new_elem = pa.float64()
     else:
         return arrow_type
@@ -486,7 +490,13 @@ def _schema_from_header(
         if info.vla or info.code is None:
             any_vla = True
             continue
-        arrow_type = _column_arrow_type(col, decode_bytes=decode_bytes, pa=pa)
+        arrow_type = _column_arrow_type(
+            col,
+            decode_bytes=decode_bytes,
+            pa=pa,
+            has_scale_cards=header.get(f"TSCAL{col.index}") is not None
+            or header.get(f"TZERO{col.index}") is not None,
+        )
         if arrow_type is None:
             any_vla = True
             continue
