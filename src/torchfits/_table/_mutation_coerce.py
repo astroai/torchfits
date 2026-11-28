@@ -146,7 +146,8 @@ def _prepare_array_for_column(arr: "np.ndarray", fmt: str) -> "np.ndarray":
         )
 
     if arr.ndim > 2:
-        return _flat_cells(arr)
+        flat: "np.ndarray" = _flat_cells(arr)
+        return flat
 
     return arr
 
