@@ -144,3 +144,47 @@ def test_iterable_where_reads_each_chunk_once(
     assert len(got) == len(want)
     for row, src in zip(got, want):
         _assert_rows_equal(row, src)
+
+
+@pytest.mark.parametrize(
+    "where,selected,native",
+    [
+        # S carries TNULL -99: a null never satisfies `S != 5`.
+        ("ID >= 2 AND S != 5", [3, 6, 7, 8], True),
+        (WHERE, SELECTED, False),
+    ],
+)
+@pytest.mark.parametrize("mmap", [True, False])
+@pytest.mark.parametrize("columns", [None, ["NAME", "VEC"]])
+def test_map_dataset_where_reads_once(
+    catalog: str,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    selected: list[int],
+    native: bool,
+    mmap: bool,
+    columns: list[str] | None,
+) -> None:
+    """One native read: the predicate columns are not read a second time."""
+    import torchfits.table
+
+    full = FitsTableDataset(catalog, columns=columns, mmap=mmap)
+    calls = _count_native_reads(monkeypatch)
+    real_read = torchfits.table.read
+
+    def table_read(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append("table.read")
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(torchfits.table, "read", table_read)
+    filtered = FitsTableDataset(catalog, where=where, columns=columns, mmap=mmap)
+    assert len(calls) == 1, calls
+    assert (calls == ["read_fits_table_filtered"]) is (native and mmap)
+    assert len(filtered) == len(selected)
+    for i, src in enumerate(selected):
+        _assert_rows_equal(filtered[i][0], full[src][0])
+
+
+def test_map_dataset_where_unknown_column(catalog: str) -> None:
+    with pytest.raises(KeyError, match="NOPE"):
+        FitsTableDataset(catalog, where="NOPE > 1", columns=["ID"])

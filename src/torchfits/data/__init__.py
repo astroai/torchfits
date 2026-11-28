@@ -210,11 +210,31 @@ def _eager_table_columns(
     import torchfits._C as cpp
     from torchfits._table._read_scan import _reraise_invalid_geometry
 
-    row_mask = None
-    if where is not None:
-        row_mask = _where_row_mask(path, hdu, where, mmap=mmap)
-    col_list = list(columns) if columns else []
     use_mmap = _resolve_table_mmap(mmap)
+    col_list = list(columns) if columns else []
+    pred_cols: list[str] = []
+    drop: set[str] = set()
+    header: Any = None
+    if where is not None:
+        # One read either way: the native predicate scan when it can serve the
+        # request, else the projection plus the predicate columns, masked in
+        # memory (the predicate columns used to be read a second time).
+        import torchfits
+        from .._table._read_schema import _all_table_columns
+        from .._where import parse_where_expression, where_columns_from_ast
+
+        header = torchfits.read_header(path, hdu)
+        pred_cols = where_columns_from_ast(parse_where_expression(where))
+        known = {col.name for col in _all_table_columns(header)}
+        for name in pred_cols:
+            if name not in known:
+                raise KeyError(f"Column '{name}' not found")
+        pushed = _native_filtered_columns(path, hdu, header, col_list, where, use_mmap)
+        if pushed is not None:
+            return _move_table_chunk(pushed, device)
+        if col_list:
+            drop = {name for name in pred_cols if name not in col_list}
+            col_list = list(dict.fromkeys(col_list + pred_cols))
     chunk = None
     # Only the native reader's own failures (RuntimeError / OSError, the
     # family _read_scan catches) select a fallback; anything else -- a
@@ -243,7 +263,10 @@ def _eager_table_columns(
                 failure,
             )
     if chunk:
-        if row_mask is not None:
+        if where is not None:
+            row_mask = _where_mask_for_chunk(path, hdu, header, chunk, where, pred_cols)
+            if drop:
+                chunk = {k: v for k, v in chunk.items() if k not in drop}
             chunk = _select_table_rows(chunk, row_mask)
         return _move_table_chunk(chunk, device)
 
@@ -277,36 +300,90 @@ def _eager_table_columns(
     return result
 
 
-def _where_row_mask(
+def _native_filtered_columns(
     path: str,
     hdu: int,
+    header: Any,
+    columns: list[str],
     where: str,
-    *,
-    mmap: bool | str,
-    row_slice: tuple[int, int] | None = None,
-) -> torch.Tensor:
-    """Boolean row mask for *where* over the table (or a ``row_slice`` window).
+    use_mmap: bool,
+) -> dict[str, Any] | None:
+    """*where* served by the native predicate scan, or None when it cannot be.
 
-    Evaluated with the full ``table.read`` predicate dialect on the predicate
-    columns only, so the selected rows can be taken from a torch-native read.
+    The scan (``mmap=True`` only) gathers the selected rows as raw cells, in
+    the representation ``read_fits_table`` gives an unfiltered read; requests
+    it does not serve exactly (scaled or VLA columns, a predicate beyond a
+    conjunction of numeric comparisons) return None for the in-memory mask.
+    """
+    if not use_mmap:
+        return None
+    import torchfits._C as cpp
+    from .._table._read_where import (
+        _native_read_failed,
+        _native_where_filters,
+        _native_where_output_columns,
+    )
+
+    out_cols = _native_where_output_columns(header, columns or None)
+    if not out_cols:
+        return None
+    filters = _native_where_filters(header, where, out_cols, apply_fits_nulls=True)
+    if filters is None:
+        return None
+    try:
+        return dict(cpp.read_fits_table_filtered(path, hdu, out_cols, filters, 1, -1))
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        _native_read_failed(exc)
+        return None
+
+
+def _where_mask_for_chunk(
+    path: str,
+    hdu: int,
+    header: Any,
+    chunk: dict[str, Any],
+    where: str,
+    pred_cols: list[str],
+) -> torch.Tensor:
+    """Boolean row mask for *where* over an already-read columnar chunk.
+
+    The predicate columns are converted to Arrow the way ``table.read``
+    converts them (TNULL is NULL, character columns decoded as strict ASCII)
+    and evaluated with its full predicate dialect.
     """
     import numpy as np
+    import pyarrow as pa
 
-    import torchfits.table
-    from .._table._read_where import _where_mask_for_table
-    from .._where import parse_where_expression, where_columns_from_ast
-
-    ast = parse_where_expression(where)
-    pred_cols = where_columns_from_ast(ast)
-    pa_table = torchfits.table.read(
-        path,
-        hdu=hdu,
-        columns=pred_cols,
-        row_slice=row_slice,
-        mmap=_resolve_table_mmap(mmap),
+    from .._string_decode import DecodeSpec
+    from .._table._read_schema import (
+        _build_fits_metadata,
+        _column_tforms_for_decode,
+        _unsigned_column_dtypes,
     )
-    mask = _where_mask_for_table(pa_table, where, parsed_ast=ast)
-    values = mask.to_numpy(zero_copy_only=False) if hasattr(mask, "to_numpy") else mask
+    from .._table._read_where import _where_mask_for_table
+    from .._table.arrow_convert import _chunk_to_record_batch
+    from .._where import parse_where_expression
+
+    pred_set = set(pred_cols)
+    try:
+        null_meta = _build_fits_metadata(path, hdu, pred_set, header=header)[0]
+    except ValueError:
+        null_meta = {}
+    batch = _chunk_to_record_batch(
+        {name: chunk[name] for name in pred_cols if name in chunk},
+        True,
+        DecodeSpec("ascii", "strict"),
+        True,
+        null_meta=null_meta,
+        apply_fits_nulls=True,
+        column_tforms=_column_tforms_for_decode(path, hdu, pred_set, header=header),
+        unsigned_dtypes=_unsigned_column_dtypes(path, hdu, pred_set, header=header),
+    )
+    # A pyarrow BooleanArray (the annotation says ndarray).
+    mask: Any = _where_mask_for_table(
+        pa.Table.from_batches([batch]), where, parsed_ast=parse_where_expression(where)
+    )
+    values = mask.to_numpy(zero_copy_only=False)
     return torch.from_numpy(np.asarray(values, dtype=bool).copy())
 
 
