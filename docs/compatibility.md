@@ -55,6 +55,89 @@ The floor and the newest tested minor live in `scripts/torch_support.json`.
 
 ---
 
+## Upgrading from 1.3
+
+The next release after 1.3.3 (on `main` until it is tagged) changes a few
+results that 1.3 returned silently. Most code needs no change; check the items
+below if you read non-ASCII tables, catch column errors by type, or script the
+CLI.
+
+**Breaking: string columns decode strictly.** 1.3 decoded character (`A`)
+columns with `errors="ignore"`, so bytes the encoding could not decode
+vanished (`b'caf\xe9'` read as `'caf'`, and `where="NAME == 'caf'"` matched
+it). Every read path -- `table.read` / `scan` / `reader` / `schema`, `where=`
+string comparisons, `TableHDU.get_string_column` and the converters that read
+a path -- now raises `UnicodeDecodeError` naming the column. Pass the encoding
+the file really uses (`encoding="latin-1"`), or `decode_errors="ignore"` for
+the 1.3 result (`"replace"` keeps a U+FFFD per bad byte); see
+[`table.read()`](api-tables.md#tableread). Tensor reads (`read_torch`,
+`scan_torch`, the table datasets) return raw `uint8` bytes and are unaffected,
+except for a `where=` predicate that compares a string column.
+
+**Tables**
+
+- A column whose `TTYPE` repeats an earlier column's name is named `COL<n>` on
+  every path (1.3 dropped it from `read`/`scan` results while `schema()`
+  listed it); see [Column names](api-tables.md#column-names).
+- An unknown column name raises `torchfits.UnknownColumnError` and a new name
+  that is already in use raises `torchfits.ColumnExistsError`. Both subclass
+  `KeyError` and `ValueError`, so existing `except` clauses still catch them.
+- `TableHDU.num_rows` / `TableHDURef.num_rows` raise on a malformed `NAXIS2`
+  or an unreadable header instead of reporting 0 rows.
+- `append_rows` / `insert_rows` fill an omitted float or complex column with
+  NaN (was 0) and store an omitted integer column's `TNULL` unscaled, so it
+  reads back as null.
+- A string clipped to its column width by `table.write(schema=...)`,
+  `insert_column` / `replace_column` or a streamed batch now emits a
+  `RuntimeWarning`, as the row mutations already did.
+- A column with an explicit repeat of 1 (`TFORM = '1E'`) reads as a scalar
+  Arrow array, as `schema()` describes it, instead of `FixedSizeList[1]`.
+
+**Images and compression**
+
+- NaN pixels of a float image written with a quantizing codec (`RICE_1`,
+  `GZIP_2`, `HCOMPRESS_1`, `BZIP2_1`, or any `quantize_level`) are kept as
+  NaN. 1.3 stored them as arbitrary integers that every reader decoded as
+  garbage, so rewrite such files from their source data. NaN-free and
+  lossless (`GZIP_1`) images are written exactly as before.
+
+**Datasets and transforms**
+
+- `FitsTableDataset` rows of a variable-length column are 1-D tensors, as
+  `FitsTableIterableDataset` yields them (1.3 returned Python lists). Only the
+  native reader's own I/O errors fall back to pyarrow now, logged at
+  `WARNING`; any other error is raised.
+- `FitsStagedCutoutIterableDataset` raises `ValueError` when a file's flux
+  bands or `ivar_hdu` / `mask_hdu` companions differ in shape (1.3 cut them at
+  the same window anyway).
+- A normalizer's `forward()` on a typed `Payload` records its inverse
+  statistics in `meta["torchfits.inverse_stats"]`; see
+  [Transforms](api-transforms.md).
+- `read_batch(strict=True)` raises the failing file's own error, the one a
+  single `read()` of it raises.
+
+**CLI** (see [CLI](cli.md))
+
+- Every output (FITS, Parquet, CSV, TSV, Arrow, PNG, `copy`, `setkey -o`) is
+  written to a temporary file and renamed into place: a failure leaves an
+  existing OUTPUT untouched. An OUTPUT that is a hard link to an INPUT is
+  refused (exit `2`).
+- `convert --to fits` keeps the table HDU in its stored form (`TFORM`,
+  `TSCAL`/`TZERO`, `TNULL`, `TDIM`, `TUNIT`, `EXTNAME` and other cards) and
+  streams it; 1.3 renamed the HDU and dropped those cards.
+- `arith` is exact for 64-bit integer images and for float operands on
+  integer images, saturating instead of wrapping; a NaN result into an integer
+  image is a usage error (exit `2`). `arith` and `cutout` drop the stale
+  `DATAMIN` / `DATAMAX`; `arith` and `transform` drop `BUNIT` when the unit
+  changes, and `arith` refuses to add or subtract images with different
+  `BUNIT` (exit `2`).
+- `verify` reports a truncated uncompressed file as an I/O error (exit `3`),
+  even when it carries no checksum keywords.
+- `table` previews are strict JSON: complex values are `{"re", "im"}` objects
+  and undecodable bytes become U+FFFD.
+
+---
+
 ## Verification
 
 To verify that your installation matches your current Python and PyTorch runtime:
