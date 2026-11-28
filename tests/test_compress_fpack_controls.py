@@ -562,3 +562,98 @@ def test_cli_int_to_float_usage_errors(tmp_path, capsys):
     assert main([*argv, "-q", "0"]) == 2
     assert "--quantize-level 0" in capsys.readouterr().err
     assert not out.exists()
+
+
+# --- the same controls on write_tensor / insert_hdu / replace_hdu ------------
+
+
+def test_write_tensor_takes_compression_controls(tmp_path):
+    data = _image((32, 40))
+    path = tmp_path / "wt.fits"
+    torchfits.write_tensor(
+        str(path),
+        data,
+        compress="RICE_1",
+        tile_shape=(8, 10),
+        quantize_method="subtractive_dither_2",
+        dither_seed=77,
+    )
+    assert _ztile(path) == (10, 8)
+    cards = _zcards(path)
+    assert cards["ZQUANTIZ"] == "SUBTRACTIVE_DITHER_2"
+    assert cards["ZDITHER0"] == 77
+
+
+def test_write_tensor_int_to_float(tmp_path):
+    data = torch.arange(32 * 40, dtype=torch.int32).reshape(32, 40)
+    path = tmp_path / "i2f.fits"
+    torchfits.write_tensor(
+        str(path), data, compress="GZIP_1", int_to_float=True, dither_seed=3
+    )
+    assert _zcards(path)["ZQUANTIZ"] == "SUBTRACTIVE_DITHER_1"
+    assert torchfits.read(str(path), hdu=1).dtype == torch.float32
+
+
+@pytest.mark.parametrize("op", ["insert", "replace"])
+def test_hdu_edit_takes_compression_controls(tmp_path, op):
+    path = tmp_path / "mef.fits"
+    base = _image((16, 16), torch.int16)
+    torchfits.write(str(path), [base, base.clone()], overwrite=True)
+    data = _image((24, 30))
+    kwargs = dict(
+        compress="RICE_1",
+        tile_shape=(6, 15),
+        quantize_level=-0.5,
+        quantize_method="no_dither",
+    )
+    if op == "insert":
+        torchfits.insert_hdu(str(path), data, index=2, **kwargs)
+    else:
+        torchfits.replace_hdu(str(path), 1, data, **kwargs)
+    target = 2 if op == "insert" else 1
+    assert _ztile(path, target) == (15, 6)
+    assert _zcards(path, target)["ZQUANTIZ"] == "NO_DITHER"
+    got = torchfits.read(str(path), hdu=target)
+    assert torch.allclose(got, data, atol=0.5)
+    # every other HDU untouched
+    assert torch.equal(torchfits.read(str(path), hdu=0), base)
+
+
+@pytest.mark.parametrize("op", ["insert", "replace"])
+def test_hdu_edit_int_to_float_and_seed(tmp_path, op):
+    path = tmp_path / "mef.fits"
+    base = _image((16, 16), torch.int16)
+    torchfits.write(str(path), [base, base.clone()], overwrite=True)
+    data = torch.arange(20 * 20, dtype=torch.int32).reshape(20, 20)
+    kwargs = dict(compress="GZIP_1", int_to_float=True, dither_seed=19)
+    if op == "insert":
+        torchfits.insert_hdu(str(path), data, index=1, **kwargs)
+    else:
+        torchfits.replace_hdu(str(path), 1, data, **kwargs)
+    assert _zcards(path, 1)["ZDITHER0"] == 19
+    assert torchfits.read(str(path), hdu=1).dtype == torch.float32
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({"tile_shape": (4, 4)}, ValueError, "pass compress="),
+        ({"compress": "RICE_1", "tile_shape": (0, 4)}, ValueError, "tile"),
+        ({"compress": "RICE_1", "dither_seed": 0}, ValueError, "dither_seed"),
+        ({"compress": "RICE_1", "int_to_float": 1}, TypeError, "int_to_float"),
+    ],
+)
+@pytest.mark.parametrize("op", ["insert", "replace"])
+def test_hdu_edit_compression_control_validation_leaves_file(
+    tmp_path, op, kwargs, error, match
+):
+    path = tmp_path / "mef.fits"
+    base = _image((16, 16), torch.int16)
+    torchfits.write(str(path), [base, base.clone()], overwrite=True)
+    before = path.read_bytes()
+    with pytest.raises(error, match=match):
+        if op == "insert":
+            torchfits.insert_hdu(str(path), _image((8, 8)), index=1, **kwargs)
+        else:
+            torchfits.replace_hdu(str(path), 1, _image((8, 8)), **kwargs)
+    assert path.read_bytes() == before

@@ -668,8 +668,18 @@ torchfits.write_tensor(
     compress=False,
     quantize=None,
     checksum=False,
+    *,
+    tile_shape=None,
+    quantize_level=None,
+    quantize_method=None,
+    dither_seed=None,
+    int_to_float=False,
 )
 ```
+
+`tensor` must be a `torch.Tensor` (`TypeError` otherwise); every other
+argument, including the keyword-only tile-compression options, behaves as in
+[`write()`](#write).
 
 ```python
 torchfits.write_tensor("out.fits", tensor, header={"OBJECT": "M31"}, overwrite=True)
@@ -682,8 +692,8 @@ torchfits.write_tensor("checked.fits", tensor, checksum=True, overwrite=True)
 ## HDU Mutation
 
 ```python
-torchfits.insert_hdu(path, data, index=1, header=None, compress=False)
-torchfits.replace_hdu(path, hdu, data, header=None, compress=False)
+torchfits.insert_hdu(path, data, index=1, header=None, compress=False, **tile_options)
+torchfits.replace_hdu(path, hdu, data, header=None, compress=False, **tile_options)
 torchfits.delete_hdu(path, hdu, compress=False)
 ```
 
@@ -696,7 +706,10 @@ Only the inserted or replacing HDU is written, from the call's arguments.
 Every other HDU is copied byte for byte, so it keeps the structure it had
 before the edit: tile compression, storage `BITPIX`, `BSCALE`/`BZERO`/`BLANK`,
 scaled table columns with `TSCAL`/`TZERO`, and all other cards. `compress=`
-applies to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
+and the keyword-only tile-compression options (`tile_options`: `tile_shape=`,
+`quantize_level=`, `quantize_method=`, `dither_seed=`, `int_to_float=`; same
+meaning and validation as in [`write()`](#write), and they likewise require
+`compress=`) apply to the new HDU only. If the file carries `CHECKSUM`/`DATASUM`, the new
 HDU is stamped too. Bytes after the last HDU that do not start an extension
 (junk, zero or blank padding, which readers ignore) stay at the end of the file.
 
