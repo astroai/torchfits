@@ -87,10 +87,27 @@ class UnknownColumnError(KeyError, ValueError):
         return str(self.args[0]) if self.args else ""
 
 
+class ColumnExistsError(KeyError, ValueError):
+    """A new column name the table already has.
+
+    Raised by ``torchfits.table.insert_column`` and
+    ``torchfits.table.rename_columns`` (a target name that collides with a
+    column not being renamed) and by ``TableHDU.add_column`` /
+    ``TableHDU.rename_column``. Like :class:`UnknownColumnError` it subclasses
+    both ``KeyError`` and ``ValueError``: earlier releases raised ``ValueError``
+    from the file helpers and ``KeyError`` from ``TableHDU``, and code written
+    against either keeps catching it.
+    """
+
+    def __str__(self) -> str:
+        # KeyError.__str__ repr-quotes its argument; this is a sentence.
+        return str(self.args[0]) if self.args else ""
+
+
 def _rebuild_hdu_not_found(
     message: str, hdu: Any, path: str | None, n_hdus: int | None
 ) -> HDUNotFoundError:
     return HDUNotFoundError(message, hdu=hdu, path=path, n_hdus=n_hdus)
 
 
-__all__ = ["HDUNotFoundError", "UnknownColumnError"]
+__all__ = ["ColumnExistsError", "HDUNotFoundError", "UnknownColumnError"]

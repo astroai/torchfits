@@ -132,6 +132,36 @@ def test_unknown_column_error_message_is_a_sentence():
     assert str(exc) == "Column 'ZZZ' not found"
 
 
+_EXISTS_CALLS = {
+    "insert_column": lambda path, hdu: torchfits.table.insert_column(
+        path, "A", np.zeros(3, dtype=np.int32), hdu=1
+    ),
+    "rename_columns": lambda path, hdu: torchfits.table.rename_columns(
+        path, {"A": "B"}, hdu=1
+    ),
+    "TableHDU.add_column": lambda path, hdu: hdu.add_column("A", np.zeros(3)),
+    "TableHDU.rename_column": lambda path, hdu: hdu.rename_column("A", "B"),
+}
+
+
+@pytest.mark.parametrize("op", sorted(_EXISTS_CALLS))
+def test_existing_column_name_is_column_exists_error(tmp_path, op):
+    # The file helpers raised ValueError and TableHDU raised KeyError for the
+    # same mistake; both now raise the one type, which is both.
+    path = str(tmp_path / "t.fits")
+    _write_table(path)
+    hdu = torchfits.TableHDU(
+        {"A": np.array([1, 2, 3], dtype=np.int32), "B": np.array([1.5, 2.5, 3.5])}
+    )
+    with pytest.raises(torchfits.ColumnExistsError) as info:
+        _EXISTS_CALLS[op](path, hdu)
+    assert isinstance(info.value, KeyError)
+    assert isinstance(info.value, ValueError)
+    assert not str(info.value).startswith(('"', "'"))  # a sentence, not repr
+    assert "B" in str(info.value) or "A" in str(info.value)
+    assert torchfits.table.schema(path, hdu=1).names == ["A", "B"]
+
+
 def test_update_rows_mmap_auto_reraises_non_decode_error(tmp_path, monkeypatch):
     """mmap='auto' must re-raise IO / non-decode errors, not silently fall back."""
     path = str(tmp_path / "t.fits")

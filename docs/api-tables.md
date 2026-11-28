@@ -37,6 +37,18 @@ except torchfits.UnknownColumnError as exc:
     print(exc)  # Column(s) not found for drop_columns: ['NOPE']
 ```
 
+A new column name the table already has raises `torchfits.ColumnExistsError`
+(also a `KeyError` and a `ValueError`) from `insert_column`, from
+`rename_columns` when a target name collides with a column that is not being
+renamed, and from `TableHDU.add_column` / `TableHDU.rename_column`:
+
+```python
+try:
+    torchfits.table.insert_column("catalog.fits", "RA", ra, hdu=1)
+except torchfits.ColumnExistsError as exc:
+    print(exc)  # Column 'RA' already exists
+```
+
 ### Column names
 
 A column is named by its `TTYPEn` card. Column `n` is named `COL<n>` instead

@@ -159,8 +159,9 @@ The root `torchfits.__all__` (public surface; see `__all__`):
   `TableHDURef`
 - **Exceptions:** `HDUNotFoundError` (unknown EXTNAME or HDU index out of
   range; see [Missing files and HDUs](api-core-io.md#missing-files-and-hdus)),
-  `UnknownColumnError` (a table column name the table does not have; see
-  [Table Reference](api-tables.md))
+  `UnknownColumnError` (a table column name the table does not have) and
+  `ColumnExistsError` (a new column name the table already has; both are
+  documented in [Table Reference](api-tables.md))
 - **Namespaces:** `table`, `cache`, `transforms`, `data`, `where`, `hdu`
 
 Each entry has a reference on the pages above; common calls also have a

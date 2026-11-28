@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 
-from .._errors import FITSFileNotFoundError, UnknownColumnError
+from .._errors import ColumnExistsError, FITSFileNotFoundError, UnknownColumnError
 from ._repr import render_html_table
 from .header import Header, naxis2_row_count
 
@@ -546,7 +546,7 @@ class TableHDU:
 
         raw = dict(self._raw_data) if hasattr(self, "_raw_data") else {}
         if name in raw and not overwrite:
-            raise KeyError(f"Column '{name}' already exists")
+            raise ColumnExistsError(f"Column '{name}' already exists")
 
         nrows = self.num_rows
         new_rows = self._value_num_rows(values)
@@ -588,7 +588,7 @@ class TableHDU:
         if old_name not in raw:
             raise UnknownColumnError(f"Column '{old_name}' not found")
         if new_name in raw:
-            raise KeyError(f"Column '{new_name}' already exists")
+            raise ColumnExistsError(f"Column '{new_name}' already exists")
 
         renamed: Dict[str, Any] = {}
         for key, value in raw.items():

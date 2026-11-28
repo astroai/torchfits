@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from .._errors import UnknownColumnError
+from .._errors import ColumnExistsError, UnknownColumnError
 from ._cell_shape import flatten_cells
 from .._io_engine._write_helpers import _validate_schema_numerics
 from .._io_engine.paths import coerce_fits_path
@@ -74,7 +74,7 @@ def insert_column(
         path, hdu
     )
     if name in columns:
-        raise ValueError(f"Column '{name}' already exists")
+        raise ColumnExistsError(f"Column '{name}' already exists")
 
     if index is None:
         index = len(columns)
@@ -615,7 +615,7 @@ def rename_columns(
         raise UnknownColumnError(f"Column(s) not found for rename_columns: {missing}")
     conflicts = sorted(set(normalized.values()) & (existing - set(normalized)))
     if conflicts:
-        raise ValueError(
+        raise ColumnExistsError(
             "rename_columns target names collide with existing columns not being renamed: "
             f"{conflicts}"
         )
